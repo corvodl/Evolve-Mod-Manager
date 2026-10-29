@@ -397,6 +397,8 @@ struct State {
     teleport_aim_pending: Option<f32>,
     teleport_aim_preview_busy: bool,
     teleport_overlay: Option<std::process::Child>,
+    teleport_overlay_pending: bool,
+    teleport_overlay_generation: u64,
     teleport_hotkey_rx: Option<std::sync::mpsc::Receiver<String>>,
     developer_hotkey_status: String,
     actor_busy: bool,
@@ -1951,6 +1953,7 @@ enum Message {
     TeleportPreviewAim,
     TeleportPreviewed(Result<runtime_teleport::Position, String>),
     TeleportOverlayChanged(bool),
+    TeleportOverlayDetected(u64, runtime_memory::Snapshot),
     TeleportOverlayPoll,
     DeveloperKeybindChanged(developer_hotkeys::Action, developer_hotkeys::Keybind),
     TeleportDo(runtime_teleport::Destination, Option<(u32, u32)>),
@@ -4347,14 +4350,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if ended {
                 state.teleport_overlay = None;
                 state.teleport_hotkey_rx = None;
+                state.teleport_status =
+                    "Overlay exited unexpectedly. Check that Evolve is still running and that the overlay companion is installed.".into();
                 state.developer_hotkey_status = "Overlay exited; shortcuts inactive".into();
-                return Task::none();
-            }
-            if !state.developer_unlocked
-                || state.developer_online_mods
-                || !state.live_edit_enabled
-                || !state.armor_offline_confirmed
-            {
                 return Task::none();
             }
             let Some(output) = state
@@ -4364,6 +4362,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             else {
                 return Task::none();
             };
+            if output == "OVERLAY_READY" {
+                state.teleport_status =
+                    "Overlay running. The marker appears only when Evolve is the foreground window.".into();
+                return Task::none();
+            }
+            if let Some(error) = output.strip_prefix("OVERLAY_ERROR ") {
+                state.teleport_status = format!("Overlay startup failed: {error}");
+                return Task::none();
+            }
             if let Some(raw) = output.strip_prefix("BINDOK ") {
                 if let Ok(index) = raw.trim().parse::<usize>()
                     && let Some(action) = developer_hotkeys::Action::from_index(index)
@@ -4490,39 +4497,87 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::TeleportOverlayChanged(visible) => {
+            // The overlay is read-only and may run independently of optional
+            // armor scanning, live actor writes, and the network testing mode.
+            // Writing actions remain protected by their own Developer checks.
+            state.teleport_overlay_generation =
+                state.teleport_overlay_generation.wrapping_add(1);
+            state.teleport_overlay_pending = false;
             if let Some(mut child) = state.teleport_overlay.take() {
                 let _ = child.kill();
                 let _ = child.wait();
             }
             state.teleport_hotkey_rx = None;
             if !visible {
-                state.teleport_status = "Crosshair overlay closed".into();
+                state.teleport_status = "Overlay disabled".into();
+                state.developer_hotkey_status = "Shortcuts inactive".into();
                 return Task::none();
             }
-            if !state.developer_unlocked
-                || state.developer_online_mods
-                || !state.armor_offline_confirmed
-                || !state.live_edit_enabled
+            if !state.developer_unlocked {
+                state.teleport_status = "Unlock the Developer menu first".into();
+                return Task::none();
+            }
+            #[cfg(not(windows))]
             {
-                state.teleport_status = "Overlay requires an isolated offline match".into();
+                state.teleport_status = "External overlay requires Windows".into();
                 return Task::none();
             }
-            let Some(pid) = state.runtime_snapshot.as_ref().and_then(|s| s.pid) else {
-                state.teleport_status = "Detect Evolve.exe first".into();
+            #[cfg(windows)]
+            {
+                state.teleport_overlay_pending = true;
+                state.teleport_status = "Finding the running Evolve.exe window...".into();
+                state.developer_hotkey_status = "Waiting for Evolve...".into();
+                let generation = state.teleport_overlay_generation;
+                let root = state.preferences.game_storage_root.clone();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || runtime_memory::inspect(&root))
+                            .await
+                            .unwrap_or_else(|error| runtime_memory::Snapshot {
+                                pid: None,
+                                status: format!("Could not detect Evolve.exe: {error}"),
+                                executable: String::new(),
+                                module_base: None,
+                            })
+                    },
+                    move |snapshot| Message::TeleportOverlayDetected(generation, snapshot),
+                );
+            }
+        }
+        Message::TeleportOverlayDetected(generation, snapshot) => {
+            if generation != state.teleport_overlay_generation
+                || !state.teleport_overlay_pending
+            {
+                return Task::none();
+            }
+            state.teleport_overlay_pending = false;
+            if !state.developer_unlocked {
+                state.teleport_status = "Developer menu was locked; overlay not started".into();
+                return Task::none();
+            }
+            let Some(pid) = snapshot.pid else {
+                state.teleport_status = snapshot.status;
+                state.developer_hotkey_status = "Shortcuts inactive".into();
                 return Task::none();
             };
-            // The explicit Developer write-arm and validated Evolve PID above
-            // are sufficient here; the removed TCP/offline guard must not
-            // block the overlay when the relay/profile connection is active.
+            // Update the runtime PID for the visible process. Full actor
+            // memory writes still need an explicitly armed Developer session.
+            if state.runtime_snapshot.as_ref().and_then(|old| old.pid) != Some(pid) {
+                state.runtime_snapshot = Some(snapshot);
+            }
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
-                let path = std::env::current_exe()
-                    .ok()
-                    .map(|p| p.with_file_name("evolve-teleport-overlay.exe"));
-                let result = path
-                    .ok_or_else(|| "Cannot locate manager installation".to_owned())
+                let result = std::env::current_exe()
+                    .map_err(|error| format!("Cannot locate manager installation: {error}"))
                     .and_then(|path| {
+                        let path = path.with_file_name("evolve-teleport-overlay.exe");
+                        if !path.is_file() {
+                            return Err(format!(
+                                "Missing overlay companion: {}. Reinstall or use the complete nightly package.",
+                                path.display()
+                            ));
+                        }
                         std::process::Command::new(path)
                             .arg(pid.to_string())
                             .arg(std::process::id().to_string())
@@ -4530,7 +4585,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .stdout(std::process::Stdio::piped())
                             .creation_flags(0x0800_0000)
                             .spawn()
-                            .map_err(|e| format!("Cannot launch overlay companion: {e}"))
+                            .map_err(|error| format!("Cannot launch overlay companion: {error}"))
                     });
                 match result {
                     Ok(mut child) => {
@@ -4551,14 +4606,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         for action in developer_hotkeys::Action::ALL {
                             send_dev_bind(state, action);
                         }
-                        state.teleport_status =
-                            "Approximate crosshair overlay and hotkeys enabled".into();
+                        state.teleport_status = "Starting overlay... Switch to Evolve to see the marker.".into();
+                        state.developer_hotkey_status = "Registering shortcuts...".into();
                     }
-                    Err(error) => state.teleport_status = error,
+                    Err(error) => {
+                        state.teleport_status = error;
+                        state.developer_hotkey_status = "Shortcuts inactive".into();
+                    }
                 }
             }
             #[cfg(not(windows))]
             {
+                let _ = pid;
                 state.teleport_status = "External overlay requires Windows".into();
             }
         }
@@ -5433,6 +5492,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::RuntimeDetected(snapshot) => {
+            state.teleport_overlay_generation =
+                state.teleport_overlay_generation.wrapping_add(1);
+            state.teleport_overlay_pending = false;
             state.actor_frozen.clear();
             state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.actor_listing = None;
@@ -5640,6 +5702,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            state.teleport_overlay_generation =
+                state.teleport_overlay_generation.wrapping_add(1);
+            state.teleport_overlay_pending = false;
             if state.teleport_hold_cancel.is_some() {
                 state.teleport_hold_status =
                     "Unfreeze coordinates before locking the Developer menu".into();
