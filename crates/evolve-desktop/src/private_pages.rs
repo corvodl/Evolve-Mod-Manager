@@ -1372,10 +1372,14 @@ fn research_rows(state: &State) -> Element<'_, Message> {
         ))
         .size(12),
     );
-    body = body.push(text(format!(
-        "Running executable SHA256: {} (fingerprint only; no hash allowlist supplied)",
-        report.image_sha256
-    )).size(12).style(design::muted));
+    body = body.push(
+        text(format!(
+            "Running executable SHA256: {} (fingerprint only; no hash allowlist supplied)",
+            report.image_sha256
+        ))
+        .size(12)
+        .style(design::muted),
+    );
     body = body.push(text(&report.slots).size(12));
     if let Some(perks) = &state.match_perks {
         let logged = perks
@@ -1396,7 +1400,8 @@ fn research_rows(state: &State) -> Element<'_, Message> {
     body = body.push(text(&report.character_gravity).size(12));
     body = body.push(text(&report.world_gravity).size(12).style(design::muted));
     body = body.push(text(&report.jetpack).size(12));
-    body = body.push(text("Inventory · actor identity, owner and item-list bounds checked").size(15));
+    body =
+        body.push(text("Inventory · actor identity, owner and item-list bounds checked").size(15));
     for inv in &report.inventory {
         let items = inv
             .item_ids
@@ -1405,7 +1410,8 @@ fn research_rows(state: &State) -> Element<'_, Message> {
             .collect::<Vec<_>>()
             .join(", ");
         let occupied = inv.loadout.iter().filter(|(id, _)| *id != 0).count();
-        let flags = inv.loadout
+        let flags = inv
+            .loadout
             .iter()
             .enumerate()
             .filter(|(_, (id, _))| *id != 0)
@@ -1439,14 +1445,15 @@ fn research_rows(state: &State) -> Element<'_, Message> {
         body = body.push(
             text(format!("Inventory not verified: {err}"))
                 .size(12)
-                .style(design::muted)
+                .style(design::muted),
         );
     }
     body = body.push(text("Projectile physics research · no generic speed write").size(15));
     for note in &report.projectiles {
         body = body.push(text(note).size(12).style(design::muted));
     }
-    body.push(text(&report.feature_status).size(12).style(design::muted)).into()
+    body.push(text(&report.feature_status).size(12).style(design::muted))
+        .into()
 }
 
 fn actor_rows(state: &State) -> Element<'_, Message> {
