@@ -348,7 +348,7 @@ fn open_selected(
                 ));
             }
             Ok(None) => diagnostics.push(
-                "This original heightmap contains no readable terrain layer-ID section.".into()
+                "This original heightmap contains no readable terrain layer-ID section.".into(),
             ),
             Err(error) => diagnostics.push(format!("Terrain paint data unsupported: {error}")),
         }
