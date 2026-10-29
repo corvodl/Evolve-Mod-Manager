@@ -271,6 +271,7 @@ struct GpuSurface {
     transparent: bool,
     bind: wgpu::BindGroup,
     _image: wgpu::Texture,
+    _opacity_image: wgpu::Texture,
 }
 struct GpuGroup {
     vertices: wgpu::Buffer,
@@ -313,6 +314,16 @@ impl Renderer {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -479,6 +490,36 @@ impl Renderer {
                 bytes,
             );
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            // A distinct authored opacity texture must control foliage
+            // cutouts. Never misinterpret a packed diffuse alpha channel
+            // (which may be gloss or specular) as vegetation coverage.
+            let opaque = [255u8, 255, 255, 255];
+            let mask = surf.opacity.as_ref().filter(|img| {
+                (img.width() as u64) * (img.height() as u64) * 4 <= 32 * 1024 * 1024
+            });
+            let (mw, mh, mask_bytes) = mask
+                .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
+                .unwrap_or((1, 1, &opaque[..]));
+            let opacity_tex = device.create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("Exact original CryEngine opacity / vegetation coverage"),
+                    size: wgpu::Extent3d {
+                        width: mw,
+                        height: mh,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                },
+                TextureDataOrder::LayerMajor,
+                mask_bytes,
+            );
+            let opacity_view = opacity_tex.create_view(&wgpu::TextureViewDescriptor::default());
             let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact source material per instanced mesh"),
                 layout: &self.layout,
@@ -495,6 +536,10 @@ impl Renderer {
                         binding: 2,
                         resource: wgpu::BindingResource::TextureView(&view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&opacity_view),
+                    },
                 ],
             });
             surfaces.push(GpuSurface {
@@ -503,6 +548,7 @@ impl Renderer {
                 transparent: surf.transparent,
                 bind,
                 _image: tex,
+                _opacity_image: opacity_tex,
             });
         }
         if surfaces.is_empty() {
