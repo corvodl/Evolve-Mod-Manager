@@ -4469,9 +4469,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if let Some(probe) = state.ai_pause_probe {
                 let now = runtime_memory::inspect(&state.preferences.game_storage_root);
-                if now.pid == Some(probe.pid) && now.module_base == Some(probe.module_base) {
+                // Never discard an owned pause on a mere process-inspection failure.
+                // Only an observed different PID or a confirmed absence of Evolve
+                // permits resetting stale state without restoring memory.
+                let ended = now.pid.is_some_and(|pid| pid != probe.pid)
+                    || now.status == "No Evolve.exe process detected";
+                if !ended {
                     state.ai_pause_status =
-                        "Game session still active; Resume AI before clearing tracking".into();
+                        "Game still running or detection uncertain; Resume AI before clearing tracking".into();
                     return Task::none();
                 }
             }
