@@ -177,7 +177,9 @@ impl World {
         let mut closest = (f32::INFINITY, None);
         for group in &self.groups {
             for instance in &group.instances {
-                if instance.object_index == usize::MAX { continue; }
+                if instance.object_index == usize::MAX {
+                    continue;
+                }
                 let p = instance.transform.position;
                 let delta = [
                     p[0] - camera.position[0],
