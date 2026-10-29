@@ -261,18 +261,26 @@ impl shader::Program<Message> for LevelViewport {
             && let Some(position) = cursor.position_in(bounds)
         {
             let triangles = Projection::new(&self.inner, bounds).and_then(|proj| {
-                pick(&self.inner.mesh, &self.picks, &proj, [position.x, position.y])
+                pick(
+                    &self.inner.mesh,
+                    &self.picks,
+                    &proj,
+                    [position.x, position.y],
+                )
             });
             let instance = self.inner.world.as_ref().and_then(|world| {
                 self.inner.level_camera.and_then(|camera| {
-                    let point=[
-                        2.0*position.x/bounds.width.max(1.0)-1.0,
-                        1.0-2.0*position.y/bounds.height.max(1.0),
+                    let point = [
+                        2.0 * position.x / bounds.width.max(1.0) - 1.0,
+                        1.0 - 2.0 * position.y / bounds.height.max(1.0),
                     ];
                     world.pick(
-                        camera,self.inner.yaw,self.inner.pitch,
-                        bounds.width/bounds.height.max(1.0),
-                        self.inner.zoom,point,
+                        camera,
+                        self.inner.yaw,
+                        self.inner.pitch,
+                        bounds.width / bounds.height.max(1.0),
+                        self.inner.zoom,
+                        point,
                     )
                 })
             });
