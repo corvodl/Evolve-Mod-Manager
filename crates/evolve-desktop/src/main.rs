@@ -12847,8 +12847,12 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::TeleportDo(target, None));
         assert!(state.teleport_status.contains("actor memory writes"));
         state.live_edit_enabled = true;
+        // Directly calling update does not execute the returned Task::done
+        // message. Clear the previous rejection before testing the newly
+        // authorized path; the asynchronous detection executes in the app.
+        state.teleport_status.clear();
         let _ = update(&mut state, Message::TeleportDo(target, None));
-        assert!(state.teleport_status.is_empty() || state.teleport_status.contains("Locating"));
+        assert!(state.teleport_status.is_empty());
     }
 
     #[cfg(windows)]
