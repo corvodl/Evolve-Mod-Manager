@@ -42,6 +42,7 @@ pub mod signed_pak;
 pub mod skin_preview;
 pub mod staging;
 pub mod terrain;
+mod terrain_tiles;
 
 pub use animation::{
     AnimatedGlb, AnimationError, AnimationReference, CafInspection, MotionClip, PoseSample,
@@ -148,6 +149,7 @@ pub use signed_pak::{
     rebuild_signed_pak_entry, resign_signed_pak,
 };
 pub use skin_preview::{VerifiedCafAssembly, VerifiedCafSkin};
+pub use terrain_tiles::{TerrainTextureAtlas, read_terrain_texture_atlas};
 pub use terrain::{
     TerrainError, TerrainInfo, TerrainMesh, TerrainPaintMap, TerrainTextureHeader,
     TerrainTextureLayer, decode_terrain_bytes, decode_terrain_paint_bytes, export_terrain_obj,
