@@ -76,6 +76,23 @@ fn checked_traversal(current_raw: u32, max_raw: u32, key: u32) -> Result<(f32, f
     Ok((current, maximum))
 }
 
+/// Decoded, read-only snapshot of a validated local monster's evolution bar.
+/// Stage 3 intentionally has a zero-length bar and no percentage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct EvolutionEnergy {
+    pub stage: u8,
+    pub current: f32,
+    pub maximum: f32,
+}
+impl EvolutionEnergy {
+    pub fn percentage(self) -> Option<u8> {
+        if self.stage == 3 || !bounded_resource(self.current, self.maximum) || self.maximum <= 0.0 {
+            return None;
+        }
+        Some((self.current / self.maximum * 100.0).round().clamp(0.0, 100.0) as u8)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Inventory {
     pub actor_name: String,
@@ -224,7 +241,7 @@ mod windows {
         h: &ProcessHandle,
         base: usize,
         local: &runtime_actors::Actor,
-    ) -> Result<(String, String), String> {
+    ) -> Result<(String, String, Option<EvolutionEnergy>), String> {
         if !local.local || !known_monster(&local.name) {
             return Err("Local actor is not a recognized Stage 2 monster".into());
         }
@@ -257,7 +274,11 @@ mod windows {
             return Err("Monster identity, stage or encoding key changed during read".into());
         }
 
-        let evolution = match checked_evolution(stage_word, evolution_raw, evolution_max_raw, key) {
+        let decoded_evolution = checked_evolution(stage_word, evolution_raw, evolution_max_raw, key);
+        let snapshot = decoded_evolution.as_ref().ok().map(|&(stage, current, maximum)| {
+            EvolutionEnergy { stage, current, maximum }
+        });
+        let evolution = match decoded_evolution {
             Ok((stage, current, maximum)) => {
                 if stage == 3 {
                     "Evolution: stage 3 · bar inactive (0/0); READ-ONLY".to_owned()
@@ -273,7 +294,33 @@ mod windows {
             }
             Err(reason) => format!("Traversal unavailable: {reason}"),
         };
-        Ok((evolution, traversal))
+        Ok((evolution, traversal, snapshot))
+    }
+
+    /// Used by Discord without invoking the much heavier inventory/roster
+    /// research. The caller passes a freshly discovered local actor; this
+    /// revalidates its identity, stage and process-specific encoding key.
+    pub(super) fn inspect_evolution(
+        snapshot: &Snapshot,
+        root: &str,
+        local: &runtime_actors::Actor,
+    ) -> Result<EvolutionEnergy, String> {
+        let now = runtime_memory::inspect(root);
+        if snapshot.pid.is_none()
+            || now.pid != snapshot.pid
+            || now.module_base.is_none()
+            || now.module_base != snapshot.module_base
+            || now.executable != snapshot.executable
+        {
+            return Err("Evolve executable or process changed since actor discovery".into());
+        }
+        let pid = now.pid.ok_or("Evolve process unavailable")?;
+        let base = now.module_base.ok_or("Module base unavailable")?;
+        let h: ProcessHandle = pid
+            .try_into()
+            .map_err(|e| format!("Cannot inspect local monster: {e}"))?;
+        let (_, _, decoded) = monster_resources(&h, base, local)?;
+        decoded.ok_or_else(|| "Evolution fields failed stage/rules validation".into())
     }
 
     fn inventory(
@@ -476,7 +523,7 @@ mod windows {
         // Failed validation is reported, not replaced with guessed values.
         let (evolution_energy, traversal_energy) =
             match monster_resources(&h, base, local) {
-                Ok(values) => values,
+                Ok((evolution, traversal, _)) => (evolution, traversal),
                 Err(reason) => (
                     format!("Evolution unavailable: {reason}"),
                     format!("Traversal unavailable: {reason}"),
@@ -517,7 +564,16 @@ mod windows {
     }
 }
 #[cfg(windows)]
-pub(super) use windows::inspect;
+pub(super) use windows::{inspect, inspect_evolution};
+
+#[cfg(not(windows))]
+pub(super) fn inspect_evolution(
+    _: &Snapshot,
+    _: &str,
+    _: &runtime_actors::Actor,
+) -> Result<EvolutionEnergy, String> {
+    Err("Live monster energy inspection requires Windows".into())
+}
 
 #[cfg(not(windows))]
 pub(super) fn inspect(
@@ -577,6 +633,17 @@ mod tests {
             assert!(checked_evolution(0x303, 1.0f32.to_bits().rotate_left(9)^key,
                 0.0f32.to_bits().rotate_right(16)^key).is_err());
         }
+    }
+
+    #[test]
+    fn evolution_percentage_is_rounded_and_stage_three_hidden() {
+        assert_eq!(EvolutionEnergy { stage: 1, current: 0.0, maximum: 24.0 }.percentage(), Some(0));
+        assert_eq!(EvolutionEnergy { stage: 1, current: 12.0, maximum: 24.0 }.percentage(), Some(50));
+        assert_eq!(EvolutionEnergy { stage: 2, current: 11.0, maximum: 28.0 }.percentage(), Some(39));
+        assert_eq!(EvolutionEnergy { stage: 2, current: 28.0, maximum: 28.0 }.percentage(), Some(100));
+        assert_eq!(EvolutionEnergy { stage: 3, current: 0.0, maximum: 0.0 }.percentage(), None);
+        assert_eq!(EvolutionEnergy { stage: 1, current: f32::INFINITY, maximum: 24.0 }.percentage(), None);
+        assert_eq!(EvolutionEnergy { stage: 2, current: 29.0, maximum: 28.0 }.percentage(), None);
     }
 
     #[test]
