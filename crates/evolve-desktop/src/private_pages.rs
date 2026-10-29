@@ -1534,7 +1534,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             })
             .size(12)
             .style(design::muted),
-            text("Coordinate freeze · hold your position in the air").size(17),
+            text("Coordinate freeze · hover and move horizontally in the air").size(17),
             row![
                 design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Z) {
                     "Holding Z"
@@ -1551,7 +1551,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                 design::button(if state.teleport_hold_releasing {
                     "Releasing..."
                 } else {
-                    "Unfreeze"
+                    "Stop hold / Fly"
                 })
                 .on_press_maybe(
                     (state.teleport_hold_cancel.is_some() && !state.teleport_hold_releasing)
@@ -1559,14 +1559,33 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                 ),
             ]
             .spacing(8),
+            text("Fly Mode · WASD moves relative to actor facing; Space rises, Ctrl descends.")
+                .size(15),
+            row![
+                text("Speed").width(Length::Fixed(65.0)),
+                design::text_input("8", &state.teleport_fly_speed)
+                    .on_input(Message::TeleportFlySpeedChanged)
+                    .width(Length::Fixed(95.0)),
+                text("hover / fly units per second (1–40)").size(12).style(design::muted),
+                design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Fly) {
+                    "Flying..."
+                } else {
+                    "Enable Fly Mode"
+                })
+                    .on_press_maybe(enabled.then_some(
+                        Message::TeleportHold(runtime_teleport::HoldMode::Fly)
+                    )),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
             text(if state.teleport_hold_status.is_empty() {
-                "Freeze Z keeps altitude while you move X/Y; Freeze XYZ locks all axes. Unfreeze to teleport again."
+                "Freeze Z actively moves X/Y with WASD (no ground movement needed). Fly Mode adds Space/Ctrl for vertical movement. Freeze XYZ locks all axes."
             } else {
                 state.teleport_hold_status.as_str()
             })
             .size(12)
             .style(design::muted),
-            text("Positional hold only; does not zero gravity velocity. Releasing may cause falling.")
+            text("Position-based hover/flight writes XYZ, not gravity or velocity. If the game overrides movement, the hold stops and reports the problem.")
                 .size(12)
                 .style(design::muted),
             text("Relative move · 20 units per click (world axes)")
