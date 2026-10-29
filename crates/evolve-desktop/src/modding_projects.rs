@@ -1583,6 +1583,48 @@ pub fn prepare_built_offline_test(
     ))
 }
 
+/// A member must be a regular, manifest-listed extracted text source.
+/// This intentionally rejects Lua bytecode, binary CryXML, and arbitrary
+/// filesystem paths; contents are checked separately before presenting them.
+pub fn valid_text_member(member: &str) -> bool {
+    let lower = member.to_ascii_lowercase();
+    safe_member(member)
+        && [".xml", ".lua", ".txt"]
+            .iter()
+            .any(|extension| lower.ends_with(extension))
+}
+
+/// Save typed UTF-8 source through the SAME journaled, verified backup/import
+/// path as an external replacement. A tempfile outside the project supplies
+/// the replacement; expected_current prevents overwriting concurrent edits.
+/// Never edits the signed source archive or Asset Library extraction.
+pub fn save_text_member(
+    project: &ProjectRow,
+    projects_root: &Path,
+    member: &str,
+    expected_current: &[u8],
+    edited: &str,
+) -> Result<bool, String> {
+    if !valid_text_member(member) || edited.len() > 2 * 1024 * 1024 {
+        return Err("Text editor accepts only safe XML/Lua/TXT up to 2 MiB".into());
+    }
+    if edited.contains('\0') {
+        return Err("Binary NUL bytes cannot be saved as editable source text".into());
+    }
+    let mut replacement = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+    replacement
+        .write_all(edited.as_bytes())
+        .map_err(|e| e.to_string())?;
+    replacement.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+    import_raw_member_checked(
+        project,
+        projects_root,
+        member,
+        replacement.path(),
+        Some(expected_current),
+    )
+}
+
 /// Import explicitly selected bytes/XML over ONE manifest-listed editable
 /// member. Never writes source PAKs or imported library originals. Keeps a
 /// verified, immutable editor backup for manual or in-app recovery.
