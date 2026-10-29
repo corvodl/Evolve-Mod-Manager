@@ -37,8 +37,8 @@ mod guided_modding;
 mod initial_setup;
 mod launcher_bridge;
 mod level_camera;
-mod level_library;
 mod level_editor_shell;
+mod level_library;
 mod level_pick;
 mod level_scene_renderer;
 mod level_workspace;
@@ -7398,7 +7398,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelCameraTick => {
             if !state.level_window_focused
-                || state.level_last_pressed_at.is_some_and(|last| last.elapsed() > Duration::from_secs(5))
+                || state
+                    .level_last_pressed_at
+                    .is_some_and(|last| last.elapsed() > Duration::from_secs(5))
             {
                 // Safe watchdog: stop on lost focus or missing KeyReleased.
                 // Normal Windows key-repeat refreshes this while held.
