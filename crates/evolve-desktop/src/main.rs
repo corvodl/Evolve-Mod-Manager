@@ -421,6 +421,8 @@ struct State {
     teleport_overlay: Option<std::process::Child>,
     teleport_overlay_pending: bool,
     teleport_overlay_generation: u64,
+    teleport_overlay_experimental: bool,
+    teleport_hook_ready: bool,
     teleport_hotkey_rx: Option<std::sync::mpsc::Receiver<String>>,
     developer_hotkey_status: String,
     actor_busy: bool,
@@ -1975,6 +1977,7 @@ enum Message {
     TeleportPreviewAim,
     TeleportPreviewed(Result<runtime_teleport::Position, String>),
     TeleportOverlayChanged(bool),
+    TeleportOverlayExperimentalChanged(bool),
     TeleportOverlayDetected(u64, runtime_memory::Snapshot),
     TeleportOverlayPoll,
     DeveloperKeybindChanged(developer_hotkeys::Action, developer_hotkeys::Keybind),
@@ -4384,6 +4387,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|| {
                         "Overlay exited unexpectedly. Check that Evolve is still running and that the overlay companion is installed.".into()
                     });
+                state.teleport_hook_ready = false;
                 state.developer_hotkey_status = "Overlay exited; shortcuts inactive".into();
                 return Task::none();
             }
@@ -4394,6 +4398,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             else {
                 return Task::none();
             };
+            if output == "HOOK_READY" {
+                state.teleport_hook_ready = true;
+                state.developer_hotkey_status =
+                    "Experimental Windows keyboard hook active; test the shortcut while Evolve has focus.".into();
+                return Task::none();
+            }
             if output == "OVERLAY_READY" {
                 state.teleport_status =
                     "Overlay running. The marker appears only when Evolve is the foreground window.".into();
@@ -4413,10 +4423,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             if let Some(raw) = output.strip_prefix("BINDFAIL ") {
-                state.developer_hotkey_status = format!(
-                    "Could not register hotkey {} (already in use by Windows or another app)",
-                    raw.trim()
-                );
+                state.developer_hotkey_status = if state.teleport_overlay_experimental {
+                    format!("Experimental input hook could not bind action {}", raw.trim())
+                } else {
+                    format!(
+                        "Could not register hotkey {} (already in use by Windows or another app)",
+                        raw.trim()
+                    )
+                };
                 return Task::none();
             }
             let Some(raw) = output.strip_prefix("HOTKEY ") else {
@@ -4613,12 +4627,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.teleport_aim_distance = value;
             }
         }
+        Message::TeleportOverlayExperimentalChanged(enabled) => {
+            if !state.developer_unlocked {
+                return Task::none();
+            }
+            if state.teleport_overlay_experimental == enabled {
+                return Task::none();
+            }
+            state.teleport_overlay_experimental = enabled;
+            let restart = state.teleport_overlay.is_some() || state.teleport_overlay_pending;
+            if restart {
+                state.teleport_status = "Restarting overlay with selected input mode...".into();
+                return Task::done(Message::TeleportOverlayChanged(true));
+            }
+            state.teleport_status = if enabled {
+                "Experimental Windows low-level keyboard hook selected. Enable the overlay to try it.".into()
+            } else {
+                "Standard external overlay input selected.".into()
+            };
+        }
         Message::TeleportOverlayChanged(visible) => {
             // The overlay is read-only and may run independently of optional
             // armor scanning, live actor writes, and the network testing mode.
             // Writing actions remain protected by their own Developer checks.
             state.teleport_overlay_generation = state.teleport_overlay_generation.wrapping_add(1);
             state.teleport_overlay_pending = false;
+            state.teleport_hook_ready = false;
             if let Some(mut child) = state.teleport_overlay.take() {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -4704,13 +4738,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 path.display()
                             ));
                         }
-                        std::process::Command::new(path)
+                        let mut command = std::process::Command::new(path);
+                        command
                             .arg(pid.to_string())
                             .arg(std::process::id().to_string())
                             .stdin(std::process::Stdio::piped())
                             .stdout(std::process::Stdio::piped())
-                            .creation_flags(0x0800_0000)
-                            .spawn()
+                            .creation_flags(0x0800_0000);
+                        if state.teleport_overlay_experimental {
+                            command.arg("--experimental-hook");
+                        }
+                        command.spawn()
                             .map_err(|error| format!("Cannot launch overlay companion: {error}"))
                     });
                 match result {
@@ -4734,7 +4772,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                         state.teleport_status =
                             "Starting overlay... Switch to Evolve to see the marker.".into();
-                        state.developer_hotkey_status = "Registering shortcuts...".into();
+                        state.developer_hotkey_status = if state.teleport_overlay_experimental {
+                            "Installing experimental low-level keyboard hook...".into()
+                        } else {
+                            "Registering standard Windows shortcuts...".into()
+                        };
                     }
                     Err(error) => {
                         state.teleport_status = error;
