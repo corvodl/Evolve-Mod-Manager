@@ -54,7 +54,15 @@ impl Report {
 pub(super) struct Assembled {
     pub mesh: RenderMesh,
     pub surfaces: Vec<Surface>,
+    pub picks: Vec<PickRange>,
     pub report: Report,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct PickRange {
+    pub object_index: usize,
+    pub first_index: usize,
+    pub index_count: usize,
 }
 
 #[derive(Clone)]
@@ -355,6 +363,7 @@ pub(super) fn assemble(
         normals: Some(Vec::new()),
     };
     let mut surfaces = Vec::new();
+    let mut picks = Vec::new();
     if let Some(terrain) = terrain && !append(
             &mut combined,
             &mut surfaces,
@@ -389,11 +398,7 @@ pub(super) fn assemble(
         let mut models = Vec::<(RenderMesh, Vec<Surface>)>::new();
         let mut failures = HashSet::<(String, String)>::new();
         let mut budget_hit = false;
-        for object in scene
-            .objects
-            .iter()
-            .filter(|obj| !obj.hidden && !obj.model.is_empty())
-        {
+        for (object_index, object) in scene.objects.iter().enumerate().filter(|(_, obj)| !obj.hidden && !obj.model.is_empty()) {
             let key = (object.model.clone(), object.material.clone());
             if failures.contains(&key) {
                 continue;
@@ -474,10 +479,12 @@ pub(super) fn assemble(
                 index
             };
             let (mesh, parts) = &models[model_index];
+            let before = combined.indices.len();
             if !append(&mut combined, &mut surfaces, mesh, parts, object.world) {
                 budget_hit = true;
                 break;
             }
+            picks.push(PickRange { object_index, first_index: before, index_count: combined.indices.len() - before });
             report.placed += 1;
             if report.placed >= MAX_PLACEMENTS {
                 budget_hit = true;
@@ -496,6 +503,7 @@ pub(super) fn assemble(
     Ok(Some(Assembled {
         mesh: combined,
         surfaces,
+        picks,
         report,
     }))
 }
