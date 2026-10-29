@@ -52,3 +52,33 @@ Native game-mode implementation requirements:
 Run \`python scripts/experiments/check_arena_duel_log.py "<Game.log>"\` on a 1v1 candidate match. It flags one/three human users, any hunter character in disabled merc_01..03, missing owner on either active slot, wrong actor class/team, or an unexpected monster_01 slot. The supplied normal Hunt control log correctly **fails** this check. Run unit tests with \`python -m unittest discover -s tests -p 'test_check_arena_duel_log.py'\`.
 
 A passing log is **only preliminary**: it cannot demonstrate the matchmaking maximum, bot absence, ownership/replication, damage or third-client rejection. Those require a real two-client test plus an attempted third connection. At present this is a **requirements/test update**, not executable two-human matchmaking enforcement or monster-on-merc initialization.
+
+## Native implementation progress, October 29
+
+**Status:** a verified-code-location native slot-count *experiment*, not a second monster spawn. No bundled gameplay DLL or working multiplayer 1v1 exists.
+
+### Why PAK editing did not establish two players
+
+The latest offline Ice Alpine Arena log records `GameServerNub ... MaxPlayers 0 -> 1`, normal `PlayerSlot_merc_00..03`, `PlayerSlot_monster_00`, and a single player. Its game rule is `ArenaMode`; the game then loads map-specific scenario XML after global `libs/GameRules/ArenaMode.xml`. A signed PAK cannot by itself change that single-player server capacity or actor ownership.
+
+### Experimental native allocation test
+
+Run `scripts/experiments/arena_native_slot_toggle.lua` with Cheat Engine attached to Evolve.exe **at the main menu of a disposable test installation**. The script does not change anything on import. Run `arenaNativeSlotStatus()`, then `arenaNativeOneMercSlot()` before launching a local Arena test. It checks the full 14-byte initializer at RVA 0x15CF820, exact bytes for desired merc=4 and monster=1, and changes only the fourth byte of the merc instruction from 04 to 01. It intentionally leaves monster desired count at 1: the earlier monster=2 edit caused level-load crashes. After leaving the match, run `arenaNativeRestoreSlots()`; an Evolve process exit also discards the in-memory patch.
+
+**This test may fail during Arena initialization.** The getter-based team admission cap is still 4 mercs/1 monster and the stock bot initializer may expect all four hunters. If Arena does load, the required evidence is a network allocation block with `PlayerSlot_merc_00` and `PlayerSlot_monster_00` but **without** `merc_01..03`, plus a clean restore. It is **NOT** a functional duel, not a third-client rejection test, and not a substitute for disabling bots through proper game logic. Do not test on public matchmaking.
+
+### Native spawn-path evidence capture
+
+`scripts/experiments/arena_native_capture.lua` performs a **read-only** dump of the relevant allocator, team limit, SetTeam, entity factory, and monster initialization code ranges at their observed RVAs into %TEMP%. `arena_native_text_capture.lua` optionally captures executable PE sections in bounded 64-KiB chunks and validates the live initializer before reading. The existing crash minidump excluded the required executable code pages; code captures are necessary to reverse-engineer the Stage 2 actor creation / human ownership path.
+
+Keep captured binary game code private. Do not commit original game executable bytes to this public repo.
+
+### Still missing for actual spawning and networked 1v1
+
+1. Determine the verified Stage 2 function and in-memory contracts for **slot role/class assignment**, **actor creation**, **network channel owner**, and camera/HUD setup (not inferred from CryEngine public API). No call signature or detour is currently verified.
+2. Verify that a monster class is accepted on merc_00, with independent player input and proper authority/replication. Swapping an entity pointer or changing a UI label does not meet this gate.
+3. Disable all hunter bots and prevent entry of other playable roles/participants; test the **2-player private networked session** and reject a third client. SinglePlayer mode's `MaxPlayers 1` cannot validate that requirement.
+4. Establish opposing monster damage and win conditions (native checks may use team IDs, not AI faction XML alone).
+5. Only then ship an opt-in runtime component and separate signed PAK with actual playable Monster 1v1.
+
+No native spawning calls or unverified live function hooks have been added to this PR. Do not advertise native actor spawning as implemented.
