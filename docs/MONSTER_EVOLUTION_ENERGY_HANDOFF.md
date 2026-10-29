@@ -98,15 +98,16 @@ changed actor/entity/key/stage/max/baseline and conditional restore; an
 explicitly authorized, disposable **offline** one-write experiment with HUD
 observation and no crash. No such write experiment has been completed yet.
 
-## Next research: Monster Traversal (separate, read-only)
+## Monster Traversal (separate, read-only)
 
-The traversal resource should **not** be inferred from evolution energy or
-assumed to have one shared shape. Wraith has three rechargeable dashes;
-Goliath has three rechargeable traversal jumps; Behemoth's roll is continuous
-and drains a resource while active. In fresh offline matches, independently
-identify each local actor, capture a stationary baseline, then record precisely
-timed uses, recharge intervals, depletion and recovery. Search actor plus
-validated movement/ability components for charges, fractional energy, cooldown
-timestamps and roll state; distinguish a UI charge display from authoritative
-state. Compare across stages and at least two monsters before proposing common
-fields. No writes, freezes, or inferred recharge-rate controls in this phase.
+Read-only traversal captures and the decoded traversal fields are documented in
+[`MONSTER_TRAVERSAL_ENERGY_HANDOFF.md`](MONSTER_TRAVERSAL_ENERGY_HANDOFF.md).
+They are **not** the evolution-energy fields above. Native disassembly identifies
+named recharge-time attributes and a runtime calculation, but not a validated
+backing address, recharge control, or authorization to write.
+
+The captures identify one encoded current/max pool across Wraith's dashes,
+Goliath's jumps, and Behemoth's draining roll. They do not establish a separate
+authoritative integer charge count or a writable recharge-rate field. Continue
+to validate the local actor and match before any read; no traversal writes or
+freezes have been attempted.
