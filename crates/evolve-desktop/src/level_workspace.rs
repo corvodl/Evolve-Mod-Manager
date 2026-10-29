@@ -189,7 +189,9 @@ impl canvas::Program<Message> for SceneOverview {
 /// mesh share one depth-buffered wgpu scene. The outliner remains interactive.
 fn world_viewport(state: &State) -> Element<'_, Message> {
     if let Some(mesh) = &state.model {
-        iced::widget::shader(super::textured::Scene {
+        iced::widget::shader(super::level_pick::LevelViewport {
+            picks: state.level_picks.clone().unwrap_or_else(|| Arc::new(Vec::new())),
+            inner: super::textured::Scene {
             mesh: mesh.clone(),
             surfaces: state.level_surfaces.clone(),
             diffuse: None,
@@ -206,6 +208,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
             pan_x: state.pan_x,
             pan_y: state.pan_y,
             shift: state.keyboard_modifiers.shift(),
+            },
         })
         .width(Fill)
         .height(Length::Fixed(460.0))
