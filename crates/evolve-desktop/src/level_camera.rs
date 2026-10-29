@@ -65,12 +65,9 @@ impl Camera {
         }
         let (forward, right, _) = basis(yaw, pitch);
         let axis = |a: char, b: char| -> f32 {
-            if keys.contains(&a) {
-                1.0
-            } else {
-                0.0
-            }
-            -if keys.contains(&b) { 1.0 } else { 0.0 }
+            let positive = if keys.contains(&a) { 1.0 } else { 0.0 };
+            let negative = if keys.contains(&b) { 1.0 } else { 0.0 };
+            positive - negative
         };
         let f = axis('w', 's');
         let r = axis('d', 'a');
