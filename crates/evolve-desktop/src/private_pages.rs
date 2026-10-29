@@ -1480,6 +1480,15 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                 ),
             ]
             .spacing(8),
+            text(if state.teleport_busy {
+                "Teleport operation running..."
+            } else if state.teleport_status.is_empty() {
+                "Position and teleport errors appear here."
+            } else {
+                state.teleport_status.as_str()
+            })
+            .size(12)
+            .style(design::muted),
             text("Coordinate freeze · hold your position in the air").size(17),
             row![
                 design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Z) {
@@ -1581,13 +1590,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             text("Overlay appears only over Evolve while the game is in focus. The center marker is not a raycast hit location.")
                 .size(12)
                 .style(design::muted),
-            text(if state.teleport_busy {
-                "Teleport operation running..."
-            } else {
-                ""
-            })
-            .size(12)
-            .style(design::muted),
+
         ]
         .spacing(9)
         .padding(10),
