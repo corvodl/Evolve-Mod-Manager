@@ -117,7 +117,8 @@ pub use library_import::{
 };
 pub use model::{
     ModelError, ModelInfo, RenderMesh, export_model_obj, has_original_mesh_subset_table,
-    original_mesh_subsets, parse_model_bytes, parse_world_model_parts, read_model, read_world_model_parts,
+    original_mesh_subsets, parse_model_bytes, parse_world_model_parts, read_model,
+    read_world_model_parts,
 };
 pub use native_caf::{
     CafBonePose, CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
