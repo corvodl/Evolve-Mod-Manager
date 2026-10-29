@@ -191,6 +191,8 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
     if let Some(mesh) = &state.model {
         iced::widget::shader(super::level_pick::LevelViewport {
             picks: state.level_picks.clone().unwrap_or_else(|| Arc::new(Vec::new())),
+            selected_pivot: state.level_selected.and_then(|i| state.level_scene.as_ref()?.objects.get(i)).map(|o| o.world.position),
+            editable: state.level_project.is_some() && state.level_selected.and_then(|i| state.level_scene.as_ref()?.objects.get(i)).is_some_and(|o| !o.kind.eq_ignore_ascii_case("Vegetation")),
             inner: super::textured::Scene {
             mesh: mesh.clone(),
             surfaces: state.level_surfaces.clone(),
