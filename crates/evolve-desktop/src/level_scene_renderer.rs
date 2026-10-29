@@ -3,7 +3,7 @@
 //! Reuse the verified imported inventory and original material loader, rather
 //! than drawing a guessed map mesh or borrowing same-named files from another
 //! game build. All loads run in the existing blocking Operation worker.
-use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface};
+use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface, world_instances};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform, imported_archive_files,
     imported_library, read_model,
@@ -12,8 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 const MAX_ARCHIVES: usize = 1_024;
-const MAX_MODELS: usize = 256;
-const MAX_PLACEMENTS: usize = 8_000;
+const MAX_MODELS: usize = 1_024;
 const MAX_VERTICES: usize = 1_500_000;
 const MAX_INDICES: usize = 4_500_000;
 const MAX_SURFACES: usize = 2_048;
@@ -56,6 +55,7 @@ pub(super) struct Assembled {
     pub surfaces: Vec<Surface>,
     pub picks: Vec<PickRange>,
     pub report: Report,
+    pub world: std::sync::Arc<world_instances::World>,
 }
 
 #[derive(Clone, Debug)]
@@ -397,7 +397,8 @@ pub(super) fn assemble(
         normals: Some(Vec::new()),
     };
     let mut surfaces = Vec::new();
-    let mut picks = Vec::new();
+    let picks = Vec::new();
+    let mut world = world_instances::World::default();
     if let Some(terrain) = terrain
         && !append(
             &mut combined,
@@ -446,7 +447,9 @@ pub(super) fn assemble(
         // Geometry is decoded once per exact model/material pair; each authored
         // actor transform creates a distinct visible scene instance.
         let mut resolved = HashMap::<(String, String), usize>::new();
-        let mut models = Vec::<(RenderMesh, Vec<Surface>)>::new();
+        // A compiled mesh is decoded once, not copied into each object's
+        // vertex/index arrays. GPU draw calls use instanced transforms.
+        let mut models = Vec::<world_instances::ModelGroup>::new();
         let mut failures = HashSet::<(String, String)>::new();
         let mut budget_hit = false;
         for (object_index, object) in scene
@@ -544,33 +547,33 @@ pub(super) fn assemble(
                     report.note(format!("No verified material for {}", object.name));
                 }
                 let index = models.len();
-                models.push((mesh, material_ranges));
+                if material_ranges.is_empty() {
+                    material_ranges.push(neutral(0, mesh.indices.len() as u32));
+                }
+                let radius = world_instances::radius(&mesh);
+                models.push(world_instances::ModelGroup {
+                    mesh: std::sync::Arc::new(mesh),
+                    surfaces: material_ranges,
+                    instances: Vec::new(),
+                    radius,
+                });
                 resolved.insert(key, index);
                 report.geometries += 1;
                 index
             };
-            let (mesh, parts) = &models[model_index];
-            let before = combined.indices.len();
-            if !append(&mut combined, &mut surfaces, mesh, parts, object.world) {
-                budget_hit = true;
-                break;
-            }
-            picks.push(PickRange {
+            models[model_index].instances.push(world_instances::Instance {
                 object_index,
-                first_index: before,
-                index_count: combined.indices.len() - before,
+                transform: object.world,
             });
             report.placed += 1;
-            if report.placed >= MAX_PLACEMENTS {
-                budget_hit = true;
-                break;
-            }
         }
         if budget_hit {
-            report.note("Viewport reached a geometry, placement or GPU-surface budget; remaining objects are not rendered.".into());
+            report.note("Original unique model resource cap reached; some geometry resources could not be resolved.".into());
         }
+        world.groups = models;
+        world.instance_count = report.placed;
     }
-    if combined.indices.is_empty() {
+    if combined.indices.is_empty() && world.instance_count == 0 {
         return Ok(None);
     }
     combined.info.vertex_count = combined.positions.len();
@@ -580,6 +583,7 @@ pub(super) fn assemble(
         surfaces,
         picks,
         report,
+        world: std::sync::Arc::new(world),
     }))
 }
 
