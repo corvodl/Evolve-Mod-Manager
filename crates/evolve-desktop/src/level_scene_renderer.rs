@@ -530,24 +530,29 @@ pub(super) fn assemble(
                     (Ok(Some(material)), Some(inventory)) => {
                         let full = (meshes.len() == 1).then(|| {
                             assembly_materials::load_model(
-                                &source.path, &material.path, inventory,
+                                &source.path,
+                                &material.path,
+                                inventory,
                                 sources.library_root.as_deref(),
-                                sources.build.as_deref(), cache,
+                                sources.build.as_deref(),
+                                cache,
                             )
                         });
                         let resolved = match full {
                             Some(Ok(data)) => Ok(data),
                             _ => assembly_materials::original_single_leaf_surface(
-                                &material.path, inventory,
+                                &material.path,
+                                inventory,
                                 sources.library_root.as_deref(),
-                                sources.build.as_deref(), cache,
-                            ).map(|(surface, warnings)| (vec![surface], warnings)),
+                                sources.build.as_deref(),
+                                cache,
+                            )
+                            .map(|(surface, warnings)| (vec![surface], warnings)),
                         };
                         match resolved {
                             Ok((parts, warnings)) => {
-                                report.textured += usize::from(
-                                    parts.iter().any(|part| part.diffuse.is_some())
-                                );
+                                report.textured +=
+                                    usize::from(parts.iter().any(|part| part.diffuse.is_some()));
                                 material_ranges = parts;
                                 for note in warnings.into_iter().take(2) {
                                     report.note(format!("{}: {note}", object.name));
@@ -555,16 +560,16 @@ pub(super) fn assemble(
                             }
                             Err(error) => report.note(format!(
                                 "{}: original MTL cannot be assigned to {} mesh sections: {error}",
-                                object.name, meshes.len()
+                                object.name,
+                                meshes.len()
                             )),
                         }
                     }
-                    (Err(error), _) => report.note(format!(
-                        "{} material: {error}", object.name
-                    )),
+                    (Err(error), _) => report.note(format!("{} material: {error}", object.name)),
                     _ => report.note(format!(
                         "No verified original material for {} ({} mesh sections)",
-                        object.name, meshes.len()
+                        object.name,
+                        meshes.len()
                     )),
                 }
                 let mut indices = Vec::with_capacity(meshes.len());
