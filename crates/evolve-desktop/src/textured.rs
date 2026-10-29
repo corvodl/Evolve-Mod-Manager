@@ -203,7 +203,7 @@ impl shader::Program<super::Message> for Scene {
             let depth = z * sp + back * cp;
             // 3D perspective and depth test, with original source UV winding.
             let perspective = (2.5 - depth).max(0.12);
-            let scale = self.zoom.clamp(0.2, 4.0) * 1.6;
+            let scale = self.zoom.clamp(0.2, 80.0) * 1.6;
             let projected = [
                 xr * scale / perspective / ratio + self.pan_x,
                 yr * scale / perspective + self.pan_y,
@@ -233,7 +233,7 @@ impl shader::Program<super::Message> for Scene {
         }
         // Generate a perspective/depth-correct grid beneath the actual
         // lowest vertex. CPU preview math is identical for 2012 and Stage 2.
-        let scale = self.zoom.clamp(0.2, 4.0) * 1.6;
+        let scale = self.zoom.clamp(0.2, 80.0) * 1.6;
         let mut ground = Vec::with_capacity(164);
         for line in super::viewer_grid::floor_lines(&data.positions) {
             for raw in [line.start, line.end] {
