@@ -1042,7 +1042,9 @@ mod tests {
             let (sy, cy) = (0.5 * yaw).sin_cos();
             let expected_x = -yaw.sin();
             let expected_y = yaw.cos();
-            for pitch_deg in [-120.0_f32, -95.0, -90.0, -80.0, 0.0, 80.0, 90.0, 95.0, 120.0] {
+            for pitch_deg in [
+                -120.0_f32, -95.0, -90.0, -80.0, 0.0, 80.0, 90.0, 95.0, 120.0,
+            ] {
                 let pitch = pitch_deg.to_radians();
                 let (sp, cp) = (0.5 * pitch).sin_cos();
                 // World-Z yaw followed by local-X pitch.
