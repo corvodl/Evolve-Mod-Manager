@@ -52,7 +52,7 @@ impl Projection {
             extent,
             yaw: scene.yaw.to_radians(),
             pitch: scene.pitch.to_radians(),
-            zoom: scene.zoom.clamp(0.2, 4.0),
+            zoom: scene.zoom.clamp(0.2, 80.0),
             pan_x: scene.pan_x,
             pan_y: scene.pan_y,
             width: bounds.width.max(1.0),
@@ -254,7 +254,15 @@ impl shader::Program<Message> for LevelViewport {
             return Some(shader::Action::publish(Message::LevelSelect(index)).and_capture());
         }
         navigation
-            .map(super::view_navigation::message)
+            .map(|gesture| match gesture {
+                super::view_navigation::Gesture::Zoom(delta) => {
+                    Message::LevelCameraZoomWheel(delta)
+                }
+                super::view_navigation::Gesture::Pan(dx, dy) => {
+                    Message::LevelCameraPanDelta(dx, dy)
+                }
+                other => super::view_navigation::message(other),
+            })
             .map(|message| shader::Action::publish(message).and_capture())
     }
     fn draw(
