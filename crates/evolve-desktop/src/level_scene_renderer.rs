@@ -98,7 +98,10 @@ fn safe_virtual(raw: &str) -> Option<String> {
 /// not authorize unrelated basename matches.
 fn compiled_render_path(model: &str) -> String {
     let source = Path::new(model);
-    let ext = source.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+    let ext = source
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
     if ext.eq_ignore_ascii_case("skin") {
         source.with_extension("skinm").to_string_lossy().to_string()
     } else if ext.eq_ignore_ascii_case("chr") {
@@ -115,7 +118,12 @@ fn relevant_asset(path: &str) -> bool {
 }
 
 impl Index {
-    fn new(selected: &ImportedPak, wanted: &HashSet<String>, report: &mut Report, project_inventory: Option<&Inventory>) -> Result<Self, String> {
+    fn new(
+        selected: &ImportedPak,
+        wanted: &HashSet<String>,
+        report: &mut Report,
+        project_inventory: Option<&Inventory>,
+    ) -> Result<Self, String> {
         let build = (selected.builds.len() == 1).then(|| selected.builds[0].clone());
         let library_root = Path::new(&selected.directory)
             .parent()
@@ -150,8 +158,11 @@ impl Index {
         // inventory validator before it can be indexed.
         for pak in archives {
             let inventory = if pak.id == selected.id {
-                if let Some(project) = project_inventory { project.clone() }
-                else { imported_archive_files(&pak).map_err(|e| e.to_string())? }
+                if let Some(project) = project_inventory {
+                    project.clone()
+                } else {
+                    imported_archive_files(&pak).map_err(|e| e.to_string())?
+                }
             } else {
                 match imported_archive_files(&pak) {
                     Ok(found) => found,
@@ -164,7 +175,9 @@ impl Index {
             let root = PathBuf::from(&inventory.root);
             let mut matched = false;
             for asset in &inventory.entries {
-                let Some(key) = safe_virtual(&asset.relative_path) else { continue };
+                let Some(key) = safe_virtual(&asset.relative_path) else {
+                    continue;
+                };
                 if wanted.contains(&key) && relevant_asset(&key) {
                     matched = true;
                     index.files.entry(key).or_default().push(AssetLocation {
@@ -364,22 +377,33 @@ pub(super) fn assemble(
     };
     let mut surfaces = Vec::new();
     let mut picks = Vec::new();
-    if let Some(terrain) = terrain && !append(
+    if let Some(terrain) = terrain
+        && !append(
             &mut combined,
             &mut surfaces,
             terrain,
             &[],
             Transform::default(),
-        ) {
-            report.note("Terrain exceeded the current viewport geometry budget.".into());
+        )
+    {
+        report.note("Terrain exceeded the current viewport geometry budget.".into());
     }
     if let Some(scene) = scene {
         let mut wanted = HashSet::new();
-        for object in scene.objects.iter().filter(|o| !o.hidden && !o.model.is_empty()) {
+        for object in scene
+            .objects
+            .iter()
+            .filter(|o| !o.hidden && !o.model.is_empty())
+        {
             if let Some(model) = safe_virtual(&compiled_render_path(&object.model)) {
                 wanted.insert(model.clone());
                 if object.material.is_empty() {
-                    wanted.insert(Path::new(&model).with_extension("mtl").to_string_lossy().to_string());
+                    wanted.insert(
+                        Path::new(&model)
+                            .with_extension("mtl")
+                            .to_string_lossy()
+                            .to_string(),
+                    );
                 }
             }
             if !object.material.is_empty() {
@@ -388,7 +412,9 @@ pub(super) fn assemble(
                 } else {
                     format!("{}.mtl", object.material)
                 };
-                if let Some(path) = safe_virtual(&material) { wanted.insert(path); }
+                if let Some(path) = safe_virtual(&material) {
+                    wanted.insert(path);
+                }
             }
         }
         let sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
@@ -398,7 +424,12 @@ pub(super) fn assemble(
         let mut models = Vec::<(RenderMesh, Vec<Surface>)>::new();
         let mut failures = HashSet::<(String, String)>::new();
         let mut budget_hit = false;
-        for (object_index, object) in scene.objects.iter().enumerate().filter(|(_, obj)| !obj.hidden && !obj.model.is_empty()) {
+        for (object_index, object) in scene
+            .objects
+            .iter()
+            .enumerate()
+            .filter(|(_, obj)| !obj.hidden && !obj.model.is_empty())
+        {
             let key = (object.model.clone(), object.material.clone());
             if failures.contains(&key) {
                 continue;
@@ -484,7 +515,11 @@ pub(super) fn assemble(
                 budget_hit = true;
                 break;
             }
-            picks.push(PickRange { object_index, first_index: before, index_count: combined.indices.len() - before });
+            picks.push(PickRange {
+                object_index,
+                first_index: before,
+                index_count: combined.indices.len() - before,
+            });
             report.placed += 1;
             if report.placed >= MAX_PLACEMENTS {
                 budget_hit = true;
@@ -521,25 +556,42 @@ pub(super) fn reproject_after_edit(
     for range in ranges {
         let old = previous.objects.get(range.object_index)?.world;
         let new = updated.objects.get(range.object_index)?.world;
-        if old == new { continue }
-        if old.scale.iter().any(|scale| scale.abs() < 1e-6) { return None }
-        let inv = [old.quaternion[0], -old.quaternion[1], -old.quaternion[2], -old.quaternion[3]];
+        if old == new {
+            continue;
+        }
+        if old.scale.iter().any(|scale| scale.abs() < 1e-6) {
+            return None;
+        }
+        let inv = [
+            old.quaternion[0],
+            -old.quaternion[1],
+            -old.quaternion[2],
+            -old.quaternion[3],
+        ];
         let start = range.first_index;
         let end = start.checked_add(range.index_count)?;
         let indices = mesh.indices.get(start..end)?;
         let unique = indices.iter().map(|v| *v as usize).collect::<HashSet<_>>();
         for i in unique {
             let point = mesh.positions.get_mut(i)?;
-            let relative = [point[0]-old.position[0], point[1]-old.position[1], point[2]-old.position[2]];
+            let relative = [
+                point[0] - old.position[0],
+                point[1] - old.position[1],
+                point[2] - old.position[2],
+            ];
             let rotated = rotate(inv, relative);
             let local = [
-                rotated[0] / old.scale[0], rotated[1] / old.scale[1], rotated[2] / old.scale[2],
+                rotated[0] / old.scale[0],
+                rotated[1] / old.scale[1],
+                rotated[2] / old.scale[2],
             ];
             *point = transformed(new, local, false);
             if let Some(normal) = mesh.normals.as_mut().and_then(|normals| normals.get_mut(i)) {
                 let old_normal = rotate(inv, *normal);
                 let source_normal = [
-                    old_normal[0] * old.scale[0], old_normal[1] * old.scale[1], old_normal[2] * old.scale[2],
+                    old_normal[0] * old.scale[0],
+                    old_normal[1] * old.scale[1],
+                    old_normal[2] * old.scale[2],
                 ];
                 *normal = transformed(new, source_normal, true);
             }
@@ -587,9 +639,13 @@ mod tests {
     fn combined_scene_offsets_indices_and_material_ranges_per_instance() {
         let source = RenderMesh {
             info: ModelInfo {
-                format: "Fixture".into(), version: 1, chunk_count: 1,
-                vertex_count: 3, triangle_count: 1,
-                original_uv0: true, original_normals: true,
+                format: "Fixture".into(),
+                version: 1,
+                chunk_count: 1,
+                vertex_count: 3,
+                triangle_count: 1,
+                original_uv0: true,
+                original_normals: true,
             },
             positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
             indices: vec![0, 1, 2],
@@ -597,15 +653,31 @@ mod tests {
             normals: Some(vec![[0., 0., 1.]; 3]),
         };
         let mut combined = RenderMesh {
-            info: source.info.clone(), positions: Vec::new(),
-            indices: Vec::new(), uv0: Some(Vec::new()), normals: Some(Vec::new()),
+            info: source.info.clone(),
+            positions: Vec::new(),
+            indices: Vec::new(),
+            uv0: Some(Vec::new()),
+            normals: Some(Vec::new()),
         };
         let mut ranges = Vec::new();
-        assert!(append(&mut combined, &mut ranges, &source, &[neutral(0, 3)], Transform::default()));
+        assert!(append(
+            &mut combined,
+            &mut ranges,
+            &source,
+            &[neutral(0, 3)],
+            Transform::default()
+        ));
         let translated = Transform {
-            position: [20.0, 0.0, 5.0], ..Transform::default()
+            position: [20.0, 0.0, 5.0],
+            ..Transform::default()
         };
-        assert!(append(&mut combined, &mut ranges, &source, &[neutral(0, 3)], translated));
+        assert!(append(
+            &mut combined,
+            &mut ranges,
+            &source,
+            &[neutral(0, 3)],
+            translated
+        ));
         assert_eq!(combined.indices, vec![0, 1, 2, 3, 4, 5]);
         assert_eq!(ranges.len(), 2);
         assert_eq!(ranges[0].first_index, 0);
@@ -618,18 +690,34 @@ mod tests {
     fn duplicate_cross_archive_paths_are_not_silently_selected() {
         let key = "objects/tree.cgf".to_string();
         let mut index = Index {
-            files: HashMap::new(), inventories: HashMap::new(),
-            build: None, library_root: None, selected_id: "selected".into(),
+            files: HashMap::new(),
+            inventories: HashMap::new(),
+            build: None,
+            library_root: None,
+            selected_id: "selected".into(),
         };
-        index.files.insert(key.clone(), vec![
-            AssetLocation { archive: "other-a".into(), path: PathBuf::from("a") },
-            AssetLocation { archive: "other-b".into(), path: PathBuf::from("b") },
-        ]);
+        index.files.insert(
+            key.clone(),
+            vec![
+                AssetLocation {
+                    archive: "other-a".into(),
+                    path: PathBuf::from("a"),
+                },
+                AssetLocation {
+                    archive: "other-b".into(),
+                    path: PathBuf::from("b"),
+                },
+            ],
+        );
         assert!(index.lookup(&key).is_err());
         index.files.get_mut(&key).unwrap().push(AssetLocation {
-            archive: "selected".into(), path: PathBuf::from("selected"),
+            archive: "selected".into(),
+            path: PathBuf::from("selected"),
         });
-        assert_eq!(index.lookup(&key).unwrap().unwrap().path, PathBuf::from("selected"));
+        assert_eq!(
+            index.lookup(&key).unwrap().unwrap().path,
+            PathBuf::from("selected")
+        );
     }
 
     #[test]
