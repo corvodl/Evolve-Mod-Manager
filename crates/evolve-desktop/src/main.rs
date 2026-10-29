@@ -55,6 +55,7 @@ mod play_dialog;
 mod play_setup;
 mod private_pages;
 mod runtime_actors;
+mod runtime_energy;
 mod runtime_ai;
 mod runtime_armor;
 mod runtime_experiments;
