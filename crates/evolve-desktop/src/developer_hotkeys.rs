@@ -60,6 +60,10 @@ impl Action {
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash)]
 pub(super) struct Keybind(pub u8);
 
+// Explicitly loaded presets. Disabled by default so nothing steals keys until
+// the user opts in. F6–F12, then Ctrl+F6 and Ctrl+F7.
+pub(super) const SUGGESTED: [u8; 9] = [22, 23, 24, 25, 26, 27, 28, 1, 2];
+
 impl Keybind {
     // None, then Ctrl/Alt/Shift/F6..F12 and unmodified F6..F12.
     // No mouse hooks, arbitrary keys, or debugger-based input capture.
@@ -130,6 +134,11 @@ mod tests {
     #[test]
     fn hotkeys_are_valid() {
         assert_eq!(Keybind(0).win32(), None);
+        let mut seen = std::collections::HashSet::new();
+        for key in SUGGESTED {
+            assert!(seen.insert(Keybind(key).win32().unwrap()));
+        }
+        assert_eq!(SUGGESTED.len(), Action::ALL.len());
         assert_eq!(Keybind(1).win32(), Some((2, 0x75)));
         assert_eq!(Keybind(28).win32(), Some((0, 0x7B)));
         for action in Action::ALL {
