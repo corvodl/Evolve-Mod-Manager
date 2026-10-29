@@ -2561,6 +2561,7 @@ fn operation_label(operation: &Operation) -> &'static str {
             "Loading original animation clip"
         }
         Operation::InspectLevel(..) | Operation::InspectTerrain(..) => "Inspecting level resources",
+        Operation::OpenImportedMap(..) => "Assembling imported map scene",
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
         Operation::ExtractSignedPak(..) => "Extracting signed CryPAK",
@@ -4225,12 +4226,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LibraryOpenMap(index) => {
             let Some(archive) = state.library_catalog.as_ref().and_then(|c| c.archives.get(index)).cloned() else { return Task::none(); };
             if state.busy { state.status = "Finish the current operation before opening a map.".into(); return Task::none(); }
-            return launch(state, Operation::OpenImportedMap(archive, 0, state.preview_cache.clone()));
+            let cache = state.preview_cache.clone();
+            return launch(state, Operation::OpenImportedMap(archive, 0, cache));
         }
         Message::LevelMapSelect(index) => {
             let Some((archive, maps, _)) = &state.library_map else { return Task::none(); };
             if index >= maps.len() || state.busy { return Task::none(); }
-            return launch(state, Operation::OpenImportedMap(archive.clone(), index, state.preview_cache.clone()));
+            let archive = archive.clone();
+            let cache = state.preview_cache.clone();
+            return launch(state, Operation::OpenImportedMap(archive, index, cache));
         }
         Message::LibrarySelect(index) => {
             if state
@@ -4252,7 +4256,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 if !state.keyboard_modifiers.control() && !state.keyboard_modifiers.shift() {
                     if let Some(archive) = state.library_catalog.as_ref().and_then(|c| c.archives.get(index)).cloned() {
                         if level_library::likely_level_pak(&archive) && !state.busy {
-                            return launch(state, Operation::OpenImportedMap(archive, 0));
+                            let cache = state.preview_cache.clone();
+                            return launch(state, Operation::OpenImportedMap(archive, 0, cache));
                         }
                     }
                 }
@@ -6805,8 +6810,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LevelEditRotationChanged(value) => state.level_edit_rotation = value,
         Message::LevelEditScaleChanged(value) => state.level_edit_scale = value,
         Message::LevelEditOutputChanged(value) => state.level_edit_output = value,
-        Message::LevelUndoTransform => restore_level_history(state, true),
-        Message::LevelRedoTransform => restore_level_history(state, false),
+        Message::LevelUndoTransform => {
+            if !state.level_read_only { restore_level_history(state, true); }
+        },
+        Message::LevelRedoTransform => {
+            if !state.level_read_only { restore_level_history(state, false); }
+        },
         Message::LevelApplyTransform => {
             if state.level_read_only { state.status = "Imported levels are read-only. Use File → Open as Modding Project to create an editable copy.".into(); return Task::none(); }
             let Some(index) = state.level_selected else {
