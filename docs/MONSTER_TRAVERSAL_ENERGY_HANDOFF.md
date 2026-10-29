@@ -140,6 +140,23 @@ neither a safe effect-add call nor damage-mitigation behavior under a
 controlled identical hit. Validate actor, component identity, build and
 process-specific key before any read; do not reuse these offsets for writes.
 
+### Runtime application path: research only
+
+Read-only disassembly finds an internal property-entry upsert at RVA
+`0x19DAB90`: it finds an empty/matching entry, encodes its value, updates
+entry metadata/count, invalidates the computed property's cache, and notifies
+the owner. An effect-lifecycle path near RVA `0x1AC7889` reaches a related
+entry writer (`0x19DB090`) and removes its entry on effect teardown through
+the component's removal path. This is further evidence that **applying and
+later removing a real effect** is preferable to overwriting either the
+cached aggregate or a single entry's raw bytes. Neither routine has a
+validated external ABI, calling thread, ownership token, timer/stacking
+semantics, or cross-monster application test. Do not call it or synthesize
+entry writes on the basis of disassembly alone. Normal, game-supported
+monster-perk selection is the currently demonstrated way to grant generic
+damage reduction to another monster; arbitrary extra runtime application
+remains open research.
+
 Read-only capture artifacts (temporary local evidence, **not** portable project fixtures):
 
 - `C:\Users\billn\AppData\Local\Temp\opencode\wraith-traversal-20261029-controlled\`
