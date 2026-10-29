@@ -569,6 +569,31 @@ mod tests {
     }
 
     #[test]
+    fn validates_original_baked_terrain_texture_layer_descriptors() {
+        let dir=tempfile::tempdir().unwrap();
+        let file=dir.path().join("terraintexture.pak");
+        let mut data=Vec::new();
+        data.extend_from_slice(b"CRY\0");
+        data.extend_from_slice(&[100,0]);
+        data.extend_from_slice(&9u16.to_le_bytes());
+        data.extend_from_slice(&1u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&256u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&11u32.to_le_bytes());
+        data.extend_from_slice(&65536u32.to_le_bytes());
+        std::fs::write(&file,&data).unwrap();
+        let info=read_terrain_texture_header(&file).unwrap();
+        assert_eq!(info.version,9);
+        assert_eq!(info.layers.len(),1);
+        assert_eq!(info.layers[0].sector_bytes,65536);
+        data[4]=42;
+        std::fs::write(&file,&data).unwrap();
+        assert!(read_terrain_texture_header(&file).is_err());
+    }
+
+    #[test]
     fn exports_non_overwriting_blender_obj() {
         let mesh = decode_terrain_bytes(&sample_data(), 16).unwrap();
         let folder = tempfile::tempdir().unwrap();
