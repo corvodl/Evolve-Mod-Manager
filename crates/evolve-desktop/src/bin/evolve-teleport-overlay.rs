@@ -234,7 +234,7 @@ mod windows {
                 let mut pid = 0;
                 unsafe { GetWindowThreadProcessId(active, &mut pid) };
                 let game_focused = pid == GAME_PID.load(Ordering::Relaxed);
-                 if !game_focused {
+                if !game_focused {
                     // Never anchor a notification to the manager or another app.
                     // Keep toasts pending until the game itself regains focus.
                     GAME_FOCUSED.store(false, Ordering::Relaxed);
