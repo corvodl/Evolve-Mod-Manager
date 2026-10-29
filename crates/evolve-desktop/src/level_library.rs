@@ -6,6 +6,7 @@ use crate::{asset_cache::SharedCache, level_scene_renderer, modding_projects::Pr
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
     parse_level_scene, read_terrain, read_terrain_paint, read_terrain_texture_header,
+    read_terrain_texture_atlas,
     scan_directory,
 };
 use std::collections::BTreeMap;
@@ -410,13 +411,42 @@ fn open_selected(
     if scene.is_none() && terrain.is_none() {
         return Err(diagnostics.join(" "));
     }
-    let full_scene = level_scene_renderer::assemble(
+    let mut full_scene = level_scene_renderer::assemble(
         &archive,
         scene.as_ref(),
         terrain.as_ref().map(|(mesh, _)| mesh),
         cache,
         project_inventory.as_ref(),
     )?;
+    if terrain.is_some() && let Some(relative) = &chosen.terrain_texture_pak {
+        match verified_source(&root, relative, 2 * 1024 * 1024 * 1024)
+            .and_then(|file| read_terrain_texture_atlas(&file).map_err(|err| err.to_string()))
+        {
+            Ok(atlas) => {
+                let mut applied = false;
+                if let (Some(assembled), Some((terrain_mesh, _))) =
+                    (full_scene.as_mut(), terrain.as_ref())
+                {
+                    if let Some(surface) = assembled.surfaces.first_mut()
+                        && surface.first_index == 0
+                        && surface.index_count == terrain_mesh.indices.len() as u32
+                    {
+                        surface.diffuse = Some(std::sync::Arc::new(atlas.image));
+                        applied = true;
+                    }
+                }
+                diagnostics.push(format!(
+                    "Original baked terrain: decoded {} indexed surface tiles (BC/RGBA format {}) into 2048×2048 ground-color atlas. {}",
+                    atlas.decoded_tiles, atlas.color_format,
+                    if applied { "Applied to terrain GPU material." }
+                    else { "No verified terrain material span to receive the color atlas." }
+                ));
+            }
+            Err(error) => diagnostics.push(format!(
+                "Original terrain color unavailable: {error}; keeping neutral ground material."
+            )),
+        }
+    }
     if let Some(assembled) = &full_scene {
         diagnostics.push(assembled.report.status());
     }
