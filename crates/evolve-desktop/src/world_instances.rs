@@ -150,36 +150,58 @@ impl World {
 
     /// Conservative ray/sphere picking for original world instances. It is
     /// intentionally approximate until per-mesh BVH ray traversal is ready.
-    pub fn pick(&self, camera: level_camera::Camera, yaw: f32, pitch: f32,
-                aspect: f32, zoom: f32, point: [f32; 2]) -> Option<usize> {
-        let (forward,right,up)=level_camera::basis(yaw,pitch);
-        let t=(camera.fov_degrees.clamp(25.0,110.0).to_radians()*0.5).tan()
-            / zoom.clamp(0.2,80.0);
-        let mut direction=[
-            forward[0]+point[0]*t*aspect*right[0]+point[1]*t*up[0],
-            forward[1]+point[0]*t*aspect*right[1]+point[1]*t*up[1],
-            forward[2]+point[0]*t*aspect*right[2]+point[1]*t*up[2],
+    pub fn pick(
+        &self,
+        camera: level_camera::Camera,
+        yaw: f32,
+        pitch: f32,
+        aspect: f32,
+        zoom: f32,
+        point: [f32; 2],
+    ) -> Option<usize> {
+        let (forward, right, up) = level_camera::basis(yaw, pitch);
+        let t = (camera.fov_degrees.clamp(25.0, 110.0).to_radians() * 0.5).tan()
+            / zoom.clamp(0.2, 80.0);
+        let mut direction = [
+            forward[0] + point[0] * t * aspect * right[0] + point[1] * t * up[0],
+            forward[1] + point[0] * t * aspect * right[1] + point[1] * t * up[1],
+            forward[2] + point[0] * t * aspect * right[2] + point[1] * t * up[2],
         ];
-        let len=direction.iter().map(|x|x*x).sum::<f32>().sqrt();
-        if len <= 1e-6 || !len.is_finite(){return None;}
-        for x in &mut direction {*x/=len;}
-        let mut closest=(f32::INFINITY,None);
+        let len = direction.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if len <= 1e-6 || !len.is_finite() {
+            return None;
+        }
+        for x in &mut direction {
+            *x /= len;
+        }
+        let mut closest = (f32::INFINITY, None);
         for group in &self.groups {
             for instance in &group.instances {
-                let p=instance.transform.position;
-                let delta=[
-                    p[0]-camera.position[0],p[1]-camera.position[1],
-                    p[2]-camera.position[2],
+                let p = instance.transform.position;
+                let delta = [
+                    p[0] - camera.position[0],
+                    p[1] - camera.position[1],
+                    p[2] - camera.position[2],
                 ];
-                let dot=delta.iter().zip(direction).map(|(a,b)|a*b).sum::<f32>();
-                if dot < 0.0 || dot > closest.0 {continue;}
-                let radius=group.radius*instance.transform.scale.iter()
-                    .copied().map(f32::abs).fold(0.0,f32::max);
-                let radial_sq=delta.iter().map(|x|x*x).sum::<f32>()-dot*dot;
-                if radial_sq <= radius*radius && radius > 0.0 {
-                    let hit=(radius*radius-radial_sq.max(0.0)).max(0.0).sqrt();
-                    let distance=(dot-hit).max(0.0);
-                    if distance < closest.0 {closest=(distance,Some(instance.object_index));}
+                let dot = delta.iter().zip(direction).map(|(a, b)| a * b).sum::<f32>();
+                if dot < 0.0 || dot > closest.0 {
+                    continue;
+                }
+                let radius = group.radius
+                    * instance
+                        .transform
+                        .scale
+                        .iter()
+                        .copied()
+                        .map(f32::abs)
+                        .fold(0.0, f32::max);
+                let radial_sq = delta.iter().map(|x| x * x).sum::<f32>() - dot * dot;
+                if radial_sq <= radius * radius && radius > 0.0 {
+                    let hit = (radius * radius - radial_sq.max(0.0)).max(0.0).sqrt();
+                    let distance = (dot - hit).max(0.0);
+                    if distance < closest.0 {
+                        closest = (distance, Some(instance.object_index));
+                    }
                 }
             }
         }
