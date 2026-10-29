@@ -18,7 +18,7 @@ const MAX_VERTICES: usize = 1_500_000;
 const MAX_INDICES: usize = 4_500_000;
 const MAX_SURFACES: usize = 2_048;
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct Report {
     pub placed: usize,
     pub geometries: usize,
@@ -42,6 +42,7 @@ impl Report {
     }
 }
 
+#[derive(Clone, Debug)]
 pub(super) struct Assembled {
     pub mesh: RenderMesh,
     pub surfaces: Vec<Surface>,
