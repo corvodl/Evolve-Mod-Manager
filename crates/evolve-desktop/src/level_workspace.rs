@@ -234,14 +234,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text(format!("Status: {}", object.status))
                 .size(12)
                 .color(MUTED),
-            text("Edit local transform (position XYZ, rotation WXYZ, scale XYZ)").size(12),
+            text(if state.level_read_only { "Imported source transforms · read-only" } else { "Edit local transform (position XYZ, rotation WXYZ, scale XYZ)" }).size(12),
             text_input("Position: x, y, z", &state.level_edit_position)
                 .on_input(Message::LevelEditPositionChanged),
             text_input("Rotation: w, x, y, z", &state.level_edit_rotation)
                 .on_input(Message::LevelEditRotationChanged),
             text_input("Scale: x, y, z", &state.level_edit_scale)
                 .on_input(Message::LevelEditScaleChanged),
-            button("Apply to preview").on_press(Message::LevelApplyTransform),
+            button("Apply to preview").on_press_maybe((!state.level_read_only).then_some(Message::LevelApplyTransform)),
         ]
         .spacing(6)
         .into()
@@ -293,10 +293,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             details,
             row![
                 button("Undo").on_press_maybe(
-                    (!state.level_undo.is_empty()).then_some(Message::LevelUndoTransform)
+                    (!state.level_read_only && !state.level_undo.is_empty()).then_some(Message::LevelUndoTransform)
                 ),
                 button("Redo").on_press_maybe(
-                    (!state.level_redo.is_empty()).then_some(Message::LevelRedoTransform)
+                    (!state.level_read_only && !state.level_redo.is_empty()).then_some(Message::LevelRedoTransform)
                 ),
                 text(format!("{} undo steps", state.level_undo.len()))
                     .size(12)
@@ -314,7 +314,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             )
             .on_input(Message::LevelEditOutputChanged),
             button("Export edited level copy")
-                .on_press_maybe((state.level_dirty_count > 0).then_some(Message::LevelExportEdits)),
+                .on_press_maybe((!state.level_read_only && state.level_dirty_count > 0).then_some(Message::LevelExportEdits)),
             text("Original level is read-only. Child world positions update in the preview.")
                 .size(12)
                 .color(MUTED),
