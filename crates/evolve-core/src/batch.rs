@@ -303,10 +303,23 @@ pub fn restore_profile_stage(stage: &Path) -> Result<BatchJournal, BatchError> {
                     "Unexpected third-party change to staged PAK".into(),
                 ));
             }
-        } else if digest(&dir.join(format!("displaced-{i}.pak")))? != item.original_sha256 {
-            return Err(BatchError::Invalid(
-                "Missing displaced original backup".into(),
-            ));
+        } else {
+            // A crash may occur after moving 'displaced' to 'restoring'
+            // but before moving 'restoring' to the now-missing target.
+            // Either location is an acceptable recovery candidate ONLY
+            // when its bytes still match the independently saved original.
+            let displaced = dir.join(format!("displaced-{i}.pak"));
+            let restoring = dir.join(format!("restoring-{i}.pak"));
+            let candidate = if fs::symlink_metadata(&displaced).is_ok() {
+                &displaced
+            } else {
+                &restoring
+            };
+            if digest(candidate)? != item.original_sha256 {
+                return Err(BatchError::Invalid(
+                    "Missing or changed original backup during staged restore".into(),
+                ));
+            }
         }
     }
     for (i, item) in tx.entries.iter().enumerate() {
@@ -404,6 +417,38 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(json["targets"], serde_json::json!(next));
     }
+    #[test]
+    fn interrupted_rename_restore_accepts_verified_restoring_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stage = tmp.path().join("isolated");
+        initialize_stage(&stage).unwrap();
+        let root = workspace(&stage).unwrap();
+        let tx = BatchJournal {
+            schema: 1,
+            id: "a".repeat(32),
+            profile_id: "b".repeat(32),
+            entries: vec![BatchEntry {
+                target: "one.pak".into(),
+                original_sha256: digest_bytes_for_test(b"original"),
+                replacement_sha256: digest_bytes_for_test(b"modified"),
+            }],
+        };
+        let dir = root.join(HISTORY).join(&tx.id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("before-0.pak"), b"original").unwrap();
+        // Simulate a crash after displaced -> restoring, with no current
+        // target. The independent 'before' copy remains journaled.
+        fs::write(dir.join("restoring-0.pak"), b"original").unwrap();
+        save_journal(&root, &tx).unwrap();
+        restore_profile_stage(&stage).unwrap();
+        assert_eq!(fs::read(root.join("paks/one.pak")).unwrap(), b"original");
+        assert!(batch_stage_status(&stage).unwrap().is_none());
+    }
+    fn digest_bytes_for_test(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
     #[test]
     fn partial_batch_recovery_keeps_original_bytes() {
         let tmp = tempfile::tempdir().unwrap();
