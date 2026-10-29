@@ -86,12 +86,7 @@ pub(super) struct WriteResult {
 
 // Validate individual fields without making actor discovery depend on them.
 fn stage_number(bits: u32) -> Option<u32> {
-    match bits {
-        0x0101 => Some(1),
-        0x0202 => Some(2),
-        0x0303 => Some(3),
-        _ => None,
-    }
+    crate::runtime_energy::stage(bits).map(u32::from)
 }
 fn plausible_pair(current_bits: u32, max_bits: u32) -> bool {
     let current = f32::from_bits(current_bits);
@@ -460,10 +455,10 @@ mod windows {
                 .trim()
                 .parse()
                 .map_err(|_| "Stage must be 1, 2 or 3")?;
-            if !(1..=3).contains(&stage) || ![0x101, 0x202, 0x303].contains(&expected) {
+            if !(1..=3).contains(&stage) || ![0x101, 0x202, 0x303].contains(&(expected & 0xFFFF)) {
                 return Err("Unsupported evolution stage encoding".into());
             }
-            stage | (stage << 8)
+            (expected & 0xFFFF_0000) | stage | (stage << 8)
         } else {
             let v: f32 = input.trim().parse().map_err(|_| "Enter a Float32 value")?;
             if !v.is_finite() || !(0.0..=100_000.0).contains(&v) {
@@ -548,6 +543,8 @@ mod tests {
         assert_eq!(stage_number(0x0101), Some(1));
         assert_eq!(stage_number(0x0202), Some(2));
         assert_eq!(stage_number(0x0303), Some(3));
+        assert_eq!(stage_number(0xFA36_0101), Some(1));
+        assert_eq!(stage_number(0x55FA_0202), Some(2));
         assert_eq!(stage_number(0), None);
         assert_eq!(stage_number(0x0404), None);
         assert!(plausible_pair(200.0f32.to_bits(), 500.0f32.to_bits()));

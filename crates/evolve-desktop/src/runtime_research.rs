@@ -1,7 +1,7 @@
 //! Read-only Stage 2 research inspection for the Developer > Actors section.
 //! PR #135 documents observations; only build/identity-validated memory reads
 //! are exposed here. This module never writes memory or invokes game methods.
-use crate::{runtime_actors, runtime_memory};
+use crate::{runtime_actors, runtime_energy, runtime_memory};
 use runtime_memory::Snapshot;
 
 const ENTITY_SYSTEM_RVA: usize = 0x28D58E8;
@@ -10,7 +10,6 @@ const ACTOR_VTABLE_RVA: usize = 0x24B3790;
 const INVENTORY_VTABLE_RVA: usize = 0x2263350;
 const PROXY_VTABLE_RVA: usize = 0x22E2DE0;
 const LIVING_VTABLE_RVA: usize = 0x2336010;
-
 #[derive(Clone, Debug)]
 pub(super) struct Inventory {
     pub actor_name: String,
@@ -38,6 +37,8 @@ pub(super) struct Report {
     pub jetpack: String,
     pub slots: String,
     pub projectiles: Vec<String>,
+    pub evolution_energy: String,
+    pub traversal_energy: String,
     pub feature_status: String,
 }
 
@@ -148,6 +149,108 @@ mod windows {
             }
         }
         format!("{:x}", hash.finalize())
+    }
+
+    /// A fresh, local actor-only read. A failed backlink, unexpected vtable,
+    /// invalid stage or changed key never produces a misleading numeric readout.
+    /// No offline authority can be inferred from these memory reads.
+    fn monster_resources(
+        h: &ProcessHandle,
+        base: usize,
+        local: &runtime_actors::Actor,
+    ) -> Result<(String, String, Option<runtime_energy::EvolutionEnergy>), String> {
+        if !local.local || !runtime_energy::known_monster(&local.name) {
+            return Err("Local actor is not a recognized Stage 2 monster".into());
+        }
+        expected_vtable(h, local.address, base, runtime_energy::ACTOR_VTABLE_RVA)?;
+        if ptr(h, local.address + 0x38)? != local.entity
+            || u32_at(h, local.entity + 0x18)? != local.id
+        {
+            return Err("Local monster actor/entity backlink changed".into());
+        }
+        let movement = ptr(h, local.address + 0x240)?;
+        if ptr(h, movement + 0x38)? != local.entity {
+            return Err("Monster movement/entity backlink is unverified".into());
+        }
+
+        let stage_word = u32_at(h, local.address + 0x1260)?;
+        if runtime_energy::stage(stage_word).is_none() {
+            return Err("Local monster evolution stage is unrecognized".into());
+        }
+        let key_at = base
+            .checked_add(runtime_energy::KEY_RVA)
+            .ok_or("Key RVA overflow")?;
+        let key = u32_at(h, key_at)?;
+        // Evolution and traversal are independent pools. An unreadable field
+        // in one must not hide the other (especially evolution in Discord).
+        let evolution_raw = u32_at(h, local.address + 0x16FC).ok();
+        let evolution_max_raw = u32_at(h, local.address + 0x1700).ok();
+        let traversal_raw = u32_at(h, local.address + 0x1754).ok();
+        let traversal_max_raw = u32_at(h, local.address + 0x1758).ok();
+
+        // Reject torn reads or an actor swap before presenting captured energy.
+        if u32_at(h, key_at)? != key
+            || u32_at(h, local.address + 0x1260)? != stage_word
+            || ptr(h, local.address + 0x38)? != local.entity
+            || ptr(h, movement + 0x38)? != local.entity
+            || u32_at(h, local.entity + 0x18)? != local.id
+        {
+            return Err("Monster identity, stage or encoding key changed during read".into());
+        }
+
+        let decoded_evolution =
+            evolution_raw
+                .zip(evolution_max_raw)
+                .and_then(|(current, maximum)| {
+                    runtime_energy::evolution(stage_word, current, maximum, key)
+                });
+        let evolution = match decoded_evolution {
+            Some(energy) if energy.stage == 3 => {
+                "Evolution: stage 3 · bar inactive (0/0); READ-ONLY".to_owned()
+            }
+            Some(energy) => format!(
+                "Evolution: stage {} · {:.2}/{:.2}; READ-ONLY",
+                energy.stage, energy.current, energy.maximum
+            ),
+            None => "Evolution unavailable: energy decode/rules mismatch".to_owned(),
+        };
+        let traversal = match traversal_raw
+            .zip(traversal_max_raw)
+            .and_then(|(current, maximum)| runtime_energy::traversal(current, maximum, key))
+        {
+            Some(energy) => format!(
+                "Traversal: {:.2}/{:.2}; READ-ONLY (no recharge-rate offset verified)",
+                energy.current, energy.maximum
+            ),
+            None => "Traversal unavailable: invalid encoded value or non-100 maximum".to_owned(),
+        };
+        Ok((evolution, traversal, decoded_evolution))
+    }
+
+    /// Used by Discord without invoking the much heavier inventory/roster
+    /// research. The caller passes a freshly discovered local actor; this
+    /// revalidates its identity, stage and process-specific encoding key.
+    pub(crate) fn inspect_evolution(
+        snapshot: &Snapshot,
+        root: &str,
+        local: &runtime_actors::Actor,
+    ) -> Result<runtime_energy::EvolutionEnergy, String> {
+        let now = runtime_memory::inspect(root);
+        if snapshot.pid.is_none()
+            || now.pid != snapshot.pid
+            || now.module_base.is_none()
+            || now.module_base != snapshot.module_base
+            || now.executable != snapshot.executable
+        {
+            return Err("Evolve executable or process changed since actor discovery".into());
+        }
+        let pid = now.pid.ok_or("Evolve process unavailable")?;
+        let base = now.module_base.ok_or("Module base unavailable")?;
+        let h: ProcessHandle = pid
+            .try_into()
+            .map_err(|e| format!("Cannot inspect local monster: {e}"))?;
+        let (_, _, decoded) = monster_resources(&h, base, local)?;
+        decoded.ok_or_else(|| "Evolution fields failed stage/rules validation".into())
     }
 
     fn inventory(
@@ -346,6 +449,16 @@ mod windows {
             _ => "Hunt slot-default code signature did not match this executable; slot capacity is NOT verified (no patch/write attempted).".into(),
         };
 
+        // Energy decoding is a separate, strictly read-only local monster path.
+        // Failed validation is reported, not replaced with guessed values.
+        let (evolution_energy, traversal_energy) = match monster_resources(&h, base, local) {
+            Ok((evolution, traversal, _)) => (evolution, traversal),
+            Err(reason) => (
+                format!("Evolution unavailable: {reason}"),
+                format!("Traversal unavailable: {reason}"),
+            ),
+        };
+
         // Do not equate these offsets with a complete projectile class decoder.
         let projectiles = projectile_observations();
 
@@ -373,12 +486,23 @@ mod windows {
             jetpack,
             slots,
             projectiles,
+            evolution_energy,
+            traversal_energy,
             feature_status: "Read-only observations. The equip RVA 0x446E88, give/pickup API, projectile velocity writes, gravity writes and second-monster slot creation remain UNVERIFIED and are not callable. Foreign item-ID swaps are explicitly unsupported.".into(),
         })
     }
 }
 #[cfg(windows)]
-pub(super) use windows::inspect;
+pub(super) use windows::{inspect, inspect_evolution};
+
+#[cfg(not(windows))]
+pub(super) fn inspect_evolution(
+    _: &Snapshot,
+    _: &str,
+    _: &runtime_actors::Actor,
+) -> Result<runtime_energy::EvolutionEnergy, String> {
+    Err("Live monster energy inspection requires Windows".into())
+}
 
 #[cfg(not(windows))]
 pub(super) fn inspect(

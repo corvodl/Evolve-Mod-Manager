@@ -1397,6 +1397,10 @@ fn research_rows(state: &State) -> Element<'_, Message> {
             .style(design::muted),
         );
     }
+    body = body.push(text("Monster resources · local actor · READ-ONLY").size(15));
+    body = body.push(text(&report.evolution_energy).size(12));
+    body = body.push(text(&report.traversal_energy).size(12));
+    body = body.push(text("Decoded with a fresh process key and verified actor/entity/movement links. Snapshot only; offline match authority and write safety are not established.").size(12).style(design::muted));
     body = body.push(text(&report.character_gravity).size(12));
     body = body.push(text(&report.world_gravity).size(12).style(design::muted));
     body = body.push(text(&report.jetpack).size(12));

@@ -58,6 +58,7 @@ mod private_pages;
 mod runtime_actors;
 mod runtime_ai;
 mod runtime_armor;
+mod runtime_energy;
 mod runtime_experiments;
 mod runtime_health;
 mod runtime_live;
