@@ -12,6 +12,12 @@ const ENTITY_SYSTEM_RVA: usize = 0x28D58E8;
 const ENTITY_VTABLE_RVA: usize = 0x22DBC60;
 const PROXY_VTABLE_RVA: usize = 0x22E2DE0;
 const LIVING_VTABLE_RVA: usize = 0x2336010;
+// Verified in live Stage 2 camera snapshots (both paths returned identical
+// XYZ forward vectors). Layout remains build-specific, just like the vtables.
+const CAMERA_GAME_PTR: usize = 0x120;
+const CAMERA_GAME_VECTOR: usize = 0x70;
+const CAMERA_FRAMEWORK_PTR: usize = 0x18;
+const CAMERA_FRAMEWORK_VECTOR: usize = 0x29C;
 const MAX_COORD: f32 = 100_000.0;
 const MAX_STEP: f32 = 10_000.0;
 
@@ -150,6 +156,37 @@ fn fly_forward(quaternion: [f32; 4]) -> Result<Position, String> {
     Err("Local actor orientation temporarily has no stable horizontal axes".into())
 }
 
+/// A normalized camera-facing vector is the preferred horizontal movement
+/// source. Keep the game camera's pitch out of WASD: Space/Ctrl owns altitude.
+/// Cache the last heading when the camera looks nearly straight up or down.
+fn camera_forward(direction: Position) -> Result<Position, String> {
+    let len2 = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
+    if !len2.is_finite() || !(0.8..=1.2).contains(&len2) {
+        return Err("Camera direction is not a valid unit vector".into());
+    }
+    let horizontal = (direction.x * direction.x + direction.y * direction.y).sqrt();
+    if !horizontal.is_finite() || horizontal < 0.1 {
+        return Err("Camera is nearly vertical; preserve previous yaw".into());
+    }
+    Ok(Position {
+        x: direction.x / horizontal,
+        y: direction.y / horizontal,
+        z: 0.0,
+    })
+}
+
+fn stable_camera_heading(
+    direction: Option<Position>,
+    last_heading: &mut Option<Position>,
+) -> Option<Position> {
+    if let Some(direction) = direction
+        && let Ok(heading) = camera_forward(direction)
+    {
+        *last_heading = Some(heading);
+    }
+    *last_heading
+}
+
 /// A transient unusable orientation must never end Fly Mode or reset its
 /// anchor. Preserve the last verified planar heading until a new one is read.
 fn stable_fly_heading(
@@ -163,7 +200,8 @@ fn stable_fly_heading(
 }
 
 /// Pure movement math, independent of Windows keyboard APIs and memory writes.
-/// W follows the actor's horizontal facing, D is local right, and Space/Ctrl
+/// W follows the selected horizontal facing (camera first, actor fallback),
+/// D is local right, and Space/Ctrl
 /// control vertical movement. WASD diagonals are normalized.
 fn fly_step(anchor: Position, forward: Position, input: FlyInput, speed: f32, dt: f32) -> Position {
     let right = Position {
@@ -190,8 +228,9 @@ fn fly_step(anchor: Position, forward: Position, input: FlyInput, speed: f32, dt
 pub(super) enum Destination {
     Absolute(Position),
     Relative(Position),
-    /// Approximate forward destination from the actor's own (w,x,y,z) rotation.
-    ActorAim(f32),
+    /// Distance along the camera facing vector, relative to the local actor.
+    /// This is not a geometry raycast or exact camera-origin crosshair hit.
+    CameraAim(f32),
 }
 pub(super) fn parse_position(x: &str, y: &str, z: &str) -> Result<Position, String> {
     let parse = |s: &str| {
@@ -208,6 +247,33 @@ pub(super) fn parse_position(x: &str, y: &str, z: &str) -> Result<Position, Stri
         return Err("Coordinates must be finite and within +/-100000".into());
     }
     Ok(pos)
+}
+
+/// Approximate camera-directed point using the player's verified physics
+/// position as origin. The camera's position and geometry hits are not yet
+/// available; preserve the previous small Z lift to avoid ground penetration.
+fn approximate_aim_target(
+    origin: Position,
+    direction: Position,
+    distance: f32,
+) -> Result<Position, String> {
+    if !distance.is_finite() || !(5.0..=100.0).contains(&distance) {
+        return Err("Aim distance must be 5 to 100 units".into());
+    }
+    let len2 = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
+    if !len2.is_finite() || !(0.8..=1.2).contains(&len2) {
+        return Err("Camera direction is not a valid unit vector".into());
+    }
+    let len = len2.sqrt();
+    let target = origin.add(Position {
+        x: direction.x / len * distance,
+        y: direction.y / len * distance,
+        z: direction.z / len * distance + 2.0,
+    });
+    if !target.finite() {
+        return Err("Calculated aim target is outside world limits".into());
+    }
+    Ok(target)
 }
 
 #[cfg(windows)]
@@ -268,6 +334,44 @@ mod windows {
         }
         Ok(rotation)
     }
+    /// Read all four Float32 values in one process-memory operation. In the
+    /// observed Stage 2 build the first float is zero and the following XYZ
+    /// components form the camera's unit-length facing vector.
+    fn camera_vector(h: &ProcessHandle, address: usize) -> Result<Position, String> {
+        let raw: [u8; 16] = read(h, address, 16)?
+            .try_into()
+            .map_err(|_| "Incomplete camera vector read")?;
+        let mut floats = [0.0f32; 4];
+        for (value, bytes) in floats.iter_mut().zip(raw.as_chunks::<4>().0.iter()) {
+            *value = f32::from_le_bytes(*bytes);
+        }
+        let [unused, x, y, z] = floats;
+        if !unused.is_finite() || unused.abs() > 0.01 {
+            return Err("Unrecognized camera vector layout".into());
+        }
+        let direction = Position { x, y, z };
+        let len2 = x * x + y * y + z * z;
+        if !len2.is_finite() || !(0.8..=1.2).contains(&len2) {
+            return Err("Camera vector is not normalized".into());
+        }
+        Ok(direction)
+    }
+
+    /// Two independently resolved paths matched in all six user snapshots.
+    /// Read the primary live pointer on each movement tick; the secondary is
+    /// used if the first pointer/vector is unavailable (e.g. a view transition).
+    fn camera_direction(h: &ProcessHandle, base: usize) -> Result<Position, String> {
+        let game = q(h, base + ENTITY_SYSTEM_RVA - 0x10)?;
+        let primary =
+            q(h, game + CAMERA_GAME_PTR).and_then(|ptr| camera_vector(h, ptr + CAMERA_GAME_VECTOR));
+        if let Ok(direction) = primary {
+            return Ok(direction);
+        }
+        let framework = q(h, game + 0x60)?;
+        let secondary = q(h, framework + CAMERA_FRAMEWORK_PTR)?;
+        camera_vector(h, secondary + CAMERA_FRAMEWORK_VECTOR)
+    }
+
     fn valid_layout(
         h: &ProcessHandle,
         object: usize,
@@ -434,45 +538,14 @@ mod windows {
         })
     }
 
-    fn approximate_actor_aim(
+    fn approximate_camera_aim(
         handle: &ProcessHandle,
-        entity: usize,
+        base: usize,
         origin: Position,
         distance: f32,
     ) -> Result<Position, String> {
-        if !distance.is_finite() || !(5.0..=100.0).contains(&distance) {
-            return Err("Aim distance must be 5 to 100 units".into());
-        }
-        // CryEngine Quat is w,x,y,z, in the entity's local transform at +0x4C.
-        // +Y is the entity's local forward axis; this is NOT camera pitch or a raycast.
-        let [w, x, y, z] = [
-            u32_at(handle, entity + 0x4C)?,
-            u32_at(handle, entity + 0x50)?,
-            u32_at(handle, entity + 0x54)?,
-            u32_at(handle, entity + 0x58)?,
-        ]
-        .map(f32::from_bits);
-        let len2 = w * w + x * x + y * y + z * z;
-        if !len2.is_finite() || !(0.8..=1.2).contains(&len2) {
-            return Err("Actor orientation is not a valid unit quaternion".into());
-        }
-        let normal = len2.sqrt();
-        let (w, x, y, z) = (w / normal, x / normal, y / normal, z / normal);
-        let forward = Position {
-            x: 2.0 * (x * y - w * z),
-            y: 1.0 - 2.0 * (x * x + z * z),
-            z: 2.0 * (y * z + w * x),
-        };
-        let target = origin.add(Position {
-            x: forward.x * distance,
-            y: forward.y * distance,
-            // Slight lift to reduce ground interpenetration; no collision test performed.
-            z: forward.z * distance + 2.0,
-        });
-        if !target.finite() {
-            return Err("Calculated aim target is outside world limits".into());
-        }
-        Ok(target)
+        let direction = camera_direction(handle, base)?;
+        approximate_aim_target(origin, direction, distance)
     }
 
     pub(crate) fn preview_aim(
@@ -485,8 +558,8 @@ mod windows {
             return Err("Confirm an isolated offline match".into());
         }
         let r = resolve(snapshot, root)?;
-        let (_, handle, _) = session(snapshot, root)?;
-        approximate_actor_aim(&handle, r.entity, r.pos, distance)
+        let (_, handle, base) = session(snapshot, root)?;
+        approximate_camera_aim(&handle, base, r.pos, distance)
     }
 
     pub(crate) fn inspect(
@@ -741,7 +814,7 @@ mod windows {
                 let dt = now.duration_since(previous_tick).as_secs_f32();
                 previous_tick = now;
                 let mut input = fly_input(r.pid);
-                // Freeze Z and Fly both move X/Y by writing position directly:
+                // Freeze Z and Fly both move camera-relative X/Y directly:
                 // neither relies on native ground locomotion in mid-air.
                 if mode == HoldMode::Z {
                     input.vertical = 0.0;
@@ -750,7 +823,20 @@ mod windows {
                     // Pure Space/Ctrl flight needs no horizontal direction.
                     // Do not interrupt vertical motion when looking straight up.
                     let heading = if input.forward != 0.0 || input.strafe != 0.0 {
-                        stable_fly_heading(actor_orientation(&handle, r.entity)?, &mut last_heading)
+                        // Prefer live camera yaw. A missing/vertical camera
+                        // preserves the previous yaw, only falling back to
+                        // actor orientation when no camera yaw was established.
+                        let heading = stable_camera_heading(
+                            camera_direction(&handle, base).ok(),
+                            &mut last_heading,
+                        );
+                        if heading.is_some() {
+                            heading
+                        } else {
+                            actor_orientation(&handle, r.entity)
+                                .ok()
+                                .and_then(|q| stable_fly_heading(q, &mut last_heading))
+                        }
                     } else {
                         last_heading
                     };
@@ -833,9 +919,9 @@ mod windows {
         let target = match dest {
             Destination::Absolute(p) => p,
             Destination::Relative(delta) => r.pos.add(delta),
-            Destination::ActorAim(distance) => {
-                let (_, h, _) = session(snapshot, root)?;
-                approximate_actor_aim(&h, r.entity, r.pos, distance)?
+            Destination::CameraAim(distance) => {
+                let (_, h, base) = session(snapshot, root)?;
+                approximate_camera_aim(&h, base, r.pos, distance)?
             }
         };
         if !target.finite() {
@@ -1174,6 +1260,114 @@ mod tests {
                 y: 2.0,
                 z: 23.0
             }
+        );
+    }
+    #[test]
+    fn camera_heading_follows_measured_yaw_and_keeps_z_horizontal() {
+        // Direction samples collected while the local actor stood still.
+        let forward = Position {
+            x: 0.231602,
+            y: 0.958263,
+            z: 0.167608,
+        };
+        let right = Position {
+            x: -0.982935,
+            y: 0.179990,
+            z: 0.037959,
+        };
+        let f = camera_forward(forward).unwrap();
+        let r = camera_forward(right).unwrap();
+        assert_eq!(f.z, 0.0);
+        assert_eq!(r.z, 0.0);
+        assert!((f.x * f.x + f.y * f.y - 1.0).abs() < 0.001);
+        assert!(f.x * r.x + f.y * r.y < 0.1);
+        let step = fly_step(
+            Position {
+                x: 0.0,
+                y: 0.0,
+                z: 70.0,
+            },
+            r,
+            FlyInput {
+                forward: 1.0,
+                ..FlyInput::default()
+            },
+            10.0,
+            0.05,
+        );
+        assert!(step.x < -0.45);
+        assert_eq!(step.z, 70.0);
+    }
+
+    #[test]
+    fn camera_looking_vertical_preserves_heading_and_actor_fallback_remains() {
+        let mut last = None;
+        let north = Position {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        };
+        assert_eq!(stable_camera_heading(Some(north), &mut last), Some(north));
+        assert_eq!(
+            stable_camera_heading(
+                Some(Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                }),
+                &mut last,
+            ),
+            Some(north),
+        );
+        assert_eq!(stable_camera_heading(None, &mut last), Some(north));
+        assert!(
+            camera_forward(Position {
+                x: f32::NAN,
+                y: 0.0,
+                z: 0.0,
+            })
+            .is_err()
+        );
+        let mut unset = None;
+        assert!(stable_camera_heading(None, &mut unset).is_none());
+        assert!(stable_fly_heading([1.0, 0.0, 0.0, 0.0], &mut unset).is_some());
+    }
+
+    #[test]
+    fn camera_crosshair_approximation_respects_pitch_and_distance() {
+        let origin = Position {
+            x: 1114.3428,
+            y: 1016.0068,
+            z: 70.2223,
+        };
+        let up = Position {
+            x: 0.807961,
+            y: -0.181423,
+            z: 0.560612,
+        };
+        let down = Position {
+            x: 0.809397,
+            y: -0.033464,
+            z: -0.586308,
+        };
+        let upward = approximate_aim_target(origin, up, 30.0).unwrap();
+        let downward = approximate_aim_target(origin, down, 30.0).unwrap();
+        assert!(upward.z > origin.z + 10.0);
+        assert!(downward.z < origin.z - 10.0);
+        assert!(upward.x > origin.x && downward.x > origin.x);
+        assert!(approximate_aim_target(origin, up, 0.0).is_err());
+        assert!(approximate_aim_target(origin, up, 101.0).is_err());
+        assert!(
+            approximate_aim_target(
+                origin,
+                Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                30.0
+            )
+            .is_err()
         );
     }
 }
