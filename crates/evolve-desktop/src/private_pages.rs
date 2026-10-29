@@ -1449,7 +1449,7 @@ fn match_perk_rows(state: &State) -> Element<'_, Message> {
 fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
     let mut rows = column![
         text("Developer shortcuts").size(17),
-        text("Active while the overlay is on and Evolve has focus. No keyboard hooks.")
+        text("Registered with Windows while the overlay is on; teleport actions require live memory edits.")
             .size(12)
             .style(design::muted),
     ]
@@ -1480,24 +1480,29 @@ fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
 }
 
 fn teleport_controls(state: &State) -> Element<'_, Message> {
-    let enabled = state.developer_unlocked
-        && state.armor_offline_confirmed
-        && state.live_edit_enabled
-        && !state.developer_online_mods
+    // Guided armor scanning is unrelated to teleporting. Process detection
+    // happens automatically on the first action if no snapshot is available.
+    let can_read = state.developer_unlocked
         && !state.teleport_busy
-        && state.teleport_hold_cancel.is_none()
-        && state
-            .runtime_snapshot
-            .as_ref()
-            .and_then(|s| s.pid)
-            .is_some();
+        && !state.teleport_detect_pending
+        && state.teleport_hold_cancel.is_none();
+    let enabled = can_read && state.live_edit_enabled;
 
     surface(
         column![
             text("Teleport").size(19),
-            text("Offline only · One-shot physics XYZ · No hooks or freezing")
+            text("Teleport & freeze · read position without arming writes; enable actor memory writes to move")
                 .size(12)
                 .style(design::muted),
+            text(if state.teleport_detect_pending {
+                "Detecting Evolve.exe before the requested action..."
+            } else if state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_none() {
+                "Running Evolve.exe will be detected automatically on the first teleport action."
+            } else {
+                "Evolve.exe detected · action status and errors appear below."
+            })
+            .size(12)
+            .style(design::muted),
             row![
                 design::text_input("X", &state.teleport_x)
                     .on_input(|v| Message::TeleportXYZChanged(0, v)),
@@ -1509,9 +1514,9 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             .spacing(8),
             row![
                 design::button("Read position")
-                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(false))),
+                    .on_press_maybe(can_read.then_some(Message::TeleportCapture(false))),
                 design::button("Save position")
-                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(true))),
+                    .on_press_maybe(can_read.then_some(Message::TeleportCapture(true))),
                 design::button("Teleport XYZ")
                     .on_press_maybe(enabled.then_some(Message::TeleportAbsolute)),
                 design::button("Return to saved").on_press_maybe(
@@ -1520,6 +1525,15 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                 ),
             ]
             .spacing(8),
+            text(if state.teleport_busy {
+                "Teleport operation running..."
+            } else if state.teleport_status.is_empty() {
+                "Position and teleport errors appear here."
+            } else {
+                state.teleport_status.as_str()
+            })
+            .size(12)
+            .style(design::muted),
             text("Coordinate freeze · hold your position in the air").size(17),
             row![
                 design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Z) {
@@ -1595,7 +1609,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                     .on_input(Message::TeleportAimDistanceChanged)
                     .width(Length::Fixed(90.0)),
                 design::button("Preview coordinates").on_press_maybe(
-                    (enabled && !state.teleport_aim_preview_busy)
+                    (can_read && !state.teleport_aim_preview_busy)
                         .then_some(Message::TeleportPreviewAim)
                 ),
                 design::button("Teleport to Crosshair")
@@ -1603,20 +1617,25 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             ]
             .align_y(iced::Alignment::Center)
             .spacing(8),
-            iced::widget::checkbox(state.teleport_overlay.is_some())
+            iced::widget::checkbox(
+                state.teleport_overlay.is_some() || state.teleport_overlay_pending
+            )
                 .label("Show external overlay and enable shortcuts (windowed fullscreen)")
                 .on_toggle(Message::TeleportOverlayChanged),
-            developer_keybind_controls(state),
-            text("The overlay marks the screen center only; it is not a raycast hit location.")
-                .size(12)
-                .style(design::muted),
-            text(if state.teleport_busy {
-                "Teleport operation running..."
+            text(if state.teleport_overlay_pending {
+                "Detecting running game..."
+            } else if state.teleport_status.is_empty() {
+                "Overlay preview needs only a running Evolve.exe; teleport shortcuts still require armed memory writes."
             } else {
                 state.teleport_status.as_str()
             })
             .size(12)
             .style(design::muted),
+            developer_keybind_controls(state),
+            text("Overlay appears only over Evolve while the game is in focus. The center marker is not a raycast hit location.")
+                .size(12)
+                .style(design::muted),
+
         ]
         .spacing(9)
         .padding(10),
