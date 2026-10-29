@@ -349,8 +349,7 @@ pub(super) fn assemble(
         normals: Some(Vec::new()),
     };
     let mut surfaces = Vec::new();
-    if let Some(terrain) = terrain {
-        if !append(
+    if let Some(terrain) = terrain && !append(
             &mut combined,
             &mut surfaces,
             terrain,
@@ -358,7 +357,6 @@ pub(super) fn assemble(
             Transform::default(),
         ) {
             report.note("Terrain exceeded the current viewport geometry budget.".into());
-        }
     }
     if let Some(scene) = scene {
         let mut wanted = HashSet::new();
