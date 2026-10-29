@@ -4,7 +4,9 @@
 //! Layout/RVAs are pinned to the examined build; unknown builds fail closed.
 use crate::runtime_memory;
 use runtime_memory::Snapshot;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, atomic::AtomicBool};
+#[cfg(windows)]
+use std::sync::atomic::Ordering;
 
 const ENTITY_SYSTEM_RVA: usize = 0x28D58E8;
 const ENTITY_VTABLE_RVA: usize = 0x22DBC60;
@@ -47,7 +49,6 @@ pub(super) struct Reading {
     pub actor_id: u32,
     pub position: Position,
 }
-#[derive(Clone, Copy, Debug)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum HoldMode {
     /// Keep altitude while allowing normal horizontal movement.
@@ -73,6 +74,7 @@ fn held_position(anchor: Position, current: Position, mode: HoldMode) -> Positio
     }
 }
 
+#[derive(Clone, Copy, Debug)]
 pub(super) enum Destination {
     Absolute(Position),
     Relative(Position),
@@ -548,7 +550,10 @@ mod windows {
                 return Err("Physics XYZ became invalid; coordinate hold stopped".into());
             }
             let target = held_position(r.pos, current, mode);
-            if !target.near(current) {
+            if (target.x - current.x).abs() > 0.01
+                || (target.y - current.y).abs() > 0.01
+                || (target.z - current.z).abs() > 0.01
+            {
                 // Only write the frozen axes. For hover, native movement
                 // retains control of X/Y and only the Z Float32 is corrected.
                 match mode {
