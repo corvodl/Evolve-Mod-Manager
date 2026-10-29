@@ -93,7 +93,7 @@ fn relevant_asset(path: &str) -> bool {
 }
 
 impl Index {
-    fn new(selected: &ImportedPak, report: &mut Report) -> Result<Self, String> {
+    fn new(selected: &ImportedPak, wanted: &HashSet<String>, report: &mut Report) -> Result<Self, String> {
         let build = (selected.builds.len() == 1).then(|| selected.builds[0].clone());
         let library_root = Path::new(&selected.directory)
             .parent()
@@ -135,18 +135,23 @@ impl Index {
                 }
             };
             let root = PathBuf::from(&inventory.root);
+            let mut matched = false;
             for asset in &inventory.entries {
-                let Some(key) = safe_virtual(&asset.relative_path) else {
-                    continue;
-                };
-                if relevant_asset(&key) {
+                let Some(key) = safe_virtual(&asset.relative_path) else { continue };
+                if wanted.contains(&key) && relevant_asset(&key) {
+                    matched = true;
                     index.files.entry(key).or_default().push(AssetLocation {
                         archive: pak.id.clone(),
                         path: root.join(&asset.relative_path),
                     });
                 }
             }
-            index.inventories.insert(pak.id.clone(), inventory);
+            // Retain inventories only for PAKs that actually contain a
+            // requested source. Keeping every imported archive inventory
+            // alive would exhaust memory on large Stage 2 installations.
+            if matched || pak.id == selected.id {
+                index.inventories.insert(pak.id.clone(), inventory);
+            }
         }
         if !index.inventories.contains_key(&selected.id) {
             return Err("Selected imported map archive could not be verified".into());
@@ -342,7 +347,24 @@ pub(super) fn assemble(
         }
     }
     if let Some(scene) = scene {
-        let sources = Index::new(archive, &mut report)?;
+        let mut wanted = HashSet::new();
+        for object in scene.objects.iter().filter(|o| !o.hidden && !o.model.is_empty()) {
+            if let Some(model) = safe_virtual(&object.model) {
+                wanted.insert(model.clone());
+                if object.material.is_empty() {
+                    wanted.insert(Path::new(&model).with_extension("mtl").to_string_lossy().to_string());
+                }
+            }
+            if !object.material.is_empty() {
+                let material = if object.material.to_ascii_lowercase().ends_with(".mtl") {
+                    object.material.clone()
+                } else {
+                    format!("{}.mtl", object.material)
+                };
+                if let Some(path) = safe_virtual(&material) { wanted.insert(path); }
+            }
+        }
+        let sources = Index::new(archive, &wanted, &mut report)?;
         // Geometry is decoded once per exact model/material pair; each authored
         // actor transform creates a distinct visible scene instance.
         let mut resolved = HashMap::<(String, String), usize>::new();
