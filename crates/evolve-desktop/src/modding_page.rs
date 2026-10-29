@@ -87,6 +87,8 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
         "Edit" => column![
             design::button("Continue Editing")
                 .on_press(Message::MenuCommand(Box::new(Message::ModdingOpenProject))),
+            design::button("Open XML / Lua / TXT editor")
+                .on_press(Message::MenuCommand(Box::new(Message::ModdingOpenProject))),
             design::button("Open Level Editor").on_press(Message::MenuCommand(Box::new(
                 Message::LevelOpenSelectedModProject
             ))),
