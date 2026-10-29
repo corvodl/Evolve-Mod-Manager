@@ -51,6 +51,7 @@ mod play_dialog;
 mod play_setup;
 mod private_pages;
 mod runtime_actors;
+mod runtime_ai;
 mod runtime_armor;
 mod runtime_experiments;
 mod runtime_health;
@@ -407,6 +408,12 @@ struct State {
     teleport_saved: Option<runtime_teleport::Reading>,
     teleport_busy: bool,
     teleport_status: String,
+    ai_pause_address: String,
+    ai_pause_probe: Option<runtime_ai::Probe>,
+    ai_pause_owned: bool,
+    ai_pause_busy: bool,
+    ai_pause_generation: u64,
+    ai_pause_status: String,
     teleport_detect_pending: bool,
     teleport_detect_generation: u64,
     teleport_hold_mode: Option<runtime_teleport::HoldMode>,
@@ -1995,6 +2002,12 @@ enum Message {
     DeveloperKeybindDefaults,
     TeleportDo(runtime_teleport::Destination, Option<(u32, u32)>),
     TeleportMoved(Result<runtime_teleport::Reading, String>),
+    AiAddressChanged(String),
+    AiInspect,
+    AiInspected(u64, Result<runtime_ai::Probe, String>),
+    AiChange(bool),
+    AiChanged(u64, bool, Result<runtime_ai::Probe, String>),
+    AiForget,
     TeleportDetect(TeleportRequest),
     TeleportAutoDetected(u64, TeleportRequest, runtime_memory::Snapshot),
     TeleportHold(runtime_teleport::HoldMode),
@@ -4402,6 +4415,146 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     format!("Shortcut set for session, but save failed: {error}");
             }
         }
+        Message::AiAddressChanged(value) => {
+            if state.developer_unlocked
+                && !state.ai_pause_busy
+                && !state.ai_pause_owned
+                && value.len() <= 80
+            {
+                state.ai_pause_address = value;
+                state.ai_pause_probe = None;
+                state.ai_pause_status.clear();
+            }
+        }
+        Message::AiInspect => {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || state.ai_pause_owned
+                || state.ai_pause_busy
+            {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.ai_pause_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            let root = state.preferences.game_storage_root.clone();
+            let address = state.ai_pause_address.clone();
+            state.ai_pause_busy = true;
+            state.ai_pause_generation = state.ai_pause_generation.wrapping_add(1);
+            let generation = state.ai_pause_generation;
+            state.ai_pause_status = "Reading candidate Int32 value...".into();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_ai::inspect(&snapshot, &root, &address)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("AI read failed: {e}")))
+                },
+                move |result| Message::AiInspected(generation, result),
+            );
+        }
+        Message::AiInspected(generation, result) => {
+            if generation != state.ai_pause_generation {
+                return Task::none();
+            }
+            state.ai_pause_busy = false;
+            match result {
+                Ok(probe) => {
+                    state.ai_pause_status = probe.describe();
+                    state.ai_pause_probe = Some(probe);
+                }
+                Err(e) => {
+                    state.ai_pause_probe = None;
+                    state.ai_pause_status = e;
+                }
+            }
+        }
+        Message::AiChange(pause) => {
+            if !state.developer_unlocked
+                || !state.live_edit_enabled
+                || state.developer_online_mods
+                || state.ai_pause_busy
+                || (pause && state.ai_pause_owned)
+                || (!pause && !state.ai_pause_owned)
+            {
+                state.ai_pause_status =
+                    "Enable Developer memory writes; use this only for isolated testing".into();
+                return Task::none();
+            }
+            let Some(probe) = state.ai_pause_probe else {
+                state.ai_pause_status = "Read the verified ai_NoUpdate Int32 address first".into();
+                return Task::none();
+            };
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.ai_pause_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            let root = state.preferences.game_storage_root.clone();
+            state.ai_pause_busy = true;
+            state.ai_pause_generation = state.ai_pause_generation.wrapping_add(1);
+            let generation = state.ai_pause_generation;
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_ai::change(&snapshot, &root, probe, pause)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("AI flag write failed: {e}")))
+                },
+                move |result| Message::AiChanged(generation, pause, result),
+            );
+        }
+        Message::AiChanged(generation, pause, result) => {
+            if generation != state.ai_pause_generation {
+                return Task::none();
+            }
+            state.ai_pause_busy = false;
+            match result {
+                Ok(probe) => {
+                    state.ai_pause_probe = Some(probe);
+                    state.ai_pause_owned = pause;
+                    state.ai_pause_status = if pause {
+                        "ai_NoUpdate = 1 verified. Test bot behavior; memory write alone does not prove AI is frozen.".into()
+                    } else {
+                        "ai_NoUpdate restored to 0; AI updates should resume.".into()
+                    };
+                    notify_dev_overlay(
+                        state,
+                        if pause {
+                            "AI update paused"
+                        } else {
+                            "AI update resumed"
+                        },
+                    );
+                }
+                Err(e) => {
+                    state.ai_pause_status = format!("AI state not changed/confirmed: {e}");
+                }
+            }
+        }
+        Message::AiForget => {
+            if state.ai_pause_busy {
+                return Task::none();
+            }
+            if let Some(probe) = state.ai_pause_probe {
+                let now = runtime_memory::inspect(&state.preferences.game_storage_root);
+                // Never discard an owned pause on a mere process-inspection failure.
+                // Only an observed different PID or a confirmed absence of Evolve
+                // permits resetting stale state without restoring memory.
+                let ended = now.pid.is_some_and(|pid| pid != probe.pid)
+                    || now.status == "No Evolve.exe process detected";
+                if !ended {
+                    state.ai_pause_status =
+                        "Game still running or detection uncertain; Resume AI before clearing tracking".into();
+                    return Task::none();
+                }
+            }
+            state.ai_pause_probe = None;
+            state.ai_pause_owned = false;
+            state.ai_pause_status = "Old game session ended; AI pause tracking cleared.".into();
+        }
         Message::TeleportOverlayPoll => {
             let ended = state
                 .teleport_overlay
@@ -5323,6 +5476,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LiveEditEnabled(armed) => {
+            if !armed && (state.ai_pause_owned || state.ai_pause_busy) {
+                state.ai_pause_status = "Resume AI before disabling memory edits".into();
+                return Task::none();
+            }
             if !state.developer_unlocked {
                 return Task::none();
             }
@@ -5680,6 +5837,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::RuntimeDetect => {
+            if state.ai_pause_owned || state.ai_pause_busy {
+                state.ai_pause_status = "Resume AI before refreshing the game process".into();
+                return Task::none();
+            }
+            state.ai_pause_probe = None;
+            state.ai_pause_generation = state.ai_pause_generation.wrapping_add(1);
             state.teleport_detect_generation = state.teleport_detect_generation.wrapping_add(1);
             state.teleport_detect_pending = false;
             if state.teleport_hold_cancel.is_some() {
@@ -5725,6 +5888,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::RuntimeDetected(snapshot) => {
+            if state.ai_pause_owned || state.ai_pause_busy {
+                return Task::none();
+            }
+            state.ai_pause_probe = None;
             state.teleport_overlay_generation = state.teleport_overlay_generation.wrapping_add(1);
             state.teleport_overlay_pending = false;
             state.actor_frozen.clear();
@@ -5936,6 +6103,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            if state.ai_pause_owned || state.ai_pause_busy {
+                state.ai_pause_status = "Resume AI before locking the Developer menu".into();
+                return Task::none();
+            }
             state.teleport_detect_generation = state.teleport_detect_generation.wrapping_add(1);
             state.teleport_detect_pending = false;
             state.teleport_overlay_generation = state.teleport_overlay_generation.wrapping_add(1);
@@ -6024,6 +6195,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 result.unwrap_or_else(|error| format!("Privilege inspection failed: {error}"));
         }
         Message::DeveloperOnlineMods(allow) => {
+            if allow && (state.ai_pause_owned || state.ai_pause_busy) {
+                state.ai_pause_status = "Resume AI before switching online testing".into();
+                return Task::none();
+            }
             if allow && state.teleport_hold_cancel.is_some() {
                 state.teleport_hold_status =
                     "Unfreeze coordinates before enabling online testing".into();
