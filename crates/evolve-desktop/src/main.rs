@@ -11643,12 +11643,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.status = format!("Map {map_name} opened read-only. {}", loaded.diagnostics.join(" "));
                     state.page = Some(Page::Levels);
                     state.level_zoom = 1.0;
+                    state.yaw = -30.0;
+                    state.pitch = 32.0;
+                    state.zoom = 1.0;
+                    state.pan_x = 0.0;
+                    state.pan_y = 0.0;
                 }
                 Ok(Completed::Level(scene, source, hash)) => {
                     state.library_map = None;
                     state.level_surfaces = None;
                     state.level_read_only = false;
                     state.level_diagnostics.clear();
+                    state.model = None;
+                    state.terrain = None;
                     state.status = format!(
                         "Loaded {} placed level objects; {} diagnostics.",
                         scene.objects.len(),
