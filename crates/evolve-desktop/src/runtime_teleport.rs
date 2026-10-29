@@ -231,7 +231,7 @@ pub(super) enum Destination {
     Absolute(Position),
     Relative(Position),
     /// Distance along the camera facing vector, relative to the local actor.
-/// This is not a geometry raycast or exact camera-origin crosshair hit.
+    /// This is not a geometry raycast or exact camera-origin crosshair hit.
     CameraAim(f32),
 }
 pub(super) fn parse_position(x: &str, y: &str, z: &str) -> Result<Position, String> {
@@ -819,7 +819,7 @@ mod windows {
                 let dt = now.duration_since(previous_tick).as_secs_f32();
                 previous_tick = now;
                 let mut input = fly_input(r.pid);
-                // Freeze Z and Fly both move X/Y by writing position directly:
+                // Freeze Z and Fly both move camera-relative X/Y directly:
                 // neither relies on native ground locomotion in mid-air.
                 if mode == HoldMode::Z {
                     input.vertical = 0.0;
