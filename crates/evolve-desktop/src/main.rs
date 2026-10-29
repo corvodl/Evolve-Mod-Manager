@@ -125,7 +125,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use textured::Scene as TexturedScene;
 use updater::{ReleaseUpdate, UpdateChannel, discover_update};
 use updater_apply::{PreparedUpdate, launch_worker, prepare_update};
@@ -365,6 +365,7 @@ struct State {
     level_camera: Option<level_camera::Camera>,
     level_keys: HashSet<char>,
     level_window_focused: bool,
+    level_last_pressed_at: Option<Instant>,
     level_surfaces: Option<Arc<Vec<textured::Surface>>>,
     level_picks: Option<Arc<Vec<level_scene_renderer::PickRange>>>,
     level_world: Option<Arc<world_instances::World>>,
@@ -7378,6 +7379,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.level_window_focused = focused;
             // Never resume an old held movement when the window reappears.
             state.level_keys.clear();
+            state.level_last_pressed_at = None;
         }
         Message::LevelCameraKey(_, key, pressed) => {
             if key == 'f' && pressed {
@@ -7386,6 +7388,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if ['w', 'a', 's', 'd', 'q', 'e'].contains(&key) {
                 if pressed && state.level_window_focused {
                     state.level_keys.insert(key);
+                    state.level_last_pressed_at = Some(Instant::now());
                 } else {
                     // Releases are honored regardless of event capture.
                     state.level_keys.remove(&key);
@@ -7393,16 +7396,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LevelCameraTick => {
-            if !state.level_window_focused {
+            if !state.level_window_focused
+                || state.level_last_pressed_at.is_some_and(|last| last.elapsed() > Duration::from_secs(5))
+            {
+                // Safe watchdog: stop on lost focus or missing KeyReleased.
+                // Normal Windows key-repeat refreshes this while held.
                 state.level_keys.clear();
-            } else {
-                // Missing KeyReleased must not create perpetual movement.
-                state
-                    .level_keys
-                    .retain(|key| level_camera::physically_held(*key));
-                if let Some(camera) = state.level_camera.as_mut() {
-                    camera.advance(&state.level_keys, state.yaw, state.pitch, 1.0 / 60.0);
-                }
+                state.level_last_pressed_at = None;
+            } else if let Some(camera) = state.level_camera.as_mut() {
+                camera.advance(&state.level_keys, state.yaw, state.pitch, 1.0 / 60.0);
             }
         }
         Message::ViewerSearchChanged(filter) => {
