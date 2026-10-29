@@ -390,7 +390,7 @@ pub fn read_terrain_texture_header(path: &Path) -> Result<TerrainTextureHeader, 
     file.read_exact(&mut header)?;
     if header[..4] != *b"CRY\0" || header[4] != 100 {
         return Err(TerrainError::Format(
-            "Not a CryEngine baked terrain surface texture header".into()
+            "Not a CryEngine baked terrain surface texture header".into(),
         ));
     }
     let version = u16::from_le_bytes([header[6], header[7]]);
@@ -403,7 +403,7 @@ pub fn read_terrain_texture_header(path: &Path) -> Result<TerrainTextureHeader, 
     let flags = u16::from_le_bytes([header[10], header[11]]);
     if !(1..=8).contains(&count) || flags & 2 != 0 {
         return Err(TerrainError::Format(
-            "Unsupported layer count or big-endian terrain surface data".into()
+            "Unsupported layer count or big-endian terrain surface data".into(),
         ));
     }
     let color_multiplier = f32::from_le_bytes(header[12..16].try_into().unwrap());
@@ -414,19 +414,33 @@ pub fn read_terrain_texture_header(path: &Path) -> Result<TerrainTextureHeader, 
     for _ in 0..count {
         let mut record = [0u8; 12];
         file.read_exact(&mut record)?;
-        let sector_pixels = u16::from_le_bytes([record[0],record[1]]);
-        let reserved = u16::from_le_bytes([record[2],record[3]]);
+        let sector_pixels = u16::from_le_bytes([record[0], record[1]]);
+        let reserved = u16::from_le_bytes([record[2], record[3]]);
         let texture_format = u32::from_le_bytes(record[4..8].try_into().unwrap());
         let sector_bytes = u32::from_le_bytes(record[8..12].try_into().unwrap());
-        if reserved != 0 || sector_pixels < 4 || sector_pixels > 8192
-            || !sector_pixels.is_power_of_two() || sector_bytes == 0
+        if reserved != 0
+            || sector_pixels < 4
+            || sector_pixels > 8192
+            || !sector_pixels.is_power_of_two()
+            || sector_bytes == 0
             || sector_bytes > 64 * 1024 * 1024
         {
-            return Err(TerrainError::Format("Invalid baked terrain layer descriptor".into()));
+            return Err(TerrainError::Format(
+                "Invalid baked terrain layer descriptor".into(),
+            ));
         }
-        layers.push(TerrainTextureLayer { sector_pixels, texture_format, sector_bytes });
+        layers.push(TerrainTextureLayer {
+            sector_pixels,
+            texture_format,
+            sector_bytes,
+        });
     }
-    Ok(TerrainTextureHeader { version, flags, color_multiplier, layers })
+    Ok(TerrainTextureHeader {
+        version,
+        flags,
+        color_multiplier,
+        layers,
+    })
 }
 
 pub fn read_terrain_paint(path: &Path) -> Result<Option<TerrainPaintMap>, TerrainError> {
@@ -570,11 +584,11 @@ mod tests {
 
     #[test]
     fn validates_original_baked_terrain_texture_layer_descriptors() {
-        let dir=tempfile::tempdir().unwrap();
-        let file=dir.path().join("terraintexture.pak");
-        let mut data=Vec::new();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("terraintexture.pak");
+        let mut data = Vec::new();
         data.extend_from_slice(b"CRY\0");
-        data.extend_from_slice(&[100,0]);
+        data.extend_from_slice(&[100, 0]);
         data.extend_from_slice(&9u16.to_le_bytes());
         data.extend_from_slice(&1u16.to_le_bytes());
         data.extend_from_slice(&0u16.to_le_bytes());
@@ -583,13 +597,13 @@ mod tests {
         data.extend_from_slice(&0u16.to_le_bytes());
         data.extend_from_slice(&11u32.to_le_bytes());
         data.extend_from_slice(&65536u32.to_le_bytes());
-        std::fs::write(&file,&data).unwrap();
-        let info=read_terrain_texture_header(&file).unwrap();
-        assert_eq!(info.version,9);
-        assert_eq!(info.layers.len(),1);
-        assert_eq!(info.layers[0].sector_bytes,65536);
-        data[4]=42;
-        std::fs::write(&file,&data).unwrap();
+        std::fs::write(&file, &data).unwrap();
+        let info = read_terrain_texture_header(&file).unwrap();
+        assert_eq!(info.version, 9);
+        assert_eq!(info.layers.len(), 1);
+        assert_eq!(info.layers[0].sector_bytes, 65536);
+        data[4] = 42;
+        std::fs::write(&file, &data).unwrap();
         assert!(read_terrain_texture_header(&file).is_err());
     }
 
