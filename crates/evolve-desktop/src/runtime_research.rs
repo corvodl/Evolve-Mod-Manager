@@ -82,7 +82,9 @@ mod windows {
 
     fn raw(h: &ProcessHandle, address: usize, count: usize) -> Result<Vec<u8>, String> {
         if !(0x10000..0x0000_7FFF_FFFF_FFFF).contains(&address)
-            || address.checked_add(count).is_none_or(|v| v >= 0x0000_7FFF_FFFF_FFFF)
+            || address
+                .checked_add(count)
+                .is_none_or(|v| v >= 0x0000_7FFF_FFFF_FFFF)
             || count > 4096
         {
             return Err("Memory read outside permitted address/size".into());
@@ -91,7 +93,9 @@ mod windows {
             .map_err(|e| format!("Read-only memory inspection failed at 0x{address:X}: {e}"))
     }
     fn u32_at(h: &ProcessHandle, at: usize) -> Result<u32, String> {
-        Ok(u32::from_le_bytes(raw(h, at, 4)?.try_into().map_err(|_| "Incomplete u32")?))
+        Ok(u32::from_le_bytes(
+            raw(h, at, 4)?.try_into().map_err(|_| "Incomplete u32")?,
+        ))
     }
     fn f32_at(h: &ProcessHandle, at: usize) -> Result<f32, String> {
         let value = f32::from_bits(u32_at(h, at)?);
@@ -101,7 +105,11 @@ mod windows {
         Ok(value)
     }
     fn ptr(h: &ProcessHandle, at: usize) -> Result<usize, String> {
-        let n = u64::from_le_bytes(raw(h, at, 8)?.try_into().map_err(|_| "Incomplete pointer")?);
+        let n = u64::from_le_bytes(
+            raw(h, at, 8)?
+                .try_into()
+                .map_err(|_| "Incomplete pointer")?,
+        );
         let addr = usize::try_from(n).map_err(|_| "Pointer exceeds address width")?;
         if !(0x10000..0x0000_7FFF_FFFF_FFFF).contains(&addr) {
             return Err(format!("Invalid process pointer at 0x{at:X}"));
@@ -121,7 +129,10 @@ mod windows {
         Ok(())
     }
     fn image_digest(snapshot: &Snapshot) -> String {
-        let Some(path) = snapshot.executable.strip_prefix("Actual running executable: ") else {
+        let Some(path) = snapshot
+            .executable
+            .strip_prefix("Actual running executable: ")
+        else {
             return "Unavailable: running executable path was not verified".into();
         };
         let Ok(mut f) = std::fs::File::open(Path::new(path)) else {
@@ -252,13 +263,16 @@ mod windows {
         root: &str,
         actors: &runtime_actors::Listing,
     ) -> Result<Report, String> {
-        let pid = snapshot.pid.ok_or("Detect Evolve.exe before runtime research")?;
+        let pid = snapshot
+            .pid
+            .ok_or("Detect Evolve.exe before runtime research")?;
         let base = snapshot.module_base.ok_or("Evolve.exe base unavailable")?;
         if actors.pid != pid {
             return Err("Actor listing belongs to another process".into());
         }
         let now = runtime_memory::inspect(root);
-        if now.pid != Some(pid) || now.module_base != Some(base)
+        if now.pid != Some(pid)
+            || now.module_base != Some(base)
             || now.executable != snapshot.executable
         {
             return Err("Executable identity changed; redetect Evolve.exe".into());
@@ -266,7 +280,9 @@ mod windows {
         let h: ProcessHandle = pid
             .try_into()
             .map_err(|e| format!("Cannot read Evolve: {e}"))?;
-        let anchor = base.checked_add(ENTITY_SYSTEM_RVA).ok_or("Entity RVA overflow")?;
+        let anchor = base
+            .checked_add(ENTITY_SYSTEM_RVA)
+            .ok_or("Entity RVA overflow")?;
         let game = ptr(&h, anchor - 0x10)?;
         let framework = ptr(&h, game + 0x60)?;
         let client = ptr(&h, framework + 0x528)?;
@@ -275,15 +291,18 @@ mod windows {
         let factory = ptr(&h, anchor)?;
         let table = ptr(&h, factory + 0xA8)?;
         let entity = ptr(&h, table + (local_id as usize & 0xFFFF) * 8)?;
-        if local_id == 0 || u32_at(&h, entity + 0x18)? != local_id
+        if local_id == 0
+            || u32_at(&h, entity + 0x18)? != local_id
             || ptr(&h, actor_addr + 0x38)? != entity
         {
             return Err("Local actor/session chain changed".into());
         }
         expected_vtable(&h, actor_addr, base, ACTOR_VTABLE_RVA)?;
         expected_vtable(&h, entity, base, ENTITY_VTABLE_RVA)?;
-        let local = actors.actors.iter().find(|a| a.local && a.id == local_id
-            && a.address == actor_addr && a.entity == entity)
+        let local = actors
+            .actors
+            .iter()
+            .find(|a| a.local && a.id == local_id && a.address == actor_addr && a.entity == entity)
             .ok_or("Actor listing is stale; refresh the game first")?;
 
         let mut inventories = Vec::new();
@@ -330,12 +349,15 @@ mod windows {
         let projectiles = projectile_observations();
 
         let end = runtime_memory::inspect(root);
-        if end.pid != Some(pid) || end.module_base != Some(base)
+        if end.pid != Some(pid)
+            || end.module_base != Some(base)
             || u32_at(&h, client + 0x170)? != local_id
             || ptr(&h, client + 0x178)? != actor_addr
             || ptr(&h, actor_addr + 0x38)? != entity
         {
-            return Err("Evolve session/actor changed during inspection; no values retained".into());
+            return Err(
+                "Evolve session/actor changed during inspection; no values retained".into(),
+            );
         }
 
         Ok(Report {
@@ -384,10 +406,10 @@ mod tests {
     }
     #[test]
     fn slot_defaults_only_match_exact_tested_instructions() {
-        assert!(slot_default_bytes(&[0xC7,0x41,8,4,0,0,0], 8, 4));
-        assert!(slot_default_bytes(&[0xC7,0x41,12,1,0,0,0], 12, 1));
-        assert!(!slot_default_bytes(&[0xC7,0x41,12,2,0,0,0], 12, 1));
-        assert!(!slot_default_bytes(&[0x90,0x41,12,1,0,0,0], 12, 1));
+        assert!(slot_default_bytes(&[0xC7, 0x41, 8, 4, 0, 0, 0], 8, 4));
+        assert!(slot_default_bytes(&[0xC7, 0x41, 12, 1, 0, 0, 0], 12, 1));
+        assert!(!slot_default_bytes(&[0xC7, 0x41, 12, 2, 0, 0, 0], 12, 1));
+        assert!(!slot_default_bytes(&[0x90, 0x41, 12, 1, 0, 0, 0], 12, 1));
     }
     #[test]
     fn projectile_offsets_remain_class_specific_hypotheses() {
