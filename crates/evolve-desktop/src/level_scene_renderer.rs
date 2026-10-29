@@ -526,43 +526,56 @@ pub(super) fn assemble(
                     format!("{}.mtl", object.material)
                 };
                 let mut material_ranges = Vec::new();
-                if meshes.len() == 1
-                    && let Ok(Some(material)) = sources.lookup(&authored_material)
-                {
-                    if let Some(inventory) = original_inventory {
-                        match assembly_materials::load_model(
-                            &source.path,
-                            &material.path,
-                            inventory,
-                            sources.library_root.as_deref(),
-                            sources.build.as_deref(),
-                            cache,
-                        ) {
+                match (sources.lookup(&authored_material), original_inventory) {
+                    (Ok(Some(material)), Some(inventory)) => {
+                        let full = (meshes.len() == 1).then(|| {
+                            assembly_materials::load_model(
+                                &source.path, &material.path, inventory,
+                                sources.library_root.as_deref(),
+                                sources.build.as_deref(), cache,
+                            )
+                        });
+                        let resolved = match full {
+                            Some(Ok(data)) => Ok(data),
+                            _ => assembly_materials::original_single_leaf_surface(
+                                &material.path, inventory,
+                                sources.library_root.as_deref(),
+                                sources.build.as_deref(), cache,
+                            ).map(|(surface, warnings)| (vec![surface], warnings)),
+                        };
+                        match resolved {
                             Ok((parts, warnings)) => {
-                                report.textured +=
-                                    usize::from(parts.iter().any(|part| part.diffuse.is_some()));
+                                report.textured += usize::from(
+                                    parts.iter().any(|part| part.diffuse.is_some())
+                                );
                                 material_ranges = parts;
                                 for note in warnings.into_iter().take(2) {
                                     report.note(format!("{}: {note}", object.name));
                                 }
                             }
-                            Err(error) => report.note(format!("{} material: {error}", object.name)),
+                            Err(error) => report.note(format!(
+                                "{}: original MTL cannot be assigned to {} mesh sections: {error}",
+                                object.name, meshes.len()
+                            )),
                         }
                     }
-                } else if meshes.len() > 1 {
-                    report.note(format!(
-                        "{}: {} verified mesh sections; per-node materials unverified",
-                        object.name,
-                        meshes.len(),
-                    ));
-                } else {
-                    report.note(format!("No verified material for {}", object.name));
+                    (Err(error), _) => report.note(format!(
+                        "{} material: {error}", object.name
+                    )),
+                    _ => report.note(format!(
+                        "No verified original material for {} ({} mesh sections)",
+                        object.name, meshes.len()
+                    )),
                 }
                 let mut indices = Vec::with_capacity(meshes.len());
                 for mesh in meshes {
                     let radius = world_instances::radius(&mesh);
                     let parts = if material_ranges.is_empty() {
                         vec![neutral(0, mesh.indices.len() as u32)]
+                    } else if material_ranges.len() == 1 && material_ranges[0].index_count == 0 {
+                        let mut original = material_ranges[0].clone();
+                        original.index_count = mesh.indices.len() as u32;
+                        vec![original]
                     } else {
                         material_ranges.clone()
                     };
