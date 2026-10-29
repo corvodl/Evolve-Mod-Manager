@@ -196,7 +196,7 @@ pub(super) fn radius(mesh: &RenderMesh) -> f32 {
 }
 /// Coarse conservative frustum culling before instance-buffer uploads.
 /// Does not make distant vegetation disappear arbitrarily by count.
-pub(super) fn visible(
+fn visible(
     group: &ModelGroup,
     camera: level_camera::Camera,
     yaw: f32,
@@ -493,6 +493,7 @@ impl Renderer {
             surfaces,
         }
     }
+    #[allow(clippy::too_many_arguments)] // Upload needs device, queue, world and camera projection parameters.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
