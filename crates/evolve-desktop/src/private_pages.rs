@@ -1434,6 +1434,56 @@ fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
     rows.into()
 }
 
+fn ai_pause_controls(state: &State) -> Element<'_, Message> {
+    let ready = state.developer_unlocked
+        && state.live_edit_enabled
+        && !state.developer_online_mods
+        && !state.ai_pause_busy
+        && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some();
+    let can_pause = ready
+        && !state.ai_pause_owned
+        && state.ai_pause_probe.is_some_and(|probe| probe.value == 0);
+    let can_resume = ready && state.ai_pause_owned;
+
+    surface(
+        column![
+            text("Global AI pause").size(19),
+            text("Experimental · For isolated testing · ai_NoUpdate Int32")
+                .size(12).style(design::muted),
+            text("Enter a separately verified CVar VALUE address. A readable 0/1 alone does not prove the address is ai_NoUpdate. No automatic detection yet.")
+                .size(12).style(design::muted),
+            row![
+                design::text_input("0x... or Evolve.exe+0x...", &state.ai_pause_address)
+                    .on_input(Message::AiAddressChanged),
+                design::button("Read Int32").on_press_maybe(
+                    (state.developer_unlocked && !state.developer_online_mods
+                        && !state.ai_pause_busy && !state.ai_pause_owned)
+                        .then_some(Message::AiInspect)
+                ),
+            ].spacing(8),
+            row![
+                design::button("Pause all AI").on_press_maybe(
+                    can_pause.then_some(Message::AiChange(true))
+                ),
+                design::button("Resume AI").on_press_maybe(
+                    can_resume.then_some(Message::AiChange(false))
+                ),
+                design::button("Clear ended session").on_press_maybe(
+                    (!state.ai_pause_busy && state.ai_pause_probe.is_some())
+                        .then_some(Message::AiForget)
+                ),
+            ].spacing(8),
+            text(if state.ai_pause_busy {
+                "Reading or writing AI update flag..."
+            } else if state.ai_pause_status.is_empty() {
+                "Read an externally verified address to enable pause; original 0 is restored on Resume."
+            } else {
+                state.ai_pause_status.as_str()
+            }).size(12).style(design::muted),
+        ].spacing(8).padding(10),
+    ).into()
+}
+
 fn teleport_controls(state: &State) -> Element<'_, Message> {
     let enabled = state.developer_unlocked
         && state.armor_offline_confirmed
@@ -1639,6 +1689,7 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                             .size(12)
                             .style(design::muted),
                         actor_rows(state),
+                        ai_pause_controls(state),
                         teleport_controls(state),
                         text("Click a value to edit it · Enter to write · Freeze holds the current value")
                             .size(12).style(design::muted),
