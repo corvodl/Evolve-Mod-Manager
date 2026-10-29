@@ -2384,5 +2384,4 @@ mod tests {
         fs::remove_file(&custom).unwrap();
         assert!(offline_test_verification_keys(&stage).is_err());
     }
-
 }
