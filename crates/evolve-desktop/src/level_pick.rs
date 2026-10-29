@@ -165,8 +165,8 @@ impl shader::Program<Message> for LevelViewport {
                 let dx = location.x - (start[0] + t * vx); let dy = location.y - (start[1] + t * vy);
                 if dx * dx + dy * dy < 64.0 && t > 0.2 {
                     state.moving = Some(axis);
-                    state.last_cursor = cursor.position().or(Some(iced::Point::new(location.x + bounds.x, location.y + bounds.y)));
-                    return Some(shader::Action::capture());
+                    state.last_cursor = Some(iced::Point::new(location.x + bounds.x, location.y + bounds.y));
+                    return Some(shader::Action::publish(Message::LevelGizmoMove(axis, 0.0)).and_capture());
                 }
             }
         }
