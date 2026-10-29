@@ -1350,6 +1350,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 pan_y: state.pan_y,
                 shift: state.keyboard_modifiers.shift(),
                 level_camera: None,
+                world: None,
             })
             .width(Fill)
             .height(Fill)
