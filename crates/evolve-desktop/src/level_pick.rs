@@ -119,7 +119,7 @@ fn pick(
             .first_index
             .saturating_add(range.index_count)
             .min(mesh.indices.len());
-        for tri in mesh.indices[range.first_index.min(end)..end].chunks_exact(3) {
+        for tri in mesh.indices[range.first_index.min(end)..end].as_chunks::<3>().0 {
             if tested >= 300_000 {
                 return closest.1;
             }
@@ -170,15 +170,9 @@ impl shader::Program<Message> for LevelViewport {
                     );
                 }
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                    let Some(before) = state.last_cursor.replace(*position) else {
-                        return None;
-                    };
-                    let Some(pivot) = self.selected_pivot else {
-                        return None;
-                    };
-                    let Some(projector) = Projection::new(&self.inner, bounds) else {
-                        return None;
-                    };
+                    let before = state.last_cursor.replace(*position)?;
+                    let pivot = self.selected_pivot?;
+                    let projector = Projection::new(&self.inner, bounds)?;
                     let start = projector.project(pivot);
                     let mut end = pivot;
                     end[axis] += projector.extent * 0.05;
