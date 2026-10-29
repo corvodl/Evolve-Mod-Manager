@@ -55,6 +55,7 @@ mod runtime_armor;
 mod runtime_experiments;
 mod runtime_health;
 mod runtime_live;
+mod runtime_match_perks;
 mod runtime_memory;
 mod runtime_signatures;
 mod runtime_teleport;
@@ -400,6 +401,8 @@ struct State {
     developer_attempts: u8,
     developer_checking: bool,
     actor_listing: Option<runtime_actors::Listing>,
+    match_perks: Option<runtime_match_perks::Listing>,
+    match_perks_status: String,
     teleport_reading: Option<runtime_teleport::Reading>,
     teleport_saved: Option<runtime_teleport::Reading>,
     teleport_busy: bool,
@@ -1965,7 +1968,15 @@ enum Message {
     DeveloperInspectProcessPrivileges,
     DeveloperProcessPrivilegesFinished(Result<String, String>),
     ActorRefresh,
-    ActorRefreshed(Result<runtime_actors::Listing, String>),
+    ActorRefreshed(
+        Result<
+            (
+                runtime_actors::Listing,
+                Result<runtime_match_perks::Listing, String>,
+            ),
+            String,
+        >,
+    ),
     TeleportCapture(bool),
     TeleportCaptured(bool, Result<runtime_teleport::Reading, String>),
     TeleportXYZChanged(usize, String),
@@ -5064,9 +5075,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let root = state.preferences.game_storage_root.clone();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || runtime_actors::inspect(&snapshot, &root))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("Actor scan failed: {e}")))
+                    tokio::task::spawn_blocking(move || {
+                        let actors = runtime_actors::inspect(&snapshot, &root)?;
+                        let perks = runtime_match_perks::inspect(&snapshot, &root, &actors.actors);
+                        Ok((actors, perks))
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Actor scan failed: {e}")))
                 },
                 Message::ActorRefreshed,
             );
@@ -5075,13 +5090,35 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.actor_busy = false;
             if state.developer_unlocked {
                 match result {
-                    Ok(listing) => {
+                    Ok((listing, perks)) => {
+                        if state.runtime_snapshot.as_ref().and_then(|s| s.pid) != Some(listing.pid)
+                        {
+                            state.actor_listing = None;
+                            state.match_perks = None;
+                            state.actor_status =
+                                "Evolve changed during refresh; detect it again".into();
+                            state.match_perks_status.clear();
+                            return Task::none();
+                        }
                         state.actor_status = listing.status.clone();
                         state.actor_listing = Some(listing);
+                        match perks {
+                            Ok(perks) => {
+                                state.match_perks_status = perks.status.clone();
+                                state.match_perks = Some(perks);
+                            }
+                            Err(error) => {
+                                state.match_perks = None;
+                                state.match_perks_status = error;
+                            }
+                        }
                     }
                     Err(err) => {
                         state.actor_listing = None;
                         state.actor_status = err;
+                        state.match_perks = None;
+                        state.match_perks_status =
+                            "Actor scan unavailable; match perks not verified".into();
                     }
                 }
             }
@@ -5693,6 +5730,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.actor_frozen.clear();
             state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.actor_listing = None;
+            state.match_perks = None;
+            state.match_perks_status.clear();
             state.actor_edit = None;
             state.teleport_reading = None;
             state.teleport_saved = None;
@@ -5909,6 +5948,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.actor_frozen.clear();
             state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.actor_listing = None;
+            state.match_perks = None;
+            state.match_perks_status.clear();
             state.actor_edit = None;
             state.actor_status.clear();
             state.teleport_reading = None;
@@ -12968,8 +13009,9 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::TeleportDo(target, None));
         assert!(state.teleport_status.contains("actor memory writes"));
         state.live_edit_enabled = true;
-        // update() returns a deferred Iced Task; the nested detection message
-        // is not executed by a direct unit-test invocation.
+        // Directly calling update does not execute the returned Task::done
+        // message. Clear the previous rejection before testing the newly
+        // authorized path; the asynchronous detection executes in the app.
         state.teleport_status.clear();
         let _ = update(&mut state, Message::TeleportDo(target, None));
         assert!(state.teleport_status.is_empty());

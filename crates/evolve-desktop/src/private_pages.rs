@@ -1401,6 +1401,51 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
     list.into()
 }
 
+fn match_perk_rows(state: &State) -> Element<'_, Message> {
+    let mut rows = column![
+        text("Current match · character perks").size(19),
+        text(if state.match_perks_status.is_empty() {
+            "Refresh all actors to verify the round-start log against live perk entities."
+        } else {
+            state.match_perks_status.as_str()
+        })
+        .size(12)
+        .style(design::muted),
+    ]
+    .spacing(7);
+    if let Some(listing) = &state.match_perks {
+        for player in &listing.players {
+            let actor = match player.actor_id {
+                Some(id) => format!(
+                    " · Actor ID 0x{id:X}{}",
+                    if player.local { " (Local)" } else { "" }
+                ),
+                None => " · Actor not identified".to_owned(),
+            };
+            let perks = if player.perks.is_empty() {
+                "No selected perks".to_owned()
+            } else {
+                player.perks.join(" · ")
+            };
+            rows = rows.push(surface(
+                column![
+                    text(format!(
+                        "{} · {} ({}){actor}",
+                        player.class, player.display, player.character
+                    ))
+                    .size(13),
+                    text(format!("{}: {perks}", player.slot))
+                        .size(12)
+                        .style(design::muted),
+                ]
+                .spacing(4)
+                .padding(8),
+            ));
+        }
+    }
+    rows.into()
+}
+
 fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
     let assigned = state
         .preferences
@@ -1728,9 +1773,9 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                             .label("Enable actor memory writes / Freeze (experimental)")
                             .on_toggle(Message::LiveEditEnabled),
                         design::button(if state.actor_busy {
-                            "Reading actors..."
+                            "Reading actors and perks..."
                         } else {
-                            "Refresh all actors"
+                            "Refresh actors and match perks"
                         })
                         .on_press_maybe(
                             (!state.actor_busy
@@ -1744,6 +1789,7 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                         text(state.actor_status.as_str())
                             .size(12)
                             .style(design::muted),
+                        match_perk_rows(state),
                         actor_rows(state),
                         teleport_controls(state),
                         text("Click a value to edit it · Enter to write · Freeze holds the current value")
