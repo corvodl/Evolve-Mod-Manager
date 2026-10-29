@@ -87,6 +87,7 @@ pub struct Scene {
     pub pan_y: f32,
     pub shift: bool,
     pub level_camera: Option<super::level_camera::Camera>,
+    pub world: Option<Arc<super::world_instances::World>>,
 }
 
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -153,6 +154,11 @@ pub struct Primitive {
     gloss_identity: usize,
     emissive_gain: f32,
     emissive_time: f32,
+    world: Option<Arc<super::world_instances::World>>,
+    camera: Option<super::level_camera::Camera>,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
 }
 impl shader::Program<super::Message> for Scene {
     type State = super::view_navigation::Navigation;
@@ -292,6 +298,11 @@ impl shader::Program<super::Message> for Scene {
             gloss_identity: self.gloss.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
             emissive_gain: self.emissive_gain,
             emissive_time: self.emissive_time,
+            world: self.world.clone(),
+            camera: self.level_camera,
+            yaw: self.yaw,
+            pitch: self.pitch,
+            zoom: self.zoom,
         }
     }
 }
@@ -325,6 +336,7 @@ struct GpuSurface {
 }
 
 pub struct Pipeline {
+    world_renderer: super::world_instances::Renderer,
     render_pipeline: wgpu::RenderPipeline,
     masked_pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
@@ -945,6 +957,7 @@ impl Pipeline {
         });
         let depth = Self::depth_view(device, (1, 1));
         Self {
+            world_renderer: super::world_instances::Renderer::new(device, format),
             render_pipeline,
             masked_pipeline,
             translucent_pipeline,
@@ -1204,6 +1217,11 @@ impl Pipeline {
             self.depth = Self::depth_view(device, size);
             self.depth_dimensions = size;
         }
+        self.world_renderer.prepare(
+            device, queue, primitive.world.as_ref(), primitive.camera,
+            primitive.yaw, primitive.pitch,
+            size.0 as f32 / size.1.max(1) as f32, primitive.zoom,
+        );
         let floor_bytes = bytemuck::cast_slice(&primitive.ground);
         self.ground_count = primitive.ground.len() as u32;
         if !floor_bytes.is_empty() {
@@ -1377,7 +1395,7 @@ impl Pipeline {
         target: &wgpu::TextureView,
         clip: Rectangle<u32>,
     ) {
-        if self.index_count == 0 || clip.width == 0 || clip.height == 0 {
+        if clip.width == 0 || clip.height == 0 {
             return;
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1416,6 +1434,7 @@ impl Pipeline {
             pass.set_vertex_buffer(0, self.ground_vertex.slice(..));
             pass.draw(0..self.ground_count, 0..1);
         }
+        if self.index_count > 0 {
         pass.set_pipeline(&self.render_pipeline);
         pass.set_vertex_buffer(0, self.vertex.slice(..));
         pass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint32);
@@ -1446,6 +1465,8 @@ impl Pipeline {
             pass.set_bind_group(0, &self.group, &[]);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
+        }
+        self.world_renderer.draw(&mut pass);
     }
 }
 impl shader::Pipeline for Pipeline {
