@@ -519,6 +519,124 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     })
 }
 
+/// Decode authored multi-node meshes by following the source MeshChunk's
+/// explicit stream-chunk references. Distinct repeated stream types must never
+/// be selected by file order, count, proximity, or guessed mesh ownership.
+///
+/// The returned submeshes are kept separate; the caller can apply the exact
+/// parent placement per submesh and avoid conflating local material slots.
+pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelError> {
+    let (format, _, chunks) = validate_chunks(data)?;
+    if format != "CrChF v7" {
+        return parse_model_bytes(data).map(|part| vec![part]);
+    }
+    const MESH: u32 = 0x08001000;
+    let mesh_chunks = chunks.iter().filter(|(ty, _, _, _)| *ty == MESH)
+        .collect::<Vec<_>>();
+    if mesh_chunks.is_empty() {
+        return parse_model_bytes(data).map(|part| vec![part]);
+    }
+    if mesh_chunks.len() > 1024 {
+        return Err(ModelError::Limits);
+    }
+    let table_count = u32at(data, 8)? as usize;
+    let table_offset = u32at(data, 12)? as usize;
+    let mut directory = HashMap::<u32, (u32, usize, usize)>::new();
+    for i in 0..table_count {
+        let at = table_offset + i * 16;
+        let kind = u32at(data, at)?;
+        let id = u32at(data, at + 4)?;
+        let len = u32at(data, at + 8)? as usize;
+        let offset = u32at(data, at + 12)? as usize;
+        if directory.insert(id, (kind, offset, len)).is_some() {
+            return Err(ModelError::Format("duplicate chunk identifiers".into()));
+        }
+    }
+    let mut parts = Vec::with_capacity(mesh_chunks.len());
+    for (_, at, size, _) in mesh_chunks {
+        if *size < 92 {
+            return Err(ModelError::Format("truncated original mesh stream references".into()));
+        }
+        let vertices = u32at(data, at + 28)?;
+        let normals = u32at(data, at + 32)?;
+        let uv = u32at(data, at + 36)?;
+        let indices = u32at(data, at + 48)?;
+        let tangents = u32at(data, at + 52)?;
+        let packed = u32at(data, at + 88)?;
+        let expected_vertices = u32at(data, at + 8)?;
+        let expected_indices = u32at(data, at + 12)?;
+        if expected_vertices < 3 || expected_vertices > MAX_VERTICES as u32
+            || expected_indices < 3 || expected_indices > MAX_INDICES as u32
+        {
+            return Err(ModelError::Limits);
+        }
+        // All nonzero optional source references must point at an original
+        // stream of the exact declared semantic type.
+        let mut selected = Vec::<(u32, usize, usize)>::new();
+        for (reference, semantic) in [
+            (vertices, 0u32), (packed, 15), (normals, 1),
+            (uv, 2), (indices, 5), (tangents, 6)
+        ] {
+            if reference == 0 || reference == u32::MAX {
+                continue;
+            }
+            let Some(&(kind, stream_at, stream_size)) = directory.get(&reference) else {
+                return Err(ModelError::Format("mesh references missing datastream".into()));
+            };
+            if kind != CRCHF_STREAM || stream_size < 24
+                || u32at(data, stream_at + 4)? != semantic
+            {
+                return Err(ModelError::Format("mesh stream reference has wrong semantic".into()));
+            }
+            selected.push((reference, stream_at, stream_size));
+        }
+        let has_position = selected.iter().any(|(_, offset, _)| {
+            matches!(u32at(data, offset + 4), Ok(0 | 15))
+        });
+        if !has_position || indices == 0 || indices == u32::MAX {
+            return Err(ModelError::Format("mesh lacks referenced vertex/index streams".into()));
+        }
+        if selected.len() > 8 {
+            return Err(ModelError::Limits);
+        }
+        // Preserve the original stream payload byte-for-byte; only construct
+        // a small transient CrChF directory to invoke the existing validated
+        // vertex/normal/UV/triangle decoder.
+        let header_end = 16 + selected.len() * 16;
+        let mut temporary = vec![0u8; header_end];
+        temporary[..8].copy_from_slice(b"CrChF\\x07\\0\\0");
+        temporary[8..12].copy_from_slice(&(selected.len() as u32).to_le_bytes());
+        temporary[12..16].copy_from_slice(&16u32.to_le_bytes());
+        for (index, (id, source_at, size)) in selected.iter().enumerate() {
+            let new_at = temporary.len();
+            let end = new_at.checked_add(*size).ok_or(ModelError::Limits)?;
+            if end > MAX_BYTES {return Err(ModelError::Limits);}
+            let table = 16 + index * 16;
+            temporary[table..table+4].copy_from_slice(&CRCHF_STREAM.to_le_bytes());
+            temporary[table+4..table+8].copy_from_slice(&id.to_le_bytes());
+            temporary[table+8..table+12].copy_from_slice(&(*size as u32).to_le_bytes());
+            temporary[table+12..table+16].copy_from_slice(&(new_at as u32).to_le_bytes());
+            temporary.extend_from_slice(&data[*source_at..*source_at+*size]);
+        }
+        let mesh = parse_model_bytes(&temporary)?;
+        if mesh.positions.len() != expected_vertices as usize
+            || mesh.indices.len() != expected_indices as usize
+        {
+            return Err(ModelError::Format("mesh and referenced datastream counts differ".into()));
+        }
+        parts.push(mesh);
+    }
+    Ok(parts)
+}
+
+pub fn read_world_model_parts(path: &Path) -> Result<Vec<RenderMesh>, ModelError> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() || meta.len() > MAX_BYTES as u64 {
+        return Err(ModelError::Limits);
+    }
+    parse_world_model_parts(&fs::read(path)?)
+}
+
 /// Whether a verified original CryEngine SUBSETS table was provided.
 /// A standalone mesh with multiple MTL leaves but no source table must not
 /// paint every triangle with slot zero or guess equipment material IDs.
