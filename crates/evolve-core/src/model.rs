@@ -617,9 +617,7 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         let packed = u32at(data, at + 88)?;
         let expected_vertices = u32at(data, at + 8)?;
         let expected_indices = u32at(data, at + 12)?;
-        if expected_vertices > MAX_VERTICES as u32
-            || expected_indices > MAX_INDICES as u32
-        {
+        if expected_vertices > MAX_VERTICES as u32 || expected_indices > MAX_INDICES as u32 {
             return Err(ModelError::Limits);
         }
         // Some source CGFs contain visible render nodes alongside helper
@@ -627,8 +625,7 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         // helpers must not hide valid sibling render meshes; do not invent
         // geometry for them. Compiled companions can still supply a fully
         // renderable alternative when none of this file's meshes qualifies.
-        let missing_position = matches!(vertices, 0 | u32::MAX)
-            && matches!(packed, 0 | u32::MAX);
+        let missing_position = matches!(vertices, 0 | u32::MAX) && matches!(packed, 0 | u32::MAX);
         let missing_indices = matches!(indices, 0 | u32::MAX);
         if expected_vertices < 3 || expected_indices < 3 || missing_position || missing_indices {
             continue;
