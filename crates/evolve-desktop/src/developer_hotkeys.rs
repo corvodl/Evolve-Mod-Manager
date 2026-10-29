@@ -149,6 +149,9 @@ mod tests {
             assert_eq!(Action::from_index(action.index()), Some(action));
         }
         assert_eq!(Action::Fly.index(), 9);
-        assert_eq!(Keybind(SUGGESTED[Action::Fly.index()]).to_string(), "Ctrl+F8");
+        assert_eq!(
+            Keybind(SUGGESTED[Action::Fly.index()]).to_string(),
+            "Ctrl+F8"
+        );
     }
 }
