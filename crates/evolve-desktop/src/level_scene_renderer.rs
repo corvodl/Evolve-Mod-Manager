@@ -23,17 +23,19 @@ pub(super) struct Report {
     pub geometries: usize,
     pub textured: usize,
     pub unresolved: usize,
+    pub recovered_companions: usize,
     pub notes: Vec<String>,
 }
 
 impl Report {
     pub fn status(&self) -> String {
         format!(
-            "{} model instances · {} unique meshes · {} textured material sets · {} missing/unsupported dependencies. {}",
+            "{} model instances · {} unique meshes · {} textured material sets · {} missing/unsupported dependencies · {} exact compiled companions recovered. {}",
             self.placed,
             self.geometries,
             self.textured,
             self.unresolved,
+            self.recovered_companions,
             self.notes
                 .iter()
                 .take(5)
@@ -530,6 +532,7 @@ pub(super) fn assemble(
                     }
                 };
                 if let Some(note) = fallback_note {
+                    report.recovered_companions += 1;
                     report.note(note);
                 }
                 if models.len().saturating_add(meshes.len()) > MAX_MODELS {
