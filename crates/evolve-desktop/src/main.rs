@@ -4573,8 +4573,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.live_edit_enabled = false;
                 state.armor_offline_confirmed = false;
                 state.actor_frozen.clear();
-                state.actor_freeze_generation =
-                    state.actor_freeze_generation.wrapping_add(1);
+                state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
                 if let Some(cancel) = state.teleport_hold_cancel.as_ref() {
                     cancel.store(true, Ordering::Release);
                 }
