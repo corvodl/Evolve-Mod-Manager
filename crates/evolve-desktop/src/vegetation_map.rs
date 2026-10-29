@@ -95,7 +95,7 @@ impl<'a> Cursor<'a> {
         let bytes = self.take(byte_len)?;
         if wide {
             let vals = bytes
-                .chunks_exact(2)
+                .as_chunks::<2>().0.iter()
                 .map(|v| u16::from_le_bytes([v[0], v[1]]))
                 .collect::<Vec<_>>();
             String::from_utf16(&vals).map_err(|e| e.to_string())
