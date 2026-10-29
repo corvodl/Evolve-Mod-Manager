@@ -275,7 +275,16 @@ impl shader::Program<Message> for LevelViewport {
                     Message::LevelCameraZoomWheel(delta)
                 }
                 super::view_navigation::Gesture::Pan(dx, dy) => {
-                    Message::LevelCameraPanDelta(dx, dy)
+                    // In flight mode RMB-drag is mouse-look rather than
+                    // shifting the entire rendered map off the screen.
+                    if self.inner.level_camera.is_some() {
+                        Message::ViewerOrbitDelta(
+                            dx * bounds.width * 0.175,
+                            -dy * bounds.height * 0.175,
+                        )
+                    } else {
+                        Message::LevelCameraPanDelta(dx, dy)
+                    }
                 }
                 other => super::view_navigation::message(other),
             })
