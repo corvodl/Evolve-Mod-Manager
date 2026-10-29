@@ -1237,6 +1237,54 @@ fn quarantine_stale_ready_copy(ready: &Path) -> Result<PathBuf, String> {
 ///
 /// Never remove unknown file types, rewrite an original game file or ignore a
 /// live/interrupted recovery phase.
+/// A restore watchdog can leave every original PAK back in place while
+/// recycling the signed modded file into its .customkey-ready slot. When the
+/// *new* enabled profile resolves to exactly the same staged bytes, reuse that
+/// prepared file instead of deleting and copying a large PAK again.
+///
+/// The caller must first validate the old journal paths against the current
+/// stage/selection with guarded_restore_state(); this checks only content,
+/// file types and the absence of any outstanding live backup. Prelaunch
+/// signature/restore checks still run before the swap can be armed.
+fn prepared_ready_matches_current_stage(rows: &[Value]) -> Result<bool, String> {
+    if rows.is_empty() {
+        return Ok(false);
+    }
+    for entry in rows {
+        let source = Path::new(
+            entry["source"].as_str().ok_or("Prepared source path missing")?,
+        );
+        let ready = Path::new(
+            entry["ready"].as_str().ok_or("Prepared ready path missing")?,
+        );
+        let backup = Path::new(
+            entry["backup"].as_str().ok_or("Prepared backup path missing")?,
+        );
+        let expected_sha = entry["sha256"].as_str().ok_or("Prepared SHA-256 missing")?;
+        let expected_len = entry["bytes"].as_u64().ok_or("Prepared length missing")?;
+        if expected_sha.len() != 64
+            || !expected_sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || fs::symlink_metadata(backup).is_ok()
+        {
+            return Ok(false);
+        }
+        let suitable = [source, ready].iter().all(|path| {
+            fs::symlink_metadata(path).is_ok_and(|meta| {
+                meta.file_type().is_file()
+                    && meta.len() == expected_len
+                    && meta.len() <= 16 * 1024 * 1024 * 1024
+            })
+        });
+        if !suitable
+            || !sha(source)?.eq_ignore_ascii_case(expected_sha)
+            || !sha(ready)?.eq_ignore_ascii_case(expected_sha)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<usize, String> {
     games_closed()?;
     let swap = directory(swap)?;
@@ -1254,6 +1302,14 @@ pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<usize
         return Ok(0);
     }
     guarded_restore_state(&stage, &swap)?;
+    // The restore watchdog can recycle all signed ready files. If the
+    // selected mod PAKs, hook DLLs and authenticated names are unchanged,
+    // leave the prepared journal and its verified copies intact. The
+    // subsequent inspect_existing_launcher() revalidates live originals,
+    // signatures and the prepared ledger before any game process starts.
+    if phase == "prepared" && prepared_ready_matches_current_stage(rows)? {
+        return Ok(0);
+    }
     let mut ready_paths = Vec::new();
     for item in rows {
         let name = item["name"].as_str().ok_or("Prepared entry name missing")?;
@@ -2050,6 +2106,39 @@ mod tests {
                 .to_string_lossy()
                 .contains(".stale-")
         );
+    }
+
+    #[test]
+    fn unchanged_prepared_mod_paks_can_reuse_recovered_ready_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("stage-lib.pak");
+        let ready = tmp.path().join("libs.pak.customkey-ready");
+        let backup = tmp.path().join("libs.pak.customkey-original");
+        let bytes = b"official encoder signed archive bytes";
+        fs::write(&source, bytes).unwrap();
+        fs::write(&ready, bytes).unwrap();
+        let record = serde_json::json!({
+            "source": source,
+            "ready": ready,
+            "backup": backup,
+            "bytes": bytes.len(),
+            "sha256": sha(&source).unwrap()
+        });
+        assert!(prepared_ready_matches_current_stage(&[record.clone()]).unwrap());
+        assert!(!prepared_ready_matches_current_stage(&[]).unwrap());
+
+        // A changed mod or a tampered ready copy must force normal reprepare.
+        fs::write(&source, b"changed mod, must copy and verify again").unwrap();
+        assert!(!prepared_ready_matches_current_stage(&[record.clone()]).unwrap());
+        fs::write(&source, bytes).unwrap();
+        fs::write(&ready, b"tampered ready copy").unwrap();
+        assert!(!prepared_ready_matches_current_stage(&[record.clone()]).unwrap());
+
+        // Do not reuse if a live original-backup file still exists.
+        fs::write(&ready, bytes).unwrap();
+        fs::write(&backup, b"unrestored original").unwrap();
+        assert!(!prepared_ready_matches_current_stage(&[record]).unwrap());
+        assert_eq!(fs::read(&backup).unwrap(), b"unrestored original");
     }
 
     #[cfg(windows)]
