@@ -261,8 +261,8 @@ mod windows {
         let name = name_from_entity(h, entity, base)
             .unwrap_or_else(|| format!("Actor entity 0x{id:08X} (name unresolved)"));
         let energy = if local {
-            let stage_word = u32_at(h, at.saturating_add(Field::Stage.offset()))
-                .unwrap_or_default();
+            let stage_word =
+                u32_at(h, at.saturating_add(Field::Stage.offset())).unwrap_or_default();
             runtime_energy::read_local(h, base, at, &name, stage_word)
         } else {
             runtime_energy::Reading::default()
