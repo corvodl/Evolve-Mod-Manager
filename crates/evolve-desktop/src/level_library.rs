@@ -18,6 +18,7 @@ pub(super) struct MapCandidate {
     pub terrain: Option<PathBuf>,
 }
 
+#[derive(Clone, Debug)]
 pub(super) struct LoadedMap {
     pub archive: ImportedPak,
     pub maps: Vec<MapCandidate>,
