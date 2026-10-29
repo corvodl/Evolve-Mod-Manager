@@ -37,9 +37,8 @@ mod guided_modding;
 mod initial_setup;
 mod launcher_bridge;
 mod level_library;
-mod level_scene_renderer;
 mod level_pick;
-mod vegetation_map;
+mod level_scene_renderer;
 mod level_workspace;
 mod library_picker;
 mod loading_wheel;
@@ -75,6 +74,7 @@ mod textured;
 mod updater;
 mod updater_apply;
 mod uv_preview;
+mod vegetation_map;
 mod view_navigation;
 mod viewer_grid;
 mod viewer_inspector;
@@ -729,7 +729,13 @@ enum Operation {
     InspectLevel(PathBuf),
     OpenImportedMap(evolve_core::ImportedPak, usize, SharedCache),
     OpenProjectLevel(modding_projects::ProjectRow, usize, SharedCache, PathBuf),
-    SaveProjectLevel(modding_projects::ProjectRow, PathBuf, String, Vec<(String, evolve_core::Transform)>, PathBuf),
+    SaveProjectLevel(
+        modding_projects::ProjectRow,
+        PathBuf,
+        String,
+        Vec<(String, evolve_core::Transform)>,
+        PathBuf,
+    ),
     ExportEditedLevel(
         PathBuf,
         PathBuf,
@@ -1284,20 +1290,31 @@ impl Operation {
                     .map(|map| Completed::ImportedMap(Box::new(map)))
             }
             Self::SaveProjectLevel(project, source, expected, edits, projects_root) => {
-                let root = std::fs::canonicalize(project.workspace.join("files")).map_err(|e| e.to_string())?;
+                let root = std::fs::canonicalize(project.workspace.join("files"))
+                    .map_err(|e| e.to_string())?;
                 let source = std::fs::canonicalize(&source).map_err(|e| e.to_string())?;
-                let relative = source.strip_prefix(&root).map_err(|_| "Level is not in this editable project")?;
+                let relative = source
+                    .strip_prefix(&root)
+                    .map_err(|_| "Level is not in this editable project")?;
                 let member = relative.to_string_lossy().replace('\\', "/");
                 if expected.is_empty() || level_source_hash(&source)? != expected {
                     return Err("Editable level source changed during editing; reopen it".into());
                 }
                 let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
                 let target = scratch.path().join("edited.lyr");
-                evolve_core::export_edited_layers(&source, &target, &edits).map_err(|e| e.to_string())?;
+                evolve_core::export_edited_layers(&source, &target, &edits)
+                    .map_err(|e| e.to_string())?;
                 if level_source_hash(&source)? != expected {
-                    return Err("Level source changed before project import; no changes saved".into());
+                    return Err(
+                        "Level source changed before project import; no changes saved".into(),
+                    );
                 }
-                let saved = modding_projects::import_raw_member(&project, &projects_root, &member, &target)?;
+                let saved = modding_projects::import_raw_member(
+                    &project,
+                    &projects_root,
+                    &member,
+                    &target,
+                )?;
                 Ok(Completed::ProjectLevelSaved(project, 0, saved))
             }
             Self::InspectLevel(source) => {
@@ -2601,7 +2618,9 @@ fn operation_label(operation: &Operation) -> &'static str {
             "Loading original animation clip"
         }
         Operation::InspectLevel(..) | Operation::InspectTerrain(..) => "Inspecting level resources",
-        Operation::OpenImportedMap(..) | Operation::OpenProjectLevel(..) => "Assembling level scene",
+        Operation::OpenImportedMap(..) | Operation::OpenProjectLevel(..) => {
+            "Assembling level scene"
+        }
         Operation::SaveProjectLevel(..) => "Saving editable level project",
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
@@ -4282,13 +4301,36 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelToggleOverview => state.level_show_overview = !state.level_show_overview,
         Message::LevelGizmoMove(axis, distance) => {
-            if state.level_project.is_none() || axis > 2 || !distance.is_finite() || distance.abs() > 10_000.0 { return Task::none(); }
-            let Some(object) = state.level_selected.and_then(|i| state.level_scene.as_ref()?.objects.get(i)) else { return Task::none(); };
-            if object.kind.eq_ignore_ascii_case("Vegetation") { return Task::none(); }
-            let coords = state.level_edit_position.split(',').map(|x| x.trim().parse::<f32>()).collect::<Result<Vec<_>, _>>();
-            if let Ok(mut coords) = coords && coords.len() == 3 {
+            if state.level_project.is_none()
+                || axis > 2
+                || !distance.is_finite()
+                || distance.abs() > 10_000.0
+            {
+                return Task::none();
+            }
+            let Some(object) = state
+                .level_selected
+                .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
+            else {
+                return Task::none();
+            };
+            if object.kind.eq_ignore_ascii_case("Vegetation") {
+                return Task::none();
+            }
+            let coords = state
+                .level_edit_position
+                .split(',')
+                .map(|x| x.trim().parse::<f32>())
+                .collect::<Result<Vec<_>, _>>();
+            if let Ok(mut coords) = coords
+                && coords.len() == 3
+            {
                 coords[axis] += distance;
-                state.level_edit_position = coords.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
+                state.level_edit_position = coords
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
             }
         }
         Message::LevelSaveProjectChanges => {
@@ -4296,29 +4338,55 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Open a managed editable level project before saving.".into();
                 return Task::none();
             };
-            if state.busy { return Task::none(); }
-            let Some(source) = state.level_source.clone() else { return Task::none(); };
-            let Some(scene) = &state.level_scene else { return Task::none(); };
+            if state.busy {
+                return Task::none();
+            }
+            let Some(source) = state.level_source.clone() else {
+                return Task::none();
+            };
+            let Some(scene) = &state.level_scene else {
+                return Task::none();
+            };
             let edits = level_pending_edits(state);
             if edits.is_empty() || edits.len() > 128 {
                 state.status = "Nothing to save, or too many pending edits (128 maximum).".into();
                 return Task::none();
             }
-            let ids = edits.iter().map(|(id, _)| id.as_str()).collect::<std::collections::HashSet<_>>();
-            if scene.objects.iter().filter(|obj| ids.contains(obj.id.as_str())).any(|obj| obj.kind.eq_ignore_ascii_case("Vegetation") || PathBuf::from(&state.assets_root).join(&obj.layer) != source) {
+            let ids = edits
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<std::collections::HashSet<_>>();
+            if scene
+                .objects
+                .iter()
+                .filter(|obj| ids.contains(obj.id.as_str()))
+                .any(|obj| {
+                    obj.kind.eq_ignore_ascii_case("Vegetation")
+                        || PathBuf::from(&state.assets_root).join(&obj.layer) != source
+                })
+            {
                 state.status = "Save one authored LYR layer at a time; binary vegetation instances cannot be edited through the XML layer editor.".into();
                 return Task::none();
             }
             let expected = state.level_source_sha.clone();
             let root = PathBuf::from(&state.preferences.projects);
-            return launch(state, Operation::SaveProjectLevel(project, source, expected, edits, root));
+            return launch(
+                state,
+                Operation::SaveProjectLevel(project, source, expected, edits, root),
+            );
         }
         Message::LevelOpenSelectedModProject => {
-            let Some(project) = state.modding_selected.and_then(|i| state.modding_projects.as_ref()?.get(i)).cloned() else {
+            let Some(project) = state
+                .modding_selected
+                .and_then(|i| state.modding_projects.as_ref()?.get(i))
+                .cloned()
+            else {
                 state.status = "Select an editable Modding project first.".into();
                 return Task::none();
             };
-            if state.busy { return Task::none(); }
+            if state.busy {
+                return Task::none();
+            }
             let cache = state.preview_cache.clone();
             let root = PathBuf::from(&state.library_root);
             return launch(state, Operation::OpenProjectLevel(project, 0, cache, root));
@@ -4335,8 +4403,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let cache = state.preview_cache.clone();
             return if let Some(project) = project {
                 let root = PathBuf::from(&state.library_root);
-                launch(state, Operation::OpenProjectLevel(project, index, cache, root))
-            } else { launch(state, Operation::OpenImportedMap(archive, index, cache)) };
+                launch(
+                    state,
+                    Operation::OpenProjectLevel(project, index, cache, root),
+                )
+            } else {
+                launch(state, Operation::OpenImportedMap(archive, index, cache))
+            };
         }
         Message::LibrarySelect(index) => {
             if state
@@ -4355,12 +4428,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.keyboard_modifiers.control(),
                 );
                 state.library_selected = state.library_selection.primary_after(index);
-                if !state.keyboard_modifiers.control() && !state.keyboard_modifiers.shift()
-                    && let Some(archive) = state.library_catalog.as_ref().and_then(|c| c.archives.get(index)).cloned()
-                    && level_library::likely_level_pak(&archive) && !state.busy
+                if !state.keyboard_modifiers.control()
+                    && !state.keyboard_modifiers.shift()
+                    && let Some(archive) = state
+                        .library_catalog
+                        .as_ref()
+                        .and_then(|c| c.archives.get(index))
+                        .cloned()
+                    && level_library::likely_level_pak(&archive)
+                    && !state.busy
                 {
-                            let cache = state.preview_cache.clone();
-                            return launch(state, Operation::OpenImportedMap(archive, 0, cache));
+                    let cache = state.preview_cache.clone();
+                    return launch(state, Operation::OpenImportedMap(archive, 0, cache));
                 }
             }
         }
@@ -6979,7 +7058,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         });
                         state.level_redo.clear();
                         if let (Some(model), Some(picks)) = (&state.model, &state.level_picks)
-                            && let Some(reprojected) = level_scene_renderer::reproject_after_edit(model, picks, scene, &edited) {
+                            && let Some(reprojected) = level_scene_renderer::reproject_after_edit(
+                                model, picks, scene, &edited,
+                            )
+                        {
                             state.model = Some(Arc::new(reprojected));
                         }
                         state.level_scene = Some(Arc::new(edited));
@@ -10850,10 +10932,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.modding_projects = Some(projects);
                     if state.level_open_after_copy {
                         state.level_open_after_copy = false;
-                        if let Some(project) = state.modding_selected.and_then(|index| state.modding_projects.as_ref()?.get(index)).cloned() {
+                        if let Some(project) = state
+                            .modding_selected
+                            .and_then(|index| state.modding_projects.as_ref()?.get(index))
+                            .cloned()
+                        {
                             let cache = state.preview_cache.clone();
                             let root = PathBuf::from(&state.library_root);
-                            return launch(state, Operation::OpenProjectLevel(project, 0, cache, root));
+                            return launch(
+                                state,
+                                Operation::OpenProjectLevel(project, 0, cache, root),
+                            );
                         }
                     }
                     state.modding_name_input = state
@@ -11740,11 +11829,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.zoom = 1.0;
                 }
                 Ok(Completed::ProjectLevelSaved(project, _, saved)) => {
-                    state.status = if saved { "Edited level saved through the verified Modding project backup/import process.".into() } else { "Project level matches its original bytes.".into() };
+                    state.status = if saved {
+                        "Edited level saved through the verified Modding project backup/import process.".into()
+                    } else {
+                        "Project level matches its original bytes.".into()
+                    };
                     let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
                     let root = PathBuf::from(&state.library_root);
                     let cache = state.preview_cache.clone();
-                    return launch(state, Operation::OpenProjectLevel(project, index, cache, root));
+                    return launch(
+                        state,
+                        Operation::OpenProjectLevel(project, index, cache, root),
+                    );
                 }
                 Ok(Completed::ImportedMap(loaded)) => {
                     let loaded = *loaded;
@@ -11755,15 +11851,46 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .source
                         .as_ref()
                         .map_or_else(String::new, |p| p.display().to_string());
-                    state.assets_root = loaded.project.as_ref().map_or_else(|| PathBuf::from(&loaded.archive.directory).join("files"), |project| project.workspace.join("files")).display().to_string();
-                    state.terrain_source = loaded.maps[loaded.index].terrain.as_ref().map_or_else(String::new, |p| PathBuf::from(&state.assets_root).join(p).display().to_string());
+                    state.assets_root = loaded
+                        .project
+                        .as_ref()
+                        .map_or_else(
+                            || PathBuf::from(&loaded.archive.directory).join("files"),
+                            |project| project.workspace.join("files"),
+                        )
+                        .display()
+                        .to_string();
+                    state.terrain_source =
+                        loaded.maps[loaded.index]
+                            .terrain
+                            .as_ref()
+                            .map_or_else(String::new, |p| {
+                                PathBuf::from(&state.assets_root)
+                                    .join(p)
+                                    .display()
+                                    .to_string()
+                            });
                     state.library_map = Some((loaded.archive.clone(), loaded.maps, loaded.index));
                     state.level_read_only = loaded.project.is_none();
                     state.level_project = loaded.project;
                     state.level_scene = loaded.scene.map(Arc::new);
                     state.level_source = loaded.source;
-                    state.level_source_sha = state.level_source.as_ref().and_then(|p| level_source_hash(p).ok()).unwrap_or_default();
-                    state.level_original_transforms = state.level_scene.as_ref().map(|scene| scene.objects.iter().map(|obj| (obj.id.clone(), obj.local)).collect()).unwrap_or_default();
+                    state.level_source_sha = state
+                        .level_source
+                        .as_ref()
+                        .and_then(|p| level_source_hash(p).ok())
+                        .unwrap_or_default();
+                    state.level_original_transforms = state
+                        .level_scene
+                        .as_ref()
+                        .map(|scene| {
+                            scene
+                                .objects
+                                .iter()
+                                .map(|obj| (obj.id.clone(), obj.local))
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     state.level_dirty_count = 0;
                     state.level_undo.clear();
                     state.level_redo.clear();
