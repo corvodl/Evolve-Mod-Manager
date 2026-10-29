@@ -51,7 +51,8 @@ pub(super) struct Reading {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum HoldMode {
-    /// Keep altitude while allowing normal horizontal movement.
+    /// Keep altitude and explicitly move X/Y using WASD. CryEngine's
+    /// normal locomotion can stop when a character is off the ground.
     Z,
     /// Keep all three world-space coordinates fixed.
     Xyz,
@@ -63,7 +64,7 @@ pub(super) enum HoldMode {
 impl HoldMode {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Z => "Z (hover)",
+            Self::Z => "Z (WASD hover)",
             Self::Xyz => "XYZ (position lock)",
             Self::Fly => "Fly (WASD/Space/Ctrl)",
         }
@@ -651,8 +652,10 @@ mod windows {
         if stop.load(Ordering::Acquire) {
             return Err("Coordinate hold canceled before starting".into());
         }
-        if mode == HoldMode::Fly && (!fly_speed.is_finite() || !(1.0..=40.0).contains(&fly_speed)) {
-            return Err("Invalid Fly Mode speed; enter 1 to 40 units/sec".into());
+        if matches!(mode, HoldMode::Z | HoldMode::Fly)
+            && (!fly_speed.is_finite() || !(1.0..=40.0).contains(&fly_speed))
+        {
+            return Err("Invalid hover/fly speed; enter 1 to 40 units/sec".into());
         }
         let r = resolve(snapshot, root)?;
         let (_, handle, base) = session(snapshot, root)?;
@@ -664,6 +667,7 @@ mod windows {
         };
         let mut fly_anchor = r.pos;
         let mut previous_tick = Instant::now();
+        let mut override_ticks = 0u32;
         while !stop.load(Ordering::Acquire) {
             // Check that this is still the same controlled actor and validated
             // physics object. Never write to a stale/repurposed player pointer.
@@ -682,11 +686,16 @@ mod windows {
             if !current.finite() {
                 return Err("Physics XYZ became invalid; coordinate hold stopped".into());
             }
-            let target = if mode == HoldMode::Fly {
+            let target = if matches!(mode, HoldMode::Z | HoldMode::Fly) {
                 let now = Instant::now();
                 let dt = now.duration_since(previous_tick).as_secs_f32();
                 previous_tick = now;
-                let input = fly_input(r.pid);
+                let mut input = fly_input(r.pid);
+                // Freeze Z and Fly both move X/Y by writing position directly:
+                // neither relies on native ground locomotion in mid-air.
+                if mode == HoldMode::Z {
+                    input.vertical = 0.0;
+                }
                 if input.active() {
                     let facing = [
                         u32_at(&handle, r.entity + 0x4C)?,
@@ -698,10 +707,26 @@ mod windows {
                     let forward = fly_forward(facing)?;
                     fly_anchor = fly_step(fly_anchor, forward, input, fly_speed, dt);
                     if !fly_anchor.finite() {
-                        return Err(
-                            "Fly Mode reached out-of-range world coordinates; stopped".into()
-                        );
+                        return Err("Hover/Fly Mode reached out-of-range world coordinates".into());
                     }
+                }
+                // Engine movement may overwrite the external physics position
+                // at the next tick. If it keeps snapping >3 units behind the
+                // commanded point while movement is held, fail visibly instead
+                // of pretending flight works. A collision may cause this too.
+                let dx = fly_anchor.x - current.x;
+                let dy = fly_anchor.y - current.y;
+                let dz = fly_anchor.z - current.z;
+                let lag = (dx * dx + dy * dy + dz * dz).sqrt();
+                if input.active() && lag > 3.0 {
+                    override_ticks += 1;
+                } else {
+                    override_ticks = 0;
+                }
+                if override_ticks >= 12 {
+                    return Err(
+                        "Hover/Fly movement is being overridden by the game or collision; verify the live physics position/movement state before using flight".into()
+                    );
                 }
                 fly_anchor
             } else {
@@ -711,11 +736,10 @@ mod windows {
                 || (target.y - current.y).abs() > 0.01
                 || (target.z - current.z).abs() > 0.01
             {
-                // Only write the frozen axes. For hover, native movement
-                // retains control of X/Y and only the Z Float32 is corrected.
+                // XYZ lock and controlled hovering/flight write the verified
+                // physics position together. Gravity/velocity remain untouched.
                 match mode {
-                    HoldMode::Z => writer.write(r.physics + 0xC0, &target.z.to_le_bytes())?,
-                    HoldMode::Xyz | HoldMode::Fly => {
+                    HoldMode::Z | HoldMode::Xyz | HoldMode::Fly => {
                         let mut bytes = [0u8; 12];
                         for (index, value) in [target.x, target.y, target.z].iter().enumerate() {
                             bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
@@ -726,7 +750,12 @@ mod windows {
             }
             std::thread::sleep(Duration::from_millis(16));
         }
-        Ok(result)
+        let _ = result;
+        let position = position(&handle, r.physics, [0xB8, 0xBC, 0xC0])?;
+        if !position.finite() {
+            return Err("Player position became invalid after coordinate hold".into());
+        }
+        Ok(Reading { position, ..result })
     }
 
     pub(crate) fn teleport(
@@ -911,6 +940,18 @@ mod tests {
         );
         assert!((strafe.x - 10.5).abs() < 0.001);
         assert!(fly_forward([0.0; 4]).is_err());
+    }
+
+    #[test]
+    fn freeze_z_uses_explicit_xy_motion_and_never_changes_height() {
+        let anchor = Position { x: 1.0, y: 2.0, z: 50.0 };
+        let north = Position { x: 0.0, y: 1.0, z: 0.0 };
+        // This is the same movement math that drives both Z hover and Fly,
+        // with vertical deliberately ignored for Z hover.
+        let input = FlyInput { forward: 1.0, vertical: 1.0, ..FlyInput::default() };
+        let target = fly_step(anchor, north, FlyInput { vertical: 0.0, ..input }, 8.0, 0.05);
+        assert!((target.y - 2.4).abs() < 0.001);
+        assert_eq!(target.z, 50.0);
     }
 
     #[test]
