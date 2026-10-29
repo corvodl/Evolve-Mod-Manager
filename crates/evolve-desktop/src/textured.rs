@@ -850,37 +850,38 @@ impl Pipeline {
                 "@vertex fn vs_main(@builtin(vertex_index) id:u32)->@builtin(position) vec4<f32> {\n                 var xy=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));\n                 return vec4<f32>(xy[id],0.99999,1.0); }\n                 @fragment fn fs_main()->@location(0) vec4<f32> { return vec4<f32>(0.105,0.117,0.135,1.0); }"
             )),
         });
-        let opaque_viewport_background = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Opaque viewport background / prevent compositing bleed-through"),
-            layout: Some(&ground_layout),
-            vertex: wgpu::VertexState {
-                module: &background_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &background_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        let opaque_viewport_background =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Opaque viewport background / prevent compositing bleed-through"),
+                layout: Some(&ground_layout),
+                vertex: wgpu::VertexState {
+                    module: &background_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &background_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: false,
+                    depth_compare: wgpu::CompareFunction::Always,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
         let ground_vertex = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Viewport model-floor vertices"),
             size: 32,
