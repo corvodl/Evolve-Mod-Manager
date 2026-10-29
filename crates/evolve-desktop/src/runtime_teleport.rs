@@ -609,6 +609,7 @@ mod windows {
         }
     }
 
+    #[allow(unsafe_code)]
     #[link(name = "user32")]
     unsafe extern "system" {
         fn GetForegroundWindow() -> *mut c_void;
@@ -616,6 +617,7 @@ mod windows {
         fn GetAsyncKeyState(key: i32) -> i16;
     }
 
+    #[allow(unsafe_code)]
     fn fly_input(game_pid: u32) -> FlyInput {
         let mut focused_pid = 0u32;
         let foreground = unsafe { GetForegroundWindow() };
