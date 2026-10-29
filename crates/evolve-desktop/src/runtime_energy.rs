@@ -36,10 +36,20 @@ pub(super) fn stage(bits: u32) -> Option<u32> {
 /// never be displayed as a validated energy pool.
 pub(super) fn known_monster(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    ["goliath", "teleporter", "kraken", "grounder", "rocky",
-     "rockybobsicle", "lurker", "wraith", "gorgon", "behemoth"]
-        .iter()
-        .any(|prefix| n.starts_with(prefix))
+    [
+        "goliath",
+        "teleporter",
+        "kraken",
+        "grounder",
+        "rocky",
+        "rockybobsicle",
+        "lurker",
+        "wraith",
+        "gorgon",
+        "behemoth",
+    ]
+    .iter()
+    .any(|prefix| n.starts_with(prefix))
 }
 
 fn plausible(current: f32, maximum: f32) -> bool {
@@ -74,8 +84,7 @@ pub(super) fn traversal(current: u32, max: u32, key: u32) -> Option<Energy> {
     let maximum = f32::from_bits((max ^ key).rotate_left(7));
     // 100 is an observed maximum for the inspected monster build. A
     // different maximum may mean a different build or a non-monster actor.
-    (plausible(current, maximum) && maximum == 100.0)
-        .then_some(Energy { current, maximum })
+    (plausible(current, maximum) && maximum == 100.0).then_some(Energy { current, maximum })
 }
 
 #[cfg(windows)]
@@ -110,16 +119,10 @@ pub(super) fn read_local(
         return result;
     };
     let field = |offset: usize| actor.checked_add(offset).and_then(raw);
-    if let (Some(a), Some(b)) = (
-        field(EVOLUTION_CURRENT_OFFSET),
-        field(EVOLUTION_MAX_OFFSET),
-    ) {
+    if let (Some(a), Some(b)) = (field(EVOLUTION_CURRENT_OFFSET), field(EVOLUTION_MAX_OFFSET)) {
         result.evolution = evolution(a, b, key, stage_word);
     }
-    if let (Some(a), Some(b)) = (
-        field(TRAVERSAL_CURRENT_OFFSET),
-        field(TRAVERSAL_MAX_OFFSET),
-    ) {
+    if let (Some(a), Some(b)) = (field(TRAVERSAL_CURRENT_OFFSET), field(TRAVERSAL_MAX_OFFSET)) {
         result.traversal = traversal(a, b, key);
     }
     result
@@ -173,9 +176,13 @@ mod tests {
     #[test]
     fn rejects_impossible_or_nonfinite_energy_and_other_rules() {
         let key = 0xB805_B8B7;
-        for (value, max) in [(25.0, 24.0), (f32::NAN, 24.0),
-                              (f32::INFINITY, 24.0), (-2.0, 24.0),
-                              (10.0, 100.0)] {
+        for (value, max) in [
+            (25.0, 24.0),
+            (f32::NAN, 24.0),
+            (f32::INFINITY, 24.0),
+            (-2.0, 24.0),
+            (10.0, 100.0),
+        ] {
             let (raw, raw_max) = enc_evolution(value, max, key);
             assert_eq!(evolution(raw, raw_max, key, 0x0101), None);
         }
@@ -188,7 +195,10 @@ mod tests {
                 let (raw, max) = enc_traversal(current, 100.0, key);
                 assert_eq!(
                     traversal(raw, max, key),
-                    Some(Energy { current, maximum: 100.0 })
+                    Some(Energy {
+                        current,
+                        maximum: 100.0
+                    })
                 );
             }
             let (raw, max) = enc_traversal(25.0, 24.0, key);
