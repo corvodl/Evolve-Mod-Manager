@@ -54,14 +54,14 @@ pub(super) enum HoldMode {
     /// Keep altitude while allowing normal horizontal movement.
     Z,
     /// Keep all three world-space coordinates fixed.
-    XYZ,
+    Xyz,
 }
 
 impl HoldMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Z => "Z (hover)",
-            Self::XYZ => "XYZ (position lock)",
+            Self::Xyz => "XYZ (position lock)",
         }
     }
 }
@@ -73,7 +73,7 @@ fn held_position(anchor: Position, current: Position, mode: HoldMode) -> Positio
             z: anchor.z,
             ..current
         },
-        HoldMode::XYZ => anchor,
+        HoldMode::Xyz => anchor,
     }
 }
 
@@ -584,7 +584,7 @@ mod windows {
                 // retains control of X/Y and only the Z Float32 is corrected.
                 match mode {
                     HoldMode::Z => writer.write(r.physics + 0xC0, &target.z.to_le_bytes())?,
-                    HoldMode::XYZ => {
+                    HoldMode::Xyz => {
                         let mut bytes = [0u8; 12];
                         for (index, value) in [target.x, target.y, target.z].iter().enumerate() {
                             bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
@@ -731,7 +731,7 @@ mod tests {
                 z: 56.0
             }
         );
-        assert_eq!(held_position(anchor, current, HoldMode::XYZ), anchor);
+        assert_eq!(held_position(anchor, current, HoldMode::Xyz), anchor);
     }
     #[test]
     fn relative_position_is_three_axis() {
