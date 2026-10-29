@@ -441,6 +441,51 @@ fn bc_alpha(bytes: &[u8]) -> [u8; 16] {
     result
 }
 
+/// Decode a verified raw CryEngine BC terrain sector (no DDS wrapper).
+/// Source layout is PC-linear; unlike Xbox 360 DDS fragments, the baked
+/// terrain surface package does not advertise any GPU swizzle.
+pub fn decode_linear_bc_surface(
+    width: u32,
+    height: u32,
+    format: DdsFormat,
+    payload: &[u8],
+) -> Result<RgbaImage, DdsError> {
+    let block_bytes = format.bytes_per_block().ok_or_else(|| {
+        DdsError::Unsupported("uncompressed terrain tile is not a BC surface".into())
+    })?;
+    if width == 0 || height == 0 || width > 8192 || height > 8192
+        || u64::from(width) * u64::from(height) > MAX_PIXELS
+    {
+        return Err(DdsError::LimitsExceeded);
+    }
+    let bw = width.div_ceil(4);
+    let bh = height.div_ceil(4);
+    let required = (bw as usize).checked_mul(bh as usize)
+        .and_then(|v| v.checked_mul(block_bytes))
+        .ok_or(DdsError::LimitsExceeded)?;
+    if payload.len() < required {
+        return Err(DdsError::Unsupported("incomplete compressed terrain tile".into()));
+    }
+    let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    for by in 0..bh {
+        for bx in 0..bw {
+            let block_at = ((by * bw + bx) as usize) * block_bytes;
+            let decoded = decode_block(format, &payload[block_at..block_at + block_bytes]);
+            for y in 0..4 {
+                for x in 0..4 {
+                    let px = bx * 4 + x;
+                    let py = by * 4 + y;
+                    if px < width && py < height {
+                        let dst = ((py * width + px) * 4) as usize;
+                        pixels[dst..dst + 4].copy_from_slice(&decoded[(y * 4 + x) as usize]);
+                    }
+                }
+            }
+        }
+    }
+    RgbaImage::from_raw(width, height, pixels).ok_or(DdsError::LimitsExceeded)
+}
+
 fn decode_block(format: DdsFormat, bytes: &[u8]) -> [[u8; 4]; 16] {
     match format {
         DdsFormat::Bc1 => decode_bc1_colors(bytes, false),
