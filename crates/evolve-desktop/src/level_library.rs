@@ -438,7 +438,10 @@ fn open_selected(
                     // triangles. Bind the decoded original atlas there too.
                     let mut world = (*assembled.world).clone();
                     if let Some(ground) = world.groups.first_mut()
-                        && ground.instances.first().is_some_and(|entry| entry.object_index == usize::MAX)
+                        && ground
+                            .instances
+                            .first()
+                            .is_some_and(|entry| entry.object_index == usize::MAX)
                         && let Some(material) = ground.surfaces.first_mut()
                     {
                         material.diffuse = Some(diffuse);
