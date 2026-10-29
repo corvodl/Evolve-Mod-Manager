@@ -374,7 +374,10 @@ impl Renderer {
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    entry_point: Some("fs_main"),
+                    // Solid world meshes must NOT forward packed diffuse alpha
+                    // into the Iced window target; it can make the actual
+                    // window transparent to applications beneath it.
+                    entry_point: Some(if blend { "fs_main" } else { "fs_opaque" }),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
                         blend: if blend {
@@ -644,6 +647,23 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn solid_world_shader_forces_opaque_alpha_but_glass_retains_blending() {
+        let shader = include_str!("world_instances.wgsl");
+        // Native window alpha must be opaque for every solid placed mesh,
+        // including source DDS textures with packed spec/gloss alpha.
+        assert!(shader.contains("fn fs_opaque(input:Output)"));
+        assert!(shader.contains("return vec4<f32>(color.rgb,1.0);"));
+        // Explicitly transparent materials still use authored coverage.
+        assert!(shader.contains("fn fs_main(input:Output)"));
+        assert!(shader.contains("return shade(input);"));
+        let pipeline_source = include_str!("world_instances.rs");
+        assert!(pipeline_source.contains(
+            "entry_point: Some(if blend { \"fs_main\" } else { \"fs_opaque\" })"
+        ));
+        assert!(pipeline_source.contains("blend: if blend {"));
+    }
+
     #[test]
     fn geometry_is_not_duplicated_for_instances() {
         let t = Transform::default();
