@@ -43,16 +43,14 @@ pub(super) fn likely_level_pak(pak: &ImportedPak) -> bool {
 
 fn map_group(relative: &str) -> (String, String) {
     let parts: Vec<&str> = relative.split('/').filter(|p| !p.is_empty()).collect();
-    if let Some(index) = parts
-        .iter()
-        .position(|p| p.eq_ignore_ascii_case("levels") || p.eq_ignore_ascii_case("maps"))
-    {
-        if let Some(name) = parts.get(index + 1) {
+    if let Some((index, name)) = parts.iter().enumerate().find_map(|(index, part)| {
+        (part.eq_ignore_ascii_case("levels") || part.eq_ignore_ascii_case("maps"))
+            .then(|| parts.get(index + 1).map(|name| (index, name))).flatten()
+    }) {
             return (
                 parts[..=index + 1].join("/").to_ascii_lowercase(),
                 (*name).to_string(),
             );
-        }
     }
     // A Layer subdirectory is not itself a separate map.
     let folder = parts.len().saturating_sub(1);
