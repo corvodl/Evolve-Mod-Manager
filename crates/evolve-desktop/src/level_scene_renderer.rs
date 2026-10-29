@@ -174,9 +174,9 @@ fn rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
 fn transformed(tf: Transform, v: [f32; 3], normal: bool) -> [f32; 3] {
     let scaled = if normal {
         [
-            v[0] / tf.scale[0].max(0.000001),
-            v[1] / tf.scale[1].max(0.000001),
-            v[2] / tf.scale[2].max(0.000001),
+            v[0] / if tf.scale[0].abs() < 0.000001 { 1.0 } else { tf.scale[0] },
+            v[1] / if tf.scale[1].abs() < 0.000001 { 1.0 } else { tf.scale[1] },
+            v[2] / if tf.scale[2].abs() < 0.000001 { 1.0 } else { tf.scale[2] },
         ]
     } else {
         [v[0] * tf.scale[0], v[1] * tf.scale[1], v[2] * tf.scale[2]]
@@ -301,8 +301,10 @@ pub(super) fn assemble(
                     // search. A missing authored material stays untextured.
                     Path::new(&object.model).with_extension("mtl")
                         .to_string_lossy().to_string()
-                } else {
+                } else if object.material.to_ascii_lowercase().ends_with(".mtl") {
                     object.material.clone()
+                } else {
+                    format!("{}.mtl", object.material)
                 };
                 let mut material_ranges = Vec::new();
                 if let Ok(Some(material)) = sources.lookup(&authored_material) {
