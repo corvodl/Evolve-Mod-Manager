@@ -116,7 +116,10 @@ fn compiled_render_path(model: &str) -> String {
 fn render_candidates(raw: &str) -> Vec<String> {
     let exact = compiled_render_path(raw);
     let path = Path::new(&exact);
-    let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
     let mut candidates = vec![exact.clone()];
     let compiled = match ext.to_ascii_lowercase().as_str() {
         "cgf" => Some("cgfm"),
@@ -486,7 +489,10 @@ pub(super) fn assemble(
                     source
                 } else {
                     report.unresolved += 1;
-                    report.note(lookup_error.unwrap_or_else(|| format!("Missing exact model {}", object.model)));
+                    report.note(
+                        lookup_error
+                            .unwrap_or_else(|| format!("Missing exact model {}", object.model)),
+                    );
                     failures.insert(key);
                     continue;
                 };
