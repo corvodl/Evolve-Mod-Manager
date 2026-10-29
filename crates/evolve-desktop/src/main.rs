@@ -1847,6 +1847,7 @@ enum Message {
     LibraryOpenMap(usize),
     LevelMapSelect(usize),
     LevelOpenSelectedModProject,
+    LevelGizmoMove(usize, f32),
     LevelSaveProjectChanges,
     LevelToggleOverview,
     LibraryPreview,
@@ -4280,6 +4281,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::OpenImportedMap(archive, 0, cache));
         }
         Message::LevelToggleOverview => state.level_show_overview = !state.level_show_overview,
+        Message::LevelGizmoMove(axis, distance) => {
+            if state.level_project.is_none() || axis > 2 || !distance.is_finite() || distance.abs() > 10_000.0 { return Task::none(); }
+            let Some(object) = state.level_selected.and_then(|i| state.level_scene.as_ref()?.objects.get(i)) else { return Task::none(); };
+            if object.kind.eq_ignore_ascii_case("Vegetation") { return Task::none(); }
+            let coords = state.level_edit_position.split(',').map(|x| x.trim().parse::<f32>()).collect::<Result<Vec<_>, _>>();
+            if let Ok(mut coords) = coords && coords.len() == 3 {
+                coords[axis] += distance;
+                state.level_edit_position = coords.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
+            }
+        }
         Message::LevelSaveProjectChanges => {
             let Some(project) = state.level_project.clone() else {
                 state.status = "Open a managed editable level project before saving.".into();
@@ -6967,6 +6978,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             new_local: applied,
                         });
                         state.level_redo.clear();
+                        if let (Some(model), Some(picks)) = (&state.model, &state.level_picks)
+                            && let Some(reprojected) = level_scene_renderer::reproject_after_edit(model, picks, scene, &edited) {
+                            state.model = Some(Arc::new(reprojected));
+                        }
                         state.level_scene = Some(Arc::new(edited));
                         sync_level_fields(state);
                         state.status =
