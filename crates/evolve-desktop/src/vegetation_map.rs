@@ -109,6 +109,7 @@ fn prototypes(xml: &[u8]) -> Result<(u32, Vec<Prototype>), String> {
     let mut root = false;
     loop {
         let event = reader.read_event().map_err(|e| e.to_string())?;
+        let opening = matches!(&event, Event::Start(_));
         match event {
             Event::Start(e) | Event::Empty(e) => {
                 let name = e.name().as_ref().to_vec();
@@ -143,7 +144,7 @@ fn prototypes(xml: &[u8]) -> Result<(u32, Vec<Prototype>), String> {
                     });
                     if objects.len() > MAX_OBJECTS { return Err("Too many vegetation prototypes".into()) }
                 }
-                if matches!(event, Event::Start(_)) { depth += 1; }
+                if opening { depth += 1; }
             }
             Event::End(e) => {
                 depth = depth.saturating_sub(1);
