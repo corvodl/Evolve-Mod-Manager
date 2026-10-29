@@ -6,7 +6,7 @@
 use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface, world_instances};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform, imported_archive_files,
-    imported_library, read_model,
+    imported_library, read_world_model_parts,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -446,7 +446,7 @@ pub(super) fn assemble(
         let sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
         // Geometry is decoded once per exact model/material pair; each authored
         // actor transform creates a distinct visible scene instance.
-        let mut resolved = HashMap::<(String, String), usize>::new();
+        let mut resolved = HashMap::<(String, String), Vec<usize>>::new();
         // A compiled mesh is decoded once, not copied into each object's
         // vertex/index arrays. GPU draw calls use instanced transforms.
         let mut models = Vec::<world_instances::ModelGroup>::new();
@@ -462,8 +462,8 @@ pub(super) fn assemble(
             if failures.contains(&key) {
                 continue;
             }
-            let model_index = if let Some(index) = resolved.get(&key) {
-                *index
+            let model_indices = if let Some(indices) = resolved.get(&key) {
+                indices.clone()
             } else {
                 if models.len() >= MAX_MODELS {
                     budget_hit = true;
@@ -499,8 +499,8 @@ pub(super) fn assemble(
                     failures.insert(key);
                     continue;
                 };
-                let mesh = match read_model(&source.path) {
-                    Ok(mesh) => mesh,
+                let meshes = match read_world_model_parts(&source.path) {
+                    Ok(meshes) => meshes,
                     Err(error) => {
                         report.unresolved += 1;
                         report.note(format!("Cannot decode {}: {error}", object.model));
@@ -508,6 +508,10 @@ pub(super) fn assemble(
                         continue;
                     }
                 };
+                if models.len().saturating_add(meshes.len()) > MAX_MODELS {
+                    budget_hit = true;
+                    break;
+                }
                 let original_inventory = sources.inventories.get(&source.archive);
                 let authored_material = if object.material.is_empty() {
                     // This is an exact sibling candidate, not a global filename
@@ -522,7 +526,9 @@ pub(super) fn assemble(
                     format!("{}.mtl", object.material)
                 };
                 let mut material_ranges = Vec::new();
-                if let Ok(Some(material)) = sources.lookup(&authored_material) {
+                if meshes.len() == 1
+                    && let Ok(Some(material)) = sources.lookup(&authored_material)
+                {
                     if let Some(inventory) = original_inventory {
                         match assembly_materials::load_model(
                             &source.path,
@@ -543,30 +549,40 @@ pub(super) fn assemble(
                             Err(error) => report.note(format!("{} material: {error}", object.name)),
                         }
                     }
+                } else if meshes.len() > 1 {
+                    report.note(format!(
+                        "{}: {} verified mesh sections; per-node materials unverified",
+                        object.name, meshes.len(),
+                    ));
                 } else {
                     report.note(format!("No verified material for {}", object.name));
                 }
-                let index = models.len();
-                if material_ranges.is_empty() {
-                    material_ranges.push(neutral(0, mesh.indices.len() as u32));
+                let mut indices = Vec::with_capacity(meshes.len());
+                for mesh in meshes {
+                    let radius = world_instances::radius(&mesh);
+                    let parts = if material_ranges.is_empty() {
+                        vec![neutral(0, mesh.indices.len() as u32)]
+                    } else {
+                        material_ranges.clone()
+                    };
+                    indices.push(models.len());
+                    models.push(world_instances::ModelGroup {
+                        mesh: std::sync::Arc::new(mesh),
+                        surfaces: parts,
+                        instances: Vec::new(),
+                        radius,
+                    });
+                    report.geometries += 1;
                 }
-                let radius = world_instances::radius(&mesh);
-                models.push(world_instances::ModelGroup {
-                    mesh: std::sync::Arc::new(mesh),
-                    surfaces: material_ranges,
-                    instances: Vec::new(),
-                    radius,
-                });
-                resolved.insert(key, index);
-                report.geometries += 1;
-                index
+                resolved.insert(key, indices.clone());
+                indices
             };
-            models[model_index]
-                .instances
-                .push(world_instances::Instance {
+            for group in model_indices {
+                models[group].instances.push(world_instances::Instance {
                     object_index,
                     transform: object.world,
                 });
+            }
             report.placed += 1;
         }
         if budget_hit {
