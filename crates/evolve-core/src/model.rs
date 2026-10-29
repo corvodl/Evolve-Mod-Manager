@@ -617,12 +617,21 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         let packed = u32at(data, at + 88)?;
         let expected_vertices = u32at(data, at + 8)?;
         let expected_indices = u32at(data, at + 12)?;
-        if expected_vertices < 3
-            || expected_vertices > MAX_VERTICES as u32
-            || expected_indices < 3
+        if expected_vertices > MAX_VERTICES as u32
             || expected_indices > MAX_INDICES as u32
         {
             return Err(ModelError::Limits);
+        }
+        // Some source CGFs contain visible render nodes alongside helper
+        // MeshChunks with no indexed triangles or position stream. Those
+        // helpers must not hide valid sibling render meshes; do not invent
+        // geometry for them. Compiled companions can still supply a fully
+        // renderable alternative when none of this file's meshes qualifies.
+        let missing_position = matches!(vertices, 0 | u32::MAX)
+            && matches!(packed, 0 | u32::MAX);
+        let missing_indices = matches!(indices, 0 | u32::MAX);
+        if expected_vertices < 3 || expected_indices < 3 || missing_position || missing_indices {
+            continue;
         }
         // All nonzero optional source references must point at an original
         // stream of the exact declared semantic type.
@@ -653,7 +662,7 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         let has_position = selected
             .iter()
             .any(|(_, offset, _)| matches!(u32at(data, offset + 4), Ok(0 | 15)));
-        if !has_position || indices == 0 || indices == u32::MAX {
+        if !has_position {
             return Err(ModelError::Format(
                 "mesh lacks referenced vertex/index streams".into(),
             ));
@@ -691,6 +700,11 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
             ));
         }
         parts.push(mesh);
+    }
+    if parts.is_empty() {
+        return Err(ModelError::Format(
+            "mesh lacks referenced vertex/index streams; no renderable mesh nodes".into(),
+        ));
     }
     Ok(parts)
 }
@@ -970,9 +984,9 @@ pub(crate) mod tests {
     #[test]
     fn original_node_ownership_excludes_physics_proxy_meshes() {
         let source = fixture();
-        let mut data = vec![0u8; 16 + 7 * 16];
+        let mut data = vec![0u8; 16 + 9 * 16];
         data[..8].copy_from_slice(b"CrChF\x07\0\0");
-        data[8..12].copy_from_slice(&7u32.to_le_bytes());
+        data[8..12].copy_from_slice(&9u32.to_le_bytes());
         data[12..16].copy_from_slice(&16u32.to_le_bytes());
         let mut add = |index: usize, kind: u32, id: u32, payload: &[u8]| {
             let table = 16 + index * 16;
@@ -1002,6 +1016,12 @@ pub(crate) mod tests {
         mesh[48..52].copy_from_slice(&2u32.to_le_bytes());
         add(3, 0x08001000, 10, &mesh);
         add(4, 0x08001000, 11, &mesh);
+        // A helper MeshChunk has no position/index references. Its node is
+        // not named $physics, yet the valid visible rock must still render.
+        let mut incomplete = vec![0u8; 104];
+        incomplete[8..12].copy_from_slice(&3u32.to_le_bytes());
+        incomplete[12..16].copy_from_slice(&3u32.to_le_bytes());
+        add(7, 0x08001000, 12, &incomplete);
         let mut render_node = vec![0u8; 84];
         render_node[..12].copy_from_slice(b"rock_visible");
         render_node[64..68].copy_from_slice(&10u32.to_le_bytes());
@@ -1010,9 +1030,20 @@ pub(crate) mod tests {
         physics[..10].copy_from_slice(b"$physics_0");
         physics[64..68].copy_from_slice(&11u32.to_le_bytes());
         add(6, 0x0800100B, 21, &physics);
+        let mut helper = vec![0u8; 84];
+        helper[..15].copy_from_slice(b"helper_attach_01");
+        helper[64..68].copy_from_slice(&12u32.to_le_bytes());
+        add(8, 0x0800100B, 22, &helper);
         let parts = parse_world_model_parts(&data).unwrap();
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].indices, vec![0, 1, 2]);
+        // A CGF containing no valid render mesh must still fail explicitly.
+        // It must never turn a helper/proxy mesh into visible geometry.
+        let mut only_helpers = data.clone();
+        let render_node_offset = u32at(&data, 16 + 5 * 16 + 12).unwrap() as usize;
+        only_helpers[render_node_offset + 64..render_node_offset + 68]
+            .copy_from_slice(&12u32.to_le_bytes());
+        assert!(parse_world_model_parts(&only_helpers).is_err());
     }
 
     // The pre-Stage-2 2012 client uses CryTek 0x745 and legacy 16-byte
