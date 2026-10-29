@@ -453,18 +453,24 @@ pub fn decode_linear_bc_surface(
     let block_bytes = format.bytes_per_block().ok_or_else(|| {
         DdsError::Unsupported("uncompressed terrain tile is not a BC surface".into())
     })?;
-    if width == 0 || height == 0 || width > 8192 || height > 8192
+    if width == 0
+        || height == 0
+        || width > 8192
+        || height > 8192
         || u64::from(width) * u64::from(height) > MAX_PIXELS
     {
         return Err(DdsError::LimitsExceeded);
     }
     let bw = width.div_ceil(4);
     let bh = height.div_ceil(4);
-    let required = (bw as usize).checked_mul(bh as usize)
+    let required = (bw as usize)
+        .checked_mul(bh as usize)
         .and_then(|v| v.checked_mul(block_bytes))
         .ok_or(DdsError::LimitsExceeded)?;
     if payload.len() < required {
-        return Err(DdsError::Unsupported("incomplete compressed terrain tile".into()));
+        return Err(DdsError::Unsupported(
+            "incomplete compressed terrain tile".into(),
+        ));
     }
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
     for by in 0..bh {
