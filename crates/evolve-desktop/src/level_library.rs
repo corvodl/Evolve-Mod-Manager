@@ -2,7 +2,9 @@
 //!
 //! Only manifest-listed files in the selected archive are used. There is no
 //! guessed global map root, automatic editing, or modification of game files.
-use crate::{asset_cache::SharedCache, auto_resources, level_scene_renderer, modding_projects::ProjectRow};
+use crate::{
+    asset_cache::SharedCache, auto_resources, level_scene_renderer, modding_projects::ProjectRow,
+};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
     parse_level_scene, read_terrain, read_terrain_paint, read_terrain_texture_atlas,
@@ -398,7 +400,10 @@ fn open_selected(
     } else {
         Ok(None)
     };
-    for (name, result) in [("TerrainTexture.xml", &terrain_xml), ("terraintexture.pak", &terrain_pak)] {
+    for (name, result) in [
+        ("TerrainTexture.xml", &terrain_xml),
+        ("terraintexture.pak", &terrain_pak),
+    ] {
         if let Err(error) = result {
             diagnostics.push(format!("Could not resolve original {name}: {error}"));
         }
