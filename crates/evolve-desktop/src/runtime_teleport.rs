@@ -55,6 +55,9 @@ pub(super) enum HoldMode {
     Z,
     /// Keep all three world-space coordinates fixed.
     Xyz,
+    /// Approximate no-fall flight by updating the local player's physics XYZ.
+    /// This does not modify CryEngine gravity or velocity fields.
+    Fly,
 }
 
 impl HoldMode {
@@ -62,6 +65,7 @@ impl HoldMode {
         match self {
             Self::Z => "Z (hover)",
             Self::Xyz => "XYZ (position lock)",
+            Self::Fly => "Fly (WASD/Space/Ctrl)",
         }
     }
 }
@@ -73,7 +77,68 @@ fn held_position(anchor: Position, current: Position, mode: HoldMode) -> Positio
             z: anchor.z,
             ..current
         },
-        HoldMode::Xyz => anchor,
+        HoldMode::Xyz | HoldMode::Fly => anchor,
+    }
+}
+
+/// User-configurable world units per second for position-based flight.
+pub(super) fn parse_fly_speed(raw: &str) -> Result<f32, String> {
+    let speed = raw.trim().parse::<f32>()
+        .map_err(|_| "Fly speed must be a number from 1 to 40 units/sec".to_owned())?;
+    if !speed.is_finite() || !(1.0..=40.0).contains(&speed) {
+        return Err("Fly speed must be between 1 and 40 units/sec".into());
+    }
+    Ok(speed)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct FlyInput {
+    forward: f32,
+    strafe: f32,
+    vertical: f32,
+}
+
+impl FlyInput {
+    fn active(self) -> bool {
+        self.forward != 0.0 || self.strafe != 0.0 || self.vertical != 0.0
+    }
+}
+
+/// Convert CryEngine actor orientation (w,x,y,z) to horizontal forward.
+fn fly_forward(quaternion: [f32; 4]) -> Result<Position, String> {
+    let [w, x, y, z] = quaternion;
+    let len2 = w * w + x * x + y * y + z * z;
+    if !len2.is_finite() || !(0.8..=1.2).contains(&len2) {
+        return Err("Fly Mode stopped: local actor orientation is invalid".into());
+    }
+    let len = len2.sqrt();
+    let (w, x, y, z) = (w / len, x / len, y / len, z / len);
+    let fx = 2.0 * (x * y - w * z);
+    let fy = 1.0 - 2.0 * (x * x + z * z);
+    let horizontal_len = (fx * fx + fy * fy).sqrt();
+    if horizontal_len < 0.01 || !horizontal_len.is_finite() {
+        return Err("Fly Mode stopped: local actor has no usable horizontal direction".into());
+    }
+    Ok(Position { x: fx / horizontal_len, y: fy / horizontal_len, z: 0.0 })
+}
+
+/// Pure movement math, independent of Windows keyboard APIs and memory writes.
+/// W follows the actor's horizontal facing, D is local right, and Space/Ctrl
+/// control vertical movement. WASD diagonals are normalized.
+fn fly_step(anchor: Position, forward: Position, input: FlyInput, speed: f32, dt: f32) -> Position {
+    let right = Position { x: forward.y, y: -forward.x, z: 0.0 };
+    let mut horizontal_x = forward.x * input.forward + right.x * input.strafe;
+    let mut horizontal_y = forward.y * input.forward + right.y * input.strafe;
+    let length = (horizontal_x * horizontal_x + horizontal_y * horizontal_y).sqrt();
+    if length > 1.0 {
+        horizontal_x /= length;
+        horizontal_y /= length;
+    }
+    let amount = speed * dt.clamp(0.0, 0.05);
+    Position {
+        x: anchor.x + horizontal_x * amount,
+        y: anchor.y + horizontal_y * amount,
+        z: anchor.z + input.vertical * amount,
     }
 }
 
@@ -106,7 +171,7 @@ mod windows {
     use super::*;
     use read_process_memory::{ProcessHandle, copy_address};
     use std::ffi::c_void;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     const PTR_MIN: usize = 0x10000;
     const PTR_MAX: usize = 0x0000_7FFF_FFFF_FFFF;
@@ -533,6 +598,32 @@ mod windows {
         }
     }
 
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetForegroundWindow() -> *mut c_void;
+        fn GetWindowThreadProcessId(hwnd: *mut c_void, pid: *mut u32) -> u32;
+        fn GetAsyncKeyState(key: i32) -> i16;
+    }
+
+    fn fly_input(game_pid: u32) -> FlyInput {
+        let mut focused_pid = 0u32;
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground.is_null() {
+            return FlyInput::default();
+        }
+        unsafe { GetWindowThreadProcessId(foreground, &mut focused_pid) };
+        if focused_pid != game_pid {
+            // Do not consume manager keystrokes or fly when alt-tabbed.
+            return FlyInput::default();
+        }
+        let pressed = |vk: i32| (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0;
+        FlyInput {
+            forward: i32::from(pressed(0x57)) as f32 - i32::from(pressed(0x53)) as f32,
+            strafe: i32::from(pressed(0x44)) as f32 - i32::from(pressed(0x41)) as f32,
+            vertical: i32::from(pressed(0x20)) as f32 - i32::from(pressed(0x11)) as f32,
+        }
+    }
+
     /// Repeatedly correct physics position at ~60 Hz. This is positional
     /// hovering, not a gravity/velocity override; some jitter can remain and
     /// releasing the hold permits normal gravity to resume.
@@ -541,6 +632,7 @@ mod windows {
         root: &str,
         offline: bool,
         mode: HoldMode,
+        fly_speed: f32,
         stop: Arc<AtomicBool>,
     ) -> Result<Reading, String> {
         if !offline {
@@ -548,6 +640,9 @@ mod windows {
         }
         if stop.load(Ordering::Acquire) {
             return Err("Coordinate hold canceled before starting".into());
+        }
+        if mode == HoldMode::Fly && (!fly_speed.is_finite() || !(1.0..=40.0).contains(&fly_speed)) {
+            return Err("Invalid Fly Mode speed; enter 1 to 40 units/sec".into());
         }
         let r = resolve(snapshot, root)?;
         let (_, handle, base) = session(snapshot, root)?;
@@ -557,6 +652,8 @@ mod windows {
             actor_id: r.actor_id,
             position: r.pos,
         };
+        let mut fly_anchor = r.pos;
+        let mut previous_tick = Instant::now();
         while !stop.load(Ordering::Acquire) {
             // Check that this is still the same controlled actor and validated
             // physics object. Never write to a stale/repurposed player pointer.
@@ -575,7 +672,28 @@ mod windows {
             if !current.finite() {
                 return Err("Physics XYZ became invalid; coordinate hold stopped".into());
             }
-            let target = held_position(r.pos, current, mode);
+            let target = if mode == HoldMode::Fly {
+                let now = Instant::now();
+                let dt = now.duration_since(previous_tick).as_secs_f32();
+                previous_tick = now;
+                let input = fly_input(r.pid);
+                if input.active() {
+                    let facing = [
+                        u32_at(&handle, r.entity + 0x4C)?,
+                        u32_at(&handle, r.entity + 0x50)?,
+                        u32_at(&handle, r.entity + 0x54)?,
+                        u32_at(&handle, r.entity + 0x58)?,
+                    ].map(f32::from_bits);
+                    let forward = fly_forward(facing)?;
+                    fly_anchor = fly_step(fly_anchor, forward, input, fly_speed, dt);
+                    if !fly_anchor.finite() {
+                        return Err("Fly Mode reached out-of-range world coordinates; stopped".into());
+                    }
+                }
+                fly_anchor
+            } else {
+                held_position(r.pos, current, mode)
+            };
             if (target.x - current.x).abs() > 0.01
                 || (target.y - current.y).abs() > 0.01
                 || (target.z - current.z).abs() > 0.01
@@ -584,7 +702,7 @@ mod windows {
                 // retains control of X/Y and only the Z Float32 is corrected.
                 match mode {
                     HoldMode::Z => writer.write(r.physics + 0xC0, &target.z.to_le_bytes())?,
-                    HoldMode::Xyz => {
+                    HoldMode::Xyz | HoldMode::Fly => {
                         let mut bytes = [0u8; 12];
                         for (index, value) in [target.x, target.y, target.z].iter().enumerate() {
                             bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
@@ -661,6 +779,7 @@ pub(super) fn hold(
     _: &str,
     _: bool,
     _: HoldMode,
+    _: f32,
     _: Arc<AtomicBool>,
 ) -> Result<Reading, String> {
     Err("Coordinate hold requires Windows".into())
@@ -732,6 +851,45 @@ mod tests {
             }
         );
         assert_eq!(held_position(anchor, current, HoldMode::Xyz), anchor);
+    }
+    #[test]
+    fn speed_rejects_invalid_values() {
+        assert_eq!(parse_fly_speed("8").unwrap(), 8.0);
+        assert!(parse_fly_speed("0").is_err());
+        assert!(parse_fly_speed("100").is_err());
+        assert!(parse_fly_speed("NaN").is_err());
+        assert!(parse_fly_speed("inf").is_err());
+        assert!(parse_fly_speed("hello").is_err());
+    }
+
+    #[test]
+    fn flight_forward_and_strafe_follow_actor_yaw() {
+        let north = fly_forward([1.0, 0.0, 0.0, 0.0]).unwrap();
+        assert!(north.near(Position { x: 0.0, y: 1.0, z: 0.0 }));
+        let origin = Position { x: 10.0, y: 20.0, z: 30.0 };
+        let forward = fly_step(origin, north, FlyInput {
+            forward: 1.0, ..FlyInput::default()
+        }, 10.0, 0.1);
+        assert!((forward.y - 20.5).abs() < 0.001);
+        let strafe = fly_step(origin, north, FlyInput {
+            strafe: 1.0, ..FlyInput::default()
+        }, 10.0, 0.05);
+        assert!((strafe.x - 10.5).abs() < 0.001);
+        assert!(fly_forward([0.0; 4]).is_err());
+    }
+
+    #[test]
+    fn flight_vertical_and_diagonal_speed_are_bounded() {
+        let origin = Position { x: 0.0, y: 0.0, z: 100.0 };
+        let forward = Position { x: 0.0, y: 1.0, z: 0.0 };
+        let climb = fly_step(origin, forward, FlyInput {
+            vertical: 1.0, ..FlyInput::default()
+        }, 8.0, 0.05);
+        assert!((climb.z - 100.4).abs() < 0.001);
+        let diagonal = fly_step(origin, forward, FlyInput {
+            forward: 1.0, strafe: 1.0, ..FlyInput::default()
+        }, 8.0, 0.05);
+        assert!((diagonal.x * diagonal.x + diagonal.y * diagonal.y).sqrt() <= 0.401);
     }
     #[test]
     fn relative_position_is_three_axis() {
