@@ -703,10 +703,19 @@ mod tests {
         assert_eq!(activity["state"], "Evolution 0%");
         let mut cfg = sample();
         cfg.show_stats = false;
-        assert_eq!(format_activity(&cfg, Some(1), Some(&actor), 100).unwrap()["state"], "In match");
+        assert_eq!(
+            format_activity(&cfg, Some(1), Some(&actor), 100).unwrap()["state"],
+            "In match"
+        );
 
-        let unknown = LocalActor { evolution_percentage: None, ..actor };
-        assert_eq!(format_activity(&sample(), Some(1), Some(&unknown), 100).unwrap()["state"], "In match");
+        let unknown = LocalActor {
+            evolution_percentage: None,
+            ..actor
+        };
+        assert_eq!(
+            format_activity(&sample(), Some(1), Some(&unknown), 100).unwrap()["state"],
+            "In match"
+        );
     }
 
     #[test]
@@ -980,7 +989,10 @@ mod tests {
         };
         let activity = format_activity(&sample(), Some(123), Some(&actor), 100).unwrap();
         assert_eq!(activity["details"], "Playing as Goliath · Stage 1");
-        assert_eq!(activity["state"], "Health 10,400 · Armor 2,344 · Evolution 75%");
+        assert_eq!(
+            activity["state"],
+            "Health 10,400 · Armor 2,344 · Evolution 75%"
+        );
         assert!(!activity.to_string().contains("Stage 2"));
         assert!(!activity.to_string().contains("My Mod"));
         let mut private = sample();
@@ -993,7 +1005,10 @@ mod tests {
         private.show_character = false;
         let hidden = format_activity(&private, Some(123), Some(&actor), 100).unwrap();
         assert_eq!(hidden["details"], "Playing Evolve");
-        assert_eq!(hidden["state"], "Health 10,400 · Armor 2,344 · Evolution 75%");
+        assert_eq!(
+            hidden["state"],
+            "Health 10,400 · Armor 2,344 · Evolution 75%"
+        );
         assert!(hidden["assets"].get("large_image").is_none());
     }
     #[test]
