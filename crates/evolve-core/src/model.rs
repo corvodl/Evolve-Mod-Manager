@@ -534,7 +534,9 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
     // A compiled CGF may contain standalone physics, collision, or helper
     // mesh chunks. Draw NODE-referenced render meshes, not every MeshChunk.
     const NODE: u32 = 0x0800100B;
-    let all_mesh_chunks = chunks.iter().filter(|(ty, _, _, _)| *ty == MESH)
+    let all_mesh_chunks = chunks
+        .iter()
+        .filter(|(ty, _, _, _)| *ty == MESH)
         .collect::<Vec<_>>();
     if all_mesh_chunks.is_empty() {
         return parse_model_bytes(data).map(|part| vec![part]);
@@ -558,13 +560,18 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
     let mut render_refs = std::collections::HashSet::new();
     let mut has_nodes = false;
     for (kind, at, size, _) in &chunks {
-        if *kind != NODE { continue; }
+        if *kind != NODE {
+            continue;
+        }
         has_nodes = true;
         if *size < 68 {
             return Err(ModelError::Format("truncated render node chunk".into()));
         }
         let name = data.get(*at..*at + 64).ok_or(ModelError::Limits)?;
-        let end = name.iter().position(|byte| *byte == 0).unwrap_or(name.len());
+        let end = name
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(name.len());
         let label = String::from_utf8_lossy(&name[..end]).to_ascii_lowercase();
         // Collision and physics-only NODEs are not render surfaces. Drawing
         // their MeshChunks creates giant neutral domes and bounding proxies.
@@ -573,21 +580,26 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
             || label.starts_with("collision_")
             || label.starts_with("proxy_")
             || label.ends_with("_proxy");
-        if collision { continue; }
+        if collision {
+            continue;
+        }
         let target = u32at(data, *at + 64)?;
         if let Some((MESH, mesh_offset, _)) = directory.get(&target) {
             render_refs.insert(*mesh_offset);
         }
     }
     let mesh_chunks = if has_nodes {
-        all_mesh_chunks.into_iter().filter(|(_, at, _, _)| render_refs.contains(at)).collect::<Vec<_>>()
+        all_mesh_chunks
+            .into_iter()
+            .filter(|(_, at, _, _)| render_refs.contains(at))
+            .collect::<Vec<_>>()
     } else {
         // Simple original geometry can have MeshChunks without a NODE table.
         all_mesh_chunks
     };
     if mesh_chunks.is_empty() {
         return Err(ModelError::Format(
-            "No renderable mesh nodes; physics/proxy geometry is excluded".into()
+            "No renderable mesh nodes; physics/proxy geometry is excluded".into(),
         ));
     }
     let mut parts = Vec::with_capacity(mesh_chunks.len());
