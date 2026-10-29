@@ -542,64 +542,90 @@ pub(super) fn assemble(
                     break;
                 }
                 let original_inventory = sources.inventories.get(&source.archive);
-                let authored_material = if object.material.is_empty() {
-                    // This is an exact sibling candidate, not a global filename
-                    // search. A missing authored material stays untextured.
-                    Path::new(&object.model)
-                        .with_extension("mtl")
-                        .to_string_lossy()
-                        .to_string()
-                } else if object.material.to_ascii_lowercase().ends_with(".mtl") {
-                    object.material.clone()
-                } else {
-                    format!("{}.mtl", object.material)
-                };
                 let mut material_ranges = Vec::new();
-                match (sources.lookup(&authored_material), original_inventory) {
-                    (Ok(Some(material)), Some(inventory)) => {
-                        let full = (meshes.len() == 1).then(|| {
-                            assembly_materials::load_model(
-                                &source.path,
-                                &material.path,
-                                inventory,
-                                sources.library_root.as_deref(),
-                                sources.build.as_deref(),
-                                cache,
-                            )
-                        });
-                        let resolved = match full {
-                            Some(Ok(data)) => Ok(data),
-                            _ => assembly_materials::original_single_leaf_surface(
-                                &material.path,
-                                inventory,
-                                sources.library_root.as_deref(),
-                                sources.build.as_deref(),
-                                cache,
-                            )
-                            .map(|(surface, warnings)| (vec![surface], warnings)),
-                        };
-                        match resolved {
-                            Ok((parts, warnings)) => {
-                                report.textured +=
-                                    usize::from(parts.iter().any(|part| part.diffuse.is_some()));
-                                material_ranges = parts;
-                                for note in warnings.into_iter().take(2) {
-                                    report.note(format!("{}: {note}", object.name));
+                if let Some(inventory) = original_inventory {
+                    // A world model may declare MtlName in its compiled mesh,
+                    // even when there is NO same-stem .mtl. Reuse the Model
+                    // Viewer's exact original-material resolver rather than
+                    // assuming the geometry filename is the material name.
+                    // For a compiled fallback, inspect that verified virtual
+                    // owner so its own embedded material hint can be used.
+                    let source_virtual = render_candidates(&object.model)
+                        .into_iter()
+                        .find(|candidate| {
+                            let candidate_extension = Path::new(candidate)
+                                .extension()
+                                .and_then(|e| e.to_str());
+                            candidate_extension.is_some_and(|extension| {
+                                source.path.extension().and_then(|e| e.to_str())
+                                    .is_some_and(|actual| actual.eq_ignore_ascii_case(extension))
+                            })
+                        })
+                        .unwrap_or_else(|| object.model.clone());
+                    let explicit = (!object.material.trim().is_empty())
+                        .then_some(object.material.as_str());
+                    match assembly_materials::material_for_part(
+                        &source_virtual,
+                        explicit,
+                        inventory,
+                        sources.library_root.as_deref(),
+                        sources.build.as_deref(),
+                    ) {
+                        Ok(Some(material)) => {
+                            let full = (meshes.len() == 1).then(|| {
+                                assembly_materials::load_model(
+                                    &source.path,
+                                    &material,
+                                    inventory,
+                                    sources.library_root.as_deref(),
+                                    sources.build.as_deref(),
+                                    cache,
+                                )
+                            });
+                            let resolved = match full {
+                                Some(Ok(data)) => Ok(data),
+                                _ => assembly_materials::original_single_leaf_surface(
+                                    &material,
+                                    inventory,
+                                    sources.library_root.as_deref(),
+                                    sources.build.as_deref(),
+                                    cache,
+                                )
+                                .map(|(surface, warnings)| (vec![surface], warnings)),
+                            };
+                            match resolved {
+                                Ok((parts, warnings)) => {
+                                    report.textured += usize::from(
+                                        parts.iter().any(|part| part.diffuse.is_some()),
+                                    );
+                                    material_ranges = parts;
+                                    for note in warnings.into_iter().take(2) {
+                                        report.note(format!("{}: {note}", object.name));
+                                    }
                                 }
+                                Err(error) => report.note(format!(
+                                    "{}: source material {} cannot be assigned to {} mesh sections: {error}",
+                                    object.name,
+                                    material.display(),
+                                    meshes.len()
+                                )),
                             }
-                            Err(error) => report.note(format!(
-                                "{}: original MTL cannot be assigned to {} mesh sections: {error}",
-                                object.name,
-                                meshes.len()
-                            )),
                         }
+                        Ok(None) => report.note(format!(
+                            "No verified original MTL reference for {} ({source_virtual}; {} mesh sections)",
+                            object.name,
+                            meshes.len()
+                        )),
+                        Err(error) => report.note(format!(
+                            "{}: exact source material resolution failed: {error}",
+                            object.name
+                        )),
                     }
-                    (Err(error), _) => report.note(format!("{} material: {error}", object.name)),
-                    _ => report.note(format!(
-                        "No verified original material for {} ({} mesh sections)",
-                        object.name,
-                        meshes.len()
-                    )),
+                } else {
+                    report.note(format!(
+                        "{}: source PAK inventory unavailable for texture resolution",
+                        object.name
+                    ));
                 }
                 let mut indices = Vec::with_capacity(meshes.len());
                 for mesh in meshes {
