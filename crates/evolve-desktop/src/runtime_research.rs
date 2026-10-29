@@ -10,6 +10,71 @@ const ACTOR_VTABLE_RVA: usize = 0x24B3790;
 const INVENTORY_VTABLE_RVA: usize = 0x2263350;
 const PROXY_VTABLE_RVA: usize = 0x22E2DE0;
 const LIVING_VTABLE_RVA: usize = 0x2336010;
+const MONSTER_ENERGY_KEY_RVA: usize = 0x28D5AE0;
+
+/// Verified on the inspected Stage 2 runtime. The key changes with the process;
+/// never persist these decoded values or treat them as directly writable floats.
+fn monster_stage(word: u32) -> Option<u8> {
+    match word & 0xFFFF {
+        0x0101 => Some(1),
+        0x0202 => Some(2),
+        0x0303 => Some(3),
+        _ => None,
+    }
+}
+
+fn known_monster(name: &str) -> bool {
+    // Match internal entity-name families, never the fallback "Actor entity ..."
+    // label. This prevents hunter offsets being interpreted as monster energy.
+    ["Goliath", "Kraken", "Grounder", "Teleporter", "Rocky",
+     "Rockybobsicle", "Lurker", "Scorpid"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+fn evolution_current(raw: u32, key: u32) -> f32 {
+    f32::from_bits((raw ^ key).rotate_right(9))
+}
+fn evolution_max(raw: u32, key: u32) -> f32 {
+    f32::from_bits((raw ^ key).rotate_left(16))
+}
+fn traversal_current(raw: u32, key: u32) -> f32 {
+    f32::from_bits(raw ^ key ^ 0x0093F6E4)
+}
+fn traversal_max(raw: u32, key: u32) -> f32 {
+    f32::from_bits((raw ^ key).rotate_left(7))
+}
+fn bounded_resource(current: f32, maximum: f32) -> bool {
+    current.is_finite()
+        && maximum.is_finite()
+        && (0.0..=maximum).contains(&current)
+        && (0.0..=1000.0).contains(&maximum)
+}
+
+fn checked_evolution(stage_word: u32, current_raw: u32, max_raw: u32, key: u32) -> Result<(u8, f32, f32), &'static str> {
+    let stage = monster_stage(stage_word).ok_or("Evolution stage unrecognized")?;
+    let current = evolution_current(current_raw, key);
+    let maximum = evolution_max(max_raw, key);
+    let expected = match stage {
+        1 => 24.0,
+        2 => 28.0,
+        3 => 0.0,
+        _ => return Err("Unsupported evolution stage"),
+    };
+    if !bounded_resource(current, maximum) || maximum != expected {
+        return Err("Energy decode/rules mismatch; no readout for this build");
+    }
+    Ok((stage, current, maximum))
+}
+
+fn checked_traversal(current_raw: u32, max_raw: u32, key: u32) -> Result<(f32, f32), &'static str> {
+    let current = traversal_current(current_raw, key);
+    let maximum = traversal_max(max_raw, key);
+    if !bounded_resource(current, maximum) || maximum <= 0.0 {
+        return Err("Traversal decode out of plausible bounds");
+    }
+    Ok((current, maximum))
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct Inventory {
@@ -38,6 +103,8 @@ pub(super) struct Report {
     pub jetpack: String,
     pub slots: String,
     pub projectiles: Vec<String>,
+    pub evolution_energy: String,
+    pub traversal_energy: String,
     pub feature_status: String,
 }
 
@@ -148,6 +215,65 @@ mod windows {
             }
         }
         format!("{:x}", hash.finalize())
+    }
+
+    /// A fresh, local actor-only read. A failed backlink, unexpected vtable,
+    /// invalid stage or changed key never produces a misleading numeric readout.
+    /// No offline authority can be inferred from these memory reads.
+    fn monster_resources(
+        h: &ProcessHandle,
+        base: usize,
+        local: &runtime_actors::Actor,
+    ) -> Result<(String, String), String> {
+        if !local.local || !known_monster(&local.name) {
+            return Err("Local actor is not a recognized Stage 2 monster".into());
+        }
+        expected_vtable(h, local.address, base, ACTOR_VTABLE_RVA)?;
+        if ptr(h, local.address + 0x38)? != local.entity
+            || u32_at(h, local.entity + 0x18)? != local.id
+        {
+            return Err("Local monster actor/entity backlink changed".into());
+        }
+        let movement = ptr(h, local.address + 0x240)?;
+        if ptr(h, movement + 0x38)? != local.entity {
+            return Err("Monster movement/entity backlink is unverified".into());
+        }
+
+        let stage_word = u32_at(h, local.address + 0x1260)?;
+        let key_at = base.checked_add(MONSTER_ENERGY_KEY_RVA).ok_or("Key RVA overflow")?;
+        let key = u32_at(h, key_at)?;
+        let evolution_raw = u32_at(h, local.address + 0x16FC)?;
+        let evolution_max_raw = u32_at(h, local.address + 0x1700)?;
+        let traversal_raw = u32_at(h, local.address + 0x1754)?;
+        let traversal_max_raw = u32_at(h, local.address + 0x1758)?;
+
+        // Reject torn reads or an actor swap before presenting captured energy.
+        if u32_at(h, key_at)? != key
+            || u32_at(h, local.address + 0x1260)? != stage_word
+            || ptr(h, local.address + 0x38)? != local.entity
+            || ptr(h, movement + 0x38)? != local.entity
+            || u32_at(h, local.entity + 0x18)? != local.id
+        {
+            return Err("Monster identity, stage or encoding key changed during read".into());
+        }
+
+        let evolution = match checked_evolution(stage_word, evolution_raw, evolution_max_raw, key) {
+            Ok((stage, current, maximum)) => {
+                if stage == 3 {
+                    "Evolution: stage 3 · bar inactive (0/0); READ-ONLY".to_owned()
+                } else {
+                    format!("Evolution: stage {stage} · {current:.2}/{maximum:.2}; READ-ONLY")
+                }
+            }
+            Err(reason) => format!("Evolution unavailable: {reason}"),
+        };
+        let traversal = match checked_traversal(traversal_raw, traversal_max_raw, key) {
+            Ok((current, maximum)) => {
+                format!("Traversal: {current:.2}/{maximum:.2}; READ-ONLY (no recharge-rate offset verified)")
+            }
+            Err(reason) => format!("Traversal unavailable: {reason}"),
+        };
+        Ok((evolution, traversal))
     }
 
     fn inventory(
@@ -346,6 +472,17 @@ mod windows {
             _ => "Hunt slot-default code signature did not match this executable; slot capacity is NOT verified (no patch/write attempted).".into(),
         };
 
+        // Energy decoding is a separate, strictly read-only local monster path.
+        // Failed validation is reported, not replaced with guessed values.
+        let (evolution_energy, traversal_energy) =
+            match monster_resources(&h, base, local) {
+                Ok(values) => values,
+                Err(reason) => (
+                    format!("Evolution unavailable: {reason}"),
+                    format!("Traversal unavailable: {reason}"),
+                ),
+            };
+
         // Do not equate these offsets with a complete projectile class decoder.
         let projectiles = projectile_observations();
 
@@ -373,6 +510,8 @@ mod windows {
             jetpack,
             slots,
             projectiles,
+            evolution_energy,
+            traversal_energy,
             feature_status: "Read-only observations. The equip RVA 0x446E88, give/pickup API, projectile velocity writes, gravity writes and second-monster slot creation remain UNVERIFIED and are not callable. Foreign item-ID swaps are explicitly unsupported.".into(),
         })
     }
@@ -412,6 +551,52 @@ mod tests {
         assert!(!slot_default_bytes(&[0xC7, 0x41, 12, 2, 0, 0, 0], 12, 1));
         assert!(!slot_default_bytes(&[0x90, 0x41, 12, 1, 0, 0, 0], 12, 1));
     }
+    #[test]
+    fn stage_decode_ignores_upper_bits_but_rejects_bad_low_word() {
+        assert_eq!(monster_stage(0xFA36_0101), Some(1));
+        assert_eq!(monster_stage(0x55FA_0202), Some(2));
+        assert_eq!(monster_stage(0x1234_0303), Some(3));
+        assert_eq!(monster_stage(0x0102), None);
+        assert_eq!(monster_stage(0), None);
+    }
+
+    #[test]
+    fn evolution_decodes_two_keys_and_stage_bounds() {
+        for key in [0xB805B8B7, 0xC0B73BB2] {
+            for (stage, current, maximum) in [(0x101, 0.0f32, 24.0f32),
+                (0x101, 24.0, 24.0), (0x202, 0.0, 28.0),
+                (0x202, 28.0, 28.0), (0x303, 0.0, 0.0)] {
+                let raw_current = current.to_bits().rotate_left(9) ^ key;
+                let raw_max = maximum.to_bits().rotate_right(16) ^ key;
+                assert_eq!(checked_evolution(stage, raw_current, raw_max, key).unwrap(),
+                    (monster_stage(stage).unwrap(), current, maximum));
+            }
+            let bad_current = f32::NAN.to_bits().rotate_left(9) ^ key;
+            let max = 24.0f32.to_bits().rotate_right(16) ^ key;
+            assert!(checked_evolution(0x101, bad_current, max, key).is_err());
+            assert!(checked_evolution(0x303, 1.0f32.to_bits().rotate_left(9)^key,
+                0.0f32.to_bits().rotate_right(16)^key).is_err());
+        }
+    }
+
+    #[test]
+    fn traversal_decode_is_distinct_from_evolution() {
+        for key in [0xB805B8B7, 0xC0B73BB2] {
+            let current = 30.0f32;
+            let maximum = 100.0f32;
+            let raw_current = current.to_bits() ^ key ^ 0x0093F6E4;
+            let raw_max = maximum.to_bits().rotate_right(7) ^ key;
+            assert_eq!(checked_traversal(raw_current, raw_max, key).unwrap(),
+                (current, maximum));
+            let nan = f32::INFINITY.to_bits() ^ key ^ 0x0093F6E4;
+            assert!(checked_traversal(nan, raw_max, key).is_err());
+        }
+        assert!(known_monster("TeleporterABot"));
+        assert!(known_monster("KrakenElderBot"));
+        assert!(!known_monster("TrackingABot"));
+        assert!(!known_monster("Actor entity 0x42 (name unresolved)"));
+    }
+
     #[test]
     fn projectile_offsets_remain_class_specific_hypotheses() {
         let findings = projectile_observations();
