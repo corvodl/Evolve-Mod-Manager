@@ -327,7 +327,7 @@ mod windows {
     /// Used by Discord without invoking the much heavier inventory/roster
     /// research. The caller passes a freshly discovered local actor; this
     /// revalidates its identity, stage and process-specific encoding key.
-    pub(super) fn inspect_evolution(
+    pub(crate) fn inspect_evolution(
         snapshot: &Snapshot,
         root: &str,
         local: &runtime_actors::Actor,
@@ -666,7 +666,8 @@ mod tests {
                 checked_evolution(
                     0x303,
                     1.0f32.to_bits().rotate_left(9) ^ key,
-                    0.0f32.to_bits().rotate_right(16) ^ key
+                    0.0f32.to_bits().rotate_right(16) ^ key,
+                    key
                 )
                 .is_err()
             );
