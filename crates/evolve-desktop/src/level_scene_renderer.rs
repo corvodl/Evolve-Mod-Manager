@@ -552,7 +552,8 @@ pub(super) fn assemble(
                 } else if meshes.len() > 1 {
                     report.note(format!(
                         "{}: {} verified mesh sections; per-node materials unverified",
-                        object.name, meshes.len(),
+                        object.name,
+                        meshes.len(),
                     ));
                 } else {
                     report.note(format!("No verified material for {}", object.name));
