@@ -4424,7 +4424,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if let Some(raw) = output.strip_prefix("BINDFAIL ") {
                 state.developer_hotkey_status = if state.teleport_overlay_experimental {
-                    format!("Experimental input hook could not bind action {}", raw.trim())
+                    format!(
+                        "Experimental input hook could not bind action {}",
+                        raw.trim()
+                    )
                 } else {
                     format!(
                         "Could not register hotkey {} (already in use by Windows or another app)",
