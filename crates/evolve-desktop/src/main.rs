@@ -5021,7 +5021,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             // Aim is resolved during the teleport itself. Do not first run an
             // asynchronous save/read round trip or overwrite the saved position.
             return Task::done(Message::TeleportDo(
-                runtime_teleport::Destination::ActorAim(distance),
+                runtime_teleport::Destination::CameraAim(distance),
                 None,
             ));
         }
@@ -5071,7 +5071,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match result {
                 Ok(pos) => {
                     state.teleport_status =
-                        format!("Approximate actor-facing destination: {}", pos.label())
+                        format!("Approximate camera-directed destination: {}", pos.label())
                 }
                 Err(error) => state.teleport_status = format!("Aim unavailable: {error}"),
             }
@@ -5125,7 +5125,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         notify_dev_overlay(state, "Position saved");
                         if let Some(distance) = state.teleport_aim_pending.take() {
                             return Task::done(Message::TeleportDo(
-                                runtime_teleport::Destination::ActorAim(distance),
+                                runtime_teleport::Destination::CameraAim(distance),
                                 None,
                             ));
                         }
