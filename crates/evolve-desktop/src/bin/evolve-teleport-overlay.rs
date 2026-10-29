@@ -228,9 +228,15 @@ mod windows {
 
     fn current_modifiers() -> u32 {
         let mut mods = 0;
-        if key_down(VK_CONTROL) { mods |= MOD_CONTROL; }
-        if key_down(VK_MENU) { mods |= MOD_ALT; }
-        if key_down(VK_SHIFT) { mods |= MOD_SHIFT; }
+        if key_down(VK_CONTROL) {
+            mods |= MOD_CONTROL;
+        }
+        if key_down(VK_MENU) {
+            mods |= MOD_ALT;
+        }
+        if key_down(VK_SHIFT) {
+            mods |= MOD_SHIFT;
+        }
         mods
     }
 
@@ -529,14 +535,11 @@ mod windows {
                 return;
             }
             if experimental {
-                let hook = SetWindowsHookExW(
-                    WH_KEYBOARD_LL,
-                    Some(keyboard_hook),
-                    instance,
-                    0,
-                );
+                let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), instance, 0);
                 if hook.is_null() {
-                    println!("OVERLAY_ERROR Windows low-level keyboard hook could not be installed");
+                    println!(
+                        "OVERLAY_ERROR Windows low-level keyboard hook could not be installed"
+                    );
                     let _ = std::io::stdout().flush();
                     DestroyWindow(hwnd);
                     return;
