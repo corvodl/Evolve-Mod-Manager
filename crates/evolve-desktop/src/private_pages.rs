@@ -1350,6 +1350,105 @@ pub(super) fn credits() -> Element<'static, Message> {
     ].spacing(12).padding(12)).height(Fill).into()
 }
 
+fn research_rows(state: &State) -> Element<'_, Message> {
+    let mut body = column![
+        text("Runtime memory research · READ-ONLY").size(17),
+        text(if state.runtime_research_status.is_empty() {
+            "Refresh actors to validate the current process and research layouts."
+        } else {
+            state.runtime_research_status.as_str()
+        })
+        .size(12)
+        .style(design::muted),
+    ]
+    .spacing(8);
+    let Some(report) = &state.runtime_research else {
+        return body.into();
+    };
+    body = body.push(
+        text(format!(
+            "PID {} · Base 0x{:X} · Local actor ID 0x{:X}",
+            report.pid, report.base, report.local_id
+        ))
+        .size(12),
+    );
+    body = body.push(text(format!(
+        "Running executable SHA256: {} (fingerprint only; no hash allowlist supplied)",
+        report.image_sha256
+    )).size(12).style(design::muted));
+    body = body.push(text(&report.slots).size(12));
+    if let Some(perks) = &state.match_perks {
+        let logged = perks
+            .players
+            .iter()
+            .filter(|player| player.slot.starts_with("PlayerSlot_monster_"))
+            .map(|player| player.slot.as_str())
+            .collect::<Vec<_>>();
+        body = body.push(
+            text(format!(
+                "Verified matching roster log: {} monster slot(s) [{}]. This is logged roster evidence, not a live allocation API.",
+                logged.len(), logged.join(", ")
+            ))
+            .size(12)
+            .style(design::muted),
+        );
+    }
+    body = body.push(text(&report.character_gravity).size(12));
+    body = body.push(text(&report.world_gravity).size(12).style(design::muted));
+    body = body.push(text(&report.jetpack).size(12));
+    body = body.push(text("Inventory · actor identity, owner and item-list bounds checked").size(15));
+    for inv in &report.inventory {
+        let items = inv
+            .item_ids
+            .iter()
+            .map(|id| format!("0x{id:X}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let occupied = inv.loadout.iter().filter(|(id, _)| *id != 0).count();
+        let flags = inv.loadout
+            .iter()
+            .enumerate()
+            .filter(|(_, (id, _))| *id != 0)
+            .map(|(index, (id, flag))| format!("{index}:0x{id:X}/0x{flag:X}"))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        body = body.push(surface(
+            column![
+                text(format!(
+                    "{} · Actor ID 0x{:X} · Inventory 0x{:X}",
+                    inv.actor_name, inv.actor_id, inv.inventory_address
+                )).size(13),
+                text(format!(
+                    "Item IDs ({}, live registry IDs {}): [{}]",
+                    inv.item_ids.len(), inv.registered_ids, items
+                )).size(12),
+                text(format!(
+                    "Selected item ID 0x{:X}; previous 0x{:X}; selected in list: {}; actor mirrors match: {}",
+                    inv.current, inv.previous,
+                    inv.selected_in_list, inv.actor_mirrors_match
+                )).size(12),
+                text(format!("Loadout entries {occupied}/16 · item ID/flag: {flags}"))
+                    .size(12)
+                    .style(design::muted),
+            ]
+            .spacing(5)
+            .padding(8)
+        ));
+    }
+    for err in report.inventory_errors.iter().take(16) {
+        body = body.push(
+            text(format!("Inventory not verified: {err}"))
+                .size(12)
+                .style(design::muted)
+        );
+    }
+    body = body.push(text("Projectile physics research · no generic speed write").size(15));
+    for note in &report.projectiles {
+        body = body.push(text(note).size(12).style(design::muted));
+    }
+    body.push(text(&report.feature_status).size(12).style(design::muted)).into()
+}
+
 fn actor_rows(state: &State) -> Element<'_, Message> {
     let Some(listing) = &state.actor_listing else {
         return text("No actor snapshot. Detect Evolve and refresh actors.")
@@ -1875,6 +1974,7 @@ fn actor_controls(state: &State) -> Element<'_, Message> {
             .size(12)
             .style(design::muted),
         match_perk_rows(state),
+        research_rows(state),
         actor_rows(state),
         text("Click a value to edit it · Enter to write · Freeze holds the current value")
             .size(12)
