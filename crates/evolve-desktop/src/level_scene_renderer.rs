@@ -508,6 +508,46 @@ pub(super) fn assemble(
     }))
 }
 
+/// Update baked mesh vertices for already-loaded source instances without
+/// recompiling textures or re-indexing the entire imported map. The source
+/// object triangle ranges never change and are owned by the scene copy.
+pub(super) fn reproject_after_edit(
+    original: &RenderMesh,
+    ranges: &[PickRange],
+    previous: &LevelScene,
+    updated: &LevelScene,
+) -> Option<RenderMesh> {
+    let mut mesh = original.clone();
+    for range in ranges {
+        let old = previous.objects.get(range.object_index)?.world;
+        let new = updated.objects.get(range.object_index)?.world;
+        if old == new { continue }
+        if old.scale.iter().any(|scale| scale.abs() < 1e-6) { return None }
+        let inv = [old.quaternion[0], -old.quaternion[1], -old.quaternion[2], -old.quaternion[3]];
+        let start = range.first_index;
+        let end = start.checked_add(range.index_count)?;
+        let indices = mesh.indices.get(start..end)?;
+        let unique = indices.iter().map(|v| *v as usize).collect::<HashSet<_>>();
+        for i in unique {
+            let point = mesh.positions.get_mut(i)?;
+            let relative = [point[0]-old.position[0], point[1]-old.position[1], point[2]-old.position[2]];
+            let rotated = rotate(inv, relative);
+            let local = [
+                rotated[0] / old.scale[0], rotated[1] / old.scale[1], rotated[2] / old.scale[2],
+            ];
+            *point = transformed(new, local, false);
+            if let Some(normal) = mesh.normals.as_mut().and_then(|normals| normals.get_mut(i)) {
+                let old_normal = rotate(inv, *normal);
+                let source_normal = [
+                    old_normal[0] * old.scale[0], old_normal[1] * old.scale[1], old_normal[2] * old.scale[2],
+                ];
+                *normal = transformed(new, source_normal, true);
+            }
+        }
+    }
+    Some(mesh)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
