@@ -56,6 +56,7 @@ impl Document {
         let data = std::str::from_utf8(&raw).map_err(|_| {
             "This file is not UTF-8 text. Compiled Lua and binary CryXML must be decoded before editing.".to_owned()
         })?;
+        let saved = data.to_owned();
         let editable = project.as_ref().is_some_and(|project| {
             fs::canonicalize(project.workspace.join("files"))
                 .is_ok_and(|project_root| project_root == root)
@@ -67,7 +68,7 @@ impl Document {
             project: if editable { project } else { None },
             projects_root,
             original: raw,
-            saved: data.to_owned(),
+            saved,
         })
     }
 
