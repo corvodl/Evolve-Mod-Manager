@@ -36,6 +36,7 @@ mod gfx_tool_install;
 mod guided_modding;
 mod initial_setup;
 mod launcher_bridge;
+mod level_camera;
 mod level_library;
 mod level_pick;
 mod level_scene_renderer;
@@ -351,6 +352,8 @@ struct State {
         usize,
     )>,
     level_read_only: bool,
+    level_camera: Option<level_camera::Camera>,
+    level_keys: HashSet<char>,
     level_surfaces: Option<Arc<Vec<textured::Surface>>>,
     level_picks: Option<Arc<Vec<level_scene_renderer::PickRange>>>,
     level_project: Option<modding_projects::ProjectRow>,
@@ -1907,6 +1910,11 @@ enum Message {
     ViewerZoomWheel(f32),
     LevelCameraZoomWheel(f32),
     LevelCameraPanDelta(f32, f32),
+    LevelCameraSpeedChanged(f32),
+    LevelCameraFocus,
+    LevelCameraReset,
+    LevelCameraKey(window::Id, char, bool),
+    LevelCameraTick,
     ViewerSearchChanged(String),
     ViewerPreviousPage,
     ViewerNextPage,
@@ -7286,6 +7294,43 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.pan_x = (state.pan_x + dx).clamp(-80.0, 80.0);
             state.pan_y = (state.pan_y + dy).clamp(-80.0, 80.0);
         }
+        Message::LevelCameraSpeedChanged(speed) => {
+            if let Some(camera) = state.level_camera.as_mut() {
+                camera.speed = speed.clamp(1.0, 2500.0);
+            }
+        }
+        Message::LevelCameraFocus => {
+            if let Some(point) = state.level_selected
+                .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
+                .map(|object| object.world.position)
+                && let Some(camera) = state.level_camera.as_mut()
+            {
+                camera.focus(point, state.yaw, state.pitch, 12.0);
+                state.zoom = 1.0;
+            }
+        }
+        Message::LevelCameraReset => {
+            state.yaw = -30.0;
+            state.pitch = 32.0;
+            state.zoom = 1.0;
+            state.level_keys.clear();
+            state.level_camera = state.model.as_ref()
+                .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
+        }
+        Message::LevelCameraKey(_, key, pressed) => {
+            if key == 'f' && pressed {
+                return update(state, Message::LevelCameraFocus);
+            }
+            if ['w','a','s','d','q','e'].contains(&key) {
+                if pressed { state.level_keys.insert(key); }
+                else { state.level_keys.remove(&key); }
+            }
+        }
+        Message::LevelCameraTick => {
+            if let Some(camera) = state.level_camera.as_mut() {
+                camera.advance(&state.level_keys, state.yaw, state.pitch, 1.0 / 60.0);
+            }
+        }
         Message::ViewerSearchChanged(filter) => {
             state.viewer_context_index = None;
             state.viewer_search = filter;
@@ -11842,6 +11887,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.playing = false;
                     state.page = Some(Page::Levels);
                     state.zoom = 1.0;
+                    state.level_keys.clear();
+                    state.level_camera = state.model.as_ref()
+                        .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
                 Ok(Completed::ProjectLevelSaved(project, saved)) => {
                     state.status = if saved {
@@ -11940,6 +11988,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.zoom = 1.0;
                     state.pan_x = 0.0;
                     state.pan_y = 0.0;
+                    state.level_keys.clear();
+                    state.level_camera = state.model.as_ref()
+                        .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
                 Ok(Completed::Level(scene, source, hash)) => {
                     state.library_map = None;
@@ -12735,6 +12786,7 @@ fn view(state: &State) -> Element<'_, Message> {
                             emissive_gain:state.emissive_strength,
                             emissive_time:state.decal_time,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
+                            level_camera: None,
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
                         canvas(MeshViewport{
@@ -13280,6 +13332,7 @@ impl Desktop {
             }
             Message::OpenViewer => self.open_viewer(),
             Message::OpenLevelEditorWindow => self.open_level_editor(),
+            Message::LevelCameraKey(id, _, _) if self.level_id != Some(id) => Task::none(),
             Message::ExportOpen => {
                 let prepare = update(&mut self.state, Message::ExportOpen);
                 Task::batch([prepare, self.open_export()])
@@ -13344,7 +13397,10 @@ impl Desktop {
                         self.export_id = None;
                         self.state.export_dialog_open = false;
                     }
-                    if self.level_id == Some(id) { self.level_id = None; }
+                    if self.level_id == Some(id) {
+                        self.level_id = None;
+                        self.state.level_keys.clear();
+                    }
                     if self.viewer_id == Some(id) {
                         self.viewer_id = None;
                         self.state.viewer_menu = None;
@@ -13504,6 +13560,11 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let level_camera_tick = if self.level_id.is_some() {
+            iced::time::every(Duration::from_millis(16)).map(|_| Message::LevelCameraTick)
+        } else {
+            Subscription::none()
+        };
         let scan_progress = if footer_is_working(&self.state) {
             iced::time::every(Duration::from_millis(250)).map(|_| Message::ScanPulse)
         } else {
@@ -13565,11 +13626,24 @@ impl Desktop {
             armor_recovery,
             armor_pulse,
             playback,
+            level_camera_tick,
             startup,
             scan_progress,
             wheel,
             window::close_events().map(Message::WindowClosed),
-            iced::event::listen_with(|event, _status, id| match event {
+            iced::event::listen_with(|event, status, id| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    ..
+                }) if status == iced::event::Status::Ignored => {
+                    value.chars().next().map(|key| Message::LevelCameraKey(id, key.to_ascii_lowercase(), true))
+                }
+                iced::Event::Keyboard(iced::keyboard::Event::KeyReleased {
+                    key: iced::keyboard::Key::Character(value),
+                    ..
+                }) => {
+                    value.chars().next().map(|key| Message::LevelCameraKey(id, key.to_ascii_lowercase(), false))
+                }
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
