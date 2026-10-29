@@ -4,9 +4,9 @@
 //! Layout/RVAs are pinned to the examined build; unknown builds fail closed.
 use crate::runtime_memory;
 use runtime_memory::Snapshot;
-use std::sync::{Arc, atomic::AtomicBool};
 #[cfg(windows)]
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, atomic::AtomicBool};
 
 const ENTITY_SYSTEM_RVA: usize = 0x28D58E8;
 const ENTITY_VTABLE_RVA: usize = 0x22DBC60;
@@ -69,7 +69,10 @@ impl HoldMode {
 /// Pure target selection used by the hold worker and its tests.
 fn held_position(anchor: Position, current: Position, mode: HoldMode) -> Position {
     match mode {
-        HoldMode::Z => Position { z: anchor.z, ..current },
+        HoldMode::Z => Position {
+            z: anchor.z,
+            ..current
+        },
         HoldMode::XYZ => anchor,
     }
 }
@@ -180,7 +183,10 @@ mod windows {
         const PROCESS_VM_READ: u32 = 0x0010;
         let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid) };
         if handle.is_null() {
-            return Err(format!("Cannot verify Evolve process: {}", io::Error::last_os_error()));
+            return Err(format!(
+                "Cannot verify Evolve process: {}",
+                io::Error::last_os_error()
+            ));
         }
         let result = (|| {
             let mut main_module: *mut c_void = std::ptr::null_mut();
@@ -193,14 +199,19 @@ mod windows {
                     &mut needed,
                 )
             };
-            if ok == 0 || main_module.is_null() || needed < std::mem::size_of::<*mut c_void>() as u32 {
+            if ok == 0
+                || main_module.is_null()
+                || needed < std::mem::size_of::<*mut c_void>() as u32
+            {
                 return Err("Cannot verify running Evolve module".into());
             }
             let mut name = [0u16; 260];
             let count = unsafe {
                 K32GetModuleBaseNameW(handle, main_module, name.as_mut_ptr(), name.len() as u32)
             } as usize;
-            if count == 0 || !String::from_utf16_lossy(&name[..count]).eq_ignore_ascii_case("Evolve.exe") {
+            if count == 0
+                || !String::from_utf16_lossy(&name[..count]).eq_ignore_ascii_case("Evolve.exe")
+            {
                 return Err("Game PID no longer points to Evolve.exe; detect game again".into());
             }
             Ok(main_module as usize)
@@ -211,7 +222,9 @@ mod windows {
 
     fn session(snapshot: &Snapshot, _root: &str) -> Result<(u32, ProcessHandle, usize), String> {
         let pid = snapshot.pid.ok_or("Detect Evolve.exe first")?;
-        let base = snapshot.module_base.ok_or("Evolve module base unavailable")?;
+        let base = snapshot
+            .module_base
+            .ok_or("Evolve module base unavailable")?;
         if running_evolve_base(pid)? != base {
             return Err("Game executable or module base changed; detect Evolve again".into());
         }
@@ -470,7 +483,10 @@ mod windows {
             const ACCESS: u32 = 0x0008 | 0x0010 | 0x0020;
             let handle = unsafe { OpenProcess(ACCESS, 0, pid) };
             if handle.is_null() {
-                return Err(format!("Cannot open game for coordinate hold: {}", io::Error::last_os_error()));
+                return Err(format!(
+                    "Cannot open game for coordinate hold: {}",
+                    io::Error::last_os_error()
+                ));
             }
             Ok(Self(handle))
         }
@@ -489,12 +505,18 @@ mod windows {
             let mut written = 0usize;
             let ok = unsafe {
                 WriteProcessMemory(
-                    self.0, address as *mut c_void, bytes.as_ptr().cast(),
-                    bytes.len(), &mut written,
+                    self.0,
+                    address as *mut c_void,
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                    &mut written,
                 )
             };
             if ok == 0 || written != bytes.len() {
-                return Err(format!("Coordinate hold write failed: {}", io::Error::last_os_error()));
+                return Err(format!(
+                    "Coordinate hold write failed: {}",
+                    io::Error::last_os_error()
+                ));
             }
             Ok(())
         }
@@ -505,7 +527,9 @@ mod windows {
             unsafe extern "system" {
                 fn CloseHandle(handle: *mut c_void) -> i32;
             }
-            unsafe { CloseHandle(self.0); }
+            unsafe {
+                CloseHandle(self.0);
+            }
         }
     }
 
@@ -543,7 +567,9 @@ mod windows {
                 || q(&handle, r.entity)? != base + ENTITY_VTABLE_RVA
                 || q(&handle, r.physics)? != base + LIVING_VTABLE_RVA
             {
-                return Err("Local actor or physics identity changed; coordinate hold stopped".into());
+                return Err(
+                    "Local actor or physics identity changed; coordinate hold stopped".into(),
+                );
             }
             let current = position(&handle, r.physics, [0xB8, 0xBC, 0xC0])?;
             if !current.finite() {
@@ -687,9 +713,24 @@ mod tests {
     }
     #[test]
     fn hover_holds_only_height_and_xyz_locks_all_axes() {
-        let anchor = Position { x: 12.0, y: 34.0, z: 56.0 };
-        let current = Position { x: 91.0, y: 82.0, z: -3.0 };
-        assert_eq!(held_position(anchor, current, HoldMode::Z), Position { x: 91.0, y: 82.0, z: 56.0 });
+        let anchor = Position {
+            x: 12.0,
+            y: 34.0,
+            z: 56.0,
+        };
+        let current = Position {
+            x: 91.0,
+            y: 82.0,
+            z: -3.0,
+        };
+        assert_eq!(
+            held_position(anchor, current, HoldMode::Z),
+            Position {
+                x: 91.0,
+                y: 82.0,
+                z: 56.0
+            }
+        );
         assert_eq!(held_position(anchor, current, HoldMode::XYZ), anchor);
     }
     #[test]
