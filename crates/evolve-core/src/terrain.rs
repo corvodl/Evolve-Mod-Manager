@@ -339,10 +339,10 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
                         name = attr.unescape_value().ok().map(|v| v.to_string());
                     }
                 }
-                if let (Some(id), Some(name)) = (id, name) {
-                    if name.len() <= 128 {
-                        names.insert(id, name);
-                    }
+                if let (Some(id), Some(name)) = (id, name)
+                    && name.len() <= 128
+                {
+                    names.insert(id, name);
                 }
                 if names.len() > 256 {
                     return Err(TerrainError::Limits);
