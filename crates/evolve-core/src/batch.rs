@@ -259,14 +259,12 @@ pub fn apply_profile_stage(
         if digest(&target)? != item.original_sha256 {
             return Err(BatchError::Invalid("Original stage bytes changed".into()));
         }
-        // Renames stay within the same filesystem. No overwrite is permitted.
+        // The prevalidated 'after' file and target are in this same isolated
+        // filesystem. Move the already-verified complete mod PAK into place;
+        // copying it to a redundant 'incoming' file adds another multi-GB
+        // write on every launch. Keep the journal and original backup intact.
         fs::rename(&target, dir.join(format!("displaced-{i}.pak")))?;
-        copy_checked(
-            &dir.join(format!("after-{i}.pak")),
-            &dir.join(format!("incoming-{i}.pak")),
-            &item.replacement_sha256,
-        )?;
-        fs::rename(dir.join(format!("incoming-{i}.pak")), &target)?;
+        fs::rename(dir.join(format!("after-{i}.pak")), &target)?;
         if digest(&target)? != item.replacement_sha256 {
             return Err(BatchError::Invalid(
                 "Staged bytes failed post-write validation".into(),
@@ -324,11 +322,25 @@ pub fn restore_profile_stage(stage: &Path) -> Result<BatchJournal, BatchError> {
                 ));
             }
         } else {
-            copy_checked(
-                &dir.join(format!("before-{i}.pak")),
-                &restoring,
-                &item.original_sha256,
-            )?;
+            // The original staged PAK was moved to 'displaced' during apply.
+            // Reusing that same-volume file avoids copying the entire original
+            // again. 'before' remains a verified recovery fallback for older
+            // or interrupted transactions which lack 'displaced'.
+            let displaced = dir.join(format!("displaced-{i}.pak"));
+            if fs::symlink_metadata(&displaced).is_ok() {
+                if digest(&displaced)? != item.original_sha256 {
+                    return Err(BatchError::Invalid(
+                        "Displaced original differs from the recovery journal".into(),
+                    ));
+                }
+                fs::rename(displaced, &restoring)?;
+            } else {
+                copy_checked(
+                    &dir.join(format!("before-{i}.pak")),
+                    &restoring,
+                    &item.original_sha256,
+                )?;
+            }
         }
         if target.exists() {
             // Keep a recovered modified PAK for debugging rather than deleting it.
@@ -441,6 +453,10 @@ mod tests {
         .unwrap();
         assert!(stage_status(&root).is_err());
         restore_profile_stage(&root).unwrap();
+        // The intact displaced original was moved back, not recopied from
+        // 'before'; the independent recovery backup remains untouched.
+        assert!(!backup.join("displaced-0.pak").exists());
+        assert_eq!(fs::read(backup.join("before-0.pak")).unwrap(), b"first");
         assert_eq!(fs::read(root.join("paks/first.pak")).unwrap(), b"first");
         assert_eq!(fs::read(root.join("paks/second.pak")).unwrap(), b"second");
         assert!(batch_stage_status(&root).unwrap().is_none());
