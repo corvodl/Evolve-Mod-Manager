@@ -103,11 +103,42 @@ This property is not Behemoth-exclusive: monster perk effect sets such as
 Thus ordinary monster perk selection can supply damage reduction to other
 monsters. The fight capture's first `0x2400` actor bytes did not reveal a
 validated `0..15` passive-stack count or a float rising in 3% increments.
-An effective property may instead live in an effect/property component;
-neither its storage nor a game-thread effect-application API was verified.
-Do **not** copy Behemoth's reactive configuration, edit a guessed actor
-stat, substitute an item ID, or claim runtime activation on another monster
-from these observations. No activation or write was attempted.
+The effective property is represented in a separate actor-linked property
+component (below); Behemoth's passive stack count was **not** captured from
+that component. No game-thread effect-application API was verified. Do
+**not** copy Behemoth's reactive configuration, edit a guessed actor stat,
+substitute an item ID, or claim arbitrary runtime activation on another
+monster from these observations. No activation or write was attempted.
+
+### Read-only non-Behemoth armor baseline
+
+A second, identity-guarded capture of local Meteor Goliath
+(`GoliathMeteorBot`) followed the property component pointer at
+`actor+0x1130` (vtable RVA `0x24A5020` in this build). The user reported
+equipped armor modifiers of 4% (Brawler), 9% and 12%. Native property-name
+registration maps `MonsterSpecialRechargeModifier` to ID `0x19` and
+`ArmorModifier` to ID `0x49`. Read-only disassembly of property getter RVA
+`0x19DB5E0` and aggregator RVA `0x19DB7C8` identifies:
+
+- `component+0x910`: number of active property entries. The entries begin at
+  `component+0x50`, each `0x1C` bytes. The first UInt32 is the property ID;
+  the entry's encoded Float32 at `entry+0xC` decodes as
+  `f32::from_bits(rotate_left(raw ^ key, 4))` for this process/build.
+- The computed-value cache for property ID `p` has a validity byte at
+  `component+0x919+16*p` and an encoded Float32 at
+  `component+0x91C+16*p`. **Only if valid**, decode the value as
+  `f32::from_bits(raw ^ key ^ 0x00AD3091)`.
+
+All 896 frames in the guarded Meteor Goliath property capture had valid
+`ArmorModifier` (`p=0x49`) cache value `0.25` and three corresponding
+entries `0.04`, `0.09`, `0.12`. Separately, `p=0x19` cached `0.06` and had
+one `0.06` entry. These observations distinguish equipped-source entries
+from the computed aggregate and demonstrate the generic armor property on a
+**non-Behemoth** monster. A cache is **not** an authoritative writable
+source: the game can recompute it from effect entries. This establishes
+neither a safe effect-add call nor damage-mitigation behavior under a
+controlled identical hit. Validate actor, component identity, build and
+process-specific key before any read; do not reuse these offsets for writes.
 
 Read-only capture artifacts (temporary local evidence, **not** portable project fixtures):
 
@@ -116,9 +147,13 @@ Read-only capture artifacts (temporary local evidence, **not** portable project 
 - `C:\Users\billn\AppData\Local\Temp\opencode\behemoth-traversal-20261029-controlled\`
 - `C:\Users\billn\AppData\Local\Temp\opencode\behemoth-traversal-20261029-stage2\`
 - `C:\Users\billn\AppData\Local\Temp\opencode\behemoth-passive-20261029-fight\`
+- `C:\Users\billn\AppData\Local\Temp\opencode\meteor-goliath-armor-20261029-baseline\`
+- `C:\Users\billn\AppData\Local\Temp\opencode\meteor-goliath-property-cache-20261029-1\`
 
-Each directory contains `meta.json` frame metadata and `actor.bin` /
-`movement.bin` snapshots. These samples identify decoded energy behavior, but
+The traversal/fight directories contain `meta.json` frame metadata and
+`actor.bin` / `movement.bin` snapshots; the Meteor Goliath property capture
+contains `meta.json` and `component.bin`. These samples identify decoded
+energy and property behavior, but
 **do not** identify a recharge-rate address, prove a distinct authoritative
 charge count, or validate any control over recharge speed. The native helper
 above identifies named recharge attributes and a calculation, not a verified
