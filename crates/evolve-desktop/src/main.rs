@@ -38,6 +38,7 @@ mod initial_setup;
 mod launcher_bridge;
 mod level_camera;
 mod level_library;
+mod level_editor_shell;
 mod level_pick;
 mod level_scene_renderer;
 mod level_workspace;
@@ -13173,65 +13174,7 @@ fn initial_state() -> State {
     result
 }
 fn level_editor_contents(state: &State) -> Element<'_, Message> {
-    column![
-            text(if state.library_map.is_some() { "Level Editor · Imported Map" } else { "Level Editor · Source Preview" }).size(19),
-            if let Some((_, maps, selected)) = &state.library_map {
-                let mut choices = iced::widget::column![text("MAPS IN SELECTED PAK").size(12)].spacing(4);
-                for (index, map) in maps.iter().enumerate().take(48) {
-                    choices = choices.push(design::button(text(if index == *selected { format!("● {}", map.name) } else { map.name.clone() })).on_press(Message::LevelMapSelect(index)));
-                }
-                Element::from(iced::widget::scrollable(choices).height(Length::Fixed(100.0)))
-            } else { Element::from(text("Open a map from Asset Library to browse verified map sources.")) },
-            row![
-                design::button("File").on_press(Message::LibraryMenu("LevelFile")),
-                text(if state.level_read_only { "READ-ONLY IMPORT · create a modding project to edit" } else { "LOCAL SOURCE" }).size(12),
-            ].spacing(10),
-            if state.library_menu == Some("LevelFile") {
-                Element::from(column![
-                    design::button("Open as Modding Project").on_press_maybe((state.level_project.is_none() && state.library_map.is_some()).then_some(Message::LibraryMakeModProject)),
-                    design::button("Open Selected Modding Project").on_press_maybe(state.modding_selected.map(|_| Message::LevelOpenSelectedModProject)),
-                    design::button("Save Edited Project Layer").on_press_maybe((state.level_project.is_some() && state.level_dirty_count > 0).then_some(Message::LevelSaveProjectChanges)),
-                ].spacing(4))
-            } else { Element::from(text("")) },
-            level_workspace::view(state),
-            text(if state.level_read_only { "Verified source view; no source files are changed. Vegetation instance streams and unsupported shaders remain unresolved." } else { "Read Level/LYR or Heightmap.dat without touching installed game assets." }),
-            if state.level_diagnostics.is_empty() { Element::from(text("")) } else {
-                Element::from(iced::widget::scrollable(
-                    iced::widget::column(state.level_diagnostics.iter().take(12).map(|note| Element::from(text(note.as_str()).size(11))))
-                        .spacing(2)
-                ).height(Length::Fixed(70.0)))
-            },
-            if state.level_read_only {
-                Element::from(text("Imported source files are protected. File → Open as Modding Project to edit."))
-            } else {
-                Element::from(column![
-                row![
-                    design::button("Read level placements").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelInspection)),
-                    design::button("Load heightmap geometry").on_press_maybe((!state.level_read_only).then_some(Message::StartTerrainInspection)),
-                    design::button("Export geometry scene GLB").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelGlbExport)),
-                    design::button("Export geometry scene FBX").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelFbxExport)),
-                ].spacing(8),
-                row![
-                    design::text_input("Exact extracted asset root...",&state.assets_root)
-                        .on_input(Message::AssetsRootChanged).width(Fill),
-                    design::text_input("Optional Heightmap.dat source...",&state.terrain_source)
-                        .on_input(Message::TerrainSourceChanged).width(Fill),
-                ].spacing(8),
-                text(if let Some(scene)=&state.level_scene {
-                    format!("{} level objects, {} unresolved diagnostics; source transforms preserved.",
-                        scene.objects.len(),scene.diagnostics.len())
-                }else{"No placement source inspected.".into()}),
-                ].spacing(8))
-            },
-            text("The unified perspective viewport is above, beside the object outliner."),
-            if blender_install::valid_blender(&state.blender_path).is_some() {
-                Element::from(text("Blender detected automatically for scene FBX").size(12))
-            } else {
-                Element::from(design::text_input("Find Blender.exe for scene FBX…", &state.blender_path)
-                    .on_input(Message::BlenderChanged))
-            },
-            text("GLB/FBX includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
-    ].spacing(14).into()
+    level_editor_shell::view(state)
 }
 
 /// One native main window, model/asset editor, and separate export settings window. All costly
@@ -13588,9 +13531,7 @@ impl Desktop {
         if self.export_id == Some(id) {
             asset_viewer::export_dialog(&self.state)
         } else if self.level_id == Some(id) {
-            scrollable(level_editor_contents(&self.state))
-                .height(Fill)
-                .into()
+            level_editor_contents(&self.state)
         } else if self.activity_id == Some(id) {
             activity_window::view(&self.state)
         } else if self.play_notice_id == Some(id) {
