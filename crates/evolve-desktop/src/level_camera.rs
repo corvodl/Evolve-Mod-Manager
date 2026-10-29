@@ -114,28 +114,6 @@ impl Camera {
     }
 }
 
-/// Some window backends cannot deliver KeyReleased after Alt+Tab,
-/// focus changes, or a native popup menu. Reconcile the recorded WASDQE
-/// movement state with the actual keyboard state on Windows every frame.
-/// This only removes stale pressed keys; new movement still needs a
-/// KeyPressed event from the focused Level Editor window.
-#[cfg(target_os = "windows")]
-pub(super) fn physically_held(key: char) -> bool {
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        #[link_name = "GetAsyncKeyState"]
-        fn get_async_key_state(vkey: i32) -> i16;
-    }
-    let vk = key.to_ascii_uppercase() as i32;
-    // The high bit means currently down, not merely pressed since last call.
-    unsafe { get_async_key_state(vk) < 0 }
-}
-
-#[cfg(not(target_os = "windows"))]
-pub(super) fn physically_held(_key: char) -> bool {
-    true // Native key-up and window focus events still clear the set.
-}
-
 /// World camera basis. The same yaw/pitch axes are used by the original
 /// renderer and the scene triangle picker.
 pub(super) fn basis(yaw: f32, pitch: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
