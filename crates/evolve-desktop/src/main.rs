@@ -2459,6 +2459,9 @@ fn restore_level_history(state: &mut State, undo: bool) {
     match result {
         Some(Ok(scene)) => {
             track_level_dirty(state, &diff.guid, previous, target);
+            if let Some(world) = &state.level_world {
+                state.level_world = Some(Arc::new(world.updated(&scene)));
+            }
             state.level_scene = Some(Arc::new(scene));
             let other = if undo {
                 &mut state.level_redo
@@ -7081,6 +7084,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             )
                         {
                             state.model = Some(Arc::new(reprojected));
+                        }
+                        if let Some(world) = &state.level_world {
+                            state.level_world = Some(Arc::new(world.updated(&edited)));
                         }
                         state.level_scene = Some(Arc::new(edited));
                         sync_level_fields(state);
