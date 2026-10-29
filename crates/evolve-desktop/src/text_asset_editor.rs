@@ -10,7 +10,9 @@ pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 
 pub fn compatible(member: &str) -> bool {
     let name = member.to_ascii_lowercase();
-    [".xml", ".lua", ".txt"].iter().any(|ext| name.ends_with(ext))
+    [".xml", ".lua", ".txt"]
+        .iter()
+        .any(|ext| name.ends_with(ext))
 }
 
 pub struct Document {
@@ -71,9 +73,15 @@ impl Document {
 
     pub fn save(&mut self) -> Result<bool, String> {
         if !self.editable {
-            return Err("Asset Library originals are read-only. Create an editable Modding project first.".into());
+            return Err(
+                "Asset Library originals are read-only. Create an editable Modding project first."
+                    .into(),
+            );
         }
-        let project = self.project.as_ref().ok_or("No editable Modding project is attached")?;
+        let project = self
+            .project
+            .as_ref()
+            .ok_or("No editable Modding project is attached")?;
         let edited = self.content.text();
         if edited.len() as u64 > MAX_TEXT_BYTES {
             return Err("Edited document exceeds 2 MiB text editor limit.".into());
@@ -82,7 +90,11 @@ impl Document {
             return Ok(false);
         }
         let changed = modding_projects::save_text_member(
-            project, &self.projects_root, &self.member, &self.original, &edited,
+            project,
+            &self.projects_root,
+            &self.member,
+            &self.original,
+            &edited,
         )?;
         if changed {
             self.original = edited.as_bytes().to_vec();
@@ -106,7 +118,12 @@ mod tests {
         for name in ["libs/A.xml", "scripts/ai.LUA", "notes/readme.Txt"] {
             assert!(compatible(name));
         }
-        for name in ["scripts/ai.luac", "libs/A.xmlb", "material.dds", "name.xml.exe"] {
+        for name in [
+            "scripts/ai.luac",
+            "libs/A.xmlb",
+            "material.dds",
+            "name.xml.exe",
+        ] {
             assert!(!compatible(name));
         }
     }
@@ -143,12 +160,18 @@ mod tests {
             "entries": [{"path": member, "format": "raw", "sha256":format!("{:x}",Sha256::digest(&original))}]
         })).unwrap()).unwrap();
         let project = ProjectRow {
-            label: "My Mod".into(), target: "libs.pak".into(),
-            source_build: "Stage 2".into(), status: "Draft".into(),
-            details: String::new(), workspace: workspace.clone(),
-            modified: vec![], changed_known: true, enabled: false,
+            label: "My Mod".into(),
+            target: "libs.pak".into(),
+            source_build: "Stage 2".into(),
+            status: "Draft".into(),
+            details: String::new(),
+            workspace: workspace.clone(),
+            modified: vec![],
+            changed_known: true,
+            enabled: false,
         };
-        let mut doc = Document::open(&root, member, Some(project.clone()), projects.clone()).unwrap();
+        let mut doc =
+            Document::open(&root, member, Some(project.clone()), projects.clone()).unwrap();
         assert!(doc.editable);
         // Simulate a user editing the text-editor buffer.
         doc.content = text_editor::Content::with_text("<Arena rounds=\"1\"/>");
@@ -156,7 +179,12 @@ mod tests {
         assert!(doc.save().unwrap());
         assert!(!doc.dirty());
         assert_eq!(fs::read(&file).unwrap(), b"<Arena rounds=\"1\"/>");
-        assert_eq!(fs::read_dir(workspace.join("EditorBackups")).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_dir(workspace.join("EditorBackups"))
+                .unwrap()
+                .count(),
+            1
+        );
         // Stale edits may never silently overwrite external workspace changes.
         doc.content = text_editor::Content::with_text("<Arena rounds=\"3\"/>");
         fs::write(&file, b"external change").unwrap();
