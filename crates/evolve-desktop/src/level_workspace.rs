@@ -277,6 +277,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text("PERSPECTIVE VIEWPORT · ORIGINAL LEVEL GEOMETRY").size(14),
             world_viewport(state),
             row![
+                button("Perspective").on_press(Message::ViewerCameraPreset("Isometric")),
+                button("Top").on_press(Message::ViewerCameraPreset("Top")),
+                button("Front").on_press(Message::ViewerCameraPreset("Front")),
+                button(if state.level_show_overview { "Hide 2D Overview" } else { "Show 2D Overview" })
+                    .on_press(Message::LevelToggleOverview),
+            ].spacing(8),
+            row![
                 text("Yaw").size(12),
                 iced::widget::slider(-180.0..=180.0, state.yaw, Message::YawChanged).width(Fill),
                 text("Pitch").size(12),
@@ -285,24 +292,30 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 iced::widget::slider(0.2..=4.0, state.zoom.max(0.2), Message::ZoomChanged).width(Fill),
                 button("Reset Camera").on_press(Message::ViewerResetCamera),
             ].spacing(8),
-            row![
-                text("PLACEMENT OVERVIEW").size(12),
-                text(format!("{} authored objects", scene.objects.len())).size(12),
-            ].spacing(10),
-            canvas_widget(SceneOverview {
-                scene: scene.clone(),
-                selected_indices: state.level_selection.indices.clone(),
-                zoom: state.level_zoom.max(0.3),
-            }).width(Fill).height(Length::Fixed(175.0)),
-            row![
-                text("Overview zoom").size(12),
-                iced::widget::slider(
-                    0.3..=3.0,
-                    state.level_zoom.max(0.3),
-                    Message::LevelZoomChanged
-                ).width(Length::Fixed(170.0)),
-                text("Click points to select; 3D orbit/pan in the viewport above").size(12).color(MUTED),
-            ].spacing(10),
+            if state.level_show_overview {
+                Element::from(column![
+                    row![
+                        text("PLACEMENT OVERVIEW").size(12),
+                        text(format!("{} authored objects", scene.objects.len())).size(12),
+                    ].spacing(10),
+                    canvas_widget(SceneOverview {
+                        scene: scene.clone(),
+                        selected_indices: state.level_selection.indices.clone(),
+                        zoom: state.level_zoom.max(0.3),
+                    }).width(Fill).height(Length::Fixed(175.0)),
+                    row![
+                        text("Overview zoom").size(12),
+                        iced::widget::slider(
+                            0.3..=3.0,
+                            state.level_zoom.max(0.3),
+                            Message::LevelZoomChanged
+                        ).width(Length::Fixed(170.0)),
+                        text("Click a point to inspect its placement").size(12).color(MUTED),
+                    ].spacing(10),
+                ].spacing(7))
+            } else {
+                Element::from(text("Select objects in the Scene Outliner. Orbit, pan and zoom in the 3D viewport.").size(12).color(MUTED))
+            },
         ].spacing(8).width(Length::FillPortion(4)),
         column![
             text("SCENE OUTLINER").size(14),
