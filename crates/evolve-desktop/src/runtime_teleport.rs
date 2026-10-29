@@ -263,11 +263,8 @@ mod windows {
             .try_into()
             .map_err(|_| "Incomplete actor rotation read")?;
         let mut rotation = [0.0f32; 4];
-        for (value, chunk) in rotation.iter_mut().zip(bytes.chunks_exact(4)) {
-            let raw: [u8; 4] = chunk
-                .try_into()
-                .map_err(|_| "Incomplete rotation component")?;
-            *value = f32::from_le_bytes(raw);
+        for (value, chunk) in rotation.iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
+            *value = f32::from_le_bytes(*chunk);
         }
         Ok(rotation)
     }
