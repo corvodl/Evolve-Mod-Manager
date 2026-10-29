@@ -107,26 +107,59 @@ impl FlyInput {
     }
 }
 
-/// Convert CryEngine actor orientation (w,x,y,z) to horizontal forward.
+/// Derive planar facing from the local entity's (w,x,y,z) orientation.
+/// CryEngine's local +Y is forward and +X is right.
+///
+/// Projecting +Y into the XY plane is *not* a stable yaw estimate: at steep
+/// pitch it becomes almost zero, then reverses sign once pitch passes 90
+/// degrees. That makes W/S suddenly reverse and D/A change direction in
+/// mid-flight. Instead project the local +X (right) axis and rotate it 90
+/// degrees to obtain planar forward. The right axis retains yaw as the actor
+/// pitches through vertical, including when facing completely upward/downward.
 fn fly_forward(quaternion: [f32; 4]) -> Result<Position, String> {
     let [w, x, y, z] = quaternion;
     let len2 = w * w + x * x + y * y + z * z;
     if !len2.is_finite() || !(0.8..=1.2).contains(&len2) {
-        return Err("Fly Mode stopped: local actor orientation is invalid".into());
+        return Err("Local actor orientation is not a valid quaternion".into());
     }
     let len = len2.sqrt();
     let (w, x, y, z) = (w / len, x / len, y / len, z / len);
-    let fx = 2.0 * (x * y - w * z);
-    let fy = 1.0 - 2.0 * (x * x + z * z);
-    let horizontal_len = (fx * fx + fy * fy).sqrt();
-    if horizontal_len < 0.01 || !horizontal_len.is_finite() {
-        return Err("Fly Mode stopped: local actor has no usable horizontal direction".into());
+    let right_x = 1.0 - 2.0 * (y * y + z * z);
+    let right_y = 2.0 * (x * y + w * z);
+    let right_len = (right_x * right_x + right_y * right_y).sqrt();
+    if right_len.is_finite() && right_len >= 0.1 {
+        return Ok(Position {
+            x: -right_y / right_len,
+            y: right_x / right_len,
+            z: 0.0,
+        });
     }
-    Ok(Position {
-        x: fx / horizontal_len,
-        y: fy / horizontal_len,
-        z: 0.0,
-    })
+    // Extremely tilted/rolled actors can have a nearly vertical right axis.
+    // Fall back to projected forward only when there is no usable side axis.
+    // stable_fly_heading() caches the prior direction if neither axis works.
+    let forward_x = 2.0 * (x * y - w * z);
+    let forward_y = 1.0 - 2.0 * (x * x + z * z);
+    let forward_len = (forward_x * forward_x + forward_y * forward_y).sqrt();
+    if forward_len.is_finite() && forward_len >= 0.1 {
+        return Ok(Position {
+            x: forward_x / forward_len,
+            y: forward_y / forward_len,
+            z: 0.0,
+        });
+    }
+    Err("Local actor orientation temporarily has no stable horizontal axes".into())
+}
+
+/// A transient unusable orientation must never end Fly Mode or reset its
+/// anchor. Preserve the last verified planar heading until a new one is read.
+fn stable_fly_heading(
+    quaternion: [f32; 4],
+    last_heading: &mut Option<Position>,
+) -> Option<Position> {
+    if let Ok(heading) = fly_forward(quaternion) {
+        *last_heading = Some(heading);
+    }
+    *last_heading
 }
 
 /// Pure movement math, independent of Windows keyboard APIs and memory writes.
@@ -220,6 +253,20 @@ mod windows {
             y: f(offsets[1])?,
             z: f(offsets[2])?,
         })
+    }
+
+    /// Read all quaternion components together, rather than four separate
+    /// read-process-memory operations during an active game-frame update.
+    fn actor_orientation(h: &ProcessHandle, entity: usize) -> Result<[f32; 4], String> {
+        let bytes = read(h, entity + 0x4C, 16)?;
+        let bytes: [u8; 16] = bytes
+            .try_into()
+            .map_err(|_| "Incomplete actor rotation read")?;
+        let mut rotation = [0.0f32; 4];
+        for (value, chunk) in rotation.iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
+            *value = f32::from_le_bytes(*chunk);
+        }
+        Ok(rotation)
     }
     fn valid_layout(
         h: &ProcessHandle,
@@ -670,6 +717,7 @@ mod windows {
         let mut fly_anchor = r.pos;
         let mut previous_tick = Instant::now();
         let mut override_ticks = 0u32;
+        let mut last_heading: Option<Position> = None;
         while !stop.load(Ordering::Acquire) {
             // Check that this is still the same controlled actor and validated
             // physics object. Never write to a stale/repurposed player pointer.
@@ -699,15 +747,24 @@ mod windows {
                     input.vertical = 0.0;
                 }
                 if input.active() {
-                    let facing = [
-                        u32_at(&handle, r.entity + 0x4C)?,
-                        u32_at(&handle, r.entity + 0x50)?,
-                        u32_at(&handle, r.entity + 0x54)?,
-                        u32_at(&handle, r.entity + 0x58)?,
-                    ]
-                    .map(f32::from_bits);
-                    let forward = fly_forward(facing)?;
-                    fly_anchor = fly_step(fly_anchor, forward, input, fly_speed, dt);
+                    // Pure Space/Ctrl flight needs no horizontal direction.
+                    // Do not interrupt vertical motion when looking straight up.
+                    let heading = if input.forward != 0.0 || input.strafe != 0.0 {
+                        stable_fly_heading(actor_orientation(&handle, r.entity)?, &mut last_heading)
+                    } else {
+                        last_heading
+                    };
+                    if heading.is_none() {
+                        // Skip only horizontal movement until we can establish
+                        // a direction; keep altitude and vertical controls live.
+                        input.forward = 0.0;
+                        input.strafe = 0.0;
+                    }
+                    if let Some(forward) = heading {
+                        fly_anchor = fly_step(fly_anchor, forward, input, fly_speed, dt);
+                    } else if input.vertical != 0.0 {
+                        fly_anchor.z += input.vertical * fly_speed * dt.clamp(0.0, 0.05);
+                    }
                     if !fly_anchor.finite() {
                         return Err("Hover/Fly Mode reached out-of-range world coordinates".into());
                     }
@@ -941,6 +998,93 @@ mod tests {
         );
         assert!((strafe.x - 10.5).abs() < 0.001);
         assert!(fly_forward([0.0; 4]).is_err());
+    }
+
+    #[test]
+    fn straight_up_and_down_keep_a_horizontal_heading() {
+        // +90 degrees around local X pitches +Y to +Z. Projected forward
+        // is zero; the local +X side vector still supplies a stable heading.
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        let straight_up = fly_forward([half, half, 0.0, 0.0]).unwrap();
+        let straight_down = fly_forward([half, -half, 0.0, 0.0]).unwrap();
+        for direction in [straight_up, straight_down] {
+            assert!(direction.near(Position {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0
+            }));
+        }
+        // Combined 90-degree yaw and 90-degree pitch should preserve yaw,
+        // not stop when the actor looks vertically.
+        let sideways = fly_forward([0.5, 0.5, 0.5, 0.5]).unwrap();
+        assert!(sideways.near(Position {
+            x: -1.0,
+            y: 0.0,
+            z: 0.0
+        }));
+    }
+
+    #[test]
+    fn horizontal_controls_do_not_reverse_when_pitch_passes_vertical() {
+        // A local +Y projection reverses beyond 90 degrees of pitch, so the
+        // original implementation unexpectedly reversed WASD mid-flight.
+        // The heading from local +X must keep its yaw at every pitch.
+        let origin = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 20.0,
+        };
+        for yaw_deg in [-135.0_f32, -90.0, 0.0, 45.0, 90.0, 180.0] {
+            let yaw = yaw_deg.to_radians();
+            let (sy, cy) = (0.5 * yaw).sin_cos();
+            let expected_x = -yaw.sin();
+            let expected_y = yaw.cos();
+            for pitch_deg in [
+                -120.0_f32, -95.0, -90.0, -80.0, 0.0, 80.0, 90.0, 95.0, 120.0,
+            ] {
+                let pitch = pitch_deg.to_radians();
+                let (sp, cp) = (0.5 * pitch).sin_cos();
+                // World-Z yaw followed by local-X pitch.
+                let facing = fly_forward([cy * cp, cy * sp, sy * sp, sy * cp])
+                    .expect("heading must remain defined through vertical pitch");
+                let dot = facing.x * expected_x + facing.y * expected_y;
+                assert!(
+                    dot > 0.999,
+                    "yaw={yaw_deg}, pitch={pitch_deg}: heading={facing:?}, dot={dot}"
+                );
+                let moved = fly_step(
+                    origin,
+                    facing,
+                    FlyInput {
+                        forward: 1.0,
+                        strafe: 1.0,
+                        ..FlyInput::default()
+                    },
+                    10.0,
+                    0.02,
+                );
+                let displacement_x = moved.x - origin.x;
+                let displacement_y = moved.y - origin.y;
+                // Both W and D keep the same expected direction, including
+                // beyond vertical pitch; diagonal speed stays normalized.
+                let expected_move_x = (expected_x + expected_y) * std::f32::consts::FRAC_1_SQRT_2;
+                let expected_move_y = (expected_y - expected_x) * std::f32::consts::FRAC_1_SQRT_2;
+                assert!((displacement_x - expected_move_x * 0.2).abs() < 0.001);
+                assert!((displacement_y - expected_move_y * 0.2).abs() < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn temporarily_invalid_rotation_uses_last_valid_heading() {
+        let mut cached = None;
+        let north = stable_fly_heading([1.0, 0.0, 0.0, 0.0], &mut cached).unwrap();
+        assert_eq!(cached, Some(north));
+        for invalid in [[0.0; 4], [f32::NAN, 0.0, 0.0, 0.0]] {
+            assert_eq!(stable_fly_heading(invalid, &mut cached), Some(north));
+        }
+        let mut empty = None;
+        assert!(stable_fly_heading([0.0; 4], &mut empty).is_none());
     }
 
     #[test]

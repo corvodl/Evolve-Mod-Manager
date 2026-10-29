@@ -13,9 +13,10 @@ pub(super) enum Action {
     YPlus,
     ZMinus,
     ZPlus,
+    Fly,
 }
 impl Action {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Aim,
         Self::Save,
         Self::Return,
@@ -25,6 +26,7 @@ impl Action {
         Self::YPlus,
         Self::ZMinus,
         Self::ZPlus,
+        Self::Fly,
     ];
     pub fn index(self) -> usize {
         match self {
@@ -37,6 +39,7 @@ impl Action {
             Self::YPlus => 6,
             Self::ZMinus => 7,
             Self::ZPlus => 8,
+            Self::Fly => 9,
         }
     }
     pub fn from_index(i: usize) -> Option<Self> {
@@ -53,6 +56,7 @@ impl Action {
             Self::YPlus => "Y +20",
             Self::ZMinus => "Z −20",
             Self::ZPlus => "Z +20",
+            Self::Fly => "Toggle Fly Mode",
         }
     }
 }
@@ -61,8 +65,8 @@ impl Action {
 pub(super) struct Keybind(pub u8);
 
 // Explicitly loaded presets. Disabled by default so nothing steals keys until
-// the user opts in. F6–F12, then Ctrl+F6 and Ctrl+F7.
-pub(super) const SUGGESTED: [u8; 9] = [22, 23, 24, 25, 26, 27, 28, 1, 2];
+// the user opts in. F6–F12, then Ctrl+F6/F7/F8 (Fly Mode).
+pub(super) const SUGGESTED: [u8; 10] = [22, 23, 24, 25, 26, 27, 28, 1, 2, 3];
 
 impl Keybind {
     // None, then Ctrl/Alt/Shift/F6..F12 and unmodified F6..F12.
@@ -144,5 +148,10 @@ mod tests {
         for action in Action::ALL {
             assert_eq!(Action::from_index(action.index()), Some(action));
         }
+        assert_eq!(Action::Fly.index(), 9);
+        assert_eq!(
+            Keybind(SUGGESTED[Action::Fly.index()]).to_string(),
+            "Ctrl+F8"
+        );
     }
 }

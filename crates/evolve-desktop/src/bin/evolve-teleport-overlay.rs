@@ -69,7 +69,7 @@ mod windows {
     static KEYBOARD_HOOK: AtomicUsize = AtomicUsize::new(0);
     static PRESSED_FKEYS: AtomicU32 = AtomicU32::new(0);
     // Encoded as modifiers (high 16) and VK (low 16), same as WM_APP_BIND.
-    static BINDINGS: Mutex<[u32; 9]> = Mutex::new([0; 9]);
+    static BINDINGS: Mutex<[u32; 10]> = Mutex::new([0; 10]);
 
     #[repr(C)]
     #[derive(Default, Clone, Copy)]
@@ -280,7 +280,7 @@ mod windows {
         match msg {
             WM_APP_BIND => {
                 let id = wp as i32 + 1;
-                if !(1..=9).contains(&id) {
+                if !(1..=10).contains(&id) {
                     return 0;
                 }
                 unsafe { UnregisterHotKey(hwnd, id) };
@@ -312,7 +312,7 @@ mod windows {
                 0
             }
             WM_HOTKEY => {
-                if has_game_focus() && (1..=9).contains(&(wp as i32)) {
+                if has_game_focus() && (1..=10).contains(&(wp as i32)) {
                     println!("HOTKEY {}", wp - 1);
                     let _ = std::io::stdout().flush();
                 }
@@ -448,7 +448,7 @@ mod windows {
                 if !hook.is_null() {
                     unsafe { UnhookWindowsHookEx(hook) };
                 }
-                for i in 1..=9 {
+                for i in 1..=10 {
                     unsafe {
                         UnregisterHotKey(hwnd, i);
                     }
@@ -569,7 +569,7 @@ mod windows {
                             .filter_map(|s| s.parse::<u32>().ok())
                             .collect();
                         if parts.len() == 3
-                            && parts[0] < 9
+                            && parts[0] < 10
                             && parts[1] <= 7
                             && (parts[2] == 0 || (0x75..=0x7B).contains(&parts[2]))
                         {

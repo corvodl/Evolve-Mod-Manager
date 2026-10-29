@@ -390,6 +390,7 @@ struct State {
     viewer_load_progress: Option<Arc<AtomicUsize>>,
     viewer_from_library: bool,
     developer_password: String,
+    developer_sections_expanded: HashSet<private_pages::DeveloperSection>,
     developer_status: String,
     developer_unlocked: bool,
     /// Session-only opt-in, never restored from settings; does not modify client authentication.
@@ -1962,6 +1963,8 @@ enum Message {
     ToggleActivity,
     ToggleDocsSection(private_pages::DocsSection),
     DocsExpandAll(bool),
+    ToggleDeveloperSection(private_pages::DeveloperSection),
+    DeveloperExpandAll(bool),
     ClearActivity,
     ToggleSystemHealth,
     CheckSystemHealth,
@@ -4363,6 +4366,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.docs_expanded.extend(private_pages::DocsSection::ALL);
             }
         }
+        Message::ToggleDeveloperSection(section) => {
+            if !state.developer_sections_expanded.insert(section) {
+                state.developer_sections_expanded.remove(&section);
+            }
+        }
+        Message::DeveloperExpandAll(expand) => {
+            state.developer_sections_expanded.clear();
+            if expand {
+                state
+                    .developer_sections_expanded
+                    .extend(private_pages::DeveloperSection::ALL);
+            }
+        }
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
                 state.developer_password = value;
@@ -4374,12 +4390,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             // Explicit opt-in: all defaults remain Disabled unless the user
             // clicks Load suggested shortcuts, preserving custom preferences.
-            state.preferences.developer_hotkeys = developer_hotkeys::SUGGESTED;
+            state.preferences.developer_hotkeys = developer_hotkeys::SUGGESTED.to_vec();
             for action in developer_hotkeys::Action::ALL {
                 send_dev_bind(state, action);
             }
             state.developer_hotkey_status =
-                "9 suggested shortcuts assigned (F6–F12, Ctrl+F6/F7). Activate the overlay to use them.".into();
+                "10 suggested shortcuts assigned (F6–F12, Ctrl+F6/F7/F8). Activate the overlay to use them.".into();
             if let Ok(path) = settings_path()
                 && let Err(error) = save_to(&path, &state.preferences)
             {
@@ -4656,6 +4672,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 developer_hotkeys::Action::ZPlus => {
                     Task::done(Message::TeleportRelative(0.0, 0.0, 20.0))
+                }
+                developer_hotkeys::Action::Fly => {
+                    if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Fly) {
+                        Task::done(Message::TeleportHoldRelease)
+                    } else {
+                        Task::done(Message::TeleportHold(runtime_teleport::HoldMode::Fly))
+                    }
                 }
             };
         }
