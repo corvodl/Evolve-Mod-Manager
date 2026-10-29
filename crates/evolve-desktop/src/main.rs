@@ -7397,7 +7397,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.level_keys.clear();
             } else {
                 // Missing KeyReleased must not create perpetual movement.
-                state.level_keys.retain(|key| level_camera::physically_held(*key));
+                state
+                    .level_keys
+                    .retain(|key| level_camera::physically_held(*key));
                 if let Some(camera) = state.level_camera.as_mut() {
                     camera.advance(&state.level_keys, state.yaw, state.pitch, 1.0 / 60.0);
                 }
