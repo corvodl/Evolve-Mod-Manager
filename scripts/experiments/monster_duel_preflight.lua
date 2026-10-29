@@ -2,8 +2,11 @@
 -- Cheat Engine > Memory View > Tools > Lua Engine > Execute once.
 -- This does NOT spawn anything, edit memory, inject code or hook game functions.
 -- Build-specific addresses are borrowed from runtime_actors.rs (Oct 2026).
--- Tests whether an existing Defend / "Second Monster" minion has a normal
--- actor backlink, registered entity name, health, armor and stage fields.
+-- Works in an ordinary Stage 2 offline match; Defend and Second Monster
+-- map effects are not accessible in Stage 2.
+-- Tests whether nonlocal hunter bots/wildlife have actor backlinks, instance
+-- names, and plausible health/armor/stage fields.
+-- This does not demonstrate a second monster spawn or friendly fire.
 
 local ENTITY_SYSTEM_RVA = 0x28D58E8
 local NAME_RESOLVER_RVA = 0x28D59A8
@@ -336,9 +339,9 @@ local function compare(a,b)
 end
 
 local prompts = {
-  {"A - Baseline", "Enter an offline match as a monster. Press OK to snapshot."},
-  {"B - Second monster present", "If supported, start an offline match with the Second Monster map effect or Defend minions. Wait until the minion is visibly spawned, then press OK."},
-  {"C - After attack", "While in the same match as B, attempt an ability/melee hit on the minion, or observe monster-minion combat. Press OK soon afterward."}
+  {"A - Stage 2 baseline", "Start an ordinary offline Stage 2 match as a monster, with hunter bots present. Wait for the match to load, then press OK."},
+  {"B - Hunter bots observed", "STAY in the same match. Approach a visible hunter bot without attacking; note which hunter you are observing. Press OK."},
+  {"C - After monster attack", "While staying in this match, deliberately hit that hunter bot once with a monster melee or ability, then capture soon afterward. Press OK."}
 }
 
 local ok,err=pcall(function()
@@ -355,4 +358,6 @@ local ok,err=pcall(function()
   if #samples>=3 then compare(samples[2],samples[3]) end
 end)
 if not ok then print("[PREFLIGHT ERROR] "..tostring(err)) end
-print("\nMonster duel preflight finished. Copy the full Lua Engine output.")
+print("\nThe snapshots establish baseline actor enumeration and possible damage-field changes.")
+print("They do NOT validate spawning, monster-vs-monster damage or team overrides.")
+print("Monster duel preflight finished. Copy the full Lua Engine output.")
