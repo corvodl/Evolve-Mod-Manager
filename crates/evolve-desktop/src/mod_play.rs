@@ -625,9 +625,11 @@ mod tests {
         // Regression for the launch failure from a valid pending batch:
         // the profile catalog rejects reads UNTIL this transaction is
         // reconciled; Play with Mods must not pre-read it.
-        assert!(selected_signed_mods(&stage)
-            .unwrap_err()
-            .contains("Stage has a pending swap"));
+        assert!(
+            selected_signed_mods(&stage)
+                .unwrap_err()
+                .contains("Stage has a pending swap")
+        );
         assert!(restore_previous_staged_profile(&stage).unwrap());
         assert!(selected_signed_mods(&stage).unwrap().is_empty());
         assert_eq!(std::fs::read(&target).unwrap(), original);
