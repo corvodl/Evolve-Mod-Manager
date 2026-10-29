@@ -1,0 +1,4 @@
+# Update this file on main to request a Nightly release build.
+# GitHub Actions runs .github/workflows/nightly.yml only on this file's main-branch change or manual dispatch.
+request: merge-122-coordinate-freeze
+requested: 2026-10-28

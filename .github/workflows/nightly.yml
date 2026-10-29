@@ -1,9 +1,15 @@
 name: Nightly 0.1.0 Windows release
 
 on:
-  # Nightlies are explicitly released only when manually dispatched.
-  # Ordinary pushes, PR merges, and schedule events do not publish releases.
+  # Manual developer trigger remains available in GitHub Actions.
   workflow_dispatch:
+  # Connector-safe explicit trigger: update the request file on main to
+  # publish a nightly from that exact main commit. No ordinary merges,
+  # source-code pushes, PRs or schedules publish releases.
+  push:
+    branches: [main]
+    paths:
+      - '.github/nightly-request.txt'
 
 permissions:
   contents: write
