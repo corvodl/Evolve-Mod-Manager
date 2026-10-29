@@ -351,6 +351,8 @@ struct State {
     )>,
     level_read_only: bool,
     level_surfaces: Option<Arc<Vec<textured::Surface>>>,
+    level_project: Option<modding_projects::ProjectRow>,
+    level_open_after_copy: bool,
     level_diagnostics: Vec<String>,
     level_show_overview: bool,
     terrain: Option<TerrainInfo>,
@@ -724,6 +726,7 @@ enum Operation {
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
     InspectLevel(PathBuf),
     OpenImportedMap(evolve_core::ImportedPak, usize, SharedCache),
+    OpenProjectLevel(modding_projects::ProjectRow, usize, SharedCache, PathBuf),
     ExportEditedLevel(
         PathBuf,
         PathBuf,
@@ -1272,6 +1275,10 @@ impl Operation {
                 level_library::open(archive, index, &cache)
                     .map(|map| Completed::ImportedMap(Box::new(map)))
             }
+            Self::OpenProjectLevel(project, index, cache, library_root) => {
+                level_library::open_project(project, index, &cache, &library_root)
+                    .map(|map| Completed::ImportedMap(Box::new(map)))
+            }
             Self::InspectLevel(source) => {
                 let checksum = level_source_hash(&source)?;
                 let scene = load_level_scene(&source).map_err(|e| e.to_string())?;
@@ -1818,6 +1825,7 @@ enum Message {
     LibrarySelect(usize),
     LibraryOpenMap(usize),
     LevelMapSelect(usize),
+    LevelOpenSelectedModProject,
     LevelToggleOverview,
     LibraryPreview,
     LibraryMakeModProject,
@@ -2570,7 +2578,7 @@ fn operation_label(operation: &Operation) -> &'static str {
             "Loading original animation clip"
         }
         Operation::InspectLevel(..) | Operation::InspectTerrain(..) => "Inspecting level resources",
-        Operation::OpenImportedMap(..) => "Assembling imported map scene",
+        Operation::OpenImportedMap(..) | Operation::OpenProjectLevel(..) => "Assembling level scene",
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
         Operation::ExtractSignedPak(..) => "Extracting signed CryPAK",
@@ -4249,6 +4257,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::OpenImportedMap(archive, 0, cache));
         }
         Message::LevelToggleOverview => state.level_show_overview = !state.level_show_overview,
+        Message::LevelOpenSelectedModProject => {
+            let Some(project) = state.modding_selected.and_then(|i| state.modding_projects.as_ref()?.get(i)).cloned() else {
+                state.status = "Select an editable Modding project first.".into();
+                return Task::none();
+            };
+            if state.busy { return Task::none(); }
+            let cache = state.preview_cache.clone();
+            let root = PathBuf::from(&state.library_root);
+            return launch(state, Operation::OpenProjectLevel(project, 0, cache, root));
+        }
         Message::LevelMapSelect(index) => {
             let Some((archive, maps, _)) = &state.library_map else {
                 return Task::none();
@@ -4256,9 +4274,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if index >= maps.len() || state.busy {
                 return Task::none();
             }
+            let project = state.level_project.clone();
             let archive = archive.clone();
             let cache = state.preview_cache.clone();
-            return launch(state, Operation::OpenImportedMap(archive, index, cache));
+            return if let Some(project) = project {
+                let root = PathBuf::from(&state.library_root);
+                launch(state, Operation::OpenProjectLevel(project, index, cache, root))
+            } else { launch(state, Operation::OpenImportedMap(archive, index, cache)) };
         }
         Message::LibrarySelect(index) => {
             if state
@@ -4329,7 +4351,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let progress = Arc::new(ProjectCopyProgress::default());
             state.project_copy_progress = Some(progress.clone());
             let stage = PathBuf::from(&state.preferences.stage);
-            state.modding_open_editor_when_scanned = true;
+            state.level_open_after_copy = state.page == Some(Page::Levels);
+            state.modding_open_editor_when_scanned = !state.level_open_after_copy;
             return launch(
                 state,
                 Operation::CreateProjectFromLibrary(
@@ -10765,6 +10788,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
                     state.status = format!("Loaded {} editable project(s).", projects.len());
                     state.modding_projects = Some(projects);
+                    if state.level_open_after_copy {
+                        state.level_open_after_copy = false;
+                        if let Some(project) = state.modding_selected.and_then(|index| state.modding_projects.as_ref()?.get(index)).cloned() {
+                            let cache = state.preview_cache.clone();
+                            let root = PathBuf::from(&state.library_root);
+                            return launch(state, Operation::OpenProjectLevel(project, 0, cache, root));
+                        }
+                    }
                     state.modding_name_input = state
                         .modding_selected
                         .and_then(|index| state.modding_projects.as_ref()?.get(index))
@@ -11656,27 +11687,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .source
                         .as_ref()
                         .map_or_else(String::new, |p| p.display().to_string());
-                    state.assets_root = PathBuf::from(&loaded.archive.directory)
-                        .join("files")
-                        .display()
-                        .to_string();
-                    state.terrain_source =
-                        loaded.maps[loaded.index]
-                            .terrain
-                            .as_ref()
-                            .map_or_else(String::new, |p| {
-                                PathBuf::from(&loaded.archive.directory)
-                                    .join("files")
-                                    .join(p)
-                                    .display()
-                                    .to_string()
-                            });
+                    state.assets_root = loaded.project.as_ref().map_or_else(|| PathBuf::from(&loaded.archive.directory).join("files"), |project| project.workspace.join("files")).display().to_string();
+                    state.terrain_source = loaded.maps[loaded.index].terrain.as_ref().map_or_else(String::new, |p| PathBuf::from(&state.assets_root).join(p).display().to_string());
                     state.library_map = Some((loaded.archive.clone(), loaded.maps, loaded.index));
-                    state.level_read_only = true;
+                    state.level_read_only = loaded.project.is_none();
+                    state.level_project = loaded.project;
                     state.level_scene = loaded.scene.map(Arc::new);
                     state.level_source = loaded.source;
-                    state.level_source_sha.clear();
-                    state.level_original_transforms.clear();
+                    state.level_source_sha = state.level_source.as_ref().and_then(|p| level_source_hash(p).ok()).unwrap_or_default();
+                    state.level_original_transforms = state.level_scene.as_ref().map(|scene| scene.objects.iter().map(|obj| (obj.id.clone(), obj.local)).collect()).unwrap_or_default();
                     state.level_dirty_count = 0;
                     state.level_undo.clear();
                     state.level_redo.clear();
@@ -11712,6 +11731,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Level(scene, source, hash)) => {
                     state.library_map = None;
+                    state.level_project = None;
                     state.level_surfaces = None;
                     state.level_read_only = false;
                     state.level_diagnostics.clear();
