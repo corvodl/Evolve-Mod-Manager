@@ -4426,7 +4426,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 || state.teleport_busy
                 || state.teleport_hold_cancel.is_some()
             {
-                state.teleport_hold_status = "Finish other teleport operations and enable actor writes first".into();
+                state.teleport_hold_status =
+                    "Finish other teleport operations and enable actor writes first".into();
                 return Task::none();
             }
             let Some(snapshot) = state.runtime_snapshot.clone() else {
@@ -4439,8 +4440,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.teleport_hold_releasing = false;
             state.teleport_hold_generation = state.teleport_hold_generation.wrapping_add(1);
             let generation = state.teleport_hold_generation;
-            state.teleport_hold_status =
-                format!("Engaging {} hold at the current physics coordinates...", mode.label());
+            state.teleport_hold_status = format!(
+                "Engaging {} hold at the current physics coordinates...",
+                mode.label()
+            );
             let root = state.preferences.game_storage_root.clone();
             return Task::perform(
                 async move {
@@ -4470,7 +4473,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match result {
                 Ok(reading) => {
                     state.teleport_hold_status =
-                        "Coordinate hold released; normal physics resumes (falling may accelerate)".into();
+                        "Coordinate hold released; normal physics resumes (falling may accelerate)"
+                            .into();
                     notify_dev_overlay(state, "Coordinate hold released");
                     state.teleport_reading = Some(reading);
                 }
@@ -4559,7 +4563,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::TeleportAim => {
-            if !state.developer_unlocked || state.teleport_busy || state.teleport_hold_cancel.is_some() {
+            if !state.developer_unlocked
+                || state.teleport_busy
+                || state.teleport_hold_cancel.is_some()
+            {
                 return Task::none();
             }
             let raw = state.teleport_aim_distance.trim();
@@ -5030,7 +5037,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             if !armed && state.teleport_hold_cancel.is_some() {
-                state.teleport_hold_status = "Unfreeze coordinates before disabling actor writes".into();
+                state.teleport_hold_status =
+                    "Unfreeze coordinates before disabling actor writes".into();
                 return Task::none();
             }
             if let Some(cancel) = &state.live_edit_cancel {
@@ -5383,7 +5391,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::RuntimeDetect => {
             if state.teleport_hold_cancel.is_some() {
-                state.teleport_hold_status = "Unfreeze coordinates before detecting another process".into();
+                state.teleport_hold_status =
+                    "Unfreeze coordinates before detecting another process".into();
                 return Task::none();
             }
             if !state.developer_unlocked || state.runtime_checking {
@@ -5632,7 +5641,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LockDeveloper => {
             if state.teleport_hold_cancel.is_some() {
-                state.teleport_hold_status = "Unfreeze coordinates before locking the Developer menu".into();
+                state.teleport_hold_status =
+                    "Unfreeze coordinates before locking the Developer menu".into();
                 return Task::none();
             }
             state.actor_frozen.clear();
@@ -5713,7 +5723,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::DeveloperOnlineMods(allow) => {
             if allow && state.teleport_hold_cancel.is_some() {
-                state.teleport_hold_status = "Unfreeze coordinates before enabling online testing".into();
+                state.teleport_hold_status =
+                    "Unfreeze coordinates before enabling online testing".into();
                 return Task::none();
             }
             if !state.developer_unlocked
