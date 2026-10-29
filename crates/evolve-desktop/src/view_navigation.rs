@@ -25,6 +25,15 @@ impl Navigation {
         shift_held: bool,
     ) -> Option<Gesture> {
         match event {
+            Event::Window(iced::window::Event::Unfocused)
+            | Event::Mouse(mouse::Event::CursorLeft) => {
+                // An RMB release can occur outside the window. Never keep
+                // mouse-look/orbit armed after focus or pointer is lost.
+                self.last = None;
+                self.active_button = None;
+                self.panning = false;
+                None
+            }
             Event::Mouse(mouse::Event::ButtonPressed(button))
                 if matches!(
                     button,

@@ -125,7 +125,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use textured::Scene as TexturedScene;
 use updater::{ReleaseUpdate, UpdateChannel, discover_update};
 use updater_apply::{PreparedUpdate, launch_worker, prepare_update};
@@ -364,6 +364,8 @@ struct State {
     level_read_only: bool,
     level_camera: Option<level_camera::Camera>,
     level_keys: HashSet<char>,
+    level_window_focused: bool,
+    level_last_pressed_at: Option<Instant>,
     level_surfaces: Option<Arc<Vec<textured::Surface>>>,
     level_picks: Option<Arc<Vec<level_scene_renderer::PickRange>>>,
     level_world: Option<Arc<world_instances::World>>,
@@ -1928,6 +1930,7 @@ enum Message {
     LevelCameraFocus,
     LevelCameraReset,
     LevelCameraKey(window::Id, char, bool),
+    LevelCameraWindowFocus(window::Id, bool),
     LevelCameraTick,
     ViewerSearchChanged(String),
     ViewerPreviousPage,
@@ -7372,20 +7375,37 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .as_ref()
                 .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
         }
+        Message::LevelCameraWindowFocus(_, focused) => {
+            state.level_window_focused = focused;
+            // Never resume an old held movement when the window reappears.
+            state.level_keys.clear();
+            state.level_last_pressed_at = None;
+        }
         Message::LevelCameraKey(_, key, pressed) => {
             if key == 'f' && pressed {
                 return update(state, Message::LevelCameraFocus);
             }
             if ['w', 'a', 's', 'd', 'q', 'e'].contains(&key) {
-                if pressed {
+                if pressed && state.level_window_focused {
                     state.level_keys.insert(key);
+                    state.level_last_pressed_at = Some(Instant::now());
                 } else {
+                    // Releases are honored regardless of event capture.
                     state.level_keys.remove(&key);
                 }
             }
         }
         Message::LevelCameraTick => {
-            if let Some(camera) = state.level_camera.as_mut() {
+            if !state.level_window_focused
+                || state
+                    .level_last_pressed_at
+                    .is_some_and(|last| last.elapsed() > Duration::from_secs(5))
+            {
+                // Safe watchdog: stop on lost focus or missing KeyReleased.
+                // Normal Windows key-repeat refreshes this while held.
+                state.level_keys.clear();
+                state.level_last_pressed_at = None;
+            } else if let Some(camera) = state.level_camera.as_mut() {
                 camera.advance(&state.level_keys, state.yaw, state.pitch, 1.0 / 60.0);
             }
         }
@@ -13297,6 +13317,8 @@ impl Desktop {
             ..window::Settings::default()
         });
         self.level_id = Some(id);
+        self.state.level_window_focused = true;
+        self.state.level_keys.clear();
         opened.map(|_| Message::ViewerOpened)
     }
 
@@ -13405,6 +13427,7 @@ impl Desktop {
             Message::OpenViewer => self.open_viewer(),
             Message::OpenLevelEditorWindow => self.open_level_editor(),
             Message::LevelCameraKey(id, _, _) if self.level_id != Some(id) => Task::none(),
+            Message::LevelCameraWindowFocus(id, _) if self.level_id != Some(id) => Task::none(),
             Message::ExportOpen => {
                 let prepare = update(&mut self.state, Message::ExportOpen);
                 Task::batch([prepare, self.open_export()])
@@ -13471,6 +13494,7 @@ impl Desktop {
                     }
                     if self.level_id == Some(id) {
                         self.level_id = None;
+                        self.state.level_window_focused = false;
                         self.state.level_keys.clear();
                     }
                     if self.viewer_id == Some(id) {
@@ -13640,7 +13664,10 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let level_camera_tick = if self.level_id.is_some() {
+        let level_camera_tick = if self.level_id.is_some()
+            && self.state.level_window_focused
+            && !self.state.level_keys.is_empty()
+        {
             iced::time::every(Duration::from_millis(16)).map(|_| Message::LevelCameraTick)
         } else {
             Subscription::none()
@@ -13732,6 +13759,12 @@ impl Desktop {
                 }) => Some(Message::DismissMenus),
                 iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                     Some(Message::ModifiersChanged(modifiers))
+                }
+                iced::Event::Window(window::Event::Unfocused) => {
+                    Some(Message::LevelCameraWindowFocus(id, false))
+                }
+                iced::Event::Window(window::Event::Focused) => {
+                    Some(Message::LevelCameraWindowFocus(id, true))
                 }
                 iced::Event::Window(window::Event::FileDropped(path)) => {
                     Some(Message::FileDropped(id, path))

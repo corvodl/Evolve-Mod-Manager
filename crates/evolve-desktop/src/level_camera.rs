@@ -143,6 +143,17 @@ mod tests {
         assert!((camera.position[2] - 1.0).abs() < 0.001);
     }
     #[test]
+    fn flight_stops_immediately_when_no_keys_remain() {
+        let mut camera = Camera::default();
+        let original = camera.position;
+        camera.advance(&HashSet::from(['w']), 0.0, 0.0, 0.05);
+        assert_ne!(camera.position, original);
+        let released_position = camera.position;
+        camera.advance(&HashSet::new(), 0.0, 0.0, 0.05);
+        assert_eq!(camera.position, released_position);
+    }
+
+    #[test]
     fn camera_projects_forward_center_and_rejects_behind() {
         let camera = Camera::default();
         let target = camera.project([0.0, 10.0, 0.0], 0.0, 0.0, 1.0, 1.0);
