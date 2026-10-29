@@ -12,7 +12,11 @@ pub(super) struct Camera {
 
 impl Default for Camera {
     fn default() -> Self {
-        Self { position: [0.0; 3], speed: 120.0, fov_degrees: 70.0 }
+        Self {
+            position: [0.0; 3],
+            speed: 120.0,
+            fov_degrees: 70.0,
+        }
     }
 }
 
@@ -34,11 +38,17 @@ impl Camera {
             return Self::default();
         }
         let center = std::array::from_fn(|axis| (lo[axis] + hi[axis]) * 0.5);
-        let extent = (0..3).map(|axis| hi[axis] - lo[axis]).fold(1.0f32, f32::max);
+        let extent = (0..3)
+            .map(|axis| hi[axis] - lo[axis])
+            .fold(1.0f32, f32::max);
         let distance = (extent * 1.45).max(10.0);
         let (forward, _, _) = basis(yaw, pitch);
         let position = std::array::from_fn(|i| center[i] - forward[i] * distance);
-        Self { position, speed: (extent * 0.12).clamp(1.0, 2500.0), ..Self::default() }
+        Self {
+            position,
+            speed: (extent * 0.12).clamp(1.0, 2500.0),
+            ..Self::default()
+        }
     }
 
     pub fn focus(&mut self, point: [f32; 3], yaw: f32, pitch: f32, distance: f32) {
@@ -50,33 +60,50 @@ impl Camera {
     /// Camera-relative first-person flight. W/S forward/back, A/D strafe,
     /// E/Q up/down in world Z; diagonals are normalized to constant speed.
     pub fn advance(&mut self, keys: &HashSet<char>, yaw: f32, pitch: f32, seconds: f32) {
-        if !seconds.is_finite() || !(0.0..=0.1).contains(&seconds) { return; }
+        if !seconds.is_finite() || !(0.0..=0.1).contains(&seconds) {
+            return;
+        }
         let (forward, right, _) = basis(yaw, pitch);
         let axis = |a: char, b: char| -> f32 {
-            if keys.contains(&a) { 1.0 } else { 0.0 } - if keys.contains(&b) { 1.0 } else { 0.0 }
+            if keys.contains(&a) {
+                1.0
+            } else {
+                0.0
+            }
+            -if keys.contains(&b) { 1.0 } else { 0.0 }
         };
-        let f = axis('w','s');
-        let r = axis('d','a');
-        let z = axis('e','q');
+        let f = axis('w', 's');
+        let r = axis('d', 'a');
+        let z = axis('e', 'q');
         let mut vector = [
             f * forward[0] + r * right[0],
             f * forward[1] + r * right[1],
             f * forward[2] + z,
         ];
         let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
-        if norm <= 1e-6 { return; }
+        if norm <= 1e-6 {
+            return;
+        }
         let distance = self.speed.clamp(0.1, 5000.0) * seconds / norm;
-        for i in 0..3 { vector[i] *= distance; self.position[i] += vector[i]; }
+        for i in 0..3 {
+            vector[i] *= distance;
+            self.position[i] += vector[i];
+        }
     }
 
     /// Returns NDC X/Y and depth with a finite near clip. Geometry beyond the
     /// near plane needs proper clipping in the future GPU-instanced renderer.
-    pub fn project(&self, point: [f32; 3], yaw: f32, pitch: f32, aspect: f32, zoom: f32) -> [f32; 3] {
+    pub fn project(
+        &self,
+        point: [f32; 3],
+        yaw: f32,
+        pitch: f32,
+        aspect: f32,
+        zoom: f32,
+    ) -> [f32; 3] {
         let (forward, right, up) = basis(yaw, pitch);
         let delta = std::array::from_fn::<_, 3, _>(|i| point[i] - self.position[i]);
-        let dot = |vector: [f32; 3]| -> f32 {
-            (0..3).map(|i| delta[i] * vector[i]).sum()
-        };
+        let dot = |vector: [f32; 3]| -> f32 { (0..3).map(|i| delta[i] * vector[i]).sum() };
         let depth = dot(forward);
         if !depth.is_finite() || depth <= 0.1 {
             return [3.0, 3.0, 1.0];
@@ -110,7 +137,7 @@ mod tests {
     fn first_person_camera_moves_in_view_direction_and_strafes() {
         let mut camera = Camera::default();
         camera.speed = 10.0;
-        camera.advance(&HashSet::from(['w']), 0.0, 0.0, 1.0/10.0);
+        camera.advance(&HashSet::from(['w']), 0.0, 0.0, 1.0 / 10.0);
         assert!((camera.position[1] - 1.0).abs() < 0.001);
         camera.advance(&HashSet::from(['d']), 0.0, 0.0, 0.1);
         assert!((camera.position[0] - 1.0).abs() < 0.001);
@@ -123,6 +150,9 @@ mod tests {
         let target = camera.project([0.0, 10.0, 0.0], 0.0, 0.0, 1.0, 1.0);
         assert!(target[0].abs() < 0.01 && target[1].abs() < 0.01);
         assert!(target[2] > 0.0 && target[2] < 1.0);
-        assert_eq!(camera.project([0.0, -10.0, 0.0], 0.0, 0.0, 1.0, 1.0), [3.0, 3.0, 1.0]);
+        assert_eq!(
+            camera.project([0.0, -10.0, 0.0], 0.0, 0.0, 1.0, 1.0),
+            [3.0, 3.0, 1.0]
+        );
     }
 }
