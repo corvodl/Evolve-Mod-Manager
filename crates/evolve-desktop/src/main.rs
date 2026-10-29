@@ -19,7 +19,6 @@ mod direct_runtime;
 mod discord_presence;
 mod explorer_tree;
 mod gfx_bundled_tools;
-mod text_asset_editor;
 mod gfx_dependencies;
 mod gfx_editor;
 mod gfx_external_textures;
@@ -74,6 +73,7 @@ mod staged_library;
 mod standard_user_launch;
 mod storage_usage;
 mod system_health;
+mod text_asset_editor;
 mod textured;
 mod updater;
 mod updater_apply;
@@ -3926,14 +3926,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match text_asset_editor::Document::open(
                 Path::new(&inventory.root),
                 &member,
-                if state.viewer_from_library { None } else { project },
+                if state.viewer_from_library {
+                    None
+                } else {
+                    project
+                },
                 PathBuf::from(&state.preferences.projects),
             ) {
                 Ok(document) => {
                     state.status = if document.editable {
-                        format!("Editing {member} — Save creates a verified EditorBackups revision.")
+                        format!(
+                            "Editing {member} — Save creates a verified EditorBackups revision."
+                        )
                     } else {
-                        format!("Previewing {member} (read-only Asset Library source). Open an editable Modding project to save.")
+                        format!(
+                            "Previewing {member} (read-only Asset Library source). Open an editable Modding project to save."
+                        )
                     };
                     state.input = PathBuf::from(&inventory.root)
                         .join(&member)
@@ -3951,13 +3959,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::TextEditorAction(action) => {
             if let Some(doc) = state.text_document.as_mut()
-                && doc.editable && !state.busy
+                && doc.editable
+                && !state.busy
             {
                 doc.content.perform(action);
                 if doc.content.text().len() as u64 > text_asset_editor::MAX_TEXT_BYTES {
                     doc.discard();
                     state.status =
-                        "Text edit exceeded 2 MiB. Current unsaved buffer reset to last save.".into();
+                        "Text edit exceeded 2 MiB. Current unsaved buffer reset to last save."
+                            .into();
                 }
             }
         }
@@ -3974,7 +3984,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(changed) => {
                     let member = doc.member.clone();
                     state.status = if changed {
-                        format!("Saved {member} into the editable project with a verified backup. Build the mod to sign the updated PAK.")
+                        format!(
+                            "Saved {member} into the editable project with a verified backup. Build the mod to sign the updated PAK."
+                        )
                     } else {
                         format!("{member} has no new changes.")
                     };
@@ -7546,7 +7558,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.text_document.as_ref().is_some_and(|doc| doc.dirty()) {
                 if state.selected != Some(index) {
                     state.status =
-                        "Save or Discard the open text changes before selecting another asset.".into();
+                        "Save or Discard the open text changes before selecting another asset."
+                            .into();
                 }
                 return Task::none();
             }
@@ -8060,7 +8073,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerPreviewSelected => {
             if state.text_document.as_ref().is_some_and(|doc| doc.dirty()) {
-                state.status = "Save or Discard the current text edits before previewing another asset.".into();
+                state.status =
+                    "Save or Discard the current text edits before previewing another asset."
+                        .into();
                 return Task::none();
             }
             if state.busy {
