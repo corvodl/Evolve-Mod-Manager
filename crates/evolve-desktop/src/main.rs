@@ -4533,7 +4533,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             else {
                 return Task::done(Message::TeleportDetect(TeleportRequest::Hold(mode)));
             };
-            let fly_speed = if mode == runtime_teleport::HoldMode::Fly {
+            let fly_speed = if matches!(
+                mode,
+                runtime_teleport::HoldMode::Z | runtime_teleport::HoldMode::Fly
+            ) {
                 let raw = state.teleport_fly_speed.trim();
                 match runtime_teleport::parse_fly_speed(if raw.is_empty() { "8" } else { raw }) {
                     Ok(speed) => speed,
@@ -4554,6 +4557,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.teleport_hold_status = if mode == runtime_teleport::HoldMode::Fly {
                 format!(
                     "Starting approximate Fly Mode at {fly_speed:.1} units/sec. Switch to Evolve and use WASD, Space, Ctrl."
+                )
+            } else if mode == runtime_teleport::HoldMode::Z {
+                format!(
+                    "Starting hover at {fly_speed:.1} units/sec. WASD moves X/Y explicitly; Z stays fixed even if normal airborne movement is blocked."
                 )
             } else {
                 format!(
