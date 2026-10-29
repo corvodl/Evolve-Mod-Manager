@@ -987,7 +987,12 @@ pub(crate) mod tests {
             let at = 16 + i * 16;
             let offset = u32at(&source, at + 12).unwrap() as usize;
             let size = u32at(&source, at + 8).unwrap() as usize;
-            add(i, CRCHF_STREAM, (i + 1) as u32, &source[offset..offset + size]);
+            add(
+                i,
+                CRCHF_STREAM,
+                (i + 1) as u32,
+                &source[offset..offset + size],
+            );
         }
         let mut mesh = vec![0u8; 104];
         mesh[8..12].copy_from_slice(&3u32.to_le_bytes());
