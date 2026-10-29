@@ -26,10 +26,18 @@ fn monster_stage(word: u32) -> Option<u8> {
 fn known_monster(name: &str) -> bool {
     // Match internal entity-name families, never the fallback "Actor entity ..."
     // label. This prevents hunter offsets being interpreted as monster energy.
-    ["Goliath", "Kraken", "Grounder", "Teleporter", "Rocky",
-     "Rockybobsicle", "Lurker", "Scorpid"]
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
+    [
+        "Goliath",
+        "Kraken",
+        "Grounder",
+        "Teleporter",
+        "Rocky",
+        "Rockybobsicle",
+        "Lurker",
+        "Scorpid",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
 }
 
 fn evolution_current(raw: u32, key: u32) -> f32 {
@@ -51,7 +59,12 @@ fn bounded_resource(current: f32, maximum: f32) -> bool {
         && (0.0..=1000.0).contains(&maximum)
 }
 
-fn checked_evolution(stage_word: u32, current_raw: u32, max_raw: u32, key: u32) -> Result<(u8, f32, f32), &'static str> {
+fn checked_evolution(
+    stage_word: u32,
+    current_raw: u32,
+    max_raw: u32,
+    key: u32,
+) -> Result<(u8, f32, f32), &'static str> {
     let stage = monster_stage(stage_word).ok_or("Evolution stage unrecognized")?;
     let current = evolution_current(current_raw, key);
     let maximum = evolution_max(max_raw, key);
@@ -89,7 +102,11 @@ impl EvolutionEnergy {
         if self.stage == 3 || !bounded_resource(self.current, self.maximum) || self.maximum <= 0.0 {
             return None;
         }
-        Some((self.current / self.maximum * 100.0).round().clamp(0.0, 100.0) as u8)
+        Some(
+            (self.current / self.maximum * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as u8,
+        )
     }
 }
 
@@ -257,7 +274,9 @@ mod windows {
         }
 
         let stage_word = u32_at(h, local.address + 0x1260)?;
-        let key_at = base.checked_add(MONSTER_ENERGY_KEY_RVA).ok_or("Key RVA overflow")?;
+        let key_at = base
+            .checked_add(MONSTER_ENERGY_KEY_RVA)
+            .ok_or("Key RVA overflow")?;
         let key = u32_at(h, key_at)?;
         let evolution_raw = u32_at(h, local.address + 0x16FC)?;
         let evolution_max_raw = u32_at(h, local.address + 0x1700)?;
@@ -274,10 +293,16 @@ mod windows {
             return Err("Monster identity, stage or encoding key changed during read".into());
         }
 
-        let decoded_evolution = checked_evolution(stage_word, evolution_raw, evolution_max_raw, key);
-        let snapshot = decoded_evolution.as_ref().ok().map(|&(stage, current, maximum)| {
-            EvolutionEnergy { stage, current, maximum }
-        });
+        let decoded_evolution =
+            checked_evolution(stage_word, evolution_raw, evolution_max_raw, key);
+        let snapshot = decoded_evolution
+            .as_ref()
+            .ok()
+            .map(|&(stage, current, maximum)| EvolutionEnergy {
+                stage,
+                current,
+                maximum,
+            });
         let evolution = match decoded_evolution {
             Ok((stage, current, maximum)) => {
                 if stage == 3 {
@@ -290,7 +315,9 @@ mod windows {
         };
         let traversal = match checked_traversal(traversal_raw, traversal_max_raw, key) {
             Ok((current, maximum)) => {
-                format!("Traversal: {current:.2}/{maximum:.2}; READ-ONLY (no recharge-rate offset verified)")
+                format!(
+                    "Traversal: {current:.2}/{maximum:.2}; READ-ONLY (no recharge-rate offset verified)"
+                )
             }
             Err(reason) => format!("Traversal unavailable: {reason}"),
         };
@@ -521,14 +548,13 @@ mod windows {
 
         // Energy decoding is a separate, strictly read-only local monster path.
         // Failed validation is reported, not replaced with guessed values.
-        let (evolution_energy, traversal_energy) =
-            match monster_resources(&h, base, local) {
-                Ok((evolution, traversal, _)) => (evolution, traversal),
-                Err(reason) => (
-                    format!("Evolution unavailable: {reason}"),
-                    format!("Traversal unavailable: {reason}"),
-                ),
-            };
+        let (evolution_energy, traversal_energy) = match monster_resources(&h, base, local) {
+            Ok((evolution, traversal, _)) => (evolution, traversal),
+            Err(reason) => (
+                format!("Evolution unavailable: {reason}"),
+                format!("Traversal unavailable: {reason}"),
+            ),
+        };
 
         // Do not equate these offsets with a complete projectile class decoder.
         let projectiles = projectile_observations();
@@ -619,31 +645,99 @@ mod tests {
     #[test]
     fn evolution_decodes_two_keys_and_stage_bounds() {
         for key in [0xB805B8B7, 0xC0B73BB2] {
-            for (stage, current, maximum) in [(0x101, 0.0f32, 24.0f32),
-                (0x101, 24.0, 24.0), (0x202, 0.0, 28.0),
-                (0x202, 28.0, 28.0), (0x303, 0.0, 0.0)] {
+            for (stage, current, maximum) in [
+                (0x101, 0.0f32, 24.0f32),
+                (0x101, 24.0, 24.0),
+                (0x202, 0.0, 28.0),
+                (0x202, 28.0, 28.0),
+                (0x303, 0.0, 0.0),
+            ] {
                 let raw_current = current.to_bits().rotate_left(9) ^ key;
                 let raw_max = maximum.to_bits().rotate_right(16) ^ key;
-                assert_eq!(checked_evolution(stage, raw_current, raw_max, key).unwrap(),
-                    (monster_stage(stage).unwrap(), current, maximum));
+                assert_eq!(
+                    checked_evolution(stage, raw_current, raw_max, key).unwrap(),
+                    (monster_stage(stage).unwrap(), current, maximum)
+                );
             }
             let bad_current = f32::NAN.to_bits().rotate_left(9) ^ key;
             let max = 24.0f32.to_bits().rotate_right(16) ^ key;
             assert!(checked_evolution(0x101, bad_current, max, key).is_err());
-            assert!(checked_evolution(0x303, 1.0f32.to_bits().rotate_left(9)^key,
-                0.0f32.to_bits().rotate_right(16)^key).is_err());
+            assert!(
+                checked_evolution(
+                    0x303,
+                    1.0f32.to_bits().rotate_left(9) ^ key,
+                    0.0f32.to_bits().rotate_right(16) ^ key
+                )
+                .is_err()
+            );
         }
     }
 
     #[test]
     fn evolution_percentage_is_rounded_and_stage_three_hidden() {
-        assert_eq!(EvolutionEnergy { stage: 1, current: 0.0, maximum: 24.0 }.percentage(), Some(0));
-        assert_eq!(EvolutionEnergy { stage: 1, current: 12.0, maximum: 24.0 }.percentage(), Some(50));
-        assert_eq!(EvolutionEnergy { stage: 2, current: 11.0, maximum: 28.0 }.percentage(), Some(39));
-        assert_eq!(EvolutionEnergy { stage: 2, current: 28.0, maximum: 28.0 }.percentage(), Some(100));
-        assert_eq!(EvolutionEnergy { stage: 3, current: 0.0, maximum: 0.0 }.percentage(), None);
-        assert_eq!(EvolutionEnergy { stage: 1, current: f32::INFINITY, maximum: 24.0 }.percentage(), None);
-        assert_eq!(EvolutionEnergy { stage: 2, current: 29.0, maximum: 28.0 }.percentage(), None);
+        assert_eq!(
+            EvolutionEnergy {
+                stage: 1,
+                current: 0.0,
+                maximum: 24.0
+            }
+            .percentage(),
+            Some(0)
+        );
+        assert_eq!(
+            EvolutionEnergy {
+                stage: 1,
+                current: 12.0,
+                maximum: 24.0
+            }
+            .percentage(),
+            Some(50)
+        );
+        assert_eq!(
+            EvolutionEnergy {
+                stage: 2,
+                current: 11.0,
+                maximum: 28.0
+            }
+            .percentage(),
+            Some(39)
+        );
+        assert_eq!(
+            EvolutionEnergy {
+                stage: 2,
+                current: 28.0,
+                maximum: 28.0
+            }
+            .percentage(),
+            Some(100)
+        );
+        assert_eq!(
+            EvolutionEnergy {
+                stage: 3,
+                current: 0.0,
+                maximum: 0.0
+            }
+            .percentage(),
+            None
+        );
+        assert_eq!(
+            EvolutionEnergy {
+                stage: 1,
+                current: f32::INFINITY,
+                maximum: 24.0
+            }
+            .percentage(),
+            None
+        );
+        assert_eq!(
+            EvolutionEnergy {
+                stage: 2,
+                current: 29.0,
+                maximum: 28.0
+            }
+            .percentage(),
+            None
+        );
     }
 
     #[test]
@@ -653,8 +747,10 @@ mod tests {
             let maximum = 100.0f32;
             let raw_current = current.to_bits() ^ key ^ 0x0093F6E4;
             let raw_max = maximum.to_bits().rotate_right(7) ^ key;
-            assert_eq!(checked_traversal(raw_current, raw_max, key).unwrap(),
-                (current, maximum));
+            assert_eq!(
+                checked_traversal(raw_current, raw_max, key).unwrap(),
+                (current, maximum)
+            );
             let nan = f32::INFINITY.to_bits() ^ key ^ 0x0093F6E4;
             assert!(checked_traversal(nan, raw_max, key).is_err());
         }
