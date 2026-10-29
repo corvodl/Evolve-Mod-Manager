@@ -2377,7 +2377,7 @@ mod tests {
 
         // Real official-tool stages have no manager-generated private PEM.
         assert!(!keys.join("private_key.pem").exists());
-        assert!(super::modding_keys::signing_keys(&stage).is_err());
+        assert!(super::super::modding_keys::signing_keys(&stage).is_err());
         let (original, custom) = offline_test_verification_keys(&stage).unwrap();
         assert_eq!(original, temp.path().join("RSAKeyData.bin"));
         assert_eq!(custom, keys.join("public_key.bin"));
