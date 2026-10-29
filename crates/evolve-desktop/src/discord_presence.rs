@@ -31,7 +31,10 @@ pub(super) struct Config {
     pub game_root: String,
     pub game_version: String,
     pub manager_action: String,
-    pub model_name: Option<String>,
+    pub manager_page: Page,
+    /// Exact selected virtual asset/member where known, never an absolute
+    /// Windows path. Unknown/ambiguous selections remain absent.
+    pub asset_name: Option<String>,
     pub mod_profile: Option<String>,
     // The current client bridge has no verified map/mode source. Never invent one.
     pub map: Option<String>,
@@ -40,16 +43,53 @@ pub(super) struct Config {
 impl Config {
     pub fn from_state(state: &State) -> Self {
         let p = &state.preferences;
-        let model_name = if state.page == Some(Page::Models) {
-            state
-                .render_source
+        let manager_page = state.page.unwrap_or(Page::Home);
+        // Use the selected or loaded asset, not a stale editable input path.
+        // A virtual GFX member is preferable to a temporary extraction name.
+        // Never expose full local installation or account paths over Discord.
+        let asset_name = match manager_page {
+            Page::Models if state.gfx_active => state
+                .gfx_session
                 .as_ref()
-                .and_then(|file| file.file_stem())
-                .or_else(|| std::path::Path::new(&state.input).file_stem())
-                .map(|name| name.to_string_lossy().into_owned())
-        } else {
-            None
-        };
+                .map(|session| session.relative.clone()),
+            Page::Models if state.model.is_some()
+                || state.texture_preview.is_some()
+                || state.character.is_some() => {
+                std::path::Path::new(&state.input)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+            }
+            Page::Levels => state
+                .library_map
+                .as_ref()
+                .and_then(|(_, maps, index)| maps.get(*index))
+                .map(|map| map.name.clone())
+                .or_else(|| {
+                    state
+                        .level_source
+                        .as_ref()
+                        .and_then(|path| path.file_name())
+                        .and_then(|name| name.to_str())
+                        .map(str::to_owned)
+                }),
+            Page::AssetLibrary => state
+                .library_selected
+                .and_then(|index| state.library_catalog.as_ref()?.archives.get(index))
+                .map(|archive| archive.name.clone()),
+            Page::Files => state
+                .modding_selected
+                .and_then(|index| state.modding_projects.as_ref()?.get(index))
+                .map(|project| {
+                    if project.modified.len() == 1 {
+                        project.modified[0].clone()
+                    } else {
+                        project.target.clone()
+                    }
+                }),
+            _ => None,
+        }
+        .filter(|name| !name.trim().is_empty());
         let manager_action = match state.page {
             Some(Page::Home) | None => "Home",
             Some(Page::Docs) => "Reading instructions",
@@ -103,7 +143,8 @@ impl Config {
             game_root: game_root.clone(),
             game_version,
             manager_action,
-            model_name,
+            manager_page,
+            asset_name,
             mod_profile,
             map: None,
             game_mode: None,
@@ -226,6 +267,23 @@ fn presence_number(value: &str) -> Option<String> {
     Some(grouped)
 }
 
+/// Discord artwork keys for the manager's *actual* Page SVG icons.
+/// Matching PNGs must be uploaded to the manager Discord application.
+fn manager_tab_art(page: Page) -> (&'static str, &'static str) {
+    match page {
+        Page::Home => ("tab_home", "Home"),
+        Page::Docs => ("tab_instructions", "Instructions"),
+        Page::AssetLibrary => ("tab_asset_library", "Asset Library"),
+        Page::Files => ("tab_modding", "Modding"),
+        Page::WhatsNew => ("tab_whats_new", "What's New"),
+        Page::Credits => ("tab_credits", "Credits"),
+        Page::Developer => ("tab_developer", "Developer"),
+        Page::Models => ("tab_models", "Model Viewer"),
+        Page::Levels => ("tab_levels", "Level Editor"),
+        Page::Settings => ("tab_settings", "Settings"),
+    }
+}
+
 fn format_activity(
     cfg: &Config,
     game_pid: Option<u32>,
@@ -280,8 +338,10 @@ fn format_activity(
         let details = "Evolve Mod Manager".to_owned();
         let state = if cfg.minimal {
             "In manager".to_owned()
-        } else if let Some(name) = cfg.model_name.as_ref() {
-            format!("Viewing {name}")
+        } else if let Some(name) = cfg.asset_name.as_ref() {
+            // Keep an exact selected member/path when available. The 128-char
+            // Discord limit is applied only at the final serialization edge.
+            format!("{} · {name}", cfg.manager_action)
         } else if cfg.show_profile {
             cfg.mod_profile
                 .as_ref()
@@ -309,7 +369,13 @@ fn format_activity(
             json!({})
         }
     } else {
-        json!({"large_image":"evolve", "large_text":"Evolve Mod Manager"})
+        let (tab_image, tab_text) = manager_tab_art(cfg.manager_page);
+        json!({
+            "large_image": "evolve",
+            "large_text": "Evolve Mod Manager",
+            "small_image": tab_image,
+            "small_text": tab_text
+        })
     };
     Some(json!({
         // Discord may ignore the name override and use the registered app
@@ -606,12 +672,76 @@ mod tests {
             game_root: String::new(),
             game_version: "Stage 2".into(),
             manager_action: "Modding Evolve".into(),
-            model_name: None,
+            manager_page: Page::Files,
+            asset_name: None,
             mod_profile: Some("My Mod".into()),
             map: None,
             game_mode: None,
         }
     }
+    #[test]
+    fn manager_tab_art_matches_all_navigation_icons() {
+        for (page, asset, tooltip) in [
+            (Page::Home, "tab_home", "Home"),
+            (Page::Docs, "tab_instructions", "Instructions"),
+            (Page::AssetLibrary, "tab_asset_library", "Asset Library"),
+            (Page::Files, "tab_modding", "Modding"),
+            (Page::WhatsNew, "tab_whats_new", "What's New"),
+            (Page::Credits, "tab_credits", "Credits"),
+            (Page::Developer, "tab_developer", "Developer"),
+            (Page::Models, "tab_models", "Model Viewer"),
+            (Page::Levels, "tab_levels", "Level Editor"),
+            (Page::Settings, "tab_settings", "Settings"),
+        ] {
+            assert_eq!(manager_tab_art(page), (asset, tooltip));
+            let mut cfg = sample();
+            cfg.manager_page = page;
+            let activity = format_activity(&cfg, None, None, 100).unwrap();
+            assert_eq!(activity["assets"]["large_image"], "evolve");
+            assert_eq!(activity["assets"]["small_image"], asset);
+            assert_eq!(activity["assets"]["small_text"], tooltip);
+        }
+    }
+
+    #[test]
+    fn presence_reports_only_active_selected_assets_and_keeps_game_art_separate() {
+        let mut state = State {
+            page: Some(Page::AssetLibrary),
+            ..State::default()
+        };
+        // No selection -> don't describe an asset that isn't being viewed.
+        assert_eq!(Config::from_state(&state).asset_name, None);
+        state.page = Some(Page::Files);
+        assert_eq!(Config::from_state(&state).asset_name, None);
+        state.page = Some(Page::Models);
+        state.input = r"C:\Users\Someone\my secret files\old.gfx".into();
+        // Typed file name alone is not proof that the user is viewing it.
+        assert_eq!(Config::from_state(&state).asset_name, None);
+
+        let mut cfg = sample();
+        cfg.manager_page = Page::Models;
+        cfg.asset_name = Some("Objects/Monsters/Goliath/Goliath.cdf".into());
+        cfg.manager_action = "Model Viewer".into();
+        let activity = format_activity(&cfg, None, None, 100).unwrap();
+        assert_eq!(activity["state"], "Model Viewer · Objects/Monsters/Goliath/Goliath.cdf");
+        assert_eq!(activity["assets"]["small_image"], "tab_models");
+
+        // Even if an asset is visible in the manager, the in-game app keeps
+        // the existing character portrait without a manager tab badge.
+        let actor = LocalActor {
+            name: Some("Goliath".into()),
+            verified_monster: true,
+            ..LocalActor::default()
+        };
+        let game = format_activity(&cfg, Some(900), Some(&actor), 100).unwrap();
+        assert_eq!(game["assets"]["large_image"], "goliath");
+        assert!(game["assets"].get("small_image").is_none());
+        cfg.minimal = true;
+        let privacy = format_activity(&cfg, None, None, 100).unwrap();
+        assert_eq!(privacy["state"], "In manager");
+        assert!(!privacy.to_string().contains("Goliath.cdf"));
+    }
+
     #[test]
     fn gameplay_shows_verified_character_name_and_monster_stats() {
         let actor = LocalActor {
