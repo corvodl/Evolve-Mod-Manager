@@ -67,6 +67,25 @@ pub(super) enum HoldMode {
     Fly,
 }
 
+/// Horizontal movement source. An orbiting third-person camera can face
+/// nearly 180 degrees away from the actor; these are different intentional
+/// control schemes, not interchangeable coordinate systems.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub(super) enum MovementFrame {
+    #[default]
+    Actor,
+    Camera,
+}
+
+impl MovementFrame {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Actor => "Actor facing",
+            Self::Camera => "Camera view",
+        }
+    }
+}
+
 impl HoldMode {
     pub fn label(self) -> &'static str {
         match self {
@@ -111,6 +130,13 @@ impl FlyInput {
     fn active(self) -> bool {
         self.forward != 0.0 || self.strafe != 0.0 || self.vertical != 0.0
     }
+}
+
+/// The observed Stage 2 entity rotation at +0x4C is stored XYZW:
+/// x=0, y=0, with z/w varying during world-Z yaw. Convert into WXYZ
+/// before applying the existing planar actor-facing math.
+fn actor_xyzw_to_wxyz(source: [f32; 4]) -> [f32; 4] {
+    [source[3], source[0], source[1], source[2]]
 }
 
 /// Derive planar facing from the local entity's (w,x,y,z) orientation.
@@ -332,8 +358,9 @@ mod windows {
         for (value, chunk) in rotation.iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
             *value = f32::from_le_bytes(*chunk);
         }
-        Ok(rotation)
+        Ok(actor_xyzw_to_wxyz(rotation))
     }
+
     /// Read all four Float32 values in one process-memory operation. In the
     /// observed Stage 2 build the first float is zero and the following XYZ
     /// components form the camera's unit-length facing vector.
@@ -766,6 +793,7 @@ mod windows {
         offline: bool,
         mode: HoldMode,
         fly_speed: f32,
+        movement_frame: MovementFrame,
         stop: Arc<AtomicBool>,
     ) -> Result<Reading, String> {
         if !offline {
@@ -814,8 +842,9 @@ mod windows {
                 let dt = now.duration_since(previous_tick).as_secs_f32();
                 previous_tick = now;
                 let mut input = fly_input(r.pid);
-                // Freeze Z and Fly both move camera-relative X/Y directly:
-                // neither relies on native ground locomotion in mid-air.
+                // Freeze Z and Fly both move X/Y through an explicit,
+                // user-selected Actor or Camera frame rather than native
+                // locomotion that may stop working when airborne.
                 if mode == HoldMode::Z {
                     input.vertical = 0.0;
                 }
@@ -823,19 +852,35 @@ mod windows {
                     // Pure Space/Ctrl flight needs no horizontal direction.
                     // Do not interrupt vertical motion when looking straight up.
                     let heading = if input.forward != 0.0 || input.strafe != 0.0 {
-                        // Prefer live camera yaw. A missing/vertical camera
-                        // preserves the previous yaw, only falling back to
-                        // actor orientation when no camera yaw was established.
-                        let heading = stable_camera_heading(
-                            camera_direction(&handle, base).ok(),
-                            &mut last_heading,
-                        );
-                        if heading.is_some() {
-                            heading
-                        } else {
-                            actor_orientation(&handle, r.entity)
-                                .ok()
-                                .and_then(|q| stable_fly_heading(q, &mut last_heading))
+                        match movement_frame {
+                            MovementFrame::Actor => {
+                                // Use the actor's actual XYZW orientation,
+                                // including after a camera orbit. The camera
+                                // is independent in third-person views.
+                                let actor_heading = actor_orientation(&handle, r.entity)
+                                    .ok()
+                                    .and_then(|q| fly_forward(q).ok());
+                                if let Some(heading) = actor_heading {
+                                    last_heading = Some(heading);
+                                }
+                                last_heading
+                            }
+                            MovementFrame::Camera => {
+                                // Explicit camera-relative movement: W may be
+                                // behind the visible actor during a free orbit.
+                                // Preserve yaw when pitching vertically and
+                                // use the corrected actor orientation only
+                                // when no valid camera heading was established.
+                                stable_camera_heading(
+                                    camera_direction(&handle, base).ok(),
+                                    &mut last_heading,
+                                )
+                                .or_else(|| {
+                                    actor_orientation(&handle, r.entity)
+                                        .ok()
+                                        .and_then(|q| stable_fly_heading(q, &mut last_heading))
+                                })
+                            }
                         }
                     } else {
                         last_heading
@@ -966,6 +1011,7 @@ pub(super) fn hold(
     _: bool,
     _: HoldMode,
     _: f32,
+    _: MovementFrame,
     _: Arc<AtomicBool>,
 ) -> Result<Reading, String> {
     Err("Coordinate hold requires Windows".into())
@@ -1046,6 +1092,51 @@ mod tests {
         assert!(parse_fly_speed("NaN").is_err());
         assert!(parse_fly_speed("inf").is_err());
         assert!(parse_fly_speed("hello").is_err());
+    }
+
+    #[test]
+    fn observed_actor_quaternion_is_xyzw_and_faces_away_from_orbit_camera() {
+        // Actual user's Stage 2 snapshot B: the camera turned sharply right
+        // while the actor remained essentially in the original orientation.
+        // A default camera-relative W was therefore almost opposite the
+        // character's apparent facing. The user must select the movement frame.
+        let recorded = [0.0, 0.0, -0.61137, 0.79134];
+        let actor = fly_forward(actor_xyzw_to_wxyz(recorded)).unwrap();
+        let camera = camera_forward(Position {
+            x: -0.982935,
+            y: 0.179990,
+            z: 0.037959,
+        })
+        .unwrap();
+        assert!(actor.x > 0.9, "actor's front is +X for this snapshot");
+        assert!(camera.x < -0.9, "camera aims across actor's front");
+        assert!(actor.x * camera.x + actor.y * camera.y < -0.85);
+
+        let zero_yaw = fly_forward(actor_xyzw_to_wxyz([0.0, 0.0, 0.0, 1.0])).unwrap();
+        assert!(zero_yaw.near(Position {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        }));
+        let quarter_turn = fly_forward(actor_xyzw_to_wxyz([
+            0.0,
+            0.0,
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+        ]))
+        .unwrap();
+        assert!(quarter_turn.near(Position {
+            x: -1.0,
+            y: 0.0,
+            z: 0.0,
+        }));
+    }
+
+    #[test]
+    fn movement_frame_defaults_to_actor_and_names_camera_as_alternative() {
+        assert_eq!(MovementFrame::default(), MovementFrame::Actor);
+        assert_eq!(MovementFrame::Actor.label(), "Actor facing");
+        assert_eq!(MovementFrame::Camera.label(), "Camera view");
     }
 
     #[test]

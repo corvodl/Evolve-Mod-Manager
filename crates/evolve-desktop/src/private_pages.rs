@@ -1658,8 +1658,38 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                 ),
             ]
             .spacing(8),
-            text("Fly Mode · WASD moves relative to actor facing; Space rises, Ctrl descends.")
+            text("Fly Mode / Freeze Z · choose WASD reference before starting")
                 .size(15),
+            row![
+                design::button(if state.teleport_movement_frame
+                    == runtime_teleport::MovementFrame::Actor
+                {
+                    "Actor-facing ✓"
+                } else {
+                    "Actor-facing"
+                })
+                .on_press_maybe(
+                    can_read.then_some(Message::TeleportMovementFrameChanged(
+                        runtime_teleport::MovementFrame::Actor,
+                    ))
+                ),
+                design::button(if state.teleport_movement_frame
+                    == runtime_teleport::MovementFrame::Camera
+                {
+                    "Camera-facing ✓"
+                } else {
+                    "Camera-facing"
+                })
+                .on_press_maybe(
+                    can_read.then_some(Message::TeleportMovementFrameChanged(
+                        runtime_teleport::MovementFrame::Camera,
+                    ))
+                ),
+            ]
+            .spacing(8),
+            text("Actor-facing (default): W moves in front of the character, even when the camera orbits behind it. Camera-facing: W follows the view/crosshair, which may point behind the actor. Stop flight to change the reference.")
+                .size(12)
+                .style(design::muted),
             row![
                 text("Speed").width(Length::Fixed(65.0)),
                 design::text_input("8", &state.teleport_fly_speed)
