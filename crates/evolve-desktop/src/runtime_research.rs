@@ -174,14 +174,19 @@ mod windows {
         }
 
         let stage_word = u32_at(h, local.address + 0x1260)?;
+        if runtime_energy::stage(stage_word).is_none() {
+            return Err("Local monster evolution stage is unrecognized".into());
+        }
         let key_at = base
             .checked_add(runtime_energy::KEY_RVA)
             .ok_or("Key RVA overflow")?;
         let key = u32_at(h, key_at)?;
-        let evolution_raw = u32_at(h, local.address + 0x16FC)?;
-        let evolution_max_raw = u32_at(h, local.address + 0x1700)?;
-        let traversal_raw = u32_at(h, local.address + 0x1754)?;
-        let traversal_max_raw = u32_at(h, local.address + 0x1758)?;
+        // Evolution and traversal are independent pools. An unreadable field
+        // in one must not hide the other (especially evolution in Discord).
+        let evolution_raw = u32_at(h, local.address + 0x16FC).ok();
+        let evolution_max_raw = u32_at(h, local.address + 0x1700).ok();
+        let traversal_raw = u32_at(h, local.address + 0x1754).ok();
+        let traversal_max_raw = u32_at(h, local.address + 0x1758).ok();
 
         // Reject torn reads or an actor swap before presenting captured energy.
         if u32_at(h, key_at)? != key
@@ -193,8 +198,9 @@ mod windows {
             return Err("Monster identity, stage or encoding key changed during read".into());
         }
 
-        let decoded_evolution =
-            runtime_energy::evolution(stage_word, evolution_raw, evolution_max_raw, key);
+        let decoded_evolution = evolution_raw
+            .zip(evolution_max_raw)
+            .and_then(|(current, maximum)| runtime_energy::evolution(stage_word, current, maximum, key));
         let evolution = match decoded_evolution {
             Some(energy) if energy.stage == 3 => {
                 "Evolution: stage 3 · bar inactive (0/0); READ-ONLY".to_owned()
@@ -205,7 +211,10 @@ mod windows {
             ),
             None => "Evolution unavailable: energy decode/rules mismatch".to_owned(),
         };
-        let traversal = match runtime_energy::traversal(traversal_raw, traversal_max_raw, key) {
+        let traversal = match traversal_raw
+            .zip(traversal_max_raw)
+            .and_then(|(current, maximum)| runtime_energy::traversal(current, maximum, key))
+        {
             Some(energy) => format!(
                 "Traversal: {:.2}/{:.2}; READ-ONLY (no recharge-rate offset verified)",
                 energy.current, energy.maximum
