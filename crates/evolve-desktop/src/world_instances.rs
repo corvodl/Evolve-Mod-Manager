@@ -273,6 +273,7 @@ struct GpuSurface {
     bind: wgpu::BindGroup,
     _image: wgpu::Texture,
     _opacity_image: wgpu::Texture,
+    _alpha_uniform: wgpu::Buffer,
 }
 struct GpuGroup {
     vertices: wgpu::Buffer,
@@ -331,6 +332,16 @@ impl Renderer {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -535,6 +546,11 @@ impl Renderer {
                 mask_bytes,
             );
             let opacity_view = opacity_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let alpha_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Authored per-material Vegetation AlphaTest"),
+                contents: bytemuck::cast_slice(&[surf.alpha_cutoff.clamp(0.0, 1.0), 0.0, 0.0, 0.0]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
             let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact source material per instanced mesh"),
                 layout: &self.layout,
@@ -555,6 +571,10 @@ impl Renderer {
                         binding: 3,
                         resource: wgpu::BindingResource::TextureView(&opacity_view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: alpha_uniform.as_entire_binding(),
+                    },
                 ],
             });
             surfaces.push(GpuSurface {
@@ -565,6 +585,7 @@ impl Renderer {
                 bind,
                 _image: tex,
                 _opacity_image: opacity_tex,
+                _alpha_uniform: alpha_uniform,
             });
         }
         if surfaces.is_empty() {
@@ -670,6 +691,7 @@ mod tests {
         assert!(shader.contains("return vec4<f32>(color.rgb,1.0);"));
         assert!(shader.contains("fn fs_foliage(input:Output)"));
         assert!(shader.contains("let leaf_alpha=textureSample(albedo,tex_sampler,input.uv).a;"));
+        assert!(shader.contains("leaf_alpha < authored_cutoff.x"));
         assert!(shader.contains("let color=shade(input,false);"));
         // Explicitly transparent materials still use authored coverage.
         assert!(shader.contains("fn fs_main(input:Output)"));
