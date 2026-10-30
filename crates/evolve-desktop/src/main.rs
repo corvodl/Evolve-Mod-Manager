@@ -12753,25 +12753,24 @@ fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
     // Collapse to icon-only navigation by default; labels appear once the
     // hover-driven width animation has enough room to show them in full.
-    let labels_visible = state.sidebar_reveal >= 0.88 || state.preferences.reduce_motion && state.sidebar_hovered;
+    let labels_visible =
+        state.sidebar_reveal >= 0.88 || state.preferences.reduce_motion && state.sidebar_hovered;
     let navigation = Page::ALL
         .into_iter()
         .fold(column![].spacing(7), |items, item| {
             let active = page == item;
-            let mut contents = row![
-                svg(item.icon()).style(design::icon).width(20).height(20),
-            ]
-            .spacing(12)
-            .align_y(iced::Center);
+            let mut contents = row![svg(item.icon()).style(design::icon).width(20).height(20),]
+                .spacing(12)
+                .align_y(iced::Center);
             if labels_visible {
                 contents = contents.push(text(item.title()).size(13));
             }
             let nav = design::button(contents)
-            .width(Fill)
-            .height(40)
-            .padding([8, 11])
-            .style(move |theme, status| design::rail(theme, status, active))
-            .on_press(Message::Navigate(item));
+                .width(Fill)
+                .height(40)
+                .padding([8, 11])
+                .style(move |theme, status| design::rail(theme, status, active))
+                .on_press(Message::Navigate(item));
             items.push(nav)
         });
     let play_mods_icon = svg(svg::Handle::from_memory(
@@ -12801,19 +12800,19 @@ fn view(state: &State) -> Element<'_, Message> {
     }
     let lower = column![
         design::button(play_mods_row)
-        .width(Fill)
-        .height(40)
-        .on_press(Message::PlayWithMods),
+            .width(Fill)
+            .height(40)
+            .on_press(Message::PlayWithMods),
         design::button(play_clean_row)
-        .width(Fill)
-        .height(40)
-        .on_press(Message::PlayWithoutMods),
+            .width(Fill)
+            .height(40)
+            .on_press(Message::PlayWithoutMods),
         design::button(settings_row)
-        .width(Fill)
-        .height(43)
-        .padding(10)
-        .style(move |theme, status| design::rail(theme, status, page == Page::Settings))
-        .on_press(Message::Navigate(Page::Settings)),
+            .width(Fill)
+            .height(43)
+            .padding(10)
+            .style(move |theme, status| design::rail(theme, status, page == Page::Settings))
+            .on_press(Message::Navigate(Page::Settings)),
     ]
     .spacing(5);
     let sidebar = container(
@@ -13802,13 +13801,11 @@ impl Desktop {
             Subscription::none()
         };
         let sidebar_animation = if !self.state.preferences.reduce_motion
-            && (self.state.sidebar_reveal
-                - if self.state.sidebar_hovered { 1.0 } else { 0.0 })
+            && (self.state.sidebar_reveal - if self.state.sidebar_hovered { 1.0 } else { 0.0 })
                 .abs()
                 > 0.001
         {
-            iced::time::every(Duration::from_millis(16))
-                .map(|_| Message::SidebarAnimationTick)
+            iced::time::every(Duration::from_millis(16)).map(|_| Message::SidebarAnimationTick)
         } else {
             Subscription::none()
         };
