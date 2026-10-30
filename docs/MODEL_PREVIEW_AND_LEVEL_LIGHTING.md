@@ -66,3 +66,36 @@ Planned stages:
 
 CryEngine level-file documentation:
 https://www.cryengine.com/docs/static/engines/cryengine-3/categories/1638401/pages/1605643
+
+## Tutorial terrain and vegetation follow-up
+
+The Tutorial map's activity log verifies 271/271 *requested scene asset
+references*, but that number covers geometry/MTL reference verification, not
+all DDS dependencies in those MTLs. In particular the authored source
+`objects/man_made/vehicles/allterraincar01/allterraincar01.mtl` requests
+`allterraincar01.tif` and `allterraincar01_spec.tif`; both must resolve
+to exact owner-qualified cooked `.dds.0` or `.dds` in the same imported build.
+When neither exists, the viewer now reports the first source-qualified
+candidates searched, selected build, and the need to import the original
+matching texture PAKs. The loader does NOT invent the missing textures.
+
+The cross-PAK terrain resolver now checks
+`Levels/<map>/LevelData/TerrainTexture.xml` before the old flattened
+`Levels/<map>/TerrainTexture.xml`. The tile package remains
+`Levels/<map>/terraintexture.pak`. Both are checked against the exact
+map owner and unique build; if a source file truly is absent, the terrain
+must remain neutral instead of borrowing another map's baked colors.
+A synthetic multi-PAK Tutorial fixture verifies map-owned metadata and
+tile-package references.
+
+Vegetation materials preserve the original per-leaf `AlphaTest` threshold
+from MTL, supporting the normalized 0..1 and editor percentage 0..100
+encodings. A missing original value uses the documented 0.5 default.
+The Level Editor sends each threshold to its world shader via a per-surface
+uniform; the Model Viewer uses the previously unused fourth component of its
+emission uniform, including after glow-slider updates. Only source-authored
+Vegetation shader materials at full opacity enable diffuse-alpha cutouts;
+do not apply packed diffuse alpha to opaque character body materials.
+
+Windows acceptance remains necessary to confirm the source texture archives
+are present and the rendered foliage matches Evolve at close-up zoom.
