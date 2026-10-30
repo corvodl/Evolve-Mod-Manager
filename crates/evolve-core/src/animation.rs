@@ -712,6 +712,54 @@ impl AnimatedGlb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::animated_glb_preview::tests::preview_doc;
+    #[test]
+    fn converted_same_rig_additive_layer_moves_actual_skinned_vertices() {
+        let (doc, binary) = preview_doc();
+        let rig = RiggedGlbPreview::from_doc(&doc, &binary).unwrap();
+        let base = Clip {
+            name: "idle".into(),
+            duration: 1.,
+            tracks: vec![Track {
+                target: 1,
+                path: "translation".into(),
+                interp: "LINEAR".into(),
+                times: vec![0., 1.],
+                values: vec![vec![0., 0., 0.], vec![1., 0., 0.]],
+            }],
+            layered: false,
+            additive: false,
+        };
+        let overlay = Clip {
+            name: "aim_additive".into(),
+            duration: 1.,
+            tracks: vec![Track {
+                target: 1,
+                path: "translation".into(),
+                interp: "LINEAR".into(),
+                times: vec![0., 1.],
+                values: vec![vec![2., 0., 0.], vec![2., 0., 0.]],
+            }],
+            layered: true,
+            additive: true,
+        };
+        let animation = AnimatedGlb {
+            clips: vec![base, overlay],
+            node_names: vec!["body".into(), "root".into()],
+            rigged_preview: Some(Arc::new(rig)),
+            rigged_preview_error: None,
+        };
+        assert_eq!(animation.layered_clips(), vec![(1, "aim_additive".into())]);
+        let normal = animation.mesh_at(0, 0.5).unwrap();
+        let blended = animation.mesh_at_layered(0, 1, 0.5, 0.5).unwrap();
+        assert!((normal.positions[0][0] - 0.5).abs() < 0.001);
+        assert!((blended.positions[0][0] - 1.5).abs() < 0.001);
+        assert_eq!(normal.indices, blended.indices);
+        assert_eq!(normal.uv0, blended.uv0);
+        assert!(animation.mesh_at_layered(1, 0, 0.5, 0.5).is_err());
+        assert!(animation.mesh_at_layered(0, 1, 0.5, f32::NAN).is_err());
+    }
+
     #[test]
     fn converter_glb_slerp_uses_shortest_arc_and_unit_norm() {
         let identity = [0., 0., 0., 1.];
