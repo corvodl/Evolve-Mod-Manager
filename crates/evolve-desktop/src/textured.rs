@@ -23,6 +23,33 @@ fn gpu_budget_allows(used: usize, additional: usize) -> bool {
         .is_some_and(|total| total <= MAX_GPU_PREVIEW_TEXTURE_BYTES)
 }
 
+/// Preserve the original source image whenever possible. When a character
+/// exceeds the preview VRAM budget or GPU dimension limit, choose a bounded
+/// RGBA downsample rather than making a real DDS material disappear.
+/// This only changes the in-memory GPU preview, never an imported file.
+fn fitted_source_dimensions(
+    width: u32,
+    height: u32,
+    limit: usize,
+    max_dimension: u32,
+) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 || max_dimension == 0 || limit < 4 {
+        return None;
+    }
+    let (mut w, mut h) = (width, height);
+    while w > max_dimension
+        || h > max_dimension
+        || (u64::from(w) * u64::from(h) * 4) > limit as u64
+    {
+        if w == 1 && h == 1 {
+            return None;
+        }
+        w = w.div_ceil(2);
+        h = h.div_ceil(2);
+    }
+    Some((w, h))
+}
+
 /// Reserve GPU space for ALL source diffuse maps before accepting optional
 /// normal/specular/glow uploads. Without this, early body sections consume
 /// the cap and later head/arm sections silently fall back to pale placeholders.
@@ -553,6 +580,17 @@ impl Pipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         source: Option<&Arc<image::RgbaImage>>,
+        fallback: &[u8; 4],
+        format: wgpu::TextureFormat,
+        label: &'static str,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        Self::upload_map_pixels(device, queue, source.map(Arc::as_ref), fallback, format, label)
+    }
+
+    fn upload_map_pixels(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: Option<&image::RgbaImage>,
         fallback: &[u8; 4],
         format: wgpu::TextureFormat,
         label: &'static str,
@@ -1242,15 +1280,42 @@ impl Pipeline {
                 let size = image.map_or(4, |pixels| pixels.as_raw().len());
                 let key = texture_cache_key(image, role);
                 let already_uploaded = uploaded.contains_key(&key);
-                let allow_source = image.is_none()
-                    || already_uploaded
-                    || allows_cdf_role(
-                        used_bytes,
-                        size,
-                        remaining_diffuse,
-                        role,
-                        can_fit_all_diffuse,
-                    );
+                // Budget original diffuse maps first: decorative spec/gloss
+                // maps must not crowd out the head/body colors of a CDF.
+                let reserve = if role == 0 { 0 } else { remaining_diffuse };
+                let available = MAX_GPU_PREVIEW_TEXTURE_BYTES
+                    .saturating_sub(used_bytes.saturating_add(reserve));
+                let can_use_role = role == 0 || can_fit_all_diffuse;
+                let full_size = allows_cdf_role(
+                    used_bytes,
+                    size,
+                    remaining_diffuse,
+                    role,
+                    can_fit_all_diffuse,
+                );
+                let desired = if already_uploaded {
+                    None
+                } else if can_use_role {
+                    image.and_then(|pixels| {
+                        let gpu_limit = device.limits().max_texture_dimension_2d;
+                        if full_size
+                            && pixels.width() <= gpu_limit
+                            && pixels.height() <= gpu_limit
+                        {
+                            Some(pixels.dimensions())
+                        } else {
+                            fitted_source_dimensions(
+                                pixels.width(),
+                                pixels.height(),
+                                available,
+                                gpu_limit,
+                            )
+                        }
+                    })
+                } else {
+                    None
+                };
+                let allow_source = image.is_none() || already_uploaded || desired.is_some();
                 let selected = if allow_source { image } else { None };
                 if role == 0 && selected.is_some() && !already_uploaded {
                     remaining_diffuse = remaining_diffuse.saturating_sub(size);
@@ -1262,12 +1327,24 @@ impl Pipeline {
                 if let Some(view) = uploaded.get(&selected_key) {
                     views.push(view.clone());
                 } else {
+                    let downsampled = selected.and_then(|pixels| {
+                        desired.filter(|dims| *dims != pixels.dimensions()).map(|(w, h)| {
+                            image::imageops::resize(
+                                pixels.as_ref(),
+                                w,
+                                h,
+                                image::imageops::FilterType::Triangle,
+                            )
+                        })
+                    });
+                    let upload_pixels = downsampled
+                        .as_ref()
+                        .or_else(|| selected.map(|pixels| pixels.as_ref()));
                     let (texture, view) =
-                        Self::upload_map(device, queue, selected, &fallback, format, label);
-                    // The fallback is a four-byte neutral placeholder; large
-                    // unverified maps are omitted instead of risking GPU OOM.
-                    used_bytes = used_bytes
-                        .saturating_add(selected.map_or(4, |pixels| pixels.as_raw().len()));
+                        Self::upload_map_pixels(device, queue, upload_pixels, &fallback, format, label);
+                    used_bytes = used_bytes.saturating_add(
+                        upload_pixels.map_or(4, |pixels| pixels.as_raw().len())
+                    );
                     uploaded.insert(selected_key, view.clone());
                     self._surface_textures.push(texture);
                     views.push(view);
@@ -1668,6 +1745,22 @@ mod tests {
         // for the remaining protected budget.
         assert!(!super::allows_cdf_role(0, 4 * mib, 300 * mib, 2, false));
         assert!(super::allows_cdf_role(0, 4 * mib, 300 * mib, 0, false));
+    }
+
+    #[test]
+    fn valid_original_character_maps_are_downscaled_not_discarded() {
+        use super::fitted_source_dimensions;
+        assert_eq!(fitted_source_dimensions(4096, 4096, 16 * 1024 * 1024, 8192), Some((2048, 2048)));
+        assert_eq!(fitted_source_dimensions(4096, 4096, 4 * 1024 * 1024, 8192), Some((1024, 1024)));
+        assert_eq!(fitted_source_dimensions(4096, 4096, 256 * 1024 * 1024, 2048), Some((2048, 2048)));
+        assert_eq!(fitted_source_dimensions(4096, 4096, 0, 8192), None);
+        let mut source = image::RgbaImage::from_pixel(32, 32, image::Rgba([10, 15, 200, 0]));
+        source.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let limited = fitted_source_dimensions(32, 32, 16 * 16 * 4, 32).unwrap();
+        let reduced = image::imageops::resize(&source, limited.0, limited.1, image::imageops::FilterType::Triangle);
+        assert_eq!(reduced.dimensions(), (16, 16));
+        assert!(reduced.pixels().any(|px| px.0[3] < 255));
+        assert!(reduced.pixels().any(|px| px.0[3] > 0));
     }
 
     #[test]

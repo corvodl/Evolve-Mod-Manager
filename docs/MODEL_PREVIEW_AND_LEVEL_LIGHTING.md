@@ -165,3 +165,16 @@ texture-compression variants or larger atlases should report an actionable
 unsupported-format error until a source-backed parser is added. Synthetic
 2×2 and 4×4 tests and truncated/missing-member tests cover the new path.
 The original user-supplied game images are not stored in the repository.
+
+
+## Original CDF Model Viewer diffuse quality under GPU memory pressure (PR #156)
+
+The viewer formerly replaced an otherwise valid large diffuse DDS with a
+1×1 pale placeholder when unique material maps exceeded the 256 MiB preview
+budget. It now tries a bounded, **RGBA/alpha-preserving** GPU-only downsample
+of that exact original source first, respecting the adapter's maximum texture
+size. Diffuse maps continue to receive priority ahead of optional normal,
+specular, gloss and emission uploads so later CDF face/body sections are not
+silently starved. Original source files, geometry, UVs, export data and PAKs
+remain unmodified. This is a quality fallback, not streaming mip support or
+a guarantee that every unsupported/missing original DDS can be recovered.
