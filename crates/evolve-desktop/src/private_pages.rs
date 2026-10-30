@@ -1797,7 +1797,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                 ),
             ]
             .spacing(8),
-            text("Actor-facing (default): W moves in front of the character, even when the camera orbits behind it. Camera-facing: W follows the view/crosshair, which may point behind the actor. Stop flight to change the reference.")
+            text("Freeze Z: choose Actor-facing or Camera-facing WASD before starting. Fly Mode always moves relative to camera yaw and attempts to turn the actor horizontally with the camera; looking up/down does not tilt the actor. Stop the hold to change Freeze Z's reference.")
                 .size(12)
                 .style(design::muted),
             row![
