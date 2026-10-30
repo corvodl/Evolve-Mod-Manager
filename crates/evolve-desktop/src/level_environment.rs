@@ -366,16 +366,20 @@ impl HeightFog {
     /// density distribution analytically and handles horizontal rays.
     #[cfg(test)]
     pub fn integrated_density(self, camera_z: f32, target_z: f32, distance: f32) -> f32 {
-        if !camera_z.is_finite() || !target_z.is_finite()
-            || !distance.is_finite() || distance <= 0.0
+        if !camera_z.is_finite()
+            || !target_z.is_finite()
+            || !distance.is_finite()
+            || distance <= 0.0
         {
             return 0.0;
         }
-        let slope = ((self.top_density.max(0.000001)
-            / self.bottom_density.max(0.000001))
-            .ln() / (self.top_height - self.bottom_height)).clamp(-0.01, 0.01);
+        let slope = ((self.top_density.max(0.000001) / self.bottom_density.max(0.000001)).ln()
+            / (self.top_height - self.bottom_height))
+            .clamp(-0.01, 0.01);
         let origin_density = self.bottom_density
-            * (slope * (camera_z - self.bottom_height)).clamp(-12.0, 12.0).exp();
+            * (slope * (camera_z - self.bottom_height))
+                .clamp(-12.0, 12.0)
+                .exp();
         let delta = slope * (target_z - camera_z);
         let ratio = if delta.abs() < 0.001 {
             1.0 + delta * 0.5 + delta * delta / 6.0
@@ -405,19 +409,20 @@ impl TimeOfDay {
             names.iter().find_map(|name| self.scalar(name, hour))
         };
         let bottom_height = sample(&[
-            "Fog height (bottom)", "Fog bottom height", "Fog height bottom",
+            "Fog height (bottom)",
+            "Fog bottom height",
+            "Fog height bottom",
         ])?;
-        let top_height = sample(&[
-            "Fog height (top)", "Fog top height", "Fog height top",
-        ])?;
+        let top_height = sample(&["Fog height (top)", "Fog top height", "Fog height top"])?;
         let bottom_density = sample(&[
-            "Fog density (bottom)", "Fog bottom density", "Fog density bottom",
+            "Fog density (bottom)",
+            "Fog bottom density",
+            "Fog density bottom",
         ])?;
-        let top_density = sample(&[
-            "Fog density (top)", "Fog top density", "Fog density top",
-        ])?;
+        let top_density = sample(&["Fog density (top)", "Fog top density", "Fog density top"])?;
         if ![bottom_height, top_height, bottom_density, top_density]
-            .iter().all(|v| v.is_finite())
+            .iter()
+            .all(|v| v.is_finite())
             || !(-5000.0..=35000.0).contains(&bottom_height)
             || !(-5000.0..=35000.0).contains(&top_height)
             || top_height - bottom_height < 0.01
@@ -597,15 +602,19 @@ mod tests {
     #[test]
     fn height_fog_requires_a_complete_and_finite_original_profile() {
         let partial = TimeOfDay::parse(
-            br#"<TimeOfDay><Variable Name="Fog density (top)" Value="0.1"></Variable></TimeOfDay>"#
-        ).unwrap();
+            br#"<TimeOfDay><Variable Name="Fog density (top)" Value="0.1"></Variable></TimeOfDay>"#,
+        )
+        .unwrap();
         assert!(partial.height_fog(12.0).is_none());
-        let reversed = TimeOfDay::parse(br#"<TimeOfDay>
+        let reversed = TimeOfDay::parse(
+            br#"<TimeOfDay>
           <Variable Name="Fog height (bottom)" Value="200"></Variable>
           <Variable Name="Fog height (top)" Value="0"></Variable>
           <Variable Name="Fog density (bottom)" Value="1"></Variable>
           <Variable Name="Fog density (top)" Value="0.1"></Variable>
-        </TimeOfDay>"#).unwrap();
+        </TimeOfDay>"#,
+        )
+        .unwrap();
         assert!(reversed.height_fog(12.0).is_none());
     }
 
