@@ -27,6 +27,7 @@ type TextureCache = HashMap<(usize, u8, bool), (wgpu::Texture, wgpu::TextureView
 /// Choose a size within the device and the per-material upload budget.
 /// Non-terrain 4K DDS assets must retain their colors and alpha mask; a
 /// bounded downscale is safer than substituting an opaque 1×1 fallback.
+#[cfg(test)]
 fn upload_dimensions(width: u32, height: u32, ground: bool, gpu_max: u32) -> Option<(u32, u32)> {
     if width == 0 || height == 0 || gpu_max == 0 {
         return None;
@@ -47,6 +48,7 @@ fn upload_dimensions(width: u32, height: u32, ground: bool, gpu_max: u32) -> Opt
     Some((w, h))
 }
 
+#[cfg(test)]
 fn gpu_diffuse<'a>(
     img: &'a image::RgbaImage,
     ground: bool,
@@ -179,15 +181,13 @@ fn upload_rgba_mips(
                 depth_or_array_layers: 1,
             },
         );
-        if level + 1 < mip_count {
-            if let Some(img) = current.as_ref() {
-                current = Some(Cow::Owned(image::imageops::resize(
-                    img.as_ref(),
-                    (w / 2).max(1),
-                    (h / 2).max(1),
-                    image::imageops::FilterType::Triangle,
-                )));
-            }
+        if level + 1 < mip_count && let Some(img) = current.as_ref() {
+            current = Some(Cow::Owned(image::imageops::resize(
+                img.as_ref(),
+                (w / 2).max(1),
+                (h / 2).max(1),
+                image::imageops::FilterType::Triangle,
+            )));
         }
     }
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
