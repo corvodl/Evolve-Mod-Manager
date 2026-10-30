@@ -293,19 +293,118 @@ fn manager_tab_art(page: Page) -> (&'static str, &'static str) {
     }
 }
 
-fn format_activity(
+// Validated against repeated live Stage 2 Cheat Engine sessions. These are
+// module-relative roots, never absolute process addresses. Reject mismatched
+// vtables and unknown enum values rather than guessing a game state.
+const LOBBY_VTABLE_RVA: usize = 0x23852D0;
+const LOBBY_STATE_OFFSET: usize = 0x8AC;
+const LOBBY_POINTER_PATHS: [(usize, usize); 2] = [
+    (0x3246360, 0x38),  // Primary; survived Evolve restart
+    (0x2C67518, 0x1D8), // Fallback; independently restart-validated
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LobbyState {
+    Menu,
+    Initializing,
+    FindGame,
+    JoinSession,
+    Lobby,
+    PreRound,
+    Game,
+    Leaving,
+}
+impl LobbyState {
+    fn from_raw(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Menu),
+            1 => Some(Self::Initializing),
+            2 => Some(Self::FindGame),
+            3 => Some(Self::JoinSession),
+            4 => Some(Self::Lobby),
+            5 => Some(Self::PreRound),
+            6 => Some(Self::Game),
+            10 => Some(Self::Leaving),
+            _ => None,
+        }
+    }
+    fn presence(self) -> &'static str {
+        match self {
+            Self::Menu => "In Menus",
+            Self::Initializing => "Connecting",
+            Self::FindGame => "Finding a Match",
+            Self::JoinSession => "Joining Session",
+            Self::Lobby => "In Lobby",
+            Self::PreRound => "Selecting Character",
+            Self::Game => "In Match",
+            Self::Leaving => "Leaving Match",
+        }
+    }
+}
+
+/// Resolve both known static chains and read the native UInt32 lobby state.
+/// Pure so that fallback and fail-closed behavior can be tested without a game.
+fn resolve_lobby_state<P, U>(
+    module_base: usize,
+    mut pointer_at: P,
+    mut u32_at: U,
+) -> Option<LobbyState>
+where
+    P: FnMut(usize) -> Option<usize>,
+    U: FnMut(usize) -> Option<u32>,
+{
+    let expected_vtable = module_base.checked_add(LOBBY_VTABLE_RVA)?;
+    for (root_rva, field_offset) in LOBBY_POINTER_PATHS {
+        let Some(root) = module_base.checked_add(root_rva) else {
+            continue;
+        };
+        let Some(first) = pointer_at(root).filter(|p| *p >= 0x10000) else {
+            continue;
+        };
+        let Some(slot) = first.checked_add(field_offset) else {
+            continue;
+        };
+        let Some(lobby) = pointer_at(slot).filter(|p| *p >= 0x10000) else {
+            continue;
+        };
+        if pointer_at(lobby) != Some(expected_vtable) {
+            continue;
+        }
+        let Some(state_address) = lobby.checked_add(LOBBY_STATE_OFFSET) else {
+            continue;
+        };
+        if let Some(state) = u32_at(state_address).and_then(LobbyState::from_raw) {
+            return Some(state);
+        }
+    }
+    None
+}
+
+fn format_activity_with_lobby(
     cfg: &Config,
     game_pid: Option<u32>,
     actor: Option<&LocalActor>,
     start: i64,
+    lobby_state: Option<LobbyState>,
 ) -> Option<serde_json::Value> {
     use serde_json::json;
     let game = game_pid.is_some() && cfg.show_game;
+    let active_match = game && lobby_state == Some(LobbyState::Game);
     if !cfg.enabled || (!game && !cfg.show_manager) {
         return None;
     }
     let (details, state) = if game {
-        if cfg.minimal {
+        if !active_match {
+            // No actor, portrait or stale health values in menus or during
+            // queueing/character select. Unknown reads must not say "In match".
+            (
+                "Playing Evolve".to_owned(),
+                lobby_state
+                    .map(LobbyState::presence)
+                    .unwrap_or("Activity unavailable")
+                    .to_owned(),
+            )
+        } else if cfg.minimal {
             ("Playing Evolve".to_owned(), "In game".to_owned())
         } else {
             let visible = cfg.show_character.then_some(actor).flatten();
@@ -379,7 +478,7 @@ fn format_activity(
     // Unrecognized characters have no guessed picture; the manager keeps its
     // own logo, and privacy/minimal modes never reveal character imagery.
     let assets = if game {
-        if cfg.show_character && !cfg.minimal {
+        if active_match && cfg.show_character && !cfg.minimal {
             actor
                 .and_then(|a| a.name.as_deref())
                 .and_then(portrait_for_display_name)
@@ -410,6 +509,18 @@ fn format_activity(
         "buttons":[{"label":"Modded Evolve","url":"https://modded-evolve.com/"}],
         "instance":false
     }))
+}
+
+// Keep legacy formatting tests explicitly in an active match; production
+// always supplies a freshly validated lobby state.
+#[cfg(test)]
+fn format_activity(
+    cfg: &Config,
+    game_pid: Option<u32>,
+    actor: Option<&LocalActor>,
+    start: i64,
+) -> Option<serde_json::Value> {
+    format_activity_with_lobby(cfg, game_pid, actor, start, Some(LobbyState::Game))
 }
 
 #[cfg(windows)]
@@ -491,6 +602,30 @@ mod windows {
         }
         Ok(())
     }
+    fn inspect_lobby_state(snapshot: &runtime_memory::Snapshot) -> Option<LobbyState> {
+        let pid = snapshot.pid?;
+        let base = snapshot.module_base?;
+        let handle: read_process_memory::ProcessHandle = pid.try_into().ok()?;
+        let read_bytes = |at: usize, len: usize| {
+            // Never dereference arbitrary invalid or kernel addresses.
+            if !(0x10000..0x0000_7FFF_FFFF_FFFF).contains(&(at as u64)) {
+                return None;
+            }
+            read_process_memory::copy_address(at, len, &handle).ok()
+        };
+        resolve_lobby_state(
+            base,
+            |at| {
+                let bytes: [u8; 8] = read_bytes(at, 8)?.try_into().ok()?;
+                usize::try_from(u64::from_le_bytes(bytes)).ok()
+            },
+            |at| {
+                let bytes: [u8; 4] = read_bytes(at, 4)?.try_into().ok()?;
+                Some(u32::from_le_bytes(bytes))
+            },
+        )
+    }
+
     fn actor_info(snapshot: &runtime_memory::Snapshot, root: &str) -> Option<LocalActor> {
         let listing = runtime_actors::inspect(snapshot, root).ok()?;
         let actor = listing.actors.iter().find(|actor| actor.local)?;
@@ -546,9 +681,11 @@ mod windows {
                 }
                 last_activity = None;
                 last_pid = None;
+                local_actor = None;
                 thread::sleep(Duration::from_secs(3));
                 continue;
             }
+            let lobby_state: Option<LobbyState>;
             let running_game = if cfg.show_game {
                 let snapshot = runtime_memory::inspect(&cfg.game_root);
                 if snapshot.pid != last_pid {
@@ -557,7 +694,12 @@ mod windows {
                     last_actor_check = Instant::now() - Duration::from_secs(60);
                     last_pid = snapshot.pid;
                 }
-                if snapshot.pid.is_some()
+                lobby_state = snapshot.pid.and_then(|_| inspect_lobby_state(&snapshot));
+                if lobby_state != Some(LobbyState::Game) {
+                    local_actor = None;
+                    last_actor_check = Instant::now() - Duration::from_secs(60);
+                }
+                if lobby_state == Some(LobbyState::Game)
                     && (cfg.show_character || cfg.show_stats)
                     && last_actor_check.elapsed() >= Duration::from_secs(8)
                 {
@@ -568,6 +710,7 @@ mod windows {
             } else {
                 last_pid = None;
                 local_actor = None;
+                lobby_state = None;
                 None
             };
             let selected_app_id = active_application_id(&cfg, running_game);
@@ -598,12 +741,14 @@ mod windows {
                 pipe = connect(&app_id).ok();
                 last_activity = None;
             }
-            let visible_actor = if cfg.show_character || cfg.show_stats {
+            let visible_actor = if lobby_state == Some(LobbyState::Game)
+                && (cfg.show_character || cfg.show_stats)
+            {
                 local_actor.as_ref()
             } else {
                 None
             };
-            let next = format_activity(
+            let next = format_activity_with_lobby(
                 &cfg,
                 running_game,
                 visible_actor,
@@ -612,6 +757,7 @@ mod windows {
                 } else {
                     manager_start
                 },
+                lobby_state,
             );
             // Periodically refresh only while Evolve is running: a native
             // presence publisher may update the same application independently.
@@ -633,7 +779,9 @@ mod windows {
                 }
                 nonce += 1;
             }
-            thread::sleep(Duration::from_secs(8));
+            // Menus/character selection are stable for seconds; more frequent
+            // polling shortens incorrect status displays after transitions.
+            thread::sleep(Duration::from_secs(3));
         }
         if let Some(mut connected) = pipe {
             let _ = activity(&mut connected, None, nonce);
@@ -690,6 +838,107 @@ impl Drop for Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lobby_state_values_match_observed_engine_states() {
+        for (raw, state, presence) in [
+            (0, LobbyState::Menu, "In Menus"),
+            (1, LobbyState::Initializing, "Connecting"),
+            (2, LobbyState::FindGame, "Finding a Match"),
+            (3, LobbyState::JoinSession, "Joining Session"),
+            (4, LobbyState::Lobby, "In Lobby"),
+            (5, LobbyState::PreRound, "Selecting Character"),
+            (6, LobbyState::Game, "In Match"),
+            (10, LobbyState::Leaving, "Leaving Match"),
+        ] {
+            assert_eq!(LobbyState::from_raw(raw), Some(state));
+            assert_eq!(state.presence(), presence);
+        }
+        for raw in [7, 8, 9, 11, u32::MAX] {
+            assert_eq!(LobbyState::from_raw(raw), None);
+        }
+    }
+
+    #[test]
+    fn lobby_pointer_chains_are_independent_and_fail_closed() {
+        let base = 0x140000000usize;
+        let (primary_rva, primary_off) = LOBBY_POINTER_PATHS[0];
+        let (fallback_rva, fallback_off) = LOBBY_POINTER_PATHS[1];
+        let primary_parent = 0x22000000usize;
+        let fallback_parent = 0x33000000usize;
+        let lobby = 0x44000000usize;
+        let mut pointers = std::collections::HashMap::new();
+        pointers.insert(base + primary_rva, primary_parent);
+        pointers.insert(primary_parent + primary_off, lobby);
+        pointers.insert(base + fallback_rva, fallback_parent);
+        pointers.insert(fallback_parent + fallback_off, lobby);
+        pointers.insert(lobby, base + LOBBY_VTABLE_RVA);
+        let read = |at: usize| pointers.get(&at).copied();
+        let state_at = |at: usize| (at == lobby + LOBBY_STATE_OFFSET).then_some(5u32);
+        assert_eq!(
+            resolve_lobby_state(base, read, state_at),
+            Some(LobbyState::PreRound)
+        );
+        // A broken primary chain must still permit the validated fallback.
+        pointers.remove(&(primary_parent + primary_off));
+        assert_eq!(
+            resolve_lobby_state(base, |at| pointers.get(&at).copied(), state_at),
+            Some(LobbyState::PreRound)
+        );
+        // A bogus vtable, or unknown state, must never be treated as in-match.
+        pointers.insert(lobby, base + 0x1234);
+        assert_eq!(
+            resolve_lobby_state(base, |at| pointers.get(&at).copied(), state_at),
+            None
+        );
+        pointers.insert(lobby, base + LOBBY_VTABLE_RVA);
+        assert_eq!(
+            resolve_lobby_state(
+                base,
+                |at| pointers.get(&at).copied(),
+                |at| { (at == lobby + LOBBY_STATE_OFFSET).then_some(87) }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn non_game_lobby_state_never_leaks_character_or_stats() {
+        let actor = LocalActor {
+            name: Some("Goliath".into()),
+            verified_monster: true,
+            evolution: Some("2".into()),
+            evolution_percentage: Some(75),
+            health: Some("9000".into()),
+            armor: Some("1000".into()),
+        };
+        for (state, label) in [
+            (Some(LobbyState::Menu), "In Menus"),
+            (Some(LobbyState::FindGame), "Finding a Match"),
+            (Some(LobbyState::Lobby), "In Lobby"),
+            (Some(LobbyState::PreRound), "Selecting Character"),
+            (None, "Activity unavailable"),
+        ] {
+            let activity =
+                format_activity_with_lobby(&sample(), Some(12), Some(&actor), 100, state).unwrap();
+            assert_eq!(activity["details"], "Playing Evolve");
+            assert_eq!(activity["state"], label);
+            assert!(activity["assets"].get("large_image").is_none());
+            assert!(!activity.to_string().contains("Health"));
+            assert!(!activity.to_string().contains("Evolution"));
+        }
+        let activity = format_activity_with_lobby(
+            &sample(),
+            Some(12),
+            Some(&actor),
+            100,
+            Some(LobbyState::Game),
+        )
+        .unwrap();
+        assert_eq!(activity["details"], "Playing as Goliath · Stage 2");
+        assert!(activity["state"].as_str().unwrap().contains("Health"));
+    }
+
     fn sample() -> Config {
         Config {
             enabled: true,

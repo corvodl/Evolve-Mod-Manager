@@ -2,7 +2,9 @@
 //!
 //! Only manifest-listed files in the selected archive are used. There is no
 //! guessed global map root, automatic editing, or modification of game files.
-use crate::{asset_cache::SharedCache, level_scene_renderer, modding_projects::ProjectRow};
+use crate::{
+    asset_cache::SharedCache, auto_resources, level_scene_renderer, modding_projects::ProjectRow,
+};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
     parse_level_scene, read_terrain, read_terrain_paint, read_terrain_texture_atlas,
@@ -70,6 +72,45 @@ fn map_group(relative: &str) -> (String, String) {
         parts[..=map_index].join("/").to_ascii_lowercase(),
         name.to_string(),
     )
+}
+
+/// Map-owned resources may be imported from a different same-build PAK.
+/// Derive the *exact* virtual folder from an authored layer/heightmap path;
+/// never use a map basename or a global terraintexture.pak search.
+fn map_virtual_folder(map: &MapCandidate) -> Option<String> {
+    map.terrain
+        .iter()
+        .chain(map.layers.iter())
+        .chain(map.vegetation.iter())
+        .map(|path| map_group(&path.to_string_lossy()).0)
+        .find(|folder| !folder.is_empty())
+}
+
+fn terrain_resource(
+    source_root: &Path,
+    selected: &ImportedPak,
+    inventory: Option<&Inventory>,
+    map: &MapCandidate,
+    manifest_entry: Option<&PathBuf>,
+    member_name: &str,
+) -> Result<Option<PathBuf>, String> {
+    if let Some(relative) = manifest_entry {
+        return verified_source(source_root, relative, 2 * 1024 * 1024 * 1024).map(Some);
+    }
+    let folder = map_virtual_folder(map)
+        .ok_or_else(|| "Cannot determine the original map's virtual folder".to_owned())?;
+    let requested = format!("{folder}/{member_name}");
+    let loaded_inventory = if inventory.is_none() {
+        Some(imported_archive_files(selected).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    let selected_inventory = inventory
+        .or(loaded_inventory.as_ref())
+        .ok_or_else(|| "No verified imported map inventory".to_owned())?;
+    let library_root = Path::new(&selected.directory).parent();
+    let build = (selected.builds.len() == 1).then(|| selected.builds[0].as_str());
+    auto_resources::exact(selected_inventory, &requested, library_root, build)
 }
 
 fn verified_source(root: &Path, relative: &Path, max_bytes: u64) -> Result<PathBuf, String> {
@@ -335,6 +376,41 @@ fn open_selected(
             )),
         }
     }
+    let terrain_xml = if chosen.terrain.is_some() {
+        terrain_resource(
+            &root,
+            &archive,
+            project_inventory.as_ref(),
+            chosen,
+            chosen.terrain_texture_xml.as_ref(),
+            "TerrainTexture.xml",
+        )
+    } else {
+        Ok(None)
+    };
+    let terrain_pak = if chosen.terrain.is_some() {
+        terrain_resource(
+            &root,
+            &archive,
+            project_inventory.as_ref(),
+            chosen,
+            chosen.terrain_texture_pak.as_ref(),
+            "terraintexture.pak",
+        )
+    } else {
+        Ok(None)
+    };
+    for (name, result) in [
+        ("TerrainTexture.xml", &terrain_xml),
+        ("terraintexture.pak", &terrain_pak),
+    ] {
+        if let Err(error) = result {
+            diagnostics.push(format!("Could not resolve original {name}: {error}"));
+        }
+    }
+    let terrain_xml = terrain_xml.ok().flatten();
+    let terrain_pak = terrain_pak.ok().flatten();
+
     let terrain = if let Some(relative) = &chosen.terrain {
         let exact = verified_source(&root, relative, 512 * 1024 * 1024)?;
         match read_terrain_paint(&exact) {
@@ -353,27 +429,27 @@ fn open_selected(
             ),
             Err(error) => diagnostics.push(format!("Terrain paint data unsupported: {error}")),
         }
-        match (&chosen.terrain_texture_xml, &chosen.terrain_texture_pak) {
-            (Some(xml), Some(pak)) => {
-                let found = verified_source(&root, pak, 2 * 1024 * 1024 * 1024);
-                match found.and_then(|path| read_terrain_texture_header(&path).map_err(|e| e.to_string())) {
-                    Ok(header) => {
-                        diagnostics.push(format!(
-                            "Original baked terrain package v{} detected ({} texture layers; formats and sector sizes: {}). Tile placement from {} must still be decoded.",
-                            header.version, header.layers.len(),
-                            header.layers.iter().map(|l| format!("{}×{} / format {} / {} bytes",
-                                l.sector_pixels, l.sector_pixels, l.texture_format, l.sector_bytes))
-                                .collect::<Vec<_>>().join("; "), xml.display()
-                        ));
-                    }
-                    Err(error) => diagnostics.push(format!(
-                        "Original baked terrain texture package {} cannot be decoded: {error}",
-                        pak.display(),
-                    )),
+        match (&terrain_xml, &terrain_pak) {
+            (Some(xml), Some(pak)) => match read_terrain_texture_header(pak) {
+                Ok(header) => {
+                    diagnostics.push(format!(
+                        "Original map-owned baked terrain v{} found in the imported build ({} texture layers; formats/sizes: {}). TerrainTexture.xml: {}",
+                        header.version, header.layers.len(),
+                        header.layers.iter().map(|layer| format!(
+                            "{}×{} / format {} / {} bytes",
+                            layer.sector_pixels, layer.sector_pixels,
+                            layer.texture_format, layer.sector_bytes
+                        )).collect::<Vec<_>>().join("; "),
+                        xml.display()
+                    ));
                 }
+                Err(error) => diagnostics.push(format!(
+                    "Original baked terrain package {} could not be decoded: {error}",
+                    pak.display()
+                )),
             },
             _ => diagnostics.push(
-                "The baked ground texture requires source TerrainTexture.xml AND terraintexture.pak from this map; neither is reconstructed from Heightmap.dat alone.".into()
+                "Original baked ground color unavailable: exact map-owned TerrainTexture.xml and terraintexture.pak are not both present in the selected imported build.".into()
             ),
         }
         match read_terrain(&exact, 129) {
@@ -418,11 +494,10 @@ fn open_selected(
         project_inventory.as_ref(),
     )?;
     if terrain.is_some()
-        && let Some(relative) = &chosen.terrain_texture_pak
+        && terrain_xml.is_some()
+        && let Some(package) = &terrain_pak
     {
-        match verified_source(&root, relative, 2 * 1024 * 1024 * 1024)
-            .and_then(|file| read_terrain_texture_atlas(&file).map_err(|err| err.to_string()))
-        {
+        match read_terrain_texture_atlas(package).map_err(|err| err.to_string()) {
             Ok(atlas) => {
                 let mut applied = false;
                 if let (Some(assembled), Some((terrain_mesh, _))) =
@@ -480,6 +555,24 @@ fn open_selected(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn baked_terrain_resources_use_exact_map_owner_not_a_global_filename() {
+        let map = MapCandidate {
+            name: "Desert_Canyon".into(),
+            layers: vec![PathBuf::from(
+                "Levels/Desert_Canyon/Layers/add_new_assets_here.lyr",
+            )],
+            terrain: Some(PathBuf::from("Levels/Desert_Canyon/Heightmap.dat")),
+            vegetation: None,
+            terrain_texture_xml: None,
+            terrain_texture_pak: None,
+        };
+        assert_eq!(
+            map_virtual_folder(&map).as_deref(),
+            Some("levels/desert_canyon")
+        );
+    }
 
     #[test]
     fn map_groups_resolve_parent_map_not_layers_subfolder() {

@@ -23,17 +23,19 @@ pub(super) struct Report {
     pub geometries: usize,
     pub textured: usize,
     pub unresolved: usize,
+    pub recovered_companions: usize,
     pub notes: Vec<String>,
 }
 
 impl Report {
     pub fn status(&self) -> String {
         format!(
-            "{} model instances · {} unique meshes · {} textured material sets · {} missing/unsupported dependencies. {}",
+            "{} model instances · {} unique meshes · {} textured material sets · {} missing/unsupported dependencies · {} exact compiled companions recovered. {}",
             self.placed,
             self.geometries,
             self.textured,
             self.unresolved,
+            self.recovered_companions,
             self.notes
                 .iter()
                 .take(5)
@@ -136,6 +138,47 @@ fn relevant_asset(path: &str) -> bool {
     [".cgf", ".cga", ".cgfm", ".cgam", ".skinm", ".chrm", ".mtl"]
         .iter()
         .any(|ext| path.ends_with(ext))
+}
+
+/// Load an authored model from an exact virtual path. Many Evolve `.cgf`
+/// members contain metadata, physics nodes, or mesh headers without complete
+/// render streams; their *same-stem* `.cgfm` render companion can be valid.
+/// A present but undecodable source must not block that verified companion.
+///
+/// Never search by basename, choose an ambiguous archive arbitrarily, or
+/// treat missing geometry as an invented proxy mesh.
+fn decodable_render_source<L, D>(
+    model: &str,
+    mut lookup: L,
+    mut decode: D,
+) -> Result<(AssetLocation, Vec<RenderMesh>, Option<String>), Vec<String>>
+where
+    L: FnMut(&str) -> Result<Option<AssetLocation>, String>,
+    D: FnMut(&Path) -> Result<Vec<RenderMesh>, String>,
+{
+    let mut reasons = Vec::new();
+    let candidates = render_candidates(model);
+    for (index, candidate) in candidates.iter().enumerate() {
+        match lookup(candidate) {
+            Ok(Some(source)) => match decode(&source.path) {
+                Ok(parts) if !parts.is_empty() => {
+                    let note = (index > 0).then(|| {
+                        format!(
+                            "Using exact compiled render companion {candidate} after original source was unavailable or could not decode"
+                        )
+                    });
+                    return Ok((source, parts, note));
+                }
+                Ok(_) => reasons.push(format!("{candidate}: no renderable geometry")),
+                Err(error) => reasons.push(format!("{candidate}: {error}")),
+            },
+            Ok(None) => reasons.push(format!(
+                "{candidate}: not present in matching imported PAKs"
+            )),
+            Err(error) => reasons.push(format!("{candidate}: {error}")),
+        }
+    }
+    Err(reasons)
 }
 
 impl Index {
@@ -469,108 +512,122 @@ pub(super) fn assemble(
                     budget_hit = true;
                     break;
                 }
-                // An exact virtual-path companion is not a filename search:
-                // it inherits the original authored directory and basename.
-                // Ambiguous hits remain errors and are never bypassed by
-                // silently taking an unrelated copy.
-                let mut chosen = None;
-                let mut lookup_error = None;
-                for candidate in render_candidates(&object.model) {
-                    match sources.lookup(&candidate) {
-                        Ok(Some(hit)) => {
-                            chosen = Some(hit);
-                            break;
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            lookup_error = Some(error);
-                            break;
-                        }
-                    }
-                }
-                let source = if let Some(source) = chosen {
-                    source
-                } else {
-                    report.unresolved += 1;
-                    report.note(
-                        lookup_error
-                            .unwrap_or_else(|| format!("Missing exact model {}", object.model)),
-                    );
-                    failures.insert(key);
-                    continue;
-                };
-                let meshes = match read_world_model_parts(&source.path) {
-                    Ok(meshes) => meshes,
-                    Err(error) => {
+                // Source metadata/physics chunks may not contain render
+                // streams even though a verified same-stem compiled companion
+                // does. Decode candidates in order, retaining exact paths and
+                // the selected build rather than guessing alternate objects.
+                let (source, meshes, fallback_note) = match decodable_render_source(
+                    &object.model,
+                    |candidate| sources.lookup(candidate).map(|found| found.cloned()),
+                    |path| read_world_model_parts(path).map_err(|error| error.to_string()),
+                ) {
+                    Ok(loaded) => loaded,
+                    Err(reasons) => {
                         report.unresolved += 1;
-                        report.note(format!("Cannot decode {}: {error}", object.model));
+                        report.note(format!(
+                            "Cannot resolve/decode {}: {}",
+                            object.model,
+                            reasons.join("; ")
+                        ));
                         failures.insert(key);
                         continue;
                     }
                 };
+                if let Some(note) = fallback_note {
+                    report.recovered_companions += 1;
+                    report.note(note);
+                }
                 if models.len().saturating_add(meshes.len()) > MAX_MODELS {
                     budget_hit = true;
                     break;
                 }
                 let original_inventory = sources.inventories.get(&source.archive);
-                let authored_material = if object.material.is_empty() {
-                    // This is an exact sibling candidate, not a global filename
-                    // search. A missing authored material stays untextured.
-                    Path::new(&object.model)
-                        .with_extension("mtl")
-                        .to_string_lossy()
-                        .to_string()
-                } else if object.material.to_ascii_lowercase().ends_with(".mtl") {
-                    object.material.clone()
-                } else {
-                    format!("{}.mtl", object.material)
-                };
                 let mut material_ranges = Vec::new();
-                match (sources.lookup(&authored_material), original_inventory) {
-                    (Ok(Some(material)), Some(inventory)) => {
-                        let full = (meshes.len() == 1).then(|| {
-                            assembly_materials::load_model(
-                                &source.path,
-                                &material.path,
-                                inventory,
-                                sources.library_root.as_deref(),
-                                sources.build.as_deref(),
-                                cache,
-                            )
-                        });
-                        let resolved = match full {
-                            Some(Ok(data)) => Ok(data),
-                            _ => assembly_materials::original_single_leaf_surface(
-                                &material.path,
-                                inventory,
-                                sources.library_root.as_deref(),
-                                sources.build.as_deref(),
-                                cache,
-                            )
-                            .map(|(surface, warnings)| (vec![surface], warnings)),
-                        };
-                        match resolved {
-                            Ok((parts, warnings)) => {
-                                report.textured +=
-                                    usize::from(parts.iter().any(|part| part.diffuse.is_some()));
-                                material_ranges = parts;
-                                for note in warnings.into_iter().take(2) {
-                                    report.note(format!("{}: {note}", object.name));
+                if let Some(inventory) = original_inventory {
+                    // A world model may declare MtlName in its compiled mesh,
+                    // even when there is NO same-stem .mtl. Reuse the Model
+                    // Viewer's exact original-material resolver rather than
+                    // assuming the geometry filename is the material name.
+                    // For a compiled fallback, inspect that verified virtual
+                    // owner so its own embedded material hint can be used.
+                    let source_virtual = render_candidates(&object.model)
+                        .into_iter()
+                        .find(|candidate| {
+                            let candidate_extension =
+                                Path::new(candidate).extension().and_then(|e| e.to_str());
+                            candidate_extension.is_some_and(|extension| {
+                                source
+                                    .path
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .is_some_and(|actual| actual.eq_ignore_ascii_case(extension))
+                            })
+                        })
+                        .unwrap_or_else(|| object.model.clone());
+                    let explicit =
+                        (!object.material.trim().is_empty()).then_some(object.material.as_str());
+                    match assembly_materials::material_for_part(
+                        &source_virtual,
+                        explicit,
+                        inventory,
+                        sources.library_root.as_deref(),
+                        sources.build.as_deref(),
+                    ) {
+                        Ok(Some(material)) => {
+                            let full = (meshes.len() == 1).then(|| {
+                                assembly_materials::load_model(
+                                    &source.path,
+                                    &material,
+                                    inventory,
+                                    sources.library_root.as_deref(),
+                                    sources.build.as_deref(),
+                                    cache,
+                                )
+                            });
+                            let resolved = match full {
+                                Some(Ok(data)) => Ok(data),
+                                _ => assembly_materials::original_single_leaf_surface(
+                                    &material,
+                                    inventory,
+                                    sources.library_root.as_deref(),
+                                    sources.build.as_deref(),
+                                    cache,
+                                )
+                                .map(|(surface, warnings)| (vec![surface], warnings)),
+                            };
+                            match resolved {
+                                Ok((parts, warnings)) => {
+                                    report.textured += usize::from(
+                                        parts.iter().any(|part| part.diffuse.is_some()),
+                                    );
+                                    material_ranges = parts;
+                                    for note in warnings.into_iter().take(2) {
+                                        report.note(format!("{}: {note}", object.name));
+                                    }
                                 }
+                                Err(error) => report.note(format!(
+                                    "{}: source material {} cannot be assigned to {} mesh sections: {error}",
+                                    object.name,
+                                    material.display(),
+                                    meshes.len()
+                                )),
                             }
-                            Err(error) => report.note(format!(
-                                "{}: original MTL cannot be assigned to {} mesh sections: {error}",
-                                object.name,
-                                meshes.len()
-                            )),
                         }
+                        Ok(None) => report.note(format!(
+                            "No verified original MTL reference for {} ({source_virtual}; {} mesh sections)",
+                            object.name,
+                            meshes.len()
+                        )),
+                        Err(error) => report.note(format!(
+                            "{}: exact source material resolution failed: {error}",
+                            object.name
+                        )),
                     }
-                    (Err(error), _) => report.note(format!("{} material: {error}", object.name)),
-                    _ => report.note(format!(
-                        "No verified original material for {} ({} mesh sections)",
-                        object.name,
-                        meshes.len()
-                    )),
+                } else {
+                    report.note(format!(
+                        "{}: source PAK inventory unavailable for texture resolution",
+                        object.name
+                    ));
                 }
                 let mut indices = Vec::with_capacity(meshes.len());
                 for mesh in meshes {
@@ -729,6 +786,114 @@ mod tests {
             compiled_render_path("objects/world/rock.cgf"),
             "objects/world/rock.cgf",
         );
+    }
+
+    #[test]
+    fn source_without_streams_falls_back_to_exact_compiled_render_companion() {
+        let mut decoded = Vec::new();
+        let (source, parts, note) = decodable_render_source(
+            "Objects/natural/rocks/riverbank02_a.cgf",
+            |candidate| {
+                Ok(Some(AssetLocation {
+                    archive: "same-imported-build".into(),
+                    path: PathBuf::from(candidate),
+                }))
+            },
+            |path| {
+                let virtual_name = path.to_string_lossy().to_string();
+                decoded.push(virtual_name.clone());
+                if virtual_name.ends_with(".cgf") {
+                    return Err("mesh lacks referenced vertex/index streams".into());
+                }
+                Ok(vec![RenderMesh {
+                    info: ModelInfo {
+                        format: "test".into(),
+                        version: 7,
+                        chunk_count: 1,
+                        vertex_count: 3,
+                        triangle_count: 1,
+                        original_uv0: false,
+                        original_normals: false,
+                    },
+                    positions: vec![[0.0, 0.0, 0.0]; 3],
+                    indices: vec![0, 1, 2],
+                    uv0: None,
+                    normals: None,
+                }])
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            decoded,
+            vec![
+                "Objects/natural/rocks/riverbank02_a.cgf",
+                "Objects/natural/rocks/riverbank02_a.cgfm",
+            ]
+        );
+        assert_eq!(source.archive, "same-imported-build");
+        assert_eq!(
+            source.path,
+            PathBuf::from("Objects/natural/rocks/riverbank02_a.cgfm")
+        );
+        assert_eq!(parts.len(), 1);
+        assert!(note.unwrap().contains("compiled render companion"));
+    }
+
+    #[test]
+    fn missing_or_ambiguous_model_companions_fail_closed_without_proxy_meshes() {
+        let result = decodable_render_source(
+            "Objects/world/rock.cgf",
+            |candidate| {
+                if candidate.ends_with(".cgfm") {
+                    Err("Ambiguous imported asset in 2 PAKs".into())
+                } else {
+                    Ok(None)
+                }
+            },
+            |_path| -> Result<Vec<RenderMesh>, String> {
+                panic!("An unavailable or ambiguous source must never be decoded")
+            },
+        );
+        let reasons = result.err().expect("no safe source");
+        assert_eq!(reasons.len(), 2);
+        assert!(reasons[0].contains("not present"));
+        assert!(reasons[1].contains("Ambiguous"));
+    }
+
+    #[test]
+    fn an_exact_render_source_still_has_priority_over_its_companion() {
+        let (source, _, note) = decodable_render_source(
+            "Objects/world/rock.cgf",
+            |candidate| {
+                Ok(Some(AssetLocation {
+                    archive: "verified".into(),
+                    path: PathBuf::from(candidate),
+                }))
+            },
+            |_path| {
+                Ok(vec![RenderMesh {
+                    info: ModelInfo {
+                        format: "test".into(),
+                        version: 7,
+                        chunk_count: 1,
+                        vertex_count: 3,
+                        triangle_count: 1,
+                        original_uv0: false,
+                        original_normals: false,
+                    },
+                    positions: vec![[0.0, 0.0, 0.0]; 3],
+                    indices: vec![0, 1, 2],
+                    uv0: None,
+                    normals: None,
+                }])
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            source.path.extension().and_then(|e| e.to_str()),
+            Some("cgf")
+        );
+        assert!(note.is_none());
     }
 
     #[test]
