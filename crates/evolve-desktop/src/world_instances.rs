@@ -7,6 +7,34 @@ use iced::wgpu;
 use iced::wgpu::util::{DeviceExt, TextureDataOrder};
 use std::sync::Arc;
 
+// Ordinary world-model diffuse textures are limited to 32 MiB so one map
+// cannot flood GPU memory with hundreds of oversized props. Baked ground
+// color is a single, verified atlas: the original Ice_Crashsite layout is
+// 4096×4096 RGBA8 (64 MiB), which must NOT silently fall back to gray.
+const MAX_WORLD_DIFFUSE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_TERRAIN_ATLAS_BYTES: u64 = 64 * 1024 * 1024;
+
+fn is_ground(group: &ModelGroup) -> bool {
+    group.instances.len() == 1 && group.instances[0].object_index == usize::MAX
+}
+
+fn valid_diffuse_image(image: &image::RgbaImage, ground: bool, limit_2d: u32) -> bool {
+    let (width, height) = image.dimensions();
+    let byte_limit = if ground {
+        MAX_TERRAIN_ATLAS_BYTES
+    } else {
+        MAX_WORLD_DIFFUSE_BYTES
+    };
+    width != 0
+        && height != 0
+        && width <= limit_2d
+        && height <= limit_2d
+        && u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .is_some_and(|bytes| bytes <= byte_limit && bytes == image.as_raw().len() as u64)
+}
+
 #[derive(Clone)]
 pub(super) struct ModelGroup {
     pub mesh: Arc<RenderMesh>,
@@ -481,6 +509,8 @@ impl Renderer {
         });
         let mut surfaces = Vec::new();
         let fallback = [210u8, 205, 205, 255];
+        let terrain = is_ground(model);
+        let limit_2d = device.limits().max_texture_dimension_2d;
         for surf in &model.surfaces {
             if !surf.visible
                 || surf.index_count == 0
@@ -491,7 +521,7 @@ impl Renderer {
             let source = surf
                 .diffuse
                 .as_ref()
-                .filter(|img| (img.width() as u64) * (img.height() as u64) * 4 <= 32 * 1024 * 1024);
+                .filter(|img| valid_diffuse_image(img, terrain, limit_2d));
             let (w, h, bytes) = source
                 .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
                 .unwrap_or((1, 1, &fallback[..]));
@@ -706,6 +736,43 @@ mod tests {
         assert!(production.contains("blend: if blend {"));
         assert!(production.contains("depth_write_enabled: !blend"));
         assert!(production.contains("foliage_cutout: surf.foliage_cutout && source.is_some()"));
+    }
+
+    #[test]
+    fn baked_terrain_atlas_is_not_silently_replaced_by_32mb_world_cap() {
+        let image = image::RgbaImage::new(4096, 4096);
+        assert_eq!(image.as_raw().len() as u64, 64 * 1024 * 1024);
+        assert!(valid_diffuse_image(&image, true, 4096));
+        assert!(!valid_diffuse_image(&image, false, 4096));
+        assert!(!valid_diffuse_image(&image, true, 2048));
+        let smaller = image::RgbaImage::new(2048, 2048);
+        assert!(valid_diffuse_image(&smaller, true, 4096));
+        assert!(valid_diffuse_image(&smaller, false, 4096));
+    }
+
+    #[test]
+    fn terrain_is_identified_by_nonselectable_ground_instance_not_asset_name() {
+        let mesh = Arc::new(RenderMesh {
+            info: evolve_core::ModelInfo {
+                format: "test".into(),
+                version: 1,
+                chunk_count: 0,
+                vertex_count: 0,
+                triangle_count: 0,
+                original_uv0: true,
+                original_normals: true,
+            },
+            positions: Vec::new(), indices: Vec::new(), uv0: None, normals: None,
+        });
+        let mut group = ModelGroup {
+            mesh,
+            surfaces: Vec::new(),
+            instances: vec![Instance { object_index: usize::MAX, transform: Transform::default() }],
+            radius: 0.0,
+        };
+        assert!(is_ground(&group));
+        group.instances[0].object_index = 0;
+        assert!(!is_ground(&group));
     }
 
     #[test]
