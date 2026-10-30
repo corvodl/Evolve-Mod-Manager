@@ -879,6 +879,70 @@ mod tests {
             LibraryReferenceStatus::Missing
         ));
         assert!(resolve_imported_reference(root.path(), "../body.tif", None).is_err());
+
+        // An assembly scope must preserve strict Stage 2 provenance without
+        // rescanning manifests per material/texture. Changing the actual
+        // source after indexing must invalidate the candidate immediately.
+        {
+            let _scope = begin_imported_lookup_session(root.path(), "Stage 2").unwrap();
+            let scoped = resolve_imported_reference(
+                root.path(),
+                "textures/body.tif",
+                Some("Stage 2"),
+            )
+            .unwrap();
+            assert!(matches!(scoped, LibraryReferenceStatus::Found(hit)
+                if hit.archive_id == archive_ids[0]));
+            assert!(matches!(
+                resolve_imported_reference(root.path(), "textures/body.tif", None).unwrap(),
+                LibraryReferenceStatus::Ambiguous(_)
+            ));
+            let path = root.path().join(format!(
+                "textures0.pak__{}/files/textures/body.dds.0",
+                archive_ids[0]
+            ));
+            fs::write(path, b"modified-source").unwrap();
+            assert!(matches!(
+                resolve_imported_reference(root.path(), "textures/body.tif", Some("Stage 2"))
+                    .unwrap(),
+                LibraryReferenceStatus::Missing
+            ));
+            assert!(resolve_imported_reference(root.path(), "../body.tif", Some("Stage 2")).is_err());
+        }
+        assert!(matches!(
+            resolve_imported_reference(root.path(), "textures/body.tif", Some("Legacy")).unwrap(),
+            LibraryReferenceStatus::Found(hit) if hit.archive_id == archive_ids[1]
+        ));
+    }
+
+    #[test]
+    fn preview_inventory_defers_unrelated_file_checks_but_full_edit_open_does_not() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("assets.pak__11111111111111111111");
+        fs::create_dir_all(folder.join("files/models")).unwrap();
+        fs::write(folder.join("files/models/building.cgf"), b"mesh").unwrap();
+        fs::write(
+            folder.join("asset-library.json"),
+            serde_json::json!({
+                "version": 1,
+                "name": "assets.pak",
+                "source": "/source/assets.pak",
+                "entries": [
+                    {"path": "models/building.cgf", "bytes": 4},
+                    {"path": "textures/unrelated.dds", "bytes": 9000}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let archive = &imported_library(root.path()).unwrap().archives[0];
+        let preview = imported_archive_preview_inventory(archive).unwrap();
+        assert_eq!(preview.entries.len(), 2);
+        assert!(matches!(imported_archive_files(archive), Err(LibraryError::Modified)));
+        assert_eq!(
+            fs::read(folder.join("files/models/building.cgf")).unwrap(),
+            b"mesh"
+        );
     }
 
     #[test]
