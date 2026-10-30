@@ -271,7 +271,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         );
     }
 
-
     if state.library_show_configuration {
         let picking = state.library_import_scanning;
         let importing = state.library_import_cancel.is_some();
@@ -539,7 +538,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             },
             ..container::Style::default()
         });
-    let center = container(dialog).width(Fill).height(Fill).center_x(Fill).center_y(Fill);
+    let center = container(dialog)
+        .width(Fill)
+        .height(Fill)
+        .center_x(Fill)
+        .center_y(Fill);
     stack![page, backdrop, center].into()
 }
 
@@ -588,13 +591,22 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
             )).size(11).style(design::muted),
         ].spacing(5);
         if editing {
-            item = item.push(row![
-                design::text_input("Build display name…", &state.library_rename_value)
-                    .on_input(Message::LibraryRenameBuildValue).width(Fill),
-                design::button("Save Name").style(design::primary)
-                    .on_press_maybe((!state.busy).then_some(Message::LibraryRenameBuildSave(build.id.clone()))),
-                design::button("Cancel").on_press(Message::LibraryRenameBuildCancel),
-            ].align_y(iced::Center).spacing(7));
+            item = item.push(
+                row![
+                    design::text_input("Build display name…", &state.library_rename_value)
+                        .on_input(Message::LibraryRenameBuildValue)
+                        .width(Fill),
+                    design::button("Save Name")
+                        .style(design::primary)
+                        .on_press_maybe(
+                            (!state.busy)
+                                .then_some(Message::LibraryRenameBuildSave(build.id.clone()))
+                        ),
+                    design::button("Cancel").on_press(Message::LibraryRenameBuildCancel),
+                ]
+                .align_y(iced::Center)
+                .spacing(7),
+            );
         } else if deleting {
             item = item.push(column![
                 text("Remove the imported snapshot history and only proven unshared extractions? Original Evolve files will remain untouched.").size(12),
@@ -605,12 +617,23 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
                 ].spacing(8),
             ].spacing(7));
         } else {
-            item = item.push(row![
-                design::button("Rename").style(design::secondary)
-                    .on_press_maybe((!state.busy).then_some(Message::LibraryRenameBuildBegin(build.id.clone()))),
-                design::button("Remove Imported Build").style(design::secondary)
-                    .on_press_maybe((!state.busy).then_some(Message::LibraryDeleteBuildConfirm(build.id.clone()))),
-            ].spacing(8));
+            item = item.push(
+                row![
+                    design::button("Rename")
+                        .style(design::secondary)
+                        .on_press_maybe(
+                            (!state.busy)
+                                .then_some(Message::LibraryRenameBuildBegin(build.id.clone()))
+                        ),
+                    design::button("Remove Imported Build")
+                        .style(design::secondary)
+                        .on_press_maybe(
+                            (!state.busy)
+                                .then_some(Message::LibraryDeleteBuildConfirm(build.id.clone()))
+                        ),
+                ]
+                .spacing(8),
+            );
         }
         content = content.push(panel(container(item).padding(12)));
     }

@@ -48,10 +48,7 @@ mod tests {
     #[test]
     fn only_known_prefixes_are_removed() {
         assert_eq!(ordinary_path(r"\\?\C:\Games"), r"C:\Games");
-        assert_eq!(
-            ordinary_path(r"\\?\UNC\server\share"),
-            r"\\server\share"
-        );
+        assert_eq!(ordinary_path(r"\\?\UNC\server\share"), r"\\server\share");
         assert_eq!(
             ordinary_path(r"\\?\Volume{123}\data"),
             r"\\?\Volume{123}\data"

@@ -219,7 +219,8 @@ fn import_library_pak(
         let manifest: serde_json::Value =
             serde_json::from_reader(File::open(doc_path).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
-        if manifest["source"].as_str()
+        if manifest["source"]
+            .as_str()
             .is_some_and(|old| source_path_key(old) == source_path_key(&source.to_string_lossy()))
         {
             use_legacy_id = true;
@@ -231,31 +232,40 @@ fn import_library_pak(
     // recorded original SHA, with the full extracted-file verification below.
     let catalog = imported_library(&root).map_err(|e| e.to_string())?;
     let matching = catalog.archives.iter().find(|item| {
-        if !item.name.eq_ignore_ascii_case(basename) ||
-            source_path_key(&item.source) != source_path_key(&source.to_string_lossy()) {
+        if !item.name.eq_ignore_ascii_case(basename)
+            || source_path_key(&item.source) != source_path_key(&source.to_string_lossy())
+        {
             return false;
         }
         let path = Path::new(&item.directory).join("asset-library.json");
-        fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_file() && meta.len() <= 32 * 1024 * 1024)
-            && File::open(path).ok()
+        fs::symlink_metadata(&path)
+            .is_ok_and(|meta| meta.file_type().is_file() && meta.len() <= 32 * 1024 * 1024)
+            && File::open(path)
+                .ok()
                 .and_then(|file| serde_json::from_reader::<_, serde_json::Value>(file).ok())
                 .is_some_and(|manifest| manifest["source_sha256"].as_str() == Some(before.as_str()))
     });
     let id = matching.map(|item| item.id.clone()).unwrap_or_else(|| {
-        if use_legacy_id { legacy_id } else { source_scoped_id(basename, &before, &source) }
+        if use_legacy_id {
+            legacy_id
+        } else {
+            source_scoped_id(basename, &before, &source)
+        }
     });
     let name = archive_directory(basename, &id);
     let target = root.join(&name);
     let legacy = root.join(&id);
-    let existing = matching.map(|item| PathBuf::from(&item.directory)).or_else(|| {
-        if fs::symlink_metadata(&legacy).is_ok() {
-            Some(legacy)
-        } else if fs::symlink_metadata(&target).is_ok() {
-            Some(target.clone())
-        } else {
-            None
-        }
-    });
+    let existing = matching
+        .map(|item| PathBuf::from(&item.directory))
+        .or_else(|| {
+            if fs::symlink_metadata(&legacy).is_ok() {
+                Some(legacy)
+            } else if fs::symlink_metadata(&target).is_ok() {
+                Some(target.clone())
+            } else {
+                None
+            }
+        });
     if let Some(existing) = existing {
         let catalog = imported_library(&root).map_err(|e| e.to_string())?;
         let item = catalog

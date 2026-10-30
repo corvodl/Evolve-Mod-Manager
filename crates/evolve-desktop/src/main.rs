@@ -108,10 +108,10 @@ use evolve_core::{
     inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
     managed_library_builds, material_texture_candidates, plan_mod_profile, prepare_client_hook,
     read_cdf, read_material, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, remove_managed_library_build, rename_managed_library_build, resign_signed_pak, resolve_cdf,
-    resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
-    scan_directory, scan_directory_with_progress, scan_library_build_updates,
-    scan_library_import_sources, stage_status,
+    rebuild_signed_pak_entry, remove_managed_library_build, rename_managed_library_build,
+    resign_signed_pak, resolve_cdf, resolve_imported_reference, resolve_materials,
+    restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
+    scan_library_build_updates, scan_library_import_sources, stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, mouse_area, row, scrollable, shader, slider, space, svg, text,
@@ -4367,9 +4367,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if let Some(build) = state.library_managed_builds.iter().find(|b| b.id == id) {
                 state.library_rename_value = if build.display_name.is_empty() {
-                    Path::new(&build.source_root).parent()
-                        .and_then(|p| p.file_name()).and_then(|n| n.to_str())
-                        .unwrap_or("Evolve Game Build").to_owned()
+                    Path::new(&build.source_root)
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Evolve Game Build")
+                        .to_owned()
                 } else {
                     build.display_name.clone()
                 };
@@ -4383,25 +4386,41 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_rename_value.clear();
         }
         Message::LibraryRenameBuildSave(id) => {
-            if state.busy || state.library_import_scanning ||
-                state.library_rename_build.as_deref() != Some(id.as_str()) {
+            if state.busy
+                || state.library_import_scanning
+                || state.library_rename_build.as_deref() != Some(id.as_str())
+            {
                 return Task::none();
             }
-            let Some(build) = state.library_managed_builds.iter().find(|b| b.id == id).cloned()
+            let Some(build) = state
+                .library_managed_builds
+                .iter()
+                .find(|b| b.id == id)
+                .cloned()
             else {
                 state.status = "Refresh managed builds before renaming.".into();
                 return Task::none();
             };
             let name = state.library_rename_value.trim().to_owned();
-            if name.is_empty() || name.len() > 80 ||
-                name.chars().any(|ch| ch.is_control() || matches!(ch, '/' | '\\')) {
+            if name.is_empty()
+                || name.len() > 80
+                || name
+                    .chars()
+                    .any(|ch| ch.is_control() || matches!(ch, '/' | '\\'))
+            {
                 state.status = "Build name must be 1–80 characters without path separators.".into();
                 return Task::none();
             }
             state.library_rename_build = None;
-            return launch(state, Operation::RenameManagedLibraryBuild(
-                PathBuf::from(&state.library_root), id, build.source_root, name,
-            ));
+            return launch(
+                state,
+                Operation::RenameManagedLibraryBuild(
+                    PathBuf::from(&state.library_root),
+                    id,
+                    build.source_root,
+                    name,
+                ),
+            );
         }
         Message::LibraryDeleteBuildConfirm(id) => {
             if !state.busy

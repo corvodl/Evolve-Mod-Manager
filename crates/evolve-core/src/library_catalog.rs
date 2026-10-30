@@ -3,8 +3,8 @@
 //! files or an assertion that the imported files are still byte-for-byte valid.
 use crate::archive::safe_member_name;
 use crate::inventory::{AssetEntry, Inventory, classify_path};
-use crate::library_paths::{ordinary_path, source_path_key};
 use crate::library_build_updates::registered_build_name;
+use crate::library_paths::{ordinary_path, source_path_key};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -254,7 +254,8 @@ fn manifests_by_build(root: &Path) -> Result<HashMap<String, Vec<String>>, Libra
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>();
             let identity_key = source_path_key(root_path);
-            let logical_id = format!("{:x}", Sha256::digest(identity_key.as_bytes()))[..24].to_owned();
+            let logical_id =
+                format!("{:x}", Sha256::digest(identity_key.as_bytes()))[..24].to_owned();
             let friendly = registered_build_name(root, &logical_id);
             let label = format!(
                 "{} [{}]",
@@ -356,7 +357,9 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
                 if candidate.entries == manifest.entries.len()
                     && candidate.extracted_bytes == manifest.extracted_bytes
                 {
-                    candidate.builds.extend(owners.get(id).cloned().unwrap_or_default());
+                    candidate
+                        .builds
+                        .extend(owners.get(id).cloned().unwrap_or_default());
                     candidate.builds.sort();
                     candidate.builds.dedup();
                     continue;
