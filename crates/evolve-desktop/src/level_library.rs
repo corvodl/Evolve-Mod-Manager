@@ -1178,7 +1178,9 @@ mod tests {
         .unwrap()
         .unwrap();
         let path = pak.file().unwrap();
-        assert!(path.starts_with(&library_root));
+        // Windows canonical paths carry a \\?\ device prefix; compare
+        // normalized absolute paths, not a raw tempdir path.
+        assert!(path.starts_with(std::fs::canonicalize(&library_root).unwrap()));
         assert_eq!(read_terrain_texture_header(path).unwrap().version, 9);
         assert_eq!(read_terrain_texture_atlas(path).unwrap().decoded_tiles, 1);
     }
