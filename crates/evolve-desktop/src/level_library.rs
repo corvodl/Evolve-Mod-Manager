@@ -290,7 +290,13 @@ fn imported_map_terrain(
                 &format!("{folder}/TerrainTexture.xml"),
             ] {
                 if let Some(path) = imported_terrain_member(&inventory, relative)? {
-                    found.push(TerrainResource::Cry(path));
+                    // Multiple accepted virtual spellings may resolve to one
+                    // exact manifest file. Only separate files are ambiguous.
+                    if !found.iter().any(|existing| {
+                        matches!(existing, TerrainResource::Cry(other) if other == &path)
+                    }) {
+                        found.push(TerrainResource::Cry(path));
+                    }
                 }
             }
         } else if member_name.eq_ignore_ascii_case("terraintexture.pak") && is_terrain_pak {
@@ -313,7 +319,11 @@ fn imported_map_terrain(
                 let Some(path) = imported_terrain_member(&inventory, &entry.relative_path)? else {
                     continue;
                 };
-                if read_terrain_texture_header(&path).is_ok() {
+                if read_terrain_texture_header(&path).is_ok()
+                    && !found.iter().any(|existing| {
+                        matches!(existing, TerrainResource::Cry(other) if other == &path)
+                    })
+                {
                     found.push(TerrainResource::Cry(path));
                 }
             }
