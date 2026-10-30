@@ -509,8 +509,12 @@ impl AnimatedGlb {
                     name: animation["name"].as_str().unwrap_or("unnamed").to_owned(),
                     duration,
                     tracks,
-                    layered: animation["extras"]["evolveLayered"].as_bool().unwrap_or(false),
-                    additive: animation["extras"]["evolveAdditive"].as_bool().unwrap_or(false),
+                    layered: animation["extras"]["evolveLayered"]
+                        .as_bool()
+                        .unwrap_or(false),
+                    additive: animation["extras"]["evolveAdditive"]
+                        .as_bool()
+                        .unwrap_or(false),
                 });
             }
         }
@@ -577,12 +581,20 @@ impl AnimatedGlb {
                 "Choose a standalone base and a marked layered overlay".into(),
             ));
         }
-        let rig = self.rigged_preview.as_ref().ok_or(AnimationError::Unavailable)?;
+        let rig = self
+            .rigged_preview
+            .as_ref()
+            .ok_or(AnimationError::Unavailable)?;
         let mut blended = self.sample(base, seconds)?;
         let mut base_channels = HashMap::<(usize, String), usize>::new();
         for (index, sample) in blended.iter().enumerate() {
-            if base_channels.insert((sample.node, sample.path.clone()), index).is_some() {
-                return Err(AnimationError::Invalid("Duplicate base animation channel".into()));
+            if base_channels
+                .insert((sample.node, sample.path.clone()), index)
+                .is_some()
+            {
+                return Err(AnimationError::Invalid(
+                    "Duplicate base animation channel".into(),
+                ));
             }
         }
         for overlay_sample in self.sample(overlay, seconds)? {
@@ -616,16 +628,16 @@ impl AnimatedGlb {
                     };
                     gltf_slerp(&mixed, &mixed, 0.)?
                 }
-                "translation" if layer_clip.additive => {
-                    current.iter().zip(layer).map(|(a, b)| a + b * weight).collect()
-                }
-                "scale" if layer_clip.additive => {
-                    current
-                        .iter()
-                        .zip(layer)
-                        .map(|(a, b)| a * (1. + weight * (b - 1.)))
-                        .collect()
-                }
+                "translation" if layer_clip.additive => current
+                    .iter()
+                    .zip(layer)
+                    .map(|(a, b)| a + b * weight)
+                    .collect(),
+                "scale" if layer_clip.additive => current
+                    .iter()
+                    .zip(layer)
+                    .map(|(a, b)| a * (1. + weight * (b - 1.)))
+                    .collect(),
                 _ => current
                     .iter()
                     .zip(layer)
