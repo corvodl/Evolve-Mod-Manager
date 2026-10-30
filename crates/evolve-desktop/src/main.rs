@@ -2372,6 +2372,16 @@ fn apply_current_skin_frame(state: &mut State) {
                 state.status = format!("CAF playback stopped: {error}");
             }
         }
+    } else if let Some(converted) = &state.glb_motion
+        && converted.has_skinned_preview()
+    {
+        match converted.mesh_at(state.selected_motion_clip, state.motion_time) {
+            Ok(mesh) => state.model = Some(Arc::new(mesh)),
+            Err(error) => {
+                state.playing = false;
+                state.status = format!("Converted GLB mesh playback stopped: {error}");
+            }
+        }
     }
 }
 
@@ -10464,6 +10474,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.motion_time = 0.0;
             state.playing = false;
             state.motion_tick = None;
+            apply_current_skin_frame(state);
         }
         Message::OpenConvertedGlb(index) => {
             if let Some(path) = state.converted_glbs.get(index).cloned() {
@@ -10491,11 +10502,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         || state.glb_motion.as_ref().is_some_and(|m| {
                             m.list_clips().get(state.selected_motion_clip).is_some()
                         }));
-                if state.glb_motion.is_some()
+                if state
+                    .glb_motion
+                    .as_ref()
+                    .is_some_and(|motion| !motion.has_skinned_preview())
                     && state.skin_preview.is_none()
                     && state.cdf_caf_preview.is_none()
                 {
-                    state.status = "Inspecting converted track keys only; the displayed model has no verified binding to this motion.".into();
+                    state.status = "Inspecting converted track keys only; this GLB has no verified source skin. No model deformation is claimed.".into();
                 }
             }
         }
@@ -11521,19 +11535,42 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::MotionGlb(motion)) => {
                     state.cdf_caf_preview = None;
                     let clips = motion.list_clips();
-                    state.status = format!(
-                        "Loaded {} real glTF animation clip(s), {} source nodes.",
-                        clips.len(),
-                        motion.node_names.len()
-                    );
+                    let rigged = motion.has_skinned_preview();
+                    state.status = if rigged {
+                        format!(
+                            "Converted GLB: {} named clip(s) and a verified internal skinned mesh. Playback deforms this GLB's own rig, not an unrelated selected CryEngine CDF.",
+                            clips.len()
+                        )
+                    } else {
+                        format!(
+                            "Loaded {} glTF track clip(s) on {} nodes (inspection only): {}.",
+                            clips.len(),
+                            motion.node_names.len(),
+                            motion.rigged_preview_error.as_deref().unwrap_or("no skinned mesh")
+                        )
+                    };
                     state.motion_time = 0.0;
+                    state.motion_tick = None;
                     state.playing = false;
                     state.selected_motion_clip = 0;
                     state.caf_layer = None;
                     state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.skin_preview = None;
+                    if rigged {
+                        // Converted geometry owns its own vertex/rig identity.
+                        // Do not paint the previous CDF's material slots onto it.
+                        state.cdf_surfaces = None;
+                        state.diffuse = None;
+                        state.normal_map = None;
+                        state.emissive_map = None;
+                        state.specular_map = None;
+                        state.gloss_map = None;
+                    }
                     state.glb_motion = Some(Arc::new(motion));
+                    if rigged {
+                        apply_current_skin_frame(state);
+                    }
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::CafLayer(source, base, label, motion)) => {
