@@ -10,6 +10,9 @@ struct Camera {
 @group(0) @binding(1) var tex_sampler: sampler;
 @group(0) @binding(2) var albedo: texture_2d<f32>;
 @group(0) @binding(3) var authored_opacity: texture_2d<f32>;
+// Material-authored AlphaTest normalized to 0..1. The default 0.5 is
+// supplied only if the selected original MTL did not specify a threshold.
+@group(0) @binding(4) var<uniform> authored_cutoff: vec4<f32>;
 struct Output {
   @builtin(position) clip: vec4<f32>,
   @location(0) uv: vec2<f32>,
@@ -74,7 +77,7 @@ fn fs_foliage(input:Output)->@location(0) vec4<f32> {
   // Discarded fragments neither write depth nor reveal the desktop; surviving
   // fragments write opaque window alpha and regular world depth.
   let leaf_alpha=textureSample(albedo,tex_sampler,input.uv).a;
-  if (leaf_alpha < 0.5) { discard; }
+  if (leaf_alpha < authored_cutoff.x) { discard; }
   let color=shade(input,false);
   return vec4<f32>(color.rgb,1.0);
 }
