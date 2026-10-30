@@ -6,6 +6,7 @@ use crate::model::RenderMesh;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
@@ -273,6 +274,8 @@ struct Clip {
     name: String,
     duration: f32,
     tracks: Vec<Track>,
+    layered: bool,
+    additive: bool,
 }
 #[derive(Clone, Debug)]
 pub struct AnimatedGlb {
@@ -506,6 +509,8 @@ impl AnimatedGlb {
                     name: animation["name"].as_str().unwrap_or("unnamed").to_owned(),
                     duration,
                     tracks,
+                    layered: animation["extras"]["evolveLayered"].as_bool().unwrap_or(false),
+                    additive: animation["extras"]["evolveAdditive"].as_bool().unwrap_or(false),
                 });
             }
         }
@@ -537,6 +542,108 @@ impl AnimatedGlb {
         })?;
         let samples = self.sample(clip_index, seconds)?;
         preview.mesh_at(&samples).map_err(AnimationError::Invalid)
+    }
+
+    /// Only explicit converter-authored layered clips are eligible as overlays.
+    /// An unmarked clip must never be silently interpreted as an aim/additive
+    /// pose. All tracks must belong to this same internally verified GLB rig.
+    pub fn layered_clips(&self) -> Vec<(usize, String)> {
+        self.clips
+            .iter()
+            .enumerate()
+            .filter(|(_, clip)| clip.layered)
+            .map(|(index, clip)| (index, clip.name.clone()))
+            .collect()
+    }
+
+    pub fn is_layered_clip(&self, index: usize) -> bool {
+        self.clips.get(index).is_some_and(|clip| clip.layered)
+    }
+
+    pub fn mesh_at_layered(
+        &self,
+        base: usize,
+        overlay: usize,
+        seconds: f32,
+        weight: f32,
+    ) -> Result<RenderMesh, AnimationError> {
+        if !weight.is_finite() || !(0. ..=1.).contains(&weight) {
+            return Err(AnimationError::Invalid("Layer weight must be 0..1".into()));
+        }
+        let base_clip = self.clips.get(base).ok_or(AnimationError::Unavailable)?;
+        let layer_clip = self.clips.get(overlay).ok_or(AnimationError::Unavailable)?;
+        if base_clip.layered || !layer_clip.layered || base == overlay {
+            return Err(AnimationError::Invalid(
+                "Choose a standalone base and a marked layered overlay".into(),
+            ));
+        }
+        let rig = self.rigged_preview.as_ref().ok_or(AnimationError::Unavailable)?;
+        let mut blended = self.sample(base, seconds)?;
+        let mut base_channels = HashMap::<(usize, String), usize>::new();
+        for (index, sample) in blended.iter().enumerate() {
+            if base_channels.insert((sample.node, sample.path.clone()), index).is_some() {
+                return Err(AnimationError::Invalid("Duplicate base animation channel".into()));
+            }
+        }
+        for overlay_sample in self.sample(overlay, seconds)? {
+            let key = (overlay_sample.node, overlay_sample.path.clone());
+            let current = if let Some(index) = base_channels.get(&key) {
+                blended[*index].value.clone()
+            } else {
+                rig.rest_channel(overlay_sample.node, &overlay_sample.path)
+                    .map_err(AnimationError::Invalid)?
+            };
+            let layer = &overlay_sample.value;
+            if current.len() != layer.len() {
+                return Err(AnimationError::Invalid("Layer track width mismatch".into()));
+            }
+            let value = match overlay_sample.path.as_str() {
+                "rotation" => {
+                    let mixed = if layer_clip.additive {
+                        let delta = gltf_slerp(&[0., 0., 0., 1.], layer, weight)?;
+                        let [ax, ay, az, aw] = <[f32; 4]>::try_from(current.as_slice())
+                            .map_err(|_| AnimationError::Unavailable)?;
+                        let [bx, by, bz, bw] = <[f32; 4]>::try_from(delta.as_slice())
+                            .map_err(|_| AnimationError::Unavailable)?;
+                        vec![
+                            aw * bx + ax * bw + ay * bz - az * by,
+                            aw * by - ax * bz + ay * bw + az * bx,
+                            aw * bz + ax * by - ay * bx + az * bw,
+                            aw * bw - ax * bx - ay * by - az * bz,
+                        ]
+                    } else {
+                        gltf_slerp(&current, layer, weight)?
+                    };
+                    gltf_slerp(&mixed, &mixed, 0.)?
+                }
+                "translation" if layer_clip.additive => {
+                    current.iter().zip(layer).map(|(a, b)| a + b * weight).collect()
+                }
+                "scale" if layer_clip.additive => {
+                    current
+                        .iter()
+                        .zip(layer)
+                        .map(|(a, b)| a * (1. + weight * (b - 1.)))
+                        .collect()
+                }
+                _ => current
+                    .iter()
+                    .zip(layer)
+                    .map(|(a, b)| a * (1. - weight) + b * weight)
+                    .collect(),
+            };
+            if let Some(index) = base_channels.get(&key) {
+                blended[*index].value = value;
+            } else {
+                base_channels.insert(key, blended.len());
+                blended.push(PoseSample {
+                    node: overlay_sample.node,
+                    path: overlay_sample.path,
+                    value,
+                });
+            }
+        }
+        rig.mesh_at(&blended).map_err(AnimationError::Invalid)
     }
 
     pub fn list_clips(&self) -> Vec<MotionClip> {
