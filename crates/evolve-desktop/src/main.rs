@@ -338,6 +338,8 @@ struct State {
     converted_dba_cache: Option<Arc<tempfile::TempDir>>,
     glb_motion: Option<Arc<AnimatedGlb>>,
     selected_motion_clip: usize,
+    selected_glb_overlay: Option<usize>,
+    glb_overlay_weight: f32,
     native_caf: Option<Arc<NativeCafMotion>>,
     caf_layer: Option<Arc<NativeCafMotion>>,
     caf_layer_label: String,
@@ -347,6 +349,7 @@ struct State {
     cdf_report: Option<Arc<AssemblyReport>>,
     cdf_rest_mesh: Option<Arc<RenderMesh>>,
     motion_time: f32,
+    motion_tick: Option<Instant>,
     /// Continuous shader Decal clock, separate from CAF animation playback.
     decal_time: f32,
     playing: bool,
@@ -726,6 +729,7 @@ enum Operation {
     ),
     ConvertMotion(PathBuf, PathBuf, PathBuf, PathBuf),
     LoadGlbMotion(PathBuf),
+    BindConvertedGlb(PathBuf, PathBuf, PathBuf),
     InspectCdf(PathBuf),
     BuildStaticCdf(
         PathBuf,
@@ -869,7 +873,7 @@ enum Completed {
         Vec<String>,
     ),
     ModelSurfaces(PathBuf, Vec<textured::Surface>, Vec<String>),
-    Caf(NativeCafMotion),
+    Caf(PathBuf, NativeCafMotion),
     CafLayer(String, Arc<NativeCafMotion>, String, NativeCafMotion),
     BoundCafPreview(PathBuf, Box<VerifiedCafSkin>),
     BoundCdfCafPreview(PathBuf, Box<VerifiedCafAssembly>),
@@ -878,6 +882,7 @@ enum Completed {
     MotionConverted(ConvertedMotion, PathBuf),
     DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
     MotionGlb(AnimatedGlb),
+    BoundConvertedGlb(PathBuf, AnimatedGlb, usize),
     Character(CdfDefinition),
     StaticCharacter(
         RenderMesh,
@@ -890,7 +895,7 @@ enum Completed {
     CharacterDependencies(CdfDependencyReport),
     Model(RenderMesh, PathBuf),
     ModelResources(String, auto_resources::AutoDiscovery),
-    DeclaredClip(usize, String, NativeCafMotion),
+    DeclaredClip(usize, String, PathBuf, NativeCafMotion),
     Level(LevelScene, PathBuf, String),
     ImportedMap(Box<level_library::LoadedMap>),
     ProjectLevelSaved(modding_projects::ProjectRow, bool),
@@ -1074,6 +1079,45 @@ impl Operation {
             Self::LoadGlbMotion(path) => AnimatedGlb::read(&path)
                 .map(Completed::MotionGlb)
                 .map_err(|e| e.to_string()),
+            Self::BindConvertedGlb(converted, source, skeleton) => {
+                // The exact original weighted skin and selected skeleton
+                // are rebuilt read-only and compared against the converter's
+                // joint names, hierarchy and rest transforms. There is no
+                // filename-based retargeting and no game-file mutation.
+                for path in [&converted, &source, &skeleton] {
+                    let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+                    if !meta.file_type().is_file() || meta.len() > 192 * 1024 * 1024 {
+                        return Err("Converted binding source exceeds safe file limits".into());
+                    }
+                }
+                let mesh = read_model(&source).map_err(|e| e.to_string())?;
+                let original_bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
+                let skeleton_bytes = std::fs::read(&skeleton).map_err(|e| e.to_string())?;
+                let (original_glb, _) =
+                    evolve_core::rigged_glb_bytes(&mesh, &original_bytes, &skeleton_bytes)
+                        .map_err(|e| e.to_string())?;
+                let converted_bytes = std::fs::read(&converted).map_err(|e| e.to_string())?;
+                let attached =
+                    evolve_core::converted_glb_transfer::attach_converted_motion_to_source_glb(
+                        &original_glb,
+                        &converted_bytes,
+                        None,
+                    )?;
+                let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+                let verified = temp.path().join("verified-original-animation.glb");
+                std::fs::write(&verified, &attached.glb).map_err(|e| e.to_string())?;
+                let motion = AnimatedGlb::read(&verified).map_err(|e| e.to_string())?;
+                if !motion.has_skinned_preview() || motion.list_clips().is_empty() {
+                    return Err(
+                        "Matched converter produced no playable weighted original mesh".into(),
+                    );
+                }
+                Ok(Completed::BoundConvertedGlb(
+                    source,
+                    motion,
+                    attached.matching_joints,
+                ))
+            }
             Self::LoadCafLayer(source, base, label, path) => {
                 let layer = read_native_caf(&path).map_err(|e| e.to_string())?;
                 if layer.additive {
@@ -1082,7 +1126,7 @@ impl Operation {
                 Ok(Completed::CafLayer(source, base, label, layer))
             }
             Self::LoadCaf(source) => read_native_caf(&source)
-                .map(Completed::Caf)
+                .map(|motion| Completed::Caf(source, motion))
                 .map_err(|e| e.to_string()),
             Self::LoadDeclaredDba(virtual_path, inventory, imported_root, build, converter) => {
                 let source = auto_resources::resolve_declared_dba(
@@ -1291,7 +1335,7 @@ impl Operation {
                 )?
                 .ok_or_else(|| format!("Declared CAF is not available: {virtual_path}"))?;
                 let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
-                Ok(Completed::DeclaredClip(index, virtual_path, motion))
+                Ok(Completed::DeclaredClip(index, virtual_path, file, motion))
             }
             Self::InspectModel(source) => {
                 let render_source = preferred_render_source(&source);
@@ -2224,7 +2268,11 @@ enum Message {
     BlenderChanged(String),
     ConverterPathChanged(String),
     OpenConvertedGlb(usize),
+    BindConvertedGlb(usize),
     SelectMotionClip(usize),
+    SelectGlbOverlay(usize),
+    ClearGlbOverlay,
+    GlbOverlayWeight(f32),
     MotionScrub(f32),
     ToggleMotion,
     Tick,
@@ -2381,6 +2429,26 @@ fn apply_current_skin_frame(state: &mut State) {
             Err(error) => {
                 state.playing = false;
                 state.status = format!("CAF playback stopped: {error}");
+            }
+        }
+    } else if let Some(converted) = &state.glb_motion
+        && converted.has_skinned_preview()
+    {
+        let result = if let Some(layer) = state.selected_glb_overlay {
+            converted.mesh_at_layered(
+                state.selected_motion_clip,
+                layer,
+                state.motion_time,
+                state.glb_overlay_weight,
+            )
+        } else {
+            converted.mesh_at(state.selected_motion_clip, state.motion_time)
+        };
+        match result {
+            Ok(mesh) => state.model = Some(Arc::new(mesh)),
+            Err(error) => {
+                state.playing = false;
+                state.status = format!("Converted GLB mesh playback stopped: {error}");
             }
         }
     }
@@ -2651,6 +2719,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::ExportBundle(..) => "Exporting selected asset bundle",
         Operation::ConvertMotion(..) => "Converting animation",
         Operation::LoadGlbMotion(..) => "Loading animation keyframes",
+        Operation::BindConvertedGlb(..) => "Verifying original rig and binding converted animation",
         Operation::InspectCdf(..) | Operation::ResolveCdf(..) => "Inspecting character assembly",
         Operation::BuildStaticCdf(..) => "Building character viewport model",
         Operation::PrepareCdfDamage(..) | Operation::ReblendCdfDamage(..) => {
@@ -2938,10 +3007,13 @@ fn clear_viewer_asset(state: &mut State) {
     state.specular_map = None;
     state.gloss_map = None;
     state.native_caf = None;
+    // A CAF selected for another model must never silently become an FBX export source.
+    state.caf_path.clear();
     state.skin_preview = None;
     state.caf_layer = None;
     state.caf_layer_label.clear();
     state.glb_motion = None;
+    state.selected_glb_overlay = None;
     state.converted_glbs.clear();
     state.converted_dba_cache = None;
     state.auto_clips.clear();
@@ -2952,6 +3024,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.diffuse_status.clear();
     state.playing = false;
     state.motion_time = 0.0;
+    state.motion_tick = None;
     state.viewer_context_index = None;
     state.editor_replace_dialog = None;
     state.editor_replace_source.clear();
@@ -7983,6 +8056,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select 1 to 64 source models, CDFs, or DDS textures.".into();
                 return Task::none();
             }
+            if state.export_rigged
+                && state.export_include_animation
+                && state.caf_path.trim().is_empty()
+            {
+                state.status = "Choose a CAF for this model before embedding animation.".into();
+                return Task::none();
+            }
             // Images export as PNG directly. Model/assembly FBX exports
             // auto-discover Blender; only a genuinely missing installation
             // requires the user to select their own blender.exe.
@@ -8038,7 +8118,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .then(|| PathBuf::from(&state.skeleton_path)),
                 diffuse: (!state.diffuse_input.trim().is_empty())
                     .then(|| PathBuf::from(&state.diffuse_input)),
-                caf: (state.export_include_animation && !state.caf_path.trim().is_empty())
+                caf: (state.export_rigged && state.export_include_animation)
                     .then(|| PathBuf::from(&state.caf_path)),
                 rigged: state.export_rigged,
                 embed_textures: state.export_embed_textures,
@@ -10479,20 +10559,78 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::BlenderChanged(value) => state.blender_path = value,
         Message::ConverterPathChanged(value) => state.converter_path = value,
         Message::SelectMotionClip(index) => {
+            if state
+                .glb_motion
+                .as_ref()
+                .is_some_and(|motion| motion.is_layered_clip(index))
+            {
+                state.status = "A layered clip needs an independent base animation; use Add layer rather than playing it standalone.".into();
+                return Task::none();
+            }
             state.selected_motion_clip = index;
             state.motion_time = 0.0;
             state.playing = false;
+            state.motion_tick = None;
+            apply_current_skin_frame(state);
+        }
+        Message::SelectGlbOverlay(index) => {
+            if state
+                .glb_motion
+                .as_ref()
+                .is_some_and(|motion| motion.has_skinned_preview() && motion.is_layered_clip(index))
+                && index != state.selected_motion_clip
+            {
+                state.selected_glb_overlay = Some(index);
+                state.glb_overlay_weight = 0.65;
+                apply_current_skin_frame(state);
+            }
+        }
+        Message::ClearGlbOverlay => {
+            state.selected_glb_overlay = None;
+            apply_current_skin_frame(state);
+        }
+        Message::GlbOverlayWeight(value) => {
+            if value.is_finite() {
+                state.glb_overlay_weight = value.clamp(0., 1.);
+                apply_current_skin_frame(state);
+            }
         }
         Message::OpenConvertedGlb(index) => {
             if let Some(path) = state.converted_glbs.get(index).cloned() {
                 return launch(state, Operation::LoadGlbMotion(path));
             }
         }
+        Message::BindConvertedGlb(index) => {
+            let Some(converted) = state.converted_glbs.get(index).cloned() else {
+                return Task::none();
+            };
+            let Some(source) = state.render_source.clone() else {
+                state.status = "Choose an original compiled skin/model first".into();
+                return Task::none();
+            };
+            let extension = source
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("");
+            if !["skinm", "chrm", "skin", "chr"].contains(&extension.to_ascii_lowercase().as_str())
+                || state.skeleton_path.trim().is_empty()
+            {
+                state.status = "Original-rig binding requires a matching character skin/CHR and exact skeleton path; CDF assemblies need separate whole-character rig verification.".into();
+                return Task::none();
+            }
+            let skeleton = PathBuf::from(&state.skeleton_path);
+            return launch(
+                state,
+                Operation::BindConvertedGlb(converted, source, skeleton),
+            );
+        }
         Message::MotionScrub(value) => {
             state.motion_time = value;
+            state.motion_tick = None;
             apply_current_skin_frame(state);
         }
         Message::ToggleMotion => {
+            state.motion_tick = None;
             if state.native_caf.is_some()
                 && state.skin_preview.is_none()
                 && state.cdf_caf_preview.is_none()
@@ -10507,9 +10645,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         || state.glb_motion.as_ref().is_some_and(|m| {
                             m.list_clips().get(state.selected_motion_clip).is_some()
                         }));
+                if state
+                    .glb_motion
+                    .as_ref()
+                    .is_some_and(|motion| !motion.has_skinned_preview())
+                    && state.skin_preview.is_none()
+                    && state.cdf_caf_preview.is_none()
+                {
+                    state.status = "Inspecting converted track keys only; this GLB has no verified source skin. No model deformation is claimed.".into();
+                }
             }
         }
         Message::Tick => {
+            let now = Instant::now();
+            let elapsed = state
+                .motion_tick
+                .map(|last| now.saturating_duration_since(last));
+            state.motion_tick = state.playing.then_some(now);
             for animation in &mut state.mod_toggle_animations {
                 animation.frame = animation.frame.saturating_add(1);
             }
@@ -10532,7 +10684,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     })
                 };
                 if let Some((duration, looping)) = duration {
-                    state.motion_time += 0.04 * state.playback_speed.max(0.1);
+                    state.motion_time += evolve_core::animation::playback_step(
+                        elapsed,
+                        state.playback_speed.max(0.1),
+                    );
                     if duration <= 0.0 {
                         state.playing = false;
                     } else if state.motion_time >= duration {
@@ -10581,6 +10736,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartRigFbx => {
+            if state.export_include_animation && state.caf_path.trim().is_empty() {
+                state.status = "Choose a CAF before embedding animation in the FBX.".into();
+                return Task::none();
+            }
             let blender = match resolved_blender(state) {
                 Ok(path) => path,
                 Err(message) => {
@@ -11519,18 +11678,95 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::MotionGlb(motion)) => {
                     state.cdf_caf_preview = None;
                     let clips = motion.list_clips();
-                    state.status = format!(
-                        "Loaded {} real glTF animation clip(s), {} source nodes.",
-                        clips.len(),
-                        motion.node_names.len()
-                    );
+                    let rigged = motion.has_skinned_preview();
+                    state.status = if rigged {
+                        format!(
+                            "Converted GLB: {} named clip(s) and a verified internal skinned mesh. Playback deforms this GLB's own rig, not an unrelated selected CryEngine CDF.",
+                            clips.len()
+                        )
+                    } else {
+                        format!(
+                            "Loaded {} glTF track clip(s) on {} nodes (inspection only): {}.",
+                            clips.len(),
+                            motion.node_names.len(),
+                            motion
+                                .rigged_preview_error
+                                .as_deref()
+                                .unwrap_or("no skinned mesh")
+                        )
+                    };
                     state.motion_time = 0.0;
+                    state.motion_tick = None;
                     state.playing = false;
-                    state.selected_motion_clip = 0;
+                    state.selected_motion_clip = clips
+                        .iter()
+                        .enumerate()
+                        .find(|(index, _)| !motion.is_layered_clip(*index))
+                        .map(|(index, _)| index)
+                        .unwrap_or(0);
+                    state.selected_glb_overlay = None;
+                    state.glb_overlay_weight = 0.65;
                     state.caf_layer = None;
                     state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.skin_preview = None;
+                    if rigged {
+                        // Converted geometry owns its own vertex/rig identity.
+                        // Do not paint the previous CDF's material slots onto it.
+                        state.cdf_surfaces = None;
+                        state.diffuse = None;
+                        state.normal_map = None;
+                        state.emissive_map = None;
+                        state.specular_map = None;
+                        state.gloss_map = None;
+                    }
+                    state.glb_motion = Some(Arc::new(motion));
+                    if rigged {
+                        apply_current_skin_frame(state);
+                    }
+                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::BoundConvertedGlb(source, motion, matched_bones)) => {
+                    if state.viewer_queued_preview.is_some()
+                        || state.render_source.as_ref() != Some(&source)
+                    {
+                        return Task::none();
+                    }
+                    let preview = motion.mesh_at(0, 0.);
+                    let Ok(first) = preview else {
+                        state.status =
+                            "Original converted animation has no renderable starting pose".into();
+                        return Task::none();
+                    };
+                    // The selected source mesh and exported GLB must refer to
+                    // exactly the same original vertices and triangle order.
+                    // Preserve existing material bindings ONLY in that case.
+                    if state.model.as_ref().is_none_or(|model| {
+                        model.positions.len() != first.positions.len()
+                            || model.indices != first.indices
+                    }) {
+                        state.cdf_surfaces = None;
+                        state.diffuse = None;
+                        state.normal_map = None;
+                        state.emissive_map = None;
+                        state.specular_map = None;
+                        state.gloss_map = None;
+                    }
+                    state.native_caf = None;
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
+                    state.skin_preview = None;
+                    state.cdf_caf_preview = None;
+                    state.selected_glb_overlay = None;
+                    state.glb_overlay_weight = 0.65;
+                    state.selected_motion_clip = 0;
+                    state.motion_time = 0.;
+                    state.motion_tick = None;
+                    state.playing = false;
+                    state.model = Some(Arc::new(first));
+                    state.status = format!(
+                        "Converted animation bound to the selected original skin after verifying {matched_bones} exact source joints and rest transforms. Idle frame loaded paused."
+                    );
                     state.glb_motion = Some(Arc::new(motion));
                     state.page = Some(Page::Models);
                 }
@@ -11567,7 +11803,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         Err(error) => state.status = format!("Cannot bind CAF layer: {error}"),
                     }
                 }
-                Ok(Completed::Caf(motion)) => {
+                Ok(Completed::Caf(source, motion)) => {
+                    state.caf_path = source.to_string_lossy().into_owned();
                     state.status = format!(
                         "Native CAF decoded: {} controllers at {:.1} FPS; {} seconds. Bind-pose matching is required for mesh animation.",
                         motion.controllers.len(),
@@ -11646,17 +11883,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             return launch(state, operation);
                         }
                         if let Some(idle) = state.auto_idle_pending.take() {
-                            state.auto_play_native_caf = true;
+                            state.auto_play_native_caf = false;
                             return launch(state, Operation::LoadCaf(idle));
                         }
                     }
                 }
-                Ok(Completed::DeclaredClip(index, virtual_path, motion)) => {
+                Ok(Completed::DeclaredClip(index, virtual_path, source, motion)) => {
                     let selected = state.viewer_queued_preview.is_none()
                         && state.auto_clips.get(index).is_some_and(|clip| {
                             clip.virtual_path.eq_ignore_ascii_case(&virtual_path)
                         });
                     if selected && !motion.additive {
+                        state.caf_path = source.to_string_lossy().into_owned();
                         state.skin_preview = None;
                         state.cdf_caf_preview = None;
                         if let Some(rest) = &state.cdf_rest_mesh {
@@ -11687,7 +11925,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     {
                         let part_count = assembly.part_count();
                         let bones = assembly.original_bones();
-                        let cyclic = assembly.source_motion().cyclic;
                         state.skin_preview = None;
                         state.cdf_caf_preview = Some(Arc::new(*assembly));
                         state.motion_time = 0.0;
@@ -11695,7 +11932,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         if state.auto_play_native_caf {
                             state.playback_loop = true;
                         }
-                        state.playing = cyclic || state.auto_play_native_caf;
+                        state.playing = false;
                         state.auto_play_native_caf = false;
                         state.status = format!(
                             "Native CAF bound to {part_count} original CDF skin/equipment parts and {bones} source bones. Scrubbing deforms the assembled GPU viewport with verified CPU pose evaluation."
@@ -11714,7 +11951,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     {
                         let count = skin.original_vertices();
                         let bones = skin.original_bones();
-                        let cyclic = skin.source_motion().cyclic;
                         state.cdf_caf_preview = None;
                         state.skin_preview = Some(Arc::new(*skin));
                         state.motion_time = 0.0;
@@ -11722,7 +11958,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         if state.auto_play_native_caf {
                             state.playback_loop = true;
                         }
-                        state.playing = cyclic || state.auto_play_native_caf;
+                        state.playing = false;
                         state.auto_play_native_caf = false;
                         state.status = format!(
                             "Native CAF bound to {count} original weighted vertices and {bones} compiled bones. Mesh deforms in the GPU viewport (CPU skin evaluation)."
@@ -11835,7 +12071,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         );
                     }
                     if let Some(idle) = state.auto_idle_pending.take() {
-                        state.auto_play_native_caf = true;
+                        state.auto_play_native_caf = false;
                         return launch(state, Operation::LoadCaf(idle));
                     }
                 }
@@ -11858,7 +12094,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         );
                         state.status = state.auto_resource_note.clone();
                         if let Some(idle) = state.auto_idle_pending.take() {
-                            state.auto_play_native_caf = true;
+                            state.auto_play_native_caf = false;
                             return launch(state, Operation::LoadCaf(idle));
                         }
                     }
@@ -12697,7 +12933,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if state.auto_material_pending && state.viewer_queued_preview.is_none() {
                         state.auto_material_pending = false;
                         if let Some(idle) = state.auto_idle_pending.take() {
-                            state.auto_play_native_caf = true;
+                            state.auto_play_native_caf = false;
                             return launch(state, Operation::LoadCaf(idle));
                         }
                     }

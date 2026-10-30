@@ -1,5 +1,6 @@
 //! Core boundary for the Rust rewrite.
 //! All game data is local and opt-in. No assets are embedded or downloaded.
+mod animated_glb_preview;
 pub mod animation;
 pub mod archive;
 pub mod asset_compare;
@@ -12,6 +13,7 @@ pub mod character_equipment;
 pub mod character_folder_fbx;
 pub mod character_unified_fbx;
 pub mod client_hook;
+pub mod converted_glb_transfer;
 pub mod converter;
 pub mod cryxml;
 pub mod dds;

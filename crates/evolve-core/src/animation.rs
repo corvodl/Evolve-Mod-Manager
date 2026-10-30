@@ -1,12 +1,28 @@
 //! CryEngine CAF/DBA references and verified converter-backed GLB timelines.
 //! Raw CAF/DBA controller decoding is not guessed from chunk headers.
+use crate::animated_glb_preview::RiggedGlbPreview;
 use crate::archive::safe_member_name;
+use crate::model::RenderMesh;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Turn a measured UI tick interval into playback time. A missing prior tick
+/// (play/resume) and long focus stalls must not jump through an entire clip.
+pub fn playback_step(previous: Option<Duration>, speed: f32) -> f32 {
+    if !speed.is_finite() || speed <= 0.0 {
+        return 0.0;
+    }
+    previous
+        .map(|elapsed| elapsed.as_secs_f32().min(0.1) * speed)
+        .unwrap_or(0.0)
+}
 
 const MAX_CONFIG: usize = 2 * 1024 * 1024;
 const MAX_GLTF: usize = 256 * 1024 * 1024;
@@ -258,11 +274,17 @@ struct Clip {
     name: String,
     duration: f32,
     tracks: Vec<Track>,
+    layered: bool,
+    additive: bool,
 }
 #[derive(Clone, Debug)]
 pub struct AnimatedGlb {
     clips: Vec<Clip>,
     pub node_names: Vec<String>,
+    /// Only a rig and mesh contained together in this converted GLB can
+    /// animate without proving compatibility with another source skeleton.
+    rigged_preview: Option<Arc<RiggedGlbPreview>>,
+    pub rigged_preview_error: Option<String>,
 }
 fn json_u(v: &serde_json::Value, key: &str) -> Result<usize, AnimationError> {
     v[key]
@@ -338,6 +360,44 @@ fn floats(
         result.push(values);
     }
     Ok(result)
+}
+/// Converter GLB rotation channels use spherical interpolation, matching the
+/// private manager's shortest-arc quaternion sampling rather than nlerp.
+fn gltf_slerp(first: &[f32], second: &[f32], fraction: f32) -> Result<Vec<f32>, AnimationError> {
+    if first.len() != 4 || second.len() != 4 || !fraction.is_finite() {
+        return Err(AnimationError::Invalid(
+            "invalid GLB quaternion channel".into(),
+        ));
+    }
+    let normalized = |values: &[f32]| -> Result<[f32; 4], AnimationError> {
+        let norm = values.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if !norm.is_finite() || norm < 1e-6 {
+            return Err(AnimationError::Invalid(
+                "invalid GLB joint quaternion".into(),
+            ));
+        }
+        Ok(std::array::from_fn(|i| values[i] / norm))
+    };
+    let first = normalized(first)?;
+    let mut second = normalized(second)?;
+    let mut dot = first.iter().zip(second).map(|(a, b)| a * b).sum::<f32>();
+    if dot < 0. {
+        second = second.map(|v| -v);
+        dot = -dot;
+    }
+    let alpha = fraction.clamp(0., 1.);
+    let (a, b) = if dot > 0.9995 {
+        (1. - alpha, alpha)
+    } else {
+        let theta = dot.clamp(-1., 1.).acos();
+        let denominator = theta.sin();
+        (
+            ((1. - alpha) * theta).sin() / denominator,
+            (alpha * theta).sin() / denominator,
+        )
+    };
+    let mixed: [f32; 4] = std::array::from_fn(|i| first[i] * a + second[i] * b);
+    Ok(normalized(&mixed)?.to_vec())
 }
 impl AnimatedGlb {
     pub fn read(path: &Path) -> Result<Self, AnimationError> {
@@ -449,14 +509,155 @@ impl AnimatedGlb {
                     name: animation["name"].as_str().unwrap_or("unnamed").to_owned(),
                     duration,
                     tracks,
+                    layered: animation["extras"]["evolveLayered"]
+                        .as_bool()
+                        .unwrap_or(false),
+                    additive: animation["extras"]["evolveAdditive"]
+                        .as_bool()
+                        .unwrap_or(false),
                 });
             }
         }
+        let (rigged_preview, rigged_preview_error) = match RiggedGlbPreview::from_doc(&doc, &binary)
+        {
+            Ok(preview) => (Some(Arc::new(preview)), None),
+            Err(reason) => (None, Some(reason)),
+        };
         Ok(Self {
             clips,
             node_names: names,
+            rigged_preview,
+            rigged_preview_error,
         })
     }
+    /// True only if this exact GLB contains a verified mesh, joint table,
+    /// inverse binds and weights that can be deformed by its own clips.
+    pub fn has_skinned_preview(&self) -> bool {
+        self.rigged_preview.is_some()
+    }
+
+    pub fn mesh_at(&self, clip_index: usize, seconds: f32) -> Result<RenderMesh, AnimationError> {
+        let preview = self.rigged_preview.as_ref().ok_or_else(|| {
+            AnimationError::Invalid(
+                self.rigged_preview_error
+                    .clone()
+                    .unwrap_or_else(|| "No matching skinned GLB mesh".into()),
+            )
+        })?;
+        let samples = self.sample(clip_index, seconds)?;
+        preview.mesh_at(&samples).map_err(AnimationError::Invalid)
+    }
+
+    /// Only explicit converter-authored layered clips are eligible as overlays.
+    /// An unmarked clip must never be silently interpreted as an aim/additive
+    /// pose. All tracks must belong to this same internally verified GLB rig.
+    pub fn layered_clips(&self) -> Vec<(usize, String)> {
+        self.clips
+            .iter()
+            .enumerate()
+            .filter(|(_, clip)| clip.layered)
+            .map(|(index, clip)| (index, clip.name.clone()))
+            .collect()
+    }
+
+    pub fn is_layered_clip(&self, index: usize) -> bool {
+        self.clips.get(index).is_some_and(|clip| clip.layered)
+    }
+
+    pub fn mesh_at_layered(
+        &self,
+        base: usize,
+        overlay: usize,
+        seconds: f32,
+        weight: f32,
+    ) -> Result<RenderMesh, AnimationError> {
+        if !weight.is_finite() || !(0. ..=1.).contains(&weight) {
+            return Err(AnimationError::Invalid("Layer weight must be 0..1".into()));
+        }
+        let base_clip = self.clips.get(base).ok_or(AnimationError::Unavailable)?;
+        let layer_clip = self.clips.get(overlay).ok_or(AnimationError::Unavailable)?;
+        if base_clip.layered || !layer_clip.layered || base == overlay {
+            return Err(AnimationError::Invalid(
+                "Choose a standalone base and a marked layered overlay".into(),
+            ));
+        }
+        let rig = self
+            .rigged_preview
+            .as_ref()
+            .ok_or(AnimationError::Unavailable)?;
+        let mut blended = self.sample(base, seconds)?;
+        let mut base_channels = HashMap::<(usize, String), usize>::new();
+        for (index, sample) in blended.iter().enumerate() {
+            if base_channels
+                .insert((sample.node, sample.path.clone()), index)
+                .is_some()
+            {
+                return Err(AnimationError::Invalid(
+                    "Duplicate base animation channel".into(),
+                ));
+            }
+        }
+        for overlay_sample in self.sample(overlay, seconds)? {
+            let key = (overlay_sample.node, overlay_sample.path.clone());
+            let current = if let Some(index) = base_channels.get(&key) {
+                blended[*index].value.clone()
+            } else {
+                rig.rest_channel(overlay_sample.node, &overlay_sample.path)
+                    .map_err(AnimationError::Invalid)?
+            };
+            let layer = &overlay_sample.value;
+            if current.len() != layer.len() {
+                return Err(AnimationError::Invalid("Layer track width mismatch".into()));
+            }
+            let value = match overlay_sample.path.as_str() {
+                "rotation" => {
+                    let mixed = if layer_clip.additive {
+                        let delta = gltf_slerp(&[0., 0., 0., 1.], layer, weight)?;
+                        let [ax, ay, az, aw] = <[f32; 4]>::try_from(current.as_slice())
+                            .map_err(|_| AnimationError::Unavailable)?;
+                        let [bx, by, bz, bw] = <[f32; 4]>::try_from(delta.as_slice())
+                            .map_err(|_| AnimationError::Unavailable)?;
+                        vec![
+                            aw * bx + ax * bw + ay * bz - az * by,
+                            aw * by - ax * bz + ay * bw + az * bx,
+                            aw * bz + ax * by - ay * bx + az * bw,
+                            aw * bw - ax * bx - ay * by - az * bz,
+                        ]
+                    } else {
+                        gltf_slerp(&current, layer, weight)?
+                    };
+                    gltf_slerp(&mixed, &mixed, 0.)?
+                }
+                "translation" if layer_clip.additive => current
+                    .iter()
+                    .zip(layer)
+                    .map(|(a, b)| a + b * weight)
+                    .collect(),
+                "scale" if layer_clip.additive => current
+                    .iter()
+                    .zip(layer)
+                    .map(|(a, b)| a * (1. + weight * (b - 1.)))
+                    .collect(),
+                _ => current
+                    .iter()
+                    .zip(layer)
+                    .map(|(a, b)| a * (1. - weight) + b * weight)
+                    .collect(),
+            };
+            if let Some(index) = base_channels.get(&key) {
+                blended[*index].value = value;
+            } else {
+                base_channels.insert(key, blended.len());
+                blended.push(PoseSample {
+                    node: overlay_sample.node,
+                    path: overlay_sample.path,
+                    value,
+                });
+            }
+        }
+        rig.mesh_at(&blended).map_err(AnimationError::Invalid)
+    }
+
     pub fn list_clips(&self) -> Vec<MotionClip> {
         self.clips
             .iter()
@@ -497,20 +698,7 @@ impl AnimatedGlb {
                 .map(|(a, b)| a * (1. - alpha) + b * alpha)
                 .collect::<Vec<_>>();
             if track.path == "rotation" {
-                let first = &track.values[start];
-                let other = &track.values[end];
-                let dot = first.iter().zip(other).map(|(x, y)| x * y).sum::<f32>();
-                let sign = if dot < 0. { -1. } else { 1. };
-                for (i, value) in vector.iter_mut().enumerate() {
-                    *value = first[i] * (1. - alpha) + other[i] * alpha * sign;
-                }
-                let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
-                if norm < 1e-6 {
-                    return Err(AnimationError::Invalid("invalid joint quaternion".into()));
-                }
-                for v in &mut vector {
-                    *v /= norm;
-                }
+                vector = gltf_slerp(&track.values[start], &track.values[end], alpha)?;
             }
             result.push(PoseSample {
                 node: track.target,
@@ -524,6 +712,77 @@ impl AnimatedGlb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::animated_glb_preview::tests::preview_doc;
+    #[test]
+    fn converted_same_rig_additive_layer_moves_actual_skinned_vertices() {
+        let (doc, binary) = preview_doc();
+        let rig = RiggedGlbPreview::from_doc(&doc, &binary).unwrap();
+        let base = Clip {
+            name: "idle".into(),
+            duration: 1.,
+            tracks: vec![Track {
+                target: 1,
+                path: "translation".into(),
+                interp: "LINEAR".into(),
+                times: vec![0., 1.],
+                values: vec![vec![0., 0., 0.], vec![1., 0., 0.]],
+            }],
+            layered: false,
+            additive: false,
+        };
+        let overlay = Clip {
+            name: "aim_additive".into(),
+            duration: 1.,
+            tracks: vec![Track {
+                target: 1,
+                path: "translation".into(),
+                interp: "LINEAR".into(),
+                times: vec![0., 1.],
+                values: vec![vec![2., 0., 0.], vec![2., 0., 0.]],
+            }],
+            layered: true,
+            additive: true,
+        };
+        let animation = AnimatedGlb {
+            clips: vec![base, overlay],
+            node_names: vec!["body".into(), "root".into()],
+            rigged_preview: Some(Arc::new(rig)),
+            rigged_preview_error: None,
+        };
+        assert_eq!(animation.layered_clips(), vec![(1, "aim_additive".into())]);
+        let normal = animation.mesh_at(0, 0.5).unwrap();
+        let blended = animation.mesh_at_layered(0, 1, 0.5, 0.5).unwrap();
+        assert!((normal.positions[0][0] - 0.5).abs() < 0.001);
+        assert!((blended.positions[0][0] - 1.5).abs() < 0.001);
+        assert_eq!(normal.indices, blended.indices);
+        assert_eq!(normal.uv0, blended.uv0);
+        assert!(animation.mesh_at_layered(1, 0, 0.5, 0.5).is_err());
+        assert!(animation.mesh_at_layered(0, 1, 0.5, f32::NAN).is_err());
+    }
+
+    #[test]
+    fn converter_glb_slerp_uses_shortest_arc_and_unit_norm() {
+        let identity = [0., 0., 0., 1.];
+        let turn = [0., 0., 1., 0.];
+        let halfway = gltf_slerp(&identity, &turn, 0.5).unwrap();
+        assert!((halfway[2] - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.0001);
+        assert!((halfway[3] - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.0001);
+        let opposite = gltf_slerp(&identity, &[0., 0., 0., -1.], 0.6).unwrap();
+        assert!((opposite[3] - 1.).abs() < 0.0001);
+        assert!(gltf_slerp(&identity, &[0., 0., 0., 0.], 0.5).is_err());
+    }
+
+    #[test]
+    fn playback_uses_measured_intervals_without_focus_jump() {
+        assert_eq!(playback_step(None, 1.0), 0.0);
+        assert!((playback_step(Some(Duration::from_millis(37)), 1.0) - 0.037).abs() < 0.0001);
+        assert_eq!(playback_step(Some(Duration::from_secs(5)), 1.0), 0.1);
+        assert_eq!(
+            playback_step(Some(Duration::from_millis(40)), f32::NAN),
+            0.0
+        );
+    }
+
     #[test]
     fn rejects_corrupt_caf_metadata() {
         assert!(inspect_caf_bytes(b"CrChF\x07\0\0").is_err());

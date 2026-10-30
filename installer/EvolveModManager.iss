@@ -40,6 +40,9 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Name: "startmenuicon"; Description: "Add to the Start Menu"; GroupDescription: "Shortcuts:"; Flags: checkedonce
 Name: "gfxeditors"; Description: "Include Ruffle Desktop/Web and FFDec for live GFX editing (about 50 MB additional download size)"; GroupDescription: "Optional GFX tools:"; Flags: checkedonce
 Name: "audiotools"; Description: "Include vgmstream decoder and Vorbis FSB5 sound compiler tools (about 4.5 MB additional download size)"; GroupDescription: "Optional Audio tools:"; Flags: unchecked
+#if FileExists("..\dist\third_party\Cryengine-Converter\cgf-converter.exe")
+Name: "cryengineconverter"; Description: "Include independent GPLv2 Cryengine-Converter with corresponding source"; GroupDescription: "Optional converter:"; Flags: unchecked
+#endif
 
 [Files]
 Source: "..\target\release\evolve-mod-manager.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -52,6 +55,12 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 ; builds must populate this path from the verified private release first.
 #if FileExists("..\dist\third_party\OfficialStage2\evolve_tool.exe")
 Source: "..\dist\third_party\OfficialStage2\*"; DestDir: "{app}\third_party\OfficialStage2"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
+; Only opt-in, verified staged files are eligible. Never include arbitrary files.
+#if FileExists("..\dist\third_party\Cryengine-Converter\cgf-converter.exe")
+Source: "..\dist\third_party\Cryengine-Converter\cgf-converter.exe"; DestDir: "{app}\third_party\Cryengine-Converter"; Flags: ignoreversion; Tasks: cryengineconverter
+Source: "..\dist\third_party\Cryengine-Converter\Cryengine-Converter-source-v2.0.0.zip"; DestDir: "{app}\third_party\Cryengine-Converter"; Flags: ignoreversion; Tasks: cryengineconverter
+Source: "..\dist\third_party\Cryengine-Converter\NOTICE.txt"; DestDir: "{app}\third_party\Cryengine-Converter"; Flags: ignoreversion; Tasks: cryengineconverter
 #endif
 ; Bundle verified upstream portable distributions, never game assets.
 ; User can deselect the GFX tools task; only manager is required.

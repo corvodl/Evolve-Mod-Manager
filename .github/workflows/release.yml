@@ -10,6 +10,10 @@ on:
         description: "Type PARITY_VERIFIED_AND_TESTED after real-game checks"
         required: true
         type: string
+      include_cryengine_converter:
+        description: 'Opt in to verified GPLv2 Cryengine-Converter and corresponding source'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -75,6 +79,11 @@ jobs:
       - run: cargo test --workspace --all-targets
       - run: cargo build --release --workspace --bins
 
+      - name: Opt-in fetch of independent GPLv2 Cryengine-Converter
+        if: inputs.include_cryengine_converter
+        shell: pwsh
+        run: ./scripts/prepare-cryengine-converter.ps1 -Fetch
+
       - name: Package portable Windows distribution
         shell: pwsh
         env:
@@ -89,6 +98,10 @@ jobs:
           }
           Copy-Item "assets/hunt.ico" "$folder/hunt.ico"
           Copy-Item "README.md" "$folder/README.md"
+          if (Test-Path -LiteralPath 'dist/third_party/Cryengine-Converter') {
+            New-Item -ItemType Directory -Path "$folder/third_party" -Force | Out-Null
+            Copy-Item -LiteralPath 'dist/third_party/Cryengine-Converter' -Destination "$folder/third_party/Cryengine-Converter" -Recurse -Force
+          }
           Compress-Archive -Path (Join-Path $folder '*') -DestinationPath "dist/EvolveModManager-Portable-$env:VERSION.zip" -CompressionLevel Optimal -Force
 
       - name: Fetch and verify optional GFX editor tools

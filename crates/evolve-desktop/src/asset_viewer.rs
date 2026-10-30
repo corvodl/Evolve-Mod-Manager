@@ -124,8 +124,19 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
         let mut clips = column![
             row![
                 design::button("Open CAF").on_press(Message::StartCafLoad),
-                design::button(if state.playing { "Pause" } else { "Play" })
-                    .on_press(Message::ToggleMotion),
+                design::button(if state.playing {
+                    "Pause"
+                } else if state
+                    .glb_motion
+                    .as_ref()
+                    .is_some_and(|motion| !motion.has_skinned_preview())
+                    && state.native_caf.is_none()
+                {
+                    "Inspect track"
+                } else {
+                    "Play model"
+                })
+                .on_press(Message::ToggleMotion),
                 text(format!(
                     "{} character-declared animations",
                     state.auto_clips.len()
@@ -194,6 +205,56 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                 .spacing(8),
             );
         }
+        if let Some(motion) = &state.glb_motion
+            && motion.has_skinned_preview()
+        {
+            clips = clips.push(
+                text("CONVERTED GLB — SAME-RIG PLAYBACK")
+                    .size(12)
+                    .style(design::muted),
+            );
+            for (index, clip) in motion.list_clips().iter().enumerate().take(64) {
+                let layered = motion.is_layered_clip(index);
+                clips = clips.push(
+                    row![
+                        text(format!("{} · {:.2}s", clip.name, clip.duration))
+                            .size(12)
+                            .width(Fill),
+                        design::button(if layered { "Add layer" } else { "Play base" }).on_press(
+                            if layered {
+                                Message::SelectGlbOverlay(index)
+                            } else {
+                                Message::SelectMotionClip(index)
+                            }
+                        ),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center),
+                );
+            }
+            if let Some(index) = state.selected_glb_overlay {
+                let label = motion
+                    .list_clips()
+                    .get(index)
+                    .map(|clip| clip.name.clone())
+                    .unwrap_or_else(|| "Layer".into());
+                clips = clips.push(
+                    row![
+                        text(format!("GLB layer: {label}")).size(12),
+                        slider(
+                            0.0..=1.0,
+                            state.glb_overlay_weight,
+                            Message::GlbOverlayWeight,
+                        )
+                        .width(160),
+                        text(format!("{:.0}%", state.glb_overlay_weight * 100.0)).size(12),
+                        design::button("Remove layer").on_press(Message::ClearGlbOverlay),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center),
+                );
+            }
+        }
         if !state.converted_glbs.is_empty() {
             clips = clips.push(
                 text(if state.converted_dba_cache.is_some() {
@@ -209,10 +270,26 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| format!("Track {}", index + 1));
+                let source_rig_ready = state.render_source.as_ref().is_some_and(|path| {
+                    path.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|extension| {
+                            ["skinm", "chrm", "skin", "chr"]
+                                .iter()
+                                .any(|expected| extension.eq_ignore_ascii_case(expected))
+                        })
+                }) && !state.skeleton_path.trim().is_empty();
                 clips = clips.push(
-                    design::button(text(name).size(12))
-                        .on_press(Message::OpenConvertedGlb(index))
-                        .style(design::text_button),
+                    row![
+                        design::button(text(name).size(12))
+                            .on_press(Message::OpenConvertedGlb(index))
+                            .style(design::text_button),
+                        design::button("Bind original rig").on_press_maybe(
+                            source_rig_ready.then_some(Message::BindConvertedGlb(index))
+                        )
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center),
                 );
             }
         }
@@ -2120,12 +2197,14 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
                     design::button("Select diffuse DDS…").on_press(Message::ExportBrowse("diffuse")),
                 ].spacing(8),
                 design::button(if state.export_include_animation {
-                    "☑ Include verified CAF" } else { "☐ Include verified CAF" })
+                    "☑ Embed selected animation in FBX" } else { "☐ Embed selected animation in FBX" })
                     .on_press(Message::ViewerToggleExportAnimations),
                 row![
-                    text(compact_export_source(&state.caf_path, "CAF: none selected")).width(Fill),
-                    design::button("Select CAF…").on_press(Message::ExportBrowse("caf")),
+                    text(compact_export_source(&state.caf_path, "No CAF loaded for this model")).width(Fill),
+                    design::button("Choose another CAF…").on_press(Message::ExportBrowse("caf")),
                 ].spacing(8),
+                text("Only a CAF whose original skeleton matches this rig can be embedded; converted DBA tracks are not bound to the model.")
+                    .size(11).style(design::muted),
             ].spacing(4))
         } else {
             Element::from(text("Static FBX preserves source mesh geometry and UV0.").size(11))

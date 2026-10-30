@@ -46,6 +46,8 @@ The following features are available or being actively tested in the public prev
 
 See [the development parity checklist](docs/PARITY.md) for technical implementation status.
 
+Developers can optionally stage the independent GPLv2 Cryengine-Converter with its corresponding source; see [converter setup and redistribution](docs/CRYENGINE_CONVERTER.md).
+
 ## Notes
 
 This project is an independent community tool. Work with copies of game assets when testing experimental modification features. Previewing or exporting assets does not imply they can be safely used in an installed game, and modding may disable online functionality. Preserve backups and follow applicable game and community rules.
