@@ -6,6 +6,7 @@ use evolve_core::{RenderMesh, Transform};
 use iced::wgpu;
 use iced::wgpu::util::{DeviceExt, TextureDataOrder};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 // Ordinary world-model diffuse textures are limited to 32 MiB so one map
@@ -14,6 +15,14 @@ use std::sync::Arc;
 // 4096×4096 RGBA8 (64 MiB), which must NOT silently fall back to gray.
 const MAX_WORLD_DIFFUSE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TERRAIN_ATLAS_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_FULL_TEXTURE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_SCENE_FULL_TEXTURE_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_SCENE_BALANCED_TEXTURE_BYTES: u64 = 384 * 1024 * 1024;
+
+// A shared source Arc must produce only one GPU texture per role, even when
+// dozens of original meshes/material slots use it. Cache lifetime is one
+// imported scene; never retain a source pointer beyond that scene.
+type TextureCache = HashMap<(usize, u8), (wgpu::Texture, wgpu::TextureView)>;
 
 /// Choose a size within the device and the per-material upload budget.
 /// Non-terrain 4K DDS assets must retain their colors and alpha mask; a
@@ -44,6 +53,53 @@ fn gpu_diffuse<'a>(
     gpu_max: u32,
 ) -> Option<Cow<'a, image::RgbaImage>> {
     let dims = upload_dimensions(img.width(), img.height(), ground, gpu_max)?;
+    if dims == img.dimensions() {
+        Some(Cow::Borrowed(img))
+    } else {
+        Some(Cow::Owned(image::imageops::resize(
+            img,
+            dims.0,
+            dims.1,
+            image::imageops::FilterType::Triangle,
+        )))
+    }
+}
+
+fn full_quality_dimensions(
+    width: u32,
+    height: u32,
+    ground: bool,
+    gpu_max: u32,
+    full: bool,
+    remaining: u64,
+) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 || gpu_max == 0 || remaining < 4 {
+        return None;
+    }
+    let cap = if ground {
+        MAX_TERRAIN_ATLAS_BYTES
+    } else if full {
+        MAX_FULL_TEXTURE_BYTES
+    } else {
+        MAX_WORLD_DIFFUSE_BYTES
+    }.min(remaining);
+    let (mut w, mut h) = (width, height);
+    while w > gpu_max || h > gpu_max || u64::from(w) * u64::from(h) * 4 > cap {
+        if w == 1 && h == 1 { return None; }
+        w = w.div_ceil(2);
+        h = h.div_ceil(2);
+    }
+    Some((w, h))
+}
+
+fn gpu_diffuse_quality<'a>(
+    img: &'a image::RgbaImage,
+    ground: bool,
+    gpu_max: u32,
+    full: bool,
+    remaining: u64,
+) -> Option<Cow<'a, image::RgbaImage>> {
+    let dims = full_quality_dimensions(img.width(), img.height(), ground, gpu_max, full, remaining)?;
     if dims == img.dimensions() {
         Some(Cow::Borrowed(img))
     } else {
@@ -347,6 +403,7 @@ pub(super) struct Renderer {
     sampler: wgpu::Sampler,
     terrain_sampler: wgpu::Sampler,
     world_identity: usize,
+    last_full_textures: bool,
     groups: Vec<GpuGroup>,
     last_camera: Option<CameraGpu>,
 }
@@ -517,11 +574,20 @@ impl Renderer {
             sampler,
             terrain_sampler,
             world_identity: 0,
+            last_full_textures: true,
             groups: Vec::new(),
             last_camera: None,
         }
     }
-    fn group(&self, device: &wgpu::Device, queue: &wgpu::Queue, model: &ModelGroup) -> GpuGroup {
+    fn group(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        model: &ModelGroup,
+        full_textures: bool,
+        cache: &mut TextureCache,
+        used_bytes: &mut u64,
+    ) -> GpuGroup {
         let vert: Vec<Vertex> = model
             .mesh
             .positions
@@ -573,34 +639,44 @@ impl Renderer {
             {
                 continue;
             }
-            let source = surf
-                .diffuse
-                .as_ref()
-                .and_then(|img| gpu_diffuse(img, terrain, limit_2d));
-            let (w, h, bytes) = source
-                .as_ref()
-                .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
-                .unwrap_or((1, 1, &fallback[..]));
-            let tex = device.create_texture_with_data(
-                queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("Original world-model diffuse DDS"),
-                    size: wgpu::Extent3d {
-                        width: w,
-                        height: h,
-                        depth_or_array_layers: 1,
+            let key = (surf.diffuse.as_ref().map_or(0, |img| Arc::as_ptr(img) as usize), 0);
+            let (tex, view, diffuse_uploaded) = if let Some((tex, view)) = cache.get(&key) {
+                (tex.clone(), view.clone(), key.0 != 0)
+            } else {
+                let remaining = (if full_textures {
+                    MAX_SCENE_FULL_TEXTURE_BYTES
+                } else {
+                    MAX_SCENE_BALANCED_TEXTURE_BYTES
+                }).saturating_sub(*used_bytes);
+                let source = surf.diffuse.as_ref().and_then(|img| {
+                    gpu_diffuse_quality(img, terrain, limit_2d, full_textures, remaining)
+                });
+                let (w, h, bytes) = source
+                    .as_ref()
+                    .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
+                    .unwrap_or((1, 1, &fallback[..]));
+                let tex = device.create_texture_with_data(
+                    queue,
+                    &wgpu::TextureDescriptor {
+                        label: Some("Exact source diffuse / baked ground atlas"),
+                        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
                     },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                },
-                TextureDataOrder::LayerMajor,
-                bytes,
-            );
-            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                    TextureDataOrder::LayerMajor,
+                    bytes,
+                );
+                let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                if source.is_some() {
+                    *used_bytes = used_bytes.saturating_add(u64::from(w) * u64::from(h) * 4);
+                }
+                cache.insert(key, (tex.clone(), view.clone()));
+                (tex, view, source.is_some())
+            };
             // A distinct authored opacity texture must control foliage
             // cutouts. Never misinterpret a packed diffuse alpha channel
             // (which may be gloss or specular) as vegetation coverage.
@@ -675,7 +751,7 @@ impl Renderer {
                 first: surf.first_index,
                 count: surf.index_count,
                 transparent: surf.transparent,
-                foliage_cutout: surf.foliage_cutout && source.is_some(),
+                foliage_cutout: surf.foliage_cutout && diffuse_uploaded,
                 bind,
                 _image: tex,
                 _opacity_image: opacity_tex,
@@ -716,13 +792,16 @@ impl Renderer {
             return;
         };
         let key = Arc::as_ptr(world) as usize;
-        if key != self.world_identity {
+        if key != self.world_identity || self.last_full_textures != full_textures {
+            let mut cache = TextureCache::new();
+            let mut used_bytes = 0u64;
             self.groups = world
                 .groups
                 .iter()
-                .map(|g| self.group(device, queue, g))
+                .map(|g| self.group(device, queue, g, full_textures, &mut cache, &mut used_bytes))
                 .collect();
             self.world_identity = key;
+            self.last_full_textures = full_textures;
             self.last_camera = None;
         }
         let hour = if hour.is_finite() { hour.clamp(0.0, 24.0) } else { 12.0 };
@@ -731,7 +810,6 @@ impl Renderer {
             queue.write_buffer(&self.lighting_uniform, 0, bytemuck::cast_slice(&values));
             self.last_lighting_hour = hour;
         }
-        let _ = full_textures;
         let Some(camera) = camera else {
             return;
         };
@@ -849,6 +927,15 @@ mod tests {
         assert_eq!(decoded.dimensions(), (32, 32));
         assert!(decoded.pixels().any(|px| px[3] < 255));
         assert!(decoded.pixels().any(|px| px[3] > 0));
+    }
+
+    #[test]
+    fn full_quality_retains_original_4096_model_textures_and_bounds_scene_budget() {
+        assert_eq!(full_quality_dimensions(4096, 4096, false, 8192, true, 256*1024*1024), Some((4096, 4096)));
+        assert_eq!(full_quality_dimensions(4096, 4096, false, 8192, false, 256*1024*1024), Some((2048, 2048)));
+        assert_eq!(full_quality_dimensions(4096, 4096, false, 8192, true, 4*1024*1024), Some((1024, 1024)));
+        assert_eq!(full_quality_dimensions(4096, 4096, false, 2048, true, 256*1024*1024), Some((2048, 2048)));
+        assert!(full_quality_dimensions(4096, 4096, false, 8192, true, 0).is_none());
     }
 
     #[test]
