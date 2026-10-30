@@ -719,6 +719,7 @@ enum Operation {
     ),
     ConvertMotion(PathBuf, PathBuf, PathBuf, PathBuf),
     LoadGlbMotion(PathBuf),
+    BindConvertedGlb(PathBuf, PathBuf, PathBuf),
     InspectCdf(PathBuf),
     BuildStaticCdf(
         PathBuf,
@@ -871,6 +872,7 @@ enum Completed {
     MotionConverted(ConvertedMotion, PathBuf),
     DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
     MotionGlb(AnimatedGlb),
+    BoundConvertedGlb(PathBuf, AnimatedGlb, usize),
     Character(CdfDefinition),
     StaticCharacter(
         RenderMesh,
@@ -1067,6 +1069,37 @@ impl Operation {
             Self::LoadGlbMotion(path) => AnimatedGlb::read(&path)
                 .map(Completed::MotionGlb)
                 .map_err(|e| e.to_string()),
+            Self::BindConvertedGlb(converted, source, skeleton) => {
+                // The exact original weighted skin and selected skeleton
+                // are rebuilt read-only and compared against the converter's
+                // joint names, hierarchy and rest transforms. There is no
+                // filename-based retargeting and no game-file mutation.
+                for path in [&converted, &source, &skeleton] {
+                    let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+                    if !meta.file_type().is_file() || meta.len() > 192 * 1024 * 1024 {
+                        return Err("Converted binding source exceeds safe file limits".into());
+                    }
+                }
+                let mesh = read_model(&source).map_err(|e| e.to_string())?;
+                let original_bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
+                let skeleton_bytes = std::fs::read(&skeleton).map_err(|e| e.to_string())?;
+                let (original_glb, _) = evolve_core::rigged_glb_bytes(
+                    &mesh, &original_bytes, &skeleton_bytes
+                ).map_err(|e| e.to_string())?;
+                let converted_bytes = std::fs::read(&converted).map_err(|e| e.to_string())?;
+                let attached =
+                    evolve_core::converted_glb_transfer::attach_converted_motion_to_source_glb(
+                        &original_glb, &converted_bytes, None
+                    )?;
+                let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+                let verified = temp.path().join("verified-original-animation.glb");
+                std::fs::write(&verified, &attached.glb).map_err(|e| e.to_string())?;
+                let motion = AnimatedGlb::read(&verified).map_err(|e| e.to_string())?;
+                if !motion.has_skinned_preview() || motion.list_clips().is_empty() {
+                    return Err("Matched converter produced no playable weighted original mesh".into());
+                }
+                Ok(Completed::BoundConvertedGlb(source, motion, attached.matching_joints))
+            }
             Self::LoadCafLayer(source, base, label, path) => {
                 let layer = read_native_caf(&path).map_err(|e| e.to_string())?;
                 if layer.additive {
@@ -2215,6 +2248,7 @@ enum Message {
     BlenderChanged(String),
     ConverterPathChanged(String),
     OpenConvertedGlb(usize),
+    BindConvertedGlb(usize),
     SelectMotionClip(usize),
     SelectGlbOverlay(usize),
     ClearGlbOverlay,
@@ -2665,6 +2699,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::ExportBundle(..) => "Exporting selected asset bundle",
         Operation::ConvertMotion(..) => "Converting animation",
         Operation::LoadGlbMotion(..) => "Loading animation keyframes",
+        Operation::BindConvertedGlb(..) => "Verifying original rig and binding converted animation",
         Operation::InspectCdf(..) | Operation::ResolveCdf(..) => "Inspecting character assembly",
         Operation::BuildStaticCdf(..) => "Building character viewport model",
         Operation::PrepareCdfDamage(..) | Operation::ReblendCdfDamage(..) => {
@@ -10527,6 +10562,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return launch(state, Operation::LoadGlbMotion(path));
             }
         }
+        Message::BindConvertedGlb(index) => {
+            let Some(converted) = state.converted_glbs.get(index).cloned() else {
+                return Task::none();
+            };
+            let Some(source) = state.render_source.clone() else {
+                state.status = "Choose an original compiled skin/model first".into();
+                return Task::none();
+            };
+            let extension = source.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+            if !["skinm", "chrm", "skin", "chr"].contains(&extension.to_ascii_lowercase().as_str())
+                || state.skeleton_path.trim().is_empty()
+            {
+                state.status = "Original-rig binding requires a matching character skin/CHR and exact skeleton path; CDF assemblies need separate whole-character rig verification.".into();
+                return Task::none();
+            }
+            let skeleton = PathBuf::from(&state.skeleton_path);
+            return launch(state, Operation::BindConvertedGlb(converted, source, skeleton));
+        }
         Message::MotionScrub(value) => {
             state.motion_time = value;
             state.motion_tick = None;
@@ -11627,6 +11680,49 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if rigged {
                         apply_current_skin_frame(state);
                     }
+                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::BoundConvertedGlb(source, motion, matched_bones)) => {
+                    if state.viewer_queued_preview.is_some()
+                        || state.render_source.as_ref() != Some(&source)
+                    {
+                        return Task::none();
+                    }
+                    let preview = motion.mesh_at(0, 0.);
+                    let Ok(first) = preview else {
+                        state.status = "Original converted animation has no renderable starting pose".into();
+                        return Task::none();
+                    };
+                    // The selected source mesh and exported GLB must refer to
+                    // exactly the same original vertices and triangle order.
+                    // Preserve existing material bindings ONLY in that case.
+                    if state.model.as_ref().is_none_or(|model| {
+                        model.positions.len() != first.positions.len()
+                            || model.indices != first.indices
+                    }) {
+                        state.cdf_surfaces = None;
+                        state.diffuse = None;
+                        state.normal_map = None;
+                        state.emissive_map = None;
+                        state.specular_map = None;
+                        state.gloss_map = None;
+                    }
+                    state.native_caf = None;
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
+                    state.skin_preview = None;
+                    state.cdf_caf_preview = None;
+                    state.selected_glb_overlay = None;
+                    state.glb_overlay_weight = 0.65;
+                    state.selected_motion_clip = 0;
+                    state.motion_time = 0.;
+                    state.motion_tick = None;
+                    state.playing = false;
+                    state.model = Some(Arc::new(first));
+                    state.status = format!(
+                        "Converted animation bound to the selected original skin after verifying {matched_bones} exact source joints and rest transforms. Idle frame loaded paused."
+                    );
+                    state.glb_motion = Some(Arc::new(motion));
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::CafLayer(source, base, label, motion)) => {
