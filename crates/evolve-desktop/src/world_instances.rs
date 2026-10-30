@@ -56,23 +56,6 @@ fn is_ground(group: &ModelGroup) -> bool {
     group.instances.len() == 1 && group.instances[0].object_index == usize::MAX
 }
 
-fn valid_diffuse_image(image: &image::RgbaImage, ground: bool, limit_2d: u32) -> bool {
-    let (width, height) = image.dimensions();
-    let byte_limit = if ground {
-        MAX_TERRAIN_ATLAS_BYTES
-    } else {
-        MAX_WORLD_DIFFUSE_BYTES
-    };
-    width != 0
-        && height != 0
-        && width <= limit_2d
-        && height <= limit_2d
-        && u64::from(width)
-            .checked_mul(u64::from(height))
-            .and_then(|pixels| pixels.checked_mul(4))
-            .is_some_and(|bytes| bytes <= byte_limit && bytes == image.as_raw().len() as u64)
-}
-
 #[derive(Clone)]
 pub(super) struct ModelGroup {
     pub mesh: Arc<RenderMesh>,
@@ -794,14 +777,11 @@ mod tests {
 
     #[test]
     fn baked_terrain_atlas_is_not_silently_replaced_by_32mb_world_cap() {
-        let image = image::RgbaImage::new(4096, 4096);
-        assert_eq!(image.as_raw().len() as u64, 64 * 1024 * 1024);
-        assert!(valid_diffuse_image(&image, true, 4096));
-        assert!(!valid_diffuse_image(&image, false, 4096));
-        assert!(!valid_diffuse_image(&image, true, 2048));
-        let smaller = image::RgbaImage::new(2048, 2048);
-        assert!(valid_diffuse_image(&smaller, true, 4096));
-        assert!(valid_diffuse_image(&smaller, false, 4096));
+        assert_eq!(MAX_TERRAIN_ATLAS_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MAX_WORLD_DIFFUSE_BYTES, 32 * 1024 * 1024);
+        assert_eq!(upload_dimensions(4096, 4096, true, 4096), Some((4096, 4096)));
+        assert_eq!(upload_dimensions(4096, 4096, false, 4096), Some((2048, 2048)));
+        assert_eq!(upload_dimensions(4096, 4096, true, 2048), Some((2048, 2048)));
     }
 
     #[test]
