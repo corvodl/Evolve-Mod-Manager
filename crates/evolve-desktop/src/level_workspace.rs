@@ -440,6 +440,46 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .width(Fill)
             .height(Length::FillPortion(3))
             .style(design::panel);
+    let scene_settings_panel = container(
+        column![
+            text("Scene Settings").size(15),
+            row![
+                text("Time of day").size(12),
+                space().width(Fill),
+                text(super::level_lighting::Lighting::label(state.level_time_of_day))
+                    .size(12)
+                    .style(design::muted),
+            ]
+            .align_y(iced::Center),
+            iced::widget::slider(
+                0.0..=24.0,
+                state.level_time_of_day,
+                Message::LevelTimeOfDayChanged,
+            )
+            .step(0.25)
+            .width(Fill),
+            row![
+                design::button("Dawn").on_press(Message::LevelTimePreset(6.0)),
+                design::button("Noon").on_press(Message::LevelTimePreset(12.0)),
+                design::button("Dusk").on_press(Message::LevelTimePreset(18.0)),
+                design::button("Night").on_press(Message::LevelTimePreset(0.0)),
+            ]
+            .spacing(4),
+            design::button(if state.level_full_textures {
+                "Textures: Full quality"
+            } else {
+                "Textures: Balanced"
+            })
+            .on_press(Message::LevelFullTexturesToggled),
+            text("Preview lighting (not original CryEngine TimeOfDay.xml).")
+                .size(11)
+                .style(design::muted),
+        ]
+        .spacing(7),
+    )
+    .padding(12)
+    .width(Fill)
+    .style(design::panel);
     let changes_panel = container(
         column![
             text("Changes").size(15),
@@ -478,7 +518,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .padding(12)
     .width(Fill)
     .style(design::panel);
-    let inspector = column![outliner_panel, details_panel, changes_panel]
+    let inspector = column![outliner_panel, details_panel, scene_settings_panel, changes_panel]
         .spacing(8)
         .width(Length::Fixed(350.0))
         .height(Fill);
