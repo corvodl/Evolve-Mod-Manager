@@ -251,13 +251,18 @@ pub fn read_terrain_rgb24_tiles(
     side: usize,
 ) -> Result<TerrainTextureAtlas, TerrainError> {
     if side == 0 || side > 8 || side.checked_mul(side) != Some(paths.len()) {
-        return Err(invalid("RGB24 terrain grid has invalid dimensions or missing members"));
+        return Err(invalid(
+            "RGB24 terrain grid has invalid dimensions or missing members",
+        ));
     }
     let mut image: Option<RgbaImage> = None;
     let mut tile_dim = 0usize;
     for (tile_index, path) in paths.iter().enumerate() {
         let metadata = fs::symlink_metadata(path)?;
-        if !metadata.file_type().is_file() || metadata.len() < 8 || metadata.len() > 48 * 1024 * 1024 {
+        if !metadata.file_type().is_file()
+            || metadata.len() < 8
+            || metadata.len() > 48 * 1024 * 1024
+        {
             return Err(TerrainError::Limits);
         }
         let mut file = File::open(path)?;
@@ -270,17 +275,28 @@ pub fn read_terrain_rgb24_tiles(
         }
         let atlas_dim = side.checked_mul(width).ok_or(TerrainError::Limits)?;
         if atlas_dim > 4096 {
-            return Err(invalid("RGB24 terrain atlas exceeds 4096-pixel preview limit"));
+            return Err(invalid(
+                "RGB24 terrain atlas exceeds 4096-pixel preview limit",
+            ));
         }
         if tile_index == 0 {
             tile_dim = width;
-            image = Some(RgbaImage::from_pixel(atlas_dim as u32, atlas_dim as u32, Rgba([0, 0, 0, 255])));
+            image = Some(RgbaImage::from_pixel(
+                atlas_dim as u32,
+                atlas_dim as u32,
+                Rgba([0, 0, 0, 255]),
+            ));
         } else if width != tile_dim {
             return Err(invalid("RGB24 terrain tile dimensions differ"));
         }
-        let pixels_len = width.checked_mul(height).and_then(|pixels| pixels.checked_mul(3)).ok_or(TerrainError::Limits)?;
+        let pixels_len = width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(3))
+            .ok_or(TerrainError::Limits)?;
         if metadata.len() != (8 + pixels_len) as u64 {
-            return Err(invalid("RGB24 terrain tile has a truncated or trailing payload"));
+            return Err(invalid(
+                "RGB24 terrain tile has a truncated or trailing payload",
+            ));
         }
         let mut pixels = vec![0u8; pixels_len];
         file.read_exact(&mut pixels)?;
@@ -342,7 +358,9 @@ mod tests {
             let mut data = Vec::new();
             data.extend_from_slice(&dim.to_le_bytes());
             data.extend_from_slice(&dim.to_le_bytes());
-            for _ in 0..dim * dim { data.extend_from_slice(&colors[i]); }
+            for _ in 0..dim * dim {
+                data.extend_from_slice(&colors[i]);
+            }
             std::fs::write(&tile, data).unwrap();
             tile
         });
