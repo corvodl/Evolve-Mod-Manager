@@ -41,6 +41,9 @@ pub struct BuildUpdateFile {
     pub sha256: String,
     pub bytes: u64,
     pub was_present: bool,
+    /// Identical PAK bytes already extracted from a different installed build.
+    /// Reuse the verified library archive rather than copying it again.
+    pub reuse_archive_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +58,8 @@ pub struct LibraryBuildUpdatePlan {
     pub previous: BTreeMap<String, BuildMember>,
     pub scanned_bytes: u64,
     pub import_bytes: u64,
+    /// New/changed PAKs that can reuse identical previously imported extraction.
+    pub reused_count: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +70,7 @@ pub struct LibraryBuildUpdateReport {
     pub removed: usize,
     pub updated: usize,
     pub added: usize,
+    pub reused: usize,
     pub snapshot: PathBuf,
 }
 
@@ -220,6 +226,33 @@ fn bootstrap_from_library(
         .collect())
 }
 
+/// Reuse complete, previously authenticated/extracted archives when a game
+/// update is installed in a different directory. Archive identity remains
+/// content-specific; build roots stay separate in the snapshot ledger.
+fn imported_content_index(library: &Path) -> Result<BTreeMap<(String, String), String>, String> {
+    let catalog = imported_library(library).map_err(|e| e.to_string())?;
+    let mut index = BTreeMap::new();
+    for archive in catalog.archives {
+        let manifest = Path::new(&archive.directory).join("asset-library.json");
+        let Ok(meta) = fs::symlink_metadata(&manifest) else { continue };
+        if !meta.file_type().is_file() || meta.len() > MAX_LEDGER_BYTES {
+            continue;
+        }
+        let Ok(doc) = serde_json::from_reader::<_, serde_json::Value>(
+            File::open(&manifest).map_err(|e| e.to_string())?
+        ) else { continue };
+        let Some(sha) = doc["source_sha256"].as_str() else { continue };
+        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit())
+            || doc["name"].as_str() != Some(archive.name.as_str())
+        {
+            continue;
+        }
+        index.entry((archive.name.to_ascii_lowercase(), sha.to_ascii_lowercase()))
+            .or_insert(archive.id);
+    }
+    Ok(index)
+}
+
 /// Full SHA-256 scan of a *chosen* game root. No file is imported or changed.
 pub fn scan_library_build_updates(
     library: &Path,
@@ -249,7 +282,9 @@ pub fn scan_library_build_updates(
             }
             Err(reason) => return Err(reason),
         };
+    let content_index = imported_content_index(&library)?;
     let mut changed = Vec::new();
+    let mut reused_count = 0usize;
     let mut scanned = HashSet::new();
     let mut unchanged = 0usize;
     let mut new_count = 0usize;
@@ -269,9 +304,18 @@ pub fn scan_library_build_updates(
             continue;
         }
         let bytes = fs::metadata(&file).map_err(|e| e.to_string())?.len();
-        import_bytes = import_bytes
-            .checked_add(bytes)
-            .ok_or("Import size overflow")?;
+        let basename = file.file_name().and_then(|value| value.to_str())
+            .ok_or("Non-Unicode archive filename")?;
+        let reuse_archive_id = content_index.get(&(
+            basename.to_ascii_lowercase(), sha.to_ascii_lowercase()
+        )).cloned();
+        if reuse_archive_id.is_some() {
+            reused_count += 1;
+        } else {
+            import_bytes = import_bytes
+                .checked_add(bytes)
+                .ok_or("Import size overflow")?;
+        }
         let was_present = previous.contains_key(&rel);
         if was_present {
             changed_count += 1;
@@ -284,6 +328,7 @@ pub fn scan_library_build_updates(
             sha256: sha,
             bytes,
             was_present,
+            reuse_archive_id,
         });
     }
     let removed = previous
@@ -302,6 +347,7 @@ pub fn scan_library_build_updates(
         previous,
         scanned_bytes: scan.packed_bytes,
         import_bytes,
+        reused_count,
     })
 }
 
@@ -341,6 +387,8 @@ pub fn apply_library_build_updates(
     progress.store(0, Ordering::Relaxed);
     let mut added = 0usize;
     let mut updated = 0usize;
+    let mut reused = 0usize;
+    let content_index = imported_content_index(&library)?;
     for entry in &plan.changed {
         if cancelled.load(Ordering::Relaxed) {
             break;
@@ -354,15 +402,31 @@ pub fn apply_library_build_updates(
             {
                 return Err("Source PAK changed since preview; scan again".into());
             }
-            import_signed_library_pak_with_keys(&library, &entry.path, keys)
+            // A new installation may contain hundreds of unchanged PAKs
+            // already extracted by another game build. Recheck their
+            // manifest/content identity immediately before reuse; never trust
+            // an outdated UI plan or copy the same game twice.
+            if let Some(id) = &entry.reuse_archive_id {
+                let name = entry.path.file_name().and_then(|name| name.to_str())
+                    .ok_or("Invalid archive filename")?;
+                if content_index.get(&(name.to_ascii_lowercase(), entry.sha256.to_ascii_lowercase()))
+                    != Some(id)
+                {
+                    return Err("Previously imported PAK changed or was removed; rescan".into());
+                }
+                Ok((id.clone(), true, None))
+            } else {
+                let imported = import_signed_library_pak_with_keys(&library, &entry.path, keys)?;
+                Ok((imported.id.clone(), false, Some(imported)))
+            }
         })();
         match result {
-            Ok(imported) => {
+            Ok((archive_id, reused_source, imported)) => {
                 members.insert(
                     entry.relative.clone(),
                     BuildMember {
                         sha256: entry.sha256.clone(),
-                        archive_id: imported.id.clone(),
+                        archive_id,
                     },
                 );
                 if entry.was_present {
@@ -370,7 +434,12 @@ pub fn apply_library_build_updates(
                 } else {
                     added += 1;
                 }
-                report.imported.push(imported);
+                if reused_source {
+                    reused += 1;
+                }
+                if let Some(imported) = imported {
+                    report.imported.push(imported);
+                }
             }
             Err(reason) => report.failed.push(LibraryImportFailure {
                 archive: entry.path.display().to_string(),
@@ -418,6 +487,7 @@ pub fn apply_library_build_updates(
         removed: plan.removed.len(),
         updated,
         added,
+        reused,
         snapshot: path,
     })
 }
@@ -521,6 +591,48 @@ mod tests {
         assert_eq!(applied.removed, 1);
         assert!(first.snapshot.exists());
         assert_eq!(imported_library(&library).unwrap().archives.len(), 1);
+    }
+
+
+    #[test]
+    fn copied_game_reuses_matching_paks_and_only_extracts_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("library");
+        let old_game = dir.path().join("game-v1");
+        let new_game = dir.path().join("game-v2");
+        for folder in [&library, &old_game, &new_game] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        fn write_pak(path: &Path, body: &[u8]) {
+            let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
+            zip.start_file("models/test.cgf", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(body).unwrap();
+            zip.finish().unwrap();
+        }
+        write_pak(&old_game.join("A.pak"), b"same contents");
+        write_pak(&old_game.join("B.pak"), b"same other contents");
+        let initial = scan_library_build_updates(&library, &old_game).unwrap();
+        apply_library_build_updates(
+            &library, &initial, &[], &AtomicBool::new(false), &AtomicUsize::new(0)
+        ).unwrap();
+        fs::copy(old_game.join("A.pak"), new_game.join("A.pak")).unwrap();
+        fs::copy(old_game.join("B.pak"), new_game.join("B.pak")).unwrap();
+        write_pak(&new_game.join("C.pak"), b"new content");
+        let update = scan_library_build_updates(&library, &new_game).unwrap();
+        assert_eq!(update.new_count, 3);
+        assert_eq!(update.reused_count, 2);
+        assert_eq!(update.import_bytes, fs::metadata(new_game.join("C.pak")).unwrap().len());
+        let applied = apply_library_build_updates(
+            &library, &update, &[], &AtomicBool::new(false), &AtomicUsize::new(0)
+        ).unwrap();
+        assert_eq!(applied.reused, 2);
+        assert_eq!(applied.batch.imported.len(), 1);
+        assert_eq!(imported_library(&library).unwrap().archives.len(), 3);
+        let old_id = initial.changed[0].relative.clone();
+        let current = scan_library_build_updates(&library, &old_game).unwrap();
+        assert!(current.changed.is_empty());
+        assert!(current.previous.contains_key(&old_id));
     }
 
     #[test]
