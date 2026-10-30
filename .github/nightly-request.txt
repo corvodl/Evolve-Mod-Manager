@@ -1,6 +1,6 @@
 # Update this file on main to request a Nightly release build.
 # GitHub Actions runs .github/workflows/nightly.yml only on this file's main-branch change or manual dispatch.
-request: merged-prs-147-150-2026-10-29
-requested: 2026-10-29
-base-main-commit: 7602dffac462d9603eb65450429509e27aebca15
-description: Manual Nightly build after merging PR #147 Level Editor opacity, PR #148 CGF asset recovery and Discord lobby states, PR #149 camera-relative Fly Mode actor yaw lock, and PR #150 manager/editor UI refresh. All previously open PRs have been merged.
+request: merged-prs-151-152-2026-10-30
+requested: 2026-10-30
+base-main-commit: 5620e54a2cb454a83da44c436513190db011aa96
+description: Manual Nightly build after merging PR #152 Level Editor dependency index and PR #151 animated sidebar/Home fixes. PR #153 animation playback remains unmerged for continued development.
