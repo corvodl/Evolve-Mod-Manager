@@ -149,16 +149,67 @@ fn imported_terrain_member(
 #[derive(Clone, Debug)]
 enum TerrainResource {
     Cry(PathBuf),
-    Rgb24([PathBuf; 4]),
+    Rgb24 { paths: Vec<PathBuf>, side: usize },
 }
 
 impl TerrainResource {
     fn file(&self) -> Option<&Path> {
         match self {
             Self::Cry(path) => Some(path),
-            Self::Rgb24(_) => None,
+            Self::Rgb24 { .. } => None,
         }
     }
+}
+
+/// Verify a complete square tile grid within a SINGLE imported PAK.
+/// Accepted members have the original "tileX_Y.raw" spelling, optionally
+/// beneath the import's "files/" prefix. No unrelated filename or missing
+/// coordinate may be substituted. Individual file contents are validated by
+/// the bounded RGB24 decoder after these manifest-backed paths resolve.
+fn imported_rgb24_tile_grid(inventory: &Inventory) -> Result<Option<(Vec<PathBuf>, usize)>, String> {
+    let mut tiles = BTreeMap::<(usize, usize), String>::new();
+    for entry in &inventory.entries {
+        let lower = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
+        let name = lower.strip_prefix("files/").unwrap_or(&lower);
+        if !(name.starts_with("tile") && name.ends_with(".raw")) || name.contains('/') {
+            continue;
+        }
+        let coordinates = &name[4..name.len() - 4];
+        let (x, y) = coordinates.split_once('_').ok_or_else(|| format!(
+            "Malformed imported RGB24 terrain tile: {}", entry.relative_path
+        ))?;
+        if x.is_empty() || y.is_empty() || !x.bytes().all(|b| b.is_ascii_digit())
+            || !y.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(format!("Malformed imported RGB24 terrain coordinate: {}", entry.relative_path));
+        }
+        let x = x.parse::<usize>().map_err(|e| e.to_string())?;
+        let y = y.parse::<usize>().map_err(|e| e.to_string())?;
+        if x >= 8 || y >= 8 {
+            return Err("Imported RGB24 terrain grid exceeds the bounded eight-tile-per-axis limit".into());
+        }
+        if tiles.insert((x,y), entry.relative_path.clone()).is_some() {
+            return Err(format!("Ambiguous duplicate terrain RGB24 tile {x}_{y}"));
+        }
+    }
+    if tiles.is_empty() { return Ok(None) }
+    let side = tiles.keys().map(|(x,y)| x.max(y)).max().copied().unwrap_or(0) + 1;
+    if side.checked_mul(side) != Some(tiles.len()) {
+        return Err(format!(
+            "Incomplete imported terrain RGB24 grid: {} members for expected {side}x{side} tiles",
+            tiles.len()
+        ));
+    }
+    let mut verified = Vec::with_capacity(tiles.len());
+    for y in 0..side {
+        for x in 0..side {
+            let name = tiles.get(&(x,y)).ok_or_else(|| format!("Missing imported terrain RGB24 tile{x}_{y}.raw"))?;
+            verified.push(imported_terrain_member(inventory, name)?.ok_or_else(|| format!(
+                "Unavailable verified imported terrain tile: {name}"
+            ))?);
+        }
+    }
+    Ok(Some((verified, side)))
 }
 
 fn imported_map_terrain(
@@ -238,35 +289,11 @@ fn imported_map_terrain(
                     found.push(TerrainResource::Cry(path));
                 }
             }
-            // Other builds use a four-member RGB24 tile container rather
-            // than the raw CRY quadtree. The uploaded Tutorial source proves
-            // the exact layout: files/tile0_0.raw through files/tile1_1.raw.
-            // Detect either accepted in-archive prefix, but never piece
-            // together tiles from different archives or source installations.
-            for prefix in ["", "files/"] {
-                let members = ["tile0_0.raw", "tile1_0.raw", "tile0_1.raw", "tile1_1.raw"]
-                    .map(|name| format!("{prefix}{name}"));
-                let present = members.map(|name| {
-                    inventory.entries.iter().any(|entry| entry.relative_path.eq_ignore_ascii_case(&name))
-                });
-                if present.iter().all(|present| !present) {
-                    continue;
-                }
-                if present.iter().any(|present| !present) {
-                    return Err(format!(
-                        "Imported {} for {folder} has an incomplete four-tile RGB24 terrain set ({}); expected every tile0_0, tile1_0, tile0_1, tile1_1 in one verified PAK",
-                        archive.name, prefix
-                    ));
-                }
-                let mut verified = Vec::with_capacity(4);
-                for name in &members {
-                    let path = imported_terrain_member(&inventory, name)?.ok_or_else(|| {
-                        format!("Missing verified RGB24 terrain member {name} in {}", archive.name)
-                    })?;
-                    verified.push(path);
-                }
-                let tiles: [PathBuf; 4] = verified.try_into().map_err(|_| "Invalid RGB24 tile count")?;
-                found.push(TerrainResource::Rgb24(tiles));
+            // Tile RGB24 layouts vary by map (Tutorial 2x2,
+            // Ice_Crashsite 4x4). Detect the complete NxN set from the
+            // original manifest, not a fixed number or a map-name whitelist.
+            if let Some((paths, side)) = imported_rgb24_tile_grid(&inventory)? {
+                found.push(TerrainResource::Rgb24 { paths, side });
             }
         }
     }
