@@ -1,6 +1,6 @@
 # Update this file on main to request a Nightly release build.
 # GitHub Actions runs .github/workflows/nightly.yml only on this file's main-branch change or manual dispatch.
-request: merged-prs-151-152-2026-10-30
+request: merged-prs-153-154-155-2026-10-30
 requested: 2026-10-30
-base-main-commit: 5620e54a2cb454a83da44c436513190db011aa96
-description: Manual Nightly build after merging PR #152 Level Editor dependency index and PR #151 animated sidebar/Home fixes. PR #153 animation playback remains unmerged for continued development.
+base-main-commit: f22aa3775a237b9a335a81bb5152f38c92934042
+description: Explicit manual Nightly request after merging PR #153 animation parity, PR #154 self-updater shutdown/retry, and PR #155 model loading, foliage alpha and automatic Tutorial/Ice_Crashsite terrain decoding.
