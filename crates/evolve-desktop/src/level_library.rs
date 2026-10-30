@@ -166,7 +166,9 @@ impl TerrainResource {
 /// beneath the import's "files/" prefix. No unrelated filename or missing
 /// coordinate may be substituted. Individual file contents are validated by
 /// the bounded RGB24 decoder after these manifest-backed paths resolve.
-fn imported_rgb24_tile_grid(inventory: &Inventory) -> Result<Option<(Vec<PathBuf>, usize)>, String> {
+fn imported_rgb24_tile_grid(
+    inventory: &Inventory,
+) -> Result<Option<(Vec<PathBuf>, usize)>, String> {
     let mut tiles = BTreeMap::<(usize, usize), String>::new();
     for entry in &inventory.entries {
         let lower = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
@@ -175,25 +177,43 @@ fn imported_rgb24_tile_grid(inventory: &Inventory) -> Result<Option<(Vec<PathBuf
             continue;
         }
         let coordinates = &name[4..name.len() - 4];
-        let (x, y) = coordinates.split_once('_').ok_or_else(|| format!(
-            "Malformed imported RGB24 terrain tile: {}", entry.relative_path
-        ))?;
-        if x.is_empty() || y.is_empty() || !x.bytes().all(|b| b.is_ascii_digit())
+        let (x, y) = coordinates.split_once('_').ok_or_else(|| {
+            format!(
+                "Malformed imported RGB24 terrain tile: {}",
+                entry.relative_path
+            )
+        })?;
+        if x.is_empty()
+            || y.is_empty()
+            || !x.bytes().all(|b| b.is_ascii_digit())
             || !y.bytes().all(|b| b.is_ascii_digit())
         {
-            return Err(format!("Malformed imported RGB24 terrain coordinate: {}", entry.relative_path));
+            return Err(format!(
+                "Malformed imported RGB24 terrain coordinate: {}",
+                entry.relative_path
+            ));
         }
         let x = x.parse::<usize>().map_err(|e| e.to_string())?;
         let y = y.parse::<usize>().map_err(|e| e.to_string())?;
         if x >= 8 || y >= 8 {
-            return Err("Imported RGB24 terrain grid exceeds the bounded eight-tile-per-axis limit".into());
+            return Err(
+                "Imported RGB24 terrain grid exceeds the bounded eight-tile-per-axis limit".into(),
+            );
         }
-        if tiles.insert((x,y), entry.relative_path.clone()).is_some() {
+        if tiles.insert((x, y), entry.relative_path.clone()).is_some() {
             return Err(format!("Ambiguous duplicate terrain RGB24 tile {x}_{y}"));
         }
     }
-    if tiles.is_empty() { return Ok(None) }
-    let side = tiles.keys().map(|(x,y)| x.max(y)).max().copied().unwrap_or(0) + 1;
+    if tiles.is_empty() {
+        return Ok(None);
+    }
+    let side = tiles
+        .keys()
+        .map(|(x, y)| x.max(y))
+        .max()
+        .copied()
+        .unwrap_or(0)
+        + 1;
     if side.checked_mul(side) != Some(tiles.len()) {
         return Err(format!(
             "Incomplete imported terrain RGB24 grid: {} members for expected {side}x{side} tiles",
@@ -203,10 +223,13 @@ fn imported_rgb24_tile_grid(inventory: &Inventory) -> Result<Option<(Vec<PathBuf
     let mut verified = Vec::with_capacity(tiles.len());
     for y in 0..side {
         for x in 0..side {
-            let name = tiles.get(&(x,y)).ok_or_else(|| format!("Missing imported terrain RGB24 tile{x}_{y}.raw"))?;
-            verified.push(imported_terrain_member(inventory, name)?.ok_or_else(|| format!(
-                "Unavailable verified imported terrain tile: {name}"
-            ))?);
+            let name = tiles
+                .get(&(x, y))
+                .ok_or_else(|| format!("Missing imported terrain RGB24 tile{x}_{y}.raw"))?;
+            verified
+                .push(imported_terrain_member(inventory, name)?.ok_or_else(|| {
+                    format!("Unavailable verified imported terrain tile: {name}")
+                })?);
         }
     }
     Ok(Some((verified, side)))
@@ -969,7 +992,9 @@ mod tests {
                     let mut bytes = Vec::new();
                     bytes.extend_from_slice(&4u32.to_le_bytes());
                     bytes.extend_from_slice(&4u32.to_le_bytes());
-                    for _ in 0..16 { bytes.extend_from_slice(&[x as u8 * 50, y as u8 * 50, 128]); }
+                    for _ in 0..16 {
+                        bytes.extend_from_slice(&[x as u8 * 50, y as u8 * 50, 128]);
+                    }
                     std::fs::write(&filename, bytes).unwrap();
                 }
             }
@@ -978,9 +1003,17 @@ mod tests {
             assert_eq!(resolved_side, side);
             assert_eq!(paths.len(), side * side);
             let atlas = read_terrain_rgb24_tiles(&paths, resolved_side).unwrap();
-            assert_eq!(atlas.image.dimensions(), ((4 * side) as u32, (4 * side) as u32));
-            assert_eq!(atlas.image.get_pixel((4*side - 1) as u32, (4*side - 1) as u32).0,
-                [((side - 1)*50) as u8, ((side - 1)*50) as u8, 128, 255]);
+            assert_eq!(
+                atlas.image.dimensions(),
+                ((4 * side) as u32, (4 * side) as u32)
+            );
+            assert_eq!(
+                atlas
+                    .image
+                    .get_pixel((4 * side - 1) as u32, (4 * side - 1) as u32)
+                    .0,
+                [((side - 1) * 50) as u8, ((side - 1) * 50) as u8, 128, 255]
+            );
             std::fs::remove_file(files.join(format!("tile{}_{}.raw", side - 1, side - 1))).unwrap();
             let missing = scan_directory(dir.path()).unwrap();
             assert!(imported_rgb24_tile_grid(&missing).is_err());
@@ -1118,7 +1151,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(std::fs::read(xml.file().unwrap()).unwrap(), b"<TerrainTexture/>");
+        assert_eq!(
+            std::fs::read(xml.file().unwrap()).unwrap(),
+            b"<TerrainTexture/>"
+        );
         let pak = terrain_resource(
             root,
             selected,
