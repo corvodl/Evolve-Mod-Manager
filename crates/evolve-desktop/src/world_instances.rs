@@ -645,15 +645,11 @@ impl Renderer {
                 pass.set_vertex_buffer(0, group.vertices.slice(..));
                 pass.set_vertex_buffer(1, group.instances.slice(..));
                 pass.set_index_buffer(group.indices.slice(..), wgpu::IndexFormat::Uint32);
-                for surf in group
-                    .surfaces
-                    .iter()
-                    .filter(|s| match mode {
-                        0 => !s.transparent && !s.foliage_cutout,
-                        1 => s.foliage_cutout,
-                        _ => s.transparent,
-                    })
-                {
+                for surf in group.surfaces.iter().filter(|s| match mode {
+                    0 => !s.transparent && !s.foliage_cutout,
+                    1 => s.foliage_cutout,
+                    _ => s.transparent,
+                }) {
                     pass.set_bind_group(0, &surf.bind, &[]);
                     pass.draw_indexed(surf.first..surf.first + surf.count, 0, 0..group.visible);
                 }
