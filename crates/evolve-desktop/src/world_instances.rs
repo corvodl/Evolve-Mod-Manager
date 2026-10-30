@@ -315,22 +315,49 @@ fn prefetch_world_diffuse(
     let prop_count = sources.len().saturating_sub(ground_count);
     let (ground_share, prop_share) = world_diffuse_quotas(full, ground_count, prop_count);
     let max_size = device.limits().max_texture_dimension_2d;
+    // Preserve original source resolution when all unique diffuse mipchains
+    // actually fit. Only share/downsample fairly for a crowded scene. Full
+    // quality should not reduce a perfectly affordable 2K/4K material.
+    let scene_limit = if full {
+        MAX_SCENE_FULL_TEXTURE_BYTES
+    } else {
+        MAX_SCENE_BALANCED_TEXTURE_BYTES
+    };
+    let diffuse_limit = scene_limit.saturating_mul(3) / 4;
+    let exact_bytes = sources.iter().try_fold(0u64, |sum, (_, img, ground)| {
+        let (w, h) = full_quality_dimensions(
+            img.width(),
+            img.height(),
+            *ground,
+            max_size,
+            full,
+            scene_limit,
+        )?;
+        sum.checked_add(mip_chain_bytes(w, h))
+    });
+    let preserve_original_quality = exact_bytes.is_some_and(|bytes| bytes <= diffuse_limit);
     for (key, original, terrain) in sources {
         let quota = if terrain { ground_share } else { prop_share };
-        // Maximum RGBA base level is 3/4 of the per-asset mip budget. This
-        // allows the complete mip pyramid to stay bounded by the quota.
+        // The constrained path caps the base mip below the per-image quota,
+        // reserving enough room for lower mip levels. The all-fit path keeps
+        // original image quality within device and per-source safety caps.
+        let source_budget = if preserve_original_quality {
+            scene_limit
+        } else {
+            quota.saturating_mul(3) / 4
+        };
         let source = gpu_diffuse_quality(
             original,
             terrain,
             max_size,
             full,
-            quota.saturating_mul(3) / 4,
+            source_budget,
         );
         let Some(source) = source else {
             continue;
         };
         let bytes = mip_chain_bytes(source.width(), source.height());
-        if bytes > quota {
+        if !preserve_original_quality && bytes > quota {
             continue;
         }
         let (tex, view) = upload_rgba_mips(
