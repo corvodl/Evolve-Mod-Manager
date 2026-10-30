@@ -557,7 +557,10 @@ impl Renderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // Fragment shading reads camera.origin for specular highlights
+                    // and distance fog, in addition to vertex projection.
+                    visibility: wgpu::ShaderStages::VERTEX
+                        | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -1180,6 +1183,30 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn world_camera_binding_allows_fragment_shading() {
+        // Both editors initialize the shared world renderer even in model-only views.
+        let shader = include_str!("world_instances.wgsl");
+        assert!(shader.contains("@group(0) @binding(0) var<uniform> camera: Camera;"));
+        assert!(shader.contains("let view_direction=normalize(camera.origin.xyz-input.world);"));
+        assert!(shader.contains("let distance=length(camera.origin.xyz-input.world);"));
+
+        let source = include_str!("world_instances.rs");
+        let layout = source
+            .split(r#"label: Some("Original level full source material bindings")"#)
+            .nth(1)
+            .expect("world pipeline bind-group layout");
+        let camera = layout
+            .split("binding: 0,")
+            .nth(1)
+            .expect("camera binding")
+            .split("binding: 1,")
+            .next()
+            .unwrap();
+        assert!(camera.contains("wgpu::ShaderStages::VERTEX"));
+        assert!(camera.contains("wgpu::ShaderStages::FRAGMENT"));
+    }
     #[test]
     fn solid_world_shader_forces_opaque_alpha_but_glass_retains_blending() {
         let shader = include_str!("world_instances.wgsl");
