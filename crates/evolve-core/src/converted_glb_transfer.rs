@@ -16,7 +16,9 @@ pub struct AttachedConvertedMotion {
 }
 
 fn u32_at(bytes: &[u8], offset: usize) -> Result<usize, String> {
-    let value = bytes.get(offset..offset + 4).ok_or("Truncated glTF length")?;
+    let value = bytes
+        .get(offset..offset + 4)
+        .ok_or("Truncated glTF length")?;
     Ok(u32::from_le_bytes(value.try_into().map_err(|_| "Invalid glTF length")?) as usize)
 }
 fn unpack(bytes: &[u8]) -> Result<(Value, Vec<u8>), String> {
@@ -30,17 +32,20 @@ fn unpack(bytes: &[u8]) -> Result<(Value, Vec<u8>), String> {
         return Err("Invalid or oversized source GLB".into());
     }
     let json_size = u32_at(bytes, 12)?;
-    let json_end = 20usize.checked_add(json_size).ok_or("glTF length overflow")?;
-    if json_size > 12 * 1024 * 1024
-        || json_end.checked_add(8).is_none_or(|end| end > bytes.len())
-    {
+    let json_end = 20usize
+        .checked_add(json_size)
+        .ok_or("glTF length overflow")?;
+    if json_size > 12 * 1024 * 1024 || json_end.checked_add(8).is_none_or(|end| end > bytes.len()) {
         return Err("Malformed glTF JSON chunk".into());
     }
-    let doc: Value = serde_json::from_slice(&bytes[20..json_end])
-        .map_err(|error| error.to_string())?;
+    let doc: Value =
+        serde_json::from_slice(&bytes[20..json_end]).map_err(|error| error.to_string())?;
     let bin_size = u32_at(bytes, json_end)?;
     if bytes.get(json_end + 4..json_end + 8) != Some(b"BIN\0")
-        || json_end.checked_add(8).and_then(|n| n.checked_add(bin_size)) != Some(bytes.len())
+        || json_end
+            .checked_add(8)
+            .and_then(|n| n.checked_add(bin_size))
+            != Some(bytes.len())
     {
         return Err("Malformed glTF binary chunk".into());
     }
@@ -86,7 +91,10 @@ fn array<'a>(doc: &'a Value, name: &str) -> Result<&'a [Value], String> {
         .ok_or_else(|| format!("Missing {name} data"))
 }
 fn node_index(value: &Value) -> Result<usize, String> {
-    value.as_u64().and_then(|u| usize::try_from(u).ok()).ok_or("Invalid glTF node index".into())
+    value
+        .as_u64()
+        .and_then(|u| usize::try_from(u).ok())
+        .ok_or("Invalid glTF node index".into())
 }
 fn joints(doc: &Value) -> Result<HashMap<String, usize>, String> {
     let skins = array(doc, "skins")?;
@@ -133,20 +141,38 @@ fn local(node: &Value) -> Result<Mat4, String> {
         if matrix.len() != 16 {
             return Err("Malformed glTF bone matrix".into());
         }
-        let values = matrix.iter().map(|v| {
-            let f = v.as_f64().ok_or("Non-numeric bone matrix")? as f32;
-            if !f.is_finite() { return Err("Non-finite bone matrix".into()); }
-            Ok(f)
-        }).collect::<Result<Vec<_>, String>>()?;
-        return Ok(std::array::from_fn(|r| std::array::from_fn(|c| values[c * 4 + r])));
+        let values = matrix
+            .iter()
+            .map(|v| {
+                let f = v.as_f64().ok_or("Non-numeric bone matrix")? as f32;
+                if !f.is_finite() {
+                    return Err("Non-finite bone matrix".into());
+                }
+                Ok(f)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        return Ok(std::array::from_fn(|r| {
+            std::array::from_fn(|c| values[c * 4 + r])
+        }));
     }
-    fn values<const N: usize>(node: &Value, key: &str, default: [f32; N]) -> Result<[f32; N], String> {
-        let Some(array) = node.get(key) else { return Ok(default); };
-        let arr = array.as_array().filter(|v| v.len() == N).ok_or("Malformed joint TRS")?;
+    fn values<const N: usize>(
+        node: &Value,
+        key: &str,
+        default: [f32; N],
+    ) -> Result<[f32; N], String> {
+        let Some(array) = node.get(key) else {
+            return Ok(default);
+        };
+        let arr = array
+            .as_array()
+            .filter(|v| v.len() == N)
+            .ok_or("Malformed joint TRS")?;
         let mut out = [0f32; N];
         for (index, value) in arr.iter().enumerate() {
             let number = value.as_f64().ok_or("Non-numeric joint TRS")? as f32;
-            if !number.is_finite() { return Err("Non-finite joint TRS".into()); }
+            if !number.is_finite() {
+                return Err("Non-finite joint TRS".into());
+            }
             out[index] = number;
         }
         Ok(out)
@@ -176,12 +202,21 @@ fn local(node: &Value) -> Result<Mat4, String> {
 fn same_rest(a: &Value, b: &Value) -> Result<bool, String> {
     let a = local(a)?;
     let b = local(b)?;
-    Ok(a.iter().flatten().zip(b.iter().flatten())
+    Ok(a.iter()
+        .flatten()
+        .zip(b.iter().flatten())
         .all(|(a, b)| (*a - *b).abs() <= 0.002 + 0.002 * b.abs()))
 }
 fn clip_key(value: &str) -> String {
-    value.replace('\\', "/").trim().to_ascii_lowercase()
-        .split('/').next_back().unwrap_or("").trim_end_matches(".caf").to_owned()
+    value
+        .replace('\\', "/")
+        .trim()
+        .to_ascii_lowercase()
+        .split('/')
+        .next_back()
+        .unwrap_or("")
+        .trim_end_matches(".caf")
+        .to_owned()
 }
 
 /// A source mesh and a converter output are not interchangeable. Reuse source
@@ -205,19 +240,31 @@ pub fn attach_converted_motion_to_source_glb(
     let converted_parents = parent_table(&converted)?;
     let original_joint_set = target.values().copied().collect::<HashSet<_>>();
     let source_joint_set = source.values().copied().collect::<HashSet<_>>();
-    let parent_name = |nodes: &[Value], table: &HashMap<usize, usize>, index: usize, owned: &HashSet<usize>| {
-        table.get(&index)
-            .copied()
-            .filter(|index| owned.contains(index))
-            .and_then(|index| nodes[index]["name"].as_str())
-            .map(str::to_lowercase)
-    };
+    let parent_name =
+        |nodes: &[Value], table: &HashMap<usize, usize>, index: usize, owned: &HashSet<usize>| {
+            table
+                .get(&index)
+                .copied()
+                .filter(|index| owned.contains(index))
+                .and_then(|index| nodes[index]["name"].as_str())
+                .map(str::to_lowercase)
+        };
     let mut remap = HashMap::new();
     for (name, &index) in &source {
-        let Some(&destination) = target.get(name) else { continue; };
-        if parent_name(original_nodes, &original_parents, destination, &original_joint_set)
-            != parent_name(converted_nodes, &converted_parents, index, &source_joint_set)
-        {
+        let Some(&destination) = target.get(name) else {
+            continue;
+        };
+        if parent_name(
+            original_nodes,
+            &original_parents,
+            destination,
+            &original_joint_set,
+        ) != parent_name(
+            converted_nodes,
+            &converted_parents,
+            index,
+            &source_joint_set,
+        ) {
             return Err(format!("Converted bone parent mismatch: {name}"));
         }
         if !same_rest(&original_nodes[destination], &converted_nodes[index])? {
@@ -235,7 +282,9 @@ pub fn attach_converted_motion_to_source_glb(
     if let Some(requested) = requested_clip {
         let goal = clip_key(requested);
         animations.retain(|animation| {
-            animation["name"].as_str().is_some_and(|name| clip_key(name) == goal)
+            animation["name"]
+                .as_str()
+                .is_some_and(|name| clip_key(name) == goal)
         });
         if animations.len() != 1 {
             return Err("Requested DBA clip does not identify one exact animation".into());
@@ -244,7 +293,9 @@ pub fn attach_converted_motion_to_source_glb(
     let mut written_names = Vec::new();
     let mut keyed = Vec::<(usize, Value)>::new();
     for animation in &mut animations {
-        let channels = animation["channels"].as_array_mut().ok_or("Missing clip channels")?;
+        let channels = animation["channels"]
+            .as_array_mut()
+            .ok_or("Missing clip channels")?;
         if channels.is_empty() {
             return Err("Converted clip contains no controllers".into());
         }
@@ -253,7 +304,9 @@ pub fn attach_converted_motion_to_source_glb(
             let destination = *remap
                 .get(&target_node)
                 .ok_or("Converted clip targets an unverified source joint")?;
-            let path = channel["target"]["path"].as_str().ok_or("Invalid track path")?;
+            let path = channel["target"]["path"]
+                .as_str()
+                .ok_or("Invalid track path")?;
             if !matches!(path, "rotation" | "translation" | "scale")
                 || converted_nodes[target_node]["matrix"].is_array()
             {
@@ -262,7 +315,12 @@ pub fn attach_converted_motion_to_source_glb(
             channel["target"]["node"] = json!(destination);
             keyed.push((destination, converted_nodes[target_node].clone()));
         }
-        written_names.push(animation["name"].as_str().unwrap_or("Unnamed clip").to_owned());
+        written_names.push(
+            animation["name"]
+                .as_str()
+                .unwrap_or("Unnamed clip")
+                .to_owned(),
+        );
     }
     let target_view_start = array(&original, "bufferViews")?.len();
     let target_accessor_start = array(&original, "accessors")?.len();
@@ -277,7 +335,11 @@ pub fn attach_converted_motion_to_source_glb(
             return Err("External converted buffers unsupported".into());
         }
         let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
-        view["byteOffset"] = json!(offset.checked_add(byte_start).ok_or("Buffer offset overflow")?);
+        view["byteOffset"] = json!(
+            offset
+                .checked_add(byte_start)
+                .ok_or("Buffer offset overflow")?
+        );
     }
     let mut additional_accessors = array(&converted, "accessors")?.to_vec();
     for accessor in &mut additional_accessors {
@@ -285,25 +347,45 @@ pub fn attach_converted_motion_to_source_glb(
             return Err("Sparse converted tracks unsupported".into());
         }
         let view = node_index(&accessor["bufferView"])?;
-        accessor["bufferView"] = json!(view.checked_add(target_view_start).ok_or("View offset overflow")?);
+        accessor["bufferView"] = json!(
+            view.checked_add(target_view_start)
+                .ok_or("View offset overflow")?
+        );
     }
     for animation in &mut animations {
-        let samplers = animation["samplers"].as_array_mut().ok_or("Missing clip samplers")?;
+        let samplers = animation["samplers"]
+            .as_array_mut()
+            .ok_or("Missing clip samplers")?;
         for sampler in samplers {
             for field in ["input", "output"] {
                 let index = node_index(&sampler[field])?;
-                sampler[field] = json!(index.checked_add(target_accessor_start).ok_or("Accessor index overflow")?);
+                sampler[field] = json!(
+                    index
+                        .checked_add(target_accessor_start)
+                        .ok_or("Accessor index overflow")?
+                );
             }
         }
     }
-    original["bufferViews"].as_array_mut().ok_or("Missing source buffer views")?
+    original["bufferViews"]
+        .as_array_mut()
+        .ok_or("Missing source buffer views")?
         .extend(additional_views);
-    original["accessors"].as_array_mut().ok_or("Missing source accessors")?
+    original["accessors"]
+        .as_array_mut()
+        .ok_or("Missing source accessors")?
         .extend(additional_accessors);
-    let source_nodes = original["nodes"].as_array_mut().ok_or("Missing source joint nodes")?;
+    let source_nodes = original["nodes"]
+        .as_array_mut()
+        .ok_or("Missing source joint nodes")?;
     for (destination, converted_node) in keyed {
-        let source_node = source_nodes.get_mut(destination).ok_or("Source joint out of bounds")?;
-        source_node.as_object_mut().ok_or("Source node is not an object")?.remove("matrix");
+        let source_node = source_nodes
+            .get_mut(destination)
+            .ok_or("Source joint out of bounds")?;
+        source_node
+            .as_object_mut()
+            .ok_or("Source node is not an object")?
+            .remove("matrix");
         for (name, default) in [
             ("translation", json!([0., 0., 0.])),
             ("rotation", json!([0., 0., 0., 1.])),
@@ -366,9 +448,8 @@ mod tests {
     #[test]
     fn verified_rig_receives_converted_clip_and_deforms_its_own_original_vertices() {
         let (source, converted) = source_and_converted();
-        let result = attach_converted_motion_to_source_glb(
-            &source, &converted, Some("walk.caf")
-        ).unwrap();
+        let result =
+            attach_converted_motion_to_source_glb(&source, &converted, Some("walk.caf")).unwrap();
         assert_eq!(result.matching_joints, 1);
         assert_eq!(result.clip_names, vec!["Walk"]);
         let dir = tempfile::tempdir().unwrap();
@@ -389,10 +470,14 @@ mod tests {
         let (mut wrong, data) = unpack(&converted).unwrap();
         wrong["nodes"][1]["translation"] = json!([3., 0., 0.]);
         let wrong = pack(wrong, data).unwrap();
-        assert!(attach_converted_motion_to_source_glb(&source, &wrong, None)
-            .unwrap_err().contains("bind pose mismatch"));
-        assert!(attach_converted_motion_to_source_glb(
-            &source, &converted, Some("another.caf")
-        ).is_err());
+        assert!(
+            attach_converted_motion_to_source_glb(&source, &wrong, None)
+                .unwrap_err()
+                .contains("bind pose mismatch")
+        );
+        assert!(
+            attach_converted_motion_to_source_glb(&source, &converted, Some("another.caf"))
+                .is_err()
+        );
     }
 }
