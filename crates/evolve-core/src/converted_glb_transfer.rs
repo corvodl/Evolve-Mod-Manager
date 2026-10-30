@@ -320,3 +320,79 @@ pub fn attach_converted_motion_to_source_glb(
         clip_names: written_names,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::animated_glb_preview::tests::preview_doc;
+    use crate::animation::AnimatedGlb;
+
+    fn source_and_converted() -> (Vec<u8>, Vec<u8>) {
+        let (mut doc, bin) = preview_doc();
+        doc["buffers"] = json!([{"byteLength":bin.len()}]);
+        let source = pack(doc.clone(), bin.clone()).unwrap();
+        let mut motion_bin = bin;
+        while !motion_bin.len().is_multiple_of(4) {
+            motion_bin.push(0);
+        }
+        let time_offset = motion_bin.len();
+        motion_bin.extend_from_slice(&0f32.to_le_bytes());
+        motion_bin.extend_from_slice(&1f32.to_le_bytes());
+        let values_offset = motion_bin.len();
+        for value in [0f32, 0., 0., 2., 0., 0.] {
+            motion_bin.extend_from_slice(&value.to_le_bytes());
+        }
+        let views = doc["bufferViews"].as_array_mut().unwrap();
+        let time_view = views.len();
+        views.push(json!({"buffer":0, "byteOffset":time_offset, "byteLength":8}));
+        let pose_view = views.len();
+        views.push(json!({"buffer":0, "byteOffset":values_offset, "byteLength":24}));
+        let accessors = doc["accessors"].as_array_mut().unwrap();
+        let time_access = accessors.len();
+        accessors.push(json!({"bufferView":time_view, "componentType":5126,
+            "type":"SCALAR", "count":2}));
+        let pose_access = accessors.len();
+        accessors.push(json!({"bufferView":pose_view, "componentType":5126,
+            "type":"VEC3", "count":2}));
+        doc["animations"] = json!([{
+            "name":"Walk",
+            "samplers":[{"input":time_access, "output":pose_access, "interpolation":"LINEAR"}],
+            "channels":[{"sampler":0, "target":{"node":1, "path":"translation"}}]
+        }]);
+        let converted = pack(doc, motion_bin).unwrap();
+        (source, converted)
+    }
+
+    #[test]
+    fn verified_rig_receives_converted_clip_and_deforms_its_own_original_vertices() {
+        let (source, converted) = source_and_converted();
+        let result = attach_converted_motion_to_source_glb(
+            &source, &converted, Some("walk.caf")
+        ).unwrap();
+        assert_eq!(result.matching_joints, 1);
+        assert_eq!(result.clip_names, vec!["Walk"]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bound.glb");
+        std::fs::write(&path, result.glb).unwrap();
+        let animation = AnimatedGlb::read(&path).unwrap();
+        assert!(animation.has_skinned_preview());
+        let rest = animation.mesh_at(0, 0.).unwrap();
+        let moved = animation.mesh_at(0, 0.5).unwrap();
+        assert!((moved.positions[0][0] - rest.positions[0][0] - 1.).abs() < 0.001);
+        assert_eq!(rest.indices, moved.indices);
+        assert_eq!(rest.uv0, moved.uv0);
+    }
+
+    #[test]
+    fn conversion_refuses_wrong_hierarchy_rest_pose_and_unmatched_clip() {
+        let (source, converted) = source_and_converted();
+        let (mut wrong, data) = unpack(&converted).unwrap();
+        wrong["nodes"][1]["translation"] = json!([3., 0., 0.]);
+        let wrong = pack(wrong, data).unwrap();
+        assert!(attach_converted_motion_to_source_glb(&source, &wrong, None)
+            .unwrap_err().contains("bind pose mismatch"));
+        assert!(attach_converted_motion_to_source_glb(
+            &source, &converted, Some("another.caf")
+        ).is_err());
+    }
+}
