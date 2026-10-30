@@ -39,6 +39,7 @@ mod launcher_bridge;
 mod level_camera;
 mod level_editor_shell;
 mod level_library;
+mod level_lighting;
 mod level_pick;
 mod level_scene_renderer;
 mod level_workspace;
@@ -390,6 +391,9 @@ struct State {
     level_open_after_copy: bool,
     level_diagnostics: Vec<String>,
     level_show_overview: bool,
+    /// Preview-only lighting controls, never written to original game files.
+    level_time_of_day: f32,
+    level_full_textures: bool,
     terrain: Option<TerrainInfo>,
     selected: Option<usize>,
     file_selection: MultiSelection,
@@ -2149,6 +2153,9 @@ enum Message {
     LevelSelect(usize),
     LevelFilterChanged(String),
     LevelZoomChanged(f32),
+    LevelTimeOfDayChanged(f32),
+    LevelTimePreset(f32),
+    LevelFullTexturesToggled,
     LevelEditPositionChanged(String),
     LevelEditRotationChanged(String),
     LevelEditScaleChanged(String),
@@ -7328,6 +7335,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelFilterChanged(value) => state.level_filter = value,
         Message::LevelZoomChanged(value) => state.level_zoom = value.clamp(0.3, 3.0),
+        Message::LevelTimeOfDayChanged(value) => {
+            if value.is_finite() {
+                state.level_time_of_day = value.clamp(0.0, 24.0);
+            }
+        }
+        Message::LevelTimePreset(value) => {
+            state.level_time_of_day = value.clamp(0.0, 24.0);
+        }
+        Message::LevelFullTexturesToggled => {
+            state.level_full_textures = !state.level_full_textures;
+        },
         Message::LevelEditPositionChanged(value) => state.level_edit_position = value,
         Message::LevelEditRotationChanged(value) => state.level_edit_rotation = value,
         Message::LevelEditScaleChanged(value) => state.level_edit_scale = value,
@@ -13551,6 +13569,8 @@ fn initial_state() -> State {
         export_embed_textures: true,
         viewer_split: 0.67,
         level_zoom: 1.0,
+        level_time_of_day: 12.0,
+        level_full_textures: true,
         light_strength: 1.6,
         emissive_strength: 1.0,
         viewer_explorer_visible: true,
