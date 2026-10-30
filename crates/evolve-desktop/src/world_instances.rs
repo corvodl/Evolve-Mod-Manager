@@ -992,8 +992,18 @@ mod tests {
         assert!(shader.contains("@group(0) @binding(5) var<uniform> light"));
         let module = naga::front::wgsl::parse_str(shader)
             .expect("time-of-day world shader must parse as WGSL");
-        assert!(module.entry_points.iter().any(|entry| entry.name == "fs_opaque"));
-        assert!(module.entry_points.iter().any(|entry| entry.name == "fs_foliage"));
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_opaque")
+        );
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_foliage")
+        );
     }
 
     #[test]
