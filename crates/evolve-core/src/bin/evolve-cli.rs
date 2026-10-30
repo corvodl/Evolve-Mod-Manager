@@ -58,6 +58,7 @@ fn usage() -> String {
         "  evolve-cli dds png <texture.dds|texture.dds.0> <new-output.png>",
         "  evolve-cli cdf inspect <character.cdf> [cdf-info.json]",
         "  evolve-cli material inspect <material.mtl> [material.json]",
+        "  evolve-cli material effects <Libs/MaterialEffects-folder> <source-surface> <target-surface> [report.json] (read-only)",
         "  evolve-cli material resolve <material.mtl> <asset-library-folder> [material-resolved.json]",
         "  evolve-cli cdf resolve <character.cdf> <asset-library-folder> [cdf-dependencies.json]",
         "  evolve-cli anim caf <motion.caf> [caf-info.json]",
@@ -244,6 +245,68 @@ fn write_report<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
     }
     println!("Report written: {}", path.display());
     Ok(())
+}
+
+fn inspect_surface_pair(
+    root: &Path,
+    source: &str,
+    target: &str,
+) -> Result<serde_json::Value, String> {
+    use evolve_core::material_effects::{
+        MatrixLookup, read_effect_matrix, read_fx_library, read_surface_types,
+    };
+    let metadata = fs::symlink_metadata(root).map_err(|error| error.to_string())?;
+    if !metadata.file_type().is_dir() || is_link_or_reparse(&metadata) {
+        return Err("Select a regular, same-build MaterialEffects folder".into());
+    }
+    let surfaces =
+        read_surface_types(&root.join("SurfaceTypes.xml")).map_err(|error| error.to_string())?;
+    let matrix =
+        read_effect_matrix(&root.join("MaterialEffects.xml")).map_err(|error| error.to_string())?;
+    let left = surfaces.get(source);
+    let right = surfaces.get(target);
+    let mut status = "not_defined";
+    let mut authored = None;
+    let mut resolved = None;
+    if left.is_some() && right.is_some() {
+        match matrix.lookup_pair(source, target) {
+            MatrixLookup::NotDefined { .. } => {}
+            MatrixLookup::Missing { .. } => status = "missing_cell",
+            MatrixLookup::Blank { .. } => status = "explicitly_blank",
+            MatrixLookup::Invalid { cell, .. } => {
+                status = "invalid_cell";
+                authored = Some(cell.raw.clone());
+            }
+            MatrixLookup::Effect { reference, .. } => {
+                status = "effect_missing_library";
+                authored = Some(reference.raw.clone());
+                let path = root
+                    .join("FXLibs")
+                    .join(format!("{}.xml", reference.library));
+                if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file()) {
+                    let library = read_fx_library(&path).map_err(|error| error.to_string())?;
+                    if let Some(effect) = library.effect(&reference.effect) {
+                        status = "effect_found";
+                        resolved = Some(effect.clone());
+                    } else {
+                        status = "effect_missing_definition";
+                    }
+                }
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "source": left,
+        "target": right,
+        "status": status,
+        "authored_effect": authored,
+        "effect": resolved,
+        "surface_count": surfaces.surfaces.len(),
+        "matrix_rows": matrix.rows.len(),
+        "matrix_columns": matrix.columns.len(),
+        "surface_without_matrix_row_or_column": matrix.surfaces_without_row_or_column(&surfaces),
+        "note": "Read-only same-folder inspection; no physical simulation, sound or particle execution"
+    }))
 }
 
 fn run(args: Vec<OsString>) -> Result<(), String> {
@@ -551,6 +614,23 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
     let subcommand = pop(&mut args)?;
     let source: PathBuf = pop(&mut args)?.into();
     if verb == OsStr::new("material") {
+        if subcommand == OsStr::new("effects") {
+            let from = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            let to = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            let report: Option<PathBuf> = args.next().map(Into::into);
+            no_extra(&mut args)?;
+            let result = inspect_surface_pair(&source, &from, &to)?;
+            println!("Surface interaction: {}", result["status"]);
+            if let Some(output) = report {
+                write_report(&result, &output)?;
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?
+                );
+            }
+            return Ok(());
+        }
         let material = read_material(&source).map_err(|e| e.to_string())?;
         if subcommand == OsStr::new("inspect") {
             let report: Option<PathBuf> = args.next().map(Into::into);
@@ -1077,6 +1157,27 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_effect_inspection_stays_inside_selected_folder() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("FXLibs")).unwrap();
+        fs::write(root.path().join("SurfaceTypes.xml"),
+            br#"<SurfaceTypes><SurfaceType name="mat_metal"/><SurfaceType name="mat_wood"/></SurfaceTypes>"#).unwrap();
+        fs::write(root.path().join("MaterialEffects.xml"), br#"<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet><Table><Row><Cell/><Cell><Data>mat_wood</Data></Cell></Row><Row><Cell><Data>mat_metal</Data></Cell><Cell><Data>collisions:hit</Data></Cell></Row></Table></Worksheet></Workbook>"#).unwrap();
+        fs::write(root.path().join("FXLibs/collisions.xml"), br#"<FXLib><Effect name="hit"><Sound><Name>sound/reference</Name></Sound></Effect></FXLib>"#).unwrap();
+        let report = inspect_surface_pair(root.path(), "mat_metal", "mat_wood").unwrap();
+        assert_eq!(report["status"], "effect_found");
+        assert_eq!(
+            report["effect"]["resources"][0]["reference"],
+            "sound/reference"
+        );
+        assert_eq!(
+            inspect_surface_pair(root.path(), "mat_unknown", "mat_wood").unwrap()["status"],
+            "not_defined"
+        );
+        assert!(!root.path().join("report.json").exists());
+    }
 
     #[test]
     fn rejects_unsupported_usage_without_side_effects() {

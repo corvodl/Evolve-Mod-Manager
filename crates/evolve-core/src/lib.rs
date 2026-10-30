@@ -32,6 +32,7 @@ pub mod level_export;
 pub mod library_build_updates;
 pub mod library_catalog;
 pub mod library_import;
+pub mod material_effects;
 pub mod materials;
 pub mod model;
 pub mod native_caf;

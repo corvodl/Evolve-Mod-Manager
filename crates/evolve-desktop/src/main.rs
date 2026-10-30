@@ -13582,6 +13582,7 @@ fn view(state: &State) -> Element<'_, Message> {
                             world: None,
                             level_hour: 12.0,
                             level_full_textures: true,
+                            viewer_full_textures: state.viewer_full_textures,
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
                         canvas(MeshViewport{
