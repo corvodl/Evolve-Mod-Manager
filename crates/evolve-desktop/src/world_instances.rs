@@ -661,9 +661,10 @@ mod tests {
         // Search only production code; searching this entire file would let
         // the assertion's own string literal create a false positive.
         let production = pipeline_source.split("#[cfg(test)]").next().unwrap();
-        assert!(production.contains(
-            "entry_point: Some(if blend { \"fs_main\" } else { \"fs_opaque\" })"
-        ));
+        assert!(
+            production
+                .contains("entry_point: Some(if blend { \"fs_main\" } else { \"fs_opaque\" })")
+        );
         assert!(production.contains("blend: if blend {"));
     }
 
