@@ -680,34 +680,44 @@ impl Renderer {
             // A distinct authored opacity texture must control foliage
             // cutouts. Never misinterpret a packed diffuse alpha channel
             // (which may be gloss or specular) as vegetation coverage.
-            let opaque = [255u8, 255, 255, 255];
-            let mask = surf
-                .opacity
-                .as_ref()
-                .filter(|img| (img.width() as u64) * (img.height() as u64) * 4 <= 32 * 1024 * 1024);
-            let (mw, mh, mask_bytes) = mask
-                .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
-                .unwrap_or((1, 1, &opaque[..]));
-            let opacity_tex = device.create_texture_with_data(
-                queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("Exact original CryEngine opacity / vegetation coverage"),
-                    size: wgpu::Extent3d {
-                        width: mw,
-                        height: mh,
-                        depth_or_array_layers: 1,
+            let mask_key = (surf.opacity.as_ref().map_or(0, |img| Arc::as_ptr(img) as usize), 1);
+            let (opacity_tex, opacity_view) = if let Some((tex, view)) = cache.get(&mask_key) {
+                (tex.clone(), view.clone())
+            } else {
+                let opaque = [255u8, 255, 255, 255];
+                let remaining = (if full_textures {
+                    MAX_SCENE_FULL_TEXTURE_BYTES
+                } else {
+                    MAX_SCENE_BALANCED_TEXTURE_BYTES
+                }).saturating_sub(*used_bytes);
+                let mask = surf.opacity.as_ref().and_then(|img| {
+                    gpu_diffuse_quality(img, false, limit_2d, full_textures, remaining)
+                });
+                let (mw, mh, mask_bytes) = mask.as_ref()
+                    .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
+                    .unwrap_or((1, 1, &opaque[..]));
+                let opacity_tex = device.create_texture_with_data(
+                    queue,
+                    &wgpu::TextureDescriptor {
+                        label: Some("Exact source authored opacity map"),
+                        size: wgpu::Extent3d { width: mw, height: mh, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
                     },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                },
-                TextureDataOrder::LayerMajor,
-                mask_bytes,
-            );
-            let opacity_view = opacity_tex.create_view(&wgpu::TextureViewDescriptor::default());
+                    TextureDataOrder::LayerMajor,
+                    mask_bytes,
+                );
+                let view = opacity_tex.create_view(&wgpu::TextureViewDescriptor::default());
+                if mask.is_some() {
+                    *used_bytes = used_bytes.saturating_add(u64::from(mw) * u64::from(mh) * 4);
+                }
+                cache.insert(mask_key, (opacity_tex.clone(), view.clone()));
+                (opacity_tex, view)
+            };
             let alpha_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Authored per-material Vegetation AlphaTest"),
                 contents: bytemuck::cast_slice(&[surf.alpha_cutoff.clamp(0.0, 1.0), 0.0, 0.0, 0.0]),
