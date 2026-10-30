@@ -153,6 +153,7 @@ enum TerrainResource {
 }
 
 impl TerrainResource {
+    #[cfg(test)]
     fn file(&self) -> Option<&Path> {
         match self {
             Self::Cry(path) => Some(path),
