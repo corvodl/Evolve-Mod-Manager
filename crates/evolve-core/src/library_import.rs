@@ -999,8 +999,10 @@ mod tests {
     fn archive_import_identity_ignores_windows_verbatim_prefix() {
         let normal = Path::new(r"C:\Games\ModdedEvolve\Game\levels_tutorial.pak");
         let extended = Path::new(r"\\?\C:\Games\ModdedEvolve\Game\levels_tutorial.pak");
-        assert_eq!(source_scoped_id("levels_tutorial.pak", "abc", normal),
-                   source_scoped_id("levels_tutorial.pak", "abc", extended));
+        assert_eq!(
+            source_scoped_id("levels_tutorial.pak", "abc", normal),
+            source_scoped_id("levels_tutorial.pak", "abc", extended)
+        );
     }
 
     #[test]
