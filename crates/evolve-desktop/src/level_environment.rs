@@ -349,6 +349,90 @@ impl TimeOfDay {
         }
     }
 }
+/// Bounded, read-only fog parameters from an exact imported map owner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct FogProfile {
+    pub view_distance: f32,
+    pub ldr_density_multiplier: f32,
+}
+
+impl FogProfile {
+    pub fn parse(source: &[u8]) -> Result<Self, String> {
+        if source.len() > MAX_XML {
+            return Err("Environment.xml exceeds 4 MiB".into());
+        }
+        let decoded =
+            evolve_core::cryxml::xml_bytes(source, MAX_XML).map_err(|error| error.to_string())?;
+        let mut reader = Reader::from_reader(decoded.as_ref());
+        let mut parsed = None;
+        loop {
+            match reader.read_event().map_err(|error| error.to_string())? {
+                Event::Start(element) | Event::Empty(element)
+                    if element.name().as_ref().eq_ignore_ascii_case(b"Fog") =>
+                {
+                    if parsed.is_some() {
+                        return Err("Multiple original Fog definitions".into());
+                    }
+                    let distance = attribute(&element, b"ViewDistance")?
+                        .ok_or("Original Fog has no ViewDistance")?
+                        .parse::<f32>()
+                        .map_err(|_| "Invalid original Fog ViewDistance")?;
+                    let multiplier = attribute(&element, b"LDRGlobalDensMult")?
+                        .ok_or("Original Fog has no LDRGlobalDensMult")?
+                        .parse::<f32>()
+                        .map_err(|_| "Invalid original Fog LDRGlobalDensMult")?;
+                    if !distance.is_finite()
+                        || !(1.0..=100_000.0).contains(&distance)
+                        || !multiplier.is_finite()
+                        || !(0.0..=32.0).contains(&multiplier)
+                    {
+                        return Err("Original Fog parameters exceed preview bounds".into());
+                    }
+                    parsed = Some(Self {
+                        view_distance: distance,
+                        ldr_density_multiplier: multiplier,
+                    });
+                }
+                Event::Eof => break,
+                _ => {}
+            }
+        }
+        parsed.ok_or_else(|| "Environment.xml has no supported Fog definition".into())
+    }
+
+    /// Deliberately non-native distance-only fog preview, never the original
+    /// CryEngine height/volumetric fog or scattering equation. Zeroed when the
+    /// map has no verified TimeOfDay Fog color curve.
+    pub fn preview_uniform(
+        self,
+        tod: Option<&TimeOfDay>,
+        hour: f32,
+    ) -> [[f32; 4]; 2] {
+        let disabled = [[0.0; 4]; 2];
+        let Some(rgb) = tod.and_then(|profile| profile.color("Fog color", hour)) else {
+            return disabled;
+        };
+        if self.ldr_density_multiplier <= 0.0 || !rgb.iter().all(|v| v.is_finite()) {
+            return disabled;
+        }
+        [
+            [
+                rgb[0].clamp(0.0, 1.0),
+                rgb[1].clamp(0.0, 1.0),
+                rgb[2].clamp(0.0, 1.0),
+                0.0,
+            ],
+            [
+                1.0,
+                self.view_distance.recip(),
+                // Preview-only heuristic, NOT a recovered engine equation.
+                (0.35 * self.ldr_density_multiplier).clamp(0.0, 8.0),
+                0.0,
+            ],
+        ]
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct ResourceSummary {
     pub particle_libraries: usize,
@@ -405,6 +489,36 @@ pub(super) fn named_items(source: &[u8], tag: &[u8], key: &[u8]) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fog_schema_is_bounded_and_missing_data_is_not_invented() {
+        let source = br#"<Environment><Fog ViewDistance="4500" LDRGlobalDensMult="3"/></Environment>"#;
+        let fog = FogProfile::parse(source).unwrap();
+        assert_eq!(fog.view_distance, 4500.0);
+        assert_eq!(fog.ldr_density_multiplier, 3.0);
+        assert_eq!(fog.preview_uniform(None, 12.0), [[0.0; 4]; 2]);
+        let tod = TimeOfDay::parse(br#"<TimeOfDay><Variable Name="Fog color" Color="0.3,0.5,0.7"/></TimeOfDay>"#).unwrap();
+        let uniform = fog.preview_uniform(Some(&tod), 12.0);
+        assert_eq!(uniform[0], [0.3, 0.5, 0.7, 0.0]);
+        assert_eq!(uniform[1][0], 1.0);
+        assert!((uniform[1][1] - 1.0/4500.0).abs() < 1e-8);
+        for bad in [
+            b"<Environment/>".as_slice(),
+            b"<Environment><Fog ViewDistance=\"NaN\" LDRGlobalDensMult=\"3\"/></Environment>",
+            b"<Environment><Fog ViewDistance=\"4500\" LDRGlobalDensMult=\"-2\"/></Environment>",
+            b"<Environment><Fog ViewDistance=\"4500\"/></Environment>",
+            b"<Environment><Fog ViewDistance=\"4500\" LDRGlobalDensMult=\"3\"/><Fog ViewDistance=\"4000\" LDRGlobalDensMult=\"2\"/></Environment>",
+        ] {
+            assert!(FogProfile::parse(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn binary_cryxmlb_environment_fog_matches_plain_xml() {
+        let original = br#"<Environment><Fog ViewDistance="2400" LDRGlobalDensMult="1"/></Environment>"#;
+        let compiled = evolve_core::cryxml::encode_xml(original, MAX_XML).unwrap();
+        assert_eq!(FogProfile::parse(&compiled).unwrap(), FogProfile::parse(original).unwrap());
+    }
+
     #[test]
     fn source_spline_keys_match_cryengine_xml_layout() {
         let xml = br#"<TimeOfDay Time="13.5"><Variable Name="Sun color" Color="1,1,1"><Spline Keys="0:(0.2:0.3:0.4):36,0.5:(1:0.8:0.6):36,1:(0.2:0.3:0.4):36,"/></Variable><Variable Name="Sun intensity" Value="1000"><Spline Keys="0:1000:36,0.5:120000:36,1:1000:36,"/></Variable></TimeOfDay>"#;

@@ -437,6 +437,34 @@ fn authored_time_of_day(
     Ok(None)
 }
 
+// Resolve Environment.xml using the same exact selected-map owner and
+// unique-build provenance rules as TimeOfDay.xml; no global name search.
+fn authored_environment(
+    archive: &ImportedPak,
+    map: &MapCandidate,
+    inventory: &Inventory,
+) -> Result<Option<PathBuf>, String> {
+    let folder = map_virtual_folder(map).ok_or("Unknown original map folder")?;
+    let build = (archive.builds.len() == 1).then(|| archive.builds[0].as_str());
+    let library = build.and_then(|_| Path::new(&archive.directory).parent());
+    for name in [
+        format!("{folder}/LevelData/Environment.xml"),
+        format!("{folder}/Environment.xml"),
+    ] {
+        if let Some(path) = auto_resources::exact(inventory, &name, library, build)? {
+            return Ok(Some(path));
+        }
+    }
+    if source_game_root(archive).is_some_and(|game| source_map_parent(archive, &game, &folder)) {
+        for name in ["LevelData/Environment.xml", "Environment.xml"] {
+            if let Some(path) = auto_resources::exact(inventory, name, None, None)? {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn authored_fx_catalog(
     root: &Path,
     inventory: &Inventory,
@@ -677,6 +705,39 @@ fn open_selected(
             diagnostics.push(format!(
                 "Could not resolve original TimeOfDay.xml: {reason}"
             ));
+            None
+        }
+    };
+    let original_fog = match authored_environment(&archive, chosen, &inventory) {
+        Ok(Some(file)) => match fs::symlink_metadata(&file) {
+            Ok(meta) if meta.file_type().is_file() && meta.len() <= 4 * 1024 * 1024 => {
+                match fs::read(&file).map_err(|reason| reason.to_string())
+                    .and_then(|bytes| level_environment::FogProfile::parse(&bytes))
+                {
+                    Ok(fog) => {
+                        diagnostics.push(format!(
+                            "Original Environment.xml: Fog ViewDistance={:.1}, LDRGlobalDensMult={:.2}. Distance-only fog preview, NOT CryEngine-native.",
+                            fog.view_distance, fog.ldr_density_multiplier
+                        ));
+                        Some(fog)
+                    }
+                    Err(reason) => {
+                        diagnostics.push(format!("Original Environment.xml Fog unsupported: {reason}; fog preview disabled."));
+                        None
+                    }
+                }
+            }
+            _ => {
+                diagnostics.push("Original Environment.xml missing, linked, or oversized; fog preview disabled.".into());
+                None
+            }
+        },
+        Ok(None) => {
+            diagnostics.push("No exact original Environment.xml for the selected map; fog preview disabled.".into());
+            None
+        }
+        Err(reason) => {
+            diagnostics.push(format!("Could not resolve exact Environment.xml: {reason}; fog preview disabled."));
             None
         }
     };
@@ -974,6 +1035,7 @@ fn open_selected(
     if let Some(assembled) = full_scene.as_mut() {
         let mut world = (*assembled.world).clone();
         world.time_of_day = original_time.map(std::sync::Arc::new);
+        world.fog_profile = original_fog;
         world.source_resources = resources;
         assembled.world = std::sync::Arc::new(world);
         diagnostics.push(assembled.report.status());
