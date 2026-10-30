@@ -22,7 +22,11 @@ fn upload_dimensions(width: u32, height: u32, ground: bool, gpu_max: u32) -> Opt
     if width == 0 || height == 0 || gpu_max == 0 {
         return None;
     }
-    let cap = if ground { MAX_TERRAIN_ATLAS_BYTES } else { MAX_WORLD_DIFFUSE_BYTES };
+    let cap = if ground {
+        MAX_TERRAIN_ATLAS_BYTES
+    } else {
+        MAX_WORLD_DIFFUSE_BYTES
+    };
     let (mut w, mut h) = (width, height);
     while w > gpu_max || h > gpu_max || u64::from(w) * u64::from(h) * 4 > cap {
         if w == 1 && h == 1 {
@@ -779,16 +783,34 @@ mod tests {
     fn baked_terrain_atlas_is_not_silently_replaced_by_32mb_world_cap() {
         assert_eq!(MAX_TERRAIN_ATLAS_BYTES, 64 * 1024 * 1024);
         assert_eq!(MAX_WORLD_DIFFUSE_BYTES, 32 * 1024 * 1024);
-        assert_eq!(upload_dimensions(4096, 4096, true, 4096), Some((4096, 4096)));
-        assert_eq!(upload_dimensions(4096, 4096, false, 4096), Some((2048, 2048)));
-        assert_eq!(upload_dimensions(4096, 4096, true, 2048), Some((2048, 2048)));
+        assert_eq!(
+            upload_dimensions(4096, 4096, true, 4096),
+            Some((4096, 4096))
+        );
+        assert_eq!(
+            upload_dimensions(4096, 4096, false, 4096),
+            Some((2048, 2048))
+        );
+        assert_eq!(
+            upload_dimensions(4096, 4096, true, 2048),
+            Some((2048, 2048))
+        );
     }
 
     #[test]
     fn oversized_valid_model_texture_is_downscaled_not_discarded() {
-        assert_eq!(upload_dimensions(4096, 4096, false, 4096), Some((2048, 2048)));
-        assert_eq!(upload_dimensions(4096, 4096, true, 4096), Some((4096, 4096)));
-        assert_eq!(upload_dimensions(2048, 2048, true, 1024), Some((1024, 1024)));
+        assert_eq!(
+            upload_dimensions(4096, 4096, false, 4096),
+            Some((2048, 2048))
+        );
+        assert_eq!(
+            upload_dimensions(4096, 4096, true, 4096),
+            Some((4096, 4096))
+        );
+        assert_eq!(
+            upload_dimensions(2048, 2048, true, 1024),
+            Some((1024, 1024))
+        );
         let mut card = image::RgbaImage::from_pixel(64, 64, image::Rgba([3, 9, 15, 0]));
         card.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
         let decoded = gpu_diffuse(&card, false, 32).unwrap();
@@ -809,12 +831,18 @@ mod tests {
                 original_uv0: true,
                 original_normals: true,
             },
-            positions: Vec::new(), indices: Vec::new(), uv0: None, normals: None,
+            positions: Vec::new(),
+            indices: Vec::new(),
+            uv0: None,
+            normals: None,
         });
         let mut group = ModelGroup {
             mesh,
             surfaces: Vec::new(),
-            instances: vec![Instance { object_index: usize::MAX, transform: Transform::default() }],
+            instances: vec![Instance {
+                object_index: usize::MAX,
+                transform: Transform::default(),
+            }],
             radius: 0.0,
         };
         assert!(is_ground(&group));
