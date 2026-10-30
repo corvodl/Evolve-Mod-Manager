@@ -25,6 +25,9 @@ pub(super) struct Report {
     pub placed: usize,
     pub geometries: usize,
     pub textured: usize,
+    /// Distinct authored model/material pairs without a verified diffuse map.
+    /// This does not imply the diffuse exists in the imported build.
+    pub without_diffuse: usize,
     pub unresolved: usize,
     pub recovered_companions: usize,
     pub notes: Vec<String>,
@@ -33,10 +36,11 @@ pub(super) struct Report {
 impl Report {
     pub fn status(&self) -> String {
         format!(
-            "{} model instances · {} unique meshes · {} textured material sets · {} missing/unsupported dependencies · {} exact compiled companions recovered. {}",
+            "{} model instances · {} unique meshes · {} textured material sets · {} model/material pairs without verified diffuse · {} missing/unsupported geometry dependencies · {} exact compiled companions recovered. {}",
             self.placed,
             self.geometries,
             self.textured,
+            self.without_diffuse,
             self.unresolved,
             self.recovered_companions,
             self.notes
@@ -674,6 +678,13 @@ pub(super) fn assemble(
                         object.name
                     ));
                 }
+                // The normal geometry-dependency counter does not capture
+                // successfully decoded meshes whose materials were missing,
+                // ambiguous, unsupported or lacked an authored diffuse.
+                // Count each resource pair once, not its thousands of instances.
+                if !material_ranges.iter().any(|part| part.diffuse.is_some()) {
+                    report.without_diffuse += 1;
+                }
                 let mut indices = Vec::with_capacity(meshes.len());
                 for mesh in meshes {
                     let radius = world_instances::radius(&mesh);
@@ -956,6 +967,20 @@ mod tests {
             assert!(safe_virtual(path).is_none());
         }
     }
+    #[test]
+    fn material_diagnostics_do_not_conflate_untextured_with_missing_mesh() {
+        let report = Report {
+            placed: 200,
+            geometries: 8,
+            textured: 3,
+            without_diffuse: 5,
+            unresolved: 0,
+            ..Report::default()
+        };
+        assert!(report.status().contains("5 model/material pairs without verified diffuse"));
+        assert!(report.status().contains("0 missing/unsupported geometry dependencies"));
+    }
+
     #[test]
     fn combined_scene_offsets_indices_and_material_ranges_per_instance() {
         let source = RenderMesh {
