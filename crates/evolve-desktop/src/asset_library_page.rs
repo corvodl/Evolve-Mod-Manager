@@ -229,7 +229,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         Err("Update preview dismissed".into())
                     ))),
             ].spacing(8),
-            text(format!("Source installation: {}", plan.source_root.display())).size(12),
+            text(format!("Source installation: {}", evolve_core::library_paths::ordinary_path(&plan.source_root.to_string_lossy()))).size(12),
             text(format!(
                 "{} new  •  {} changed  •  {} unchanged  •  {} removed  •  {} reused  •  {:.2} GiB to import",
                 plan.new_count, plan.changed_count, plan.unchanged, plan.removed.len(),
@@ -313,7 +313,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             let mut filenames = column![];
             for path in plan.files.iter().take(10) {
                 filenames = filenames.push(
-                    text(path.display().to_string())
+                    text(evolve_core::library_paths::ordinary_path(&path.to_string_lossy()))
                         .size(11)
                         .style(design::muted),
                 );
