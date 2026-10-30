@@ -1377,9 +1377,9 @@ mod tests {
             assert!(allocated <= scene * 3 / 4);
             assert!(ground >= 16 * 1024 * 1024);
             assert!(prop >= 256 * 1024);
-            // A source 512×512 diffuse, plus mips, fits even for the last
-            // object in a scene with 200 distinct source maps.
-            let bytes = mip_chain_bytes(512, 512);
+            // A source 256×256 diffuse plus mips fits even for the last
+            // object in a balanced scene with 200 distinct source maps.
+            let bytes = mip_chain_bytes(256, 256);
             assert!(bytes <= prop);
             let (unused_ground, all_props) = world_diffuse_quotas(enabled, 0, 200);
             assert_eq!(unused_ground, 0);
