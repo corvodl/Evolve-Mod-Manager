@@ -9,7 +9,7 @@ use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
     imported_archive_preview_inventory, imported_library, parse_level_scene, read_terrain,
     read_terrain_paint, read_terrain_rgb24_tiles, read_terrain_texture_atlas,
-    read_terrain_texture_header, scan_directory,
+    read_terrain_texture_header, scan_directory, parse_level_scene_read_only,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -580,43 +580,56 @@ fn open_selected(
                 diagnostics.push(format!(
                     "Combined layers could not be assembled: {error}. Trying individual sources."
                 ));
-                // A cross-layer duplicate ID must not make the imported map
-                // lose every other valid layer. For a READ-ONLY preview, parse
-                // independently and union verified placements without changing
-                // source GUIDs or authoring files. Cross-layer parenting cannot
-                // be reconstructed reliably on this recovery path.
+                // An identical duplicate declaration in separate source layers
+                // should not force every layer to resolve its parents in
+                // isolation. Recover ALL unique placements into one read-only
+                // scene and resolve unambiguous cross-layer parent transforms.
+                // Conflicting IDs remain explicitly unresolved; editing still
+                // uses the strict parser and never silently rewrites GUIDs.
                 if project.is_none() {
-                    let mut recovered = LevelScene {
-                        schema: 1,
-                        objects: Vec::new(),
-                        diagnostics: Vec::new(),
-                    };
-                    let mut valid_layers = 0usize;
-                    let mut duplicate_ids = 0usize;
-                    let mut seen_ids = std::collections::HashSet::new();
-                    for (name, bytes) in &sources {
-                        match parse_level_scene(&[(name.as_str(), bytes)]) {
-                            Ok(parsed) => {
-                                valid_layers += 1;
-                                for object in parsed.objects {
-                                    if seen_ids.insert(object.id.clone()) {
-                                        recovered.objects.push(object);
-                                    } else {
-                                        duplicate_ids += 1;
+                    match parse_level_scene_read_only(&slices) {
+                        Ok(recovery) => {
+                            diagnostics.push(format!(
+                                "Read-only combined scene recovery: {} unique placements, {} repeated GUID declarations omitted ({} conflicting IDs); unambiguous cross-layer parent transforms resolved.",
+                                recovery.scene.objects.len(),
+                                recovery.duplicate_declarations,
+                                recovery.conflicting_guids,
+                            ));
+                            diagnostics.extend(recovery.scene.diagnostics.iter().take(4).cloned());
+                            scene = Some(recovery.scene);
+                        }
+                        Err(recovery_error) => {
+                            diagnostics.push(format!(
+                                "Read-only combined recovery could not validate all layers: {recovery_error}; falling back to individually validated layers."
+                            ));
+                            let mut recovered = LevelScene {
+                                schema: 1,
+                                objects: Vec::new(),
+                                diagnostics: Vec::new(),
+                            };
+                            let mut seen_ids = std::collections::HashSet::new();
+                            for (name, bytes) in &sources {
+                                match parse_level_scene(&[(name.as_str(), bytes)]) {
+                                    Ok(layer) => {
+                                        for object in layer.objects {
+                                            if seen_ids.insert(object.id.clone()) {
+                                                recovered.objects.push(object);
+                                            }
+                                        }
                                     }
+                                    Err(error) => diagnostics.push(format!(
+                                        "Layer {name} could not be recovered: {error}"
+                                    )),
                                 }
                             }
-                            Err(layer_error) => diagnostics.push(format!(
-                                "Layer {name} could not be recovered: {layer_error}"
-                            )),
+                            if !recovered.objects.is_empty() {
+                                diagnostics.push(
+                                    "Per-layer fallback has incomplete cross-layer parent transforms."
+                                        .into(),
+                                );
+                                scene = Some(recovered);
+                            }
                         }
-                    }
-                    if !recovered.objects.is_empty() {
-                        diagnostics.push(format!(
-                            "Read-only recovery assembled {valid_layers} individually valid layers ({} unique placements; {duplicate_ids} repeated IDs omitted). Cross-layer parent transforms may be incomplete.",
-                            recovered.objects.len()
-                        ));
-                        scene = Some(recovered);
                     }
                 }
                 if scene.is_none() {
