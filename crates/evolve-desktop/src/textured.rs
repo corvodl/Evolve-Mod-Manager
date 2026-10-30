@@ -10,14 +10,15 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-// A large CDF can reuse the same original DDS in dozens of material ranges.
-// Allocate each source/role only once per scene and bound unique GPU copies.
+// Reuse original DDS pixels once per unique source/role. Balanced mode keeps
+// the conservative manager budget; Full quality has NO manager-imposed total
+// GPU texture ceiling and only downsizes for the adapter's texture dimensions
+// (actual available VRAM and GPU allocation limits still apply).
 pub(crate) const MAX_GPU_PREVIEW_TEXTURE_BYTES: usize = 256 * 1024 * 1024;
-const MAX_GPU_FULL_PREVIEW_TEXTURE_BYTES: usize = 1024 * 1024 * 1024;
 
 fn preview_budget(full: bool) -> usize {
     if full {
-        MAX_GPU_FULL_PREVIEW_TEXTURE_BYTES
+        usize::MAX
     } else {
         MAX_GPU_PREVIEW_TEXTURE_BYTES
     }
@@ -1836,9 +1837,13 @@ mod tests {
     }
 
     #[test]
-    fn full_quality_raises_source_budget_to_level_editor_equivalent() {
+    fn full_quality_has_no_manager_texture_ceiling() {
         assert_eq!(super::preview_budget(false), 256 * 1024 * 1024);
-        assert_eq!(super::preview_budget(true), 1024 * 1024 * 1024);
+        assert_eq!(super::preview_budget(true), usize::MAX);
+        assert_eq!(
+            super::fitted_source_dimensions(8192, 8192, super::preview_budget(true), 16384),
+            Some((8192, 8192))
+        );
         assert!(super::allows_cdf_role(
             0,
             400 * 1024 * 1024,
