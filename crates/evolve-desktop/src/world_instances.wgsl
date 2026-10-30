@@ -33,6 +33,13 @@ struct FogPreview {
   params: vec4<f32>, // enabled, inverse ViewDistance, scaled LDR density, reserved
 }
 @group(0) @binding(10) var<uniform> fog: FogPreview;
+// Authored TimeOfDay height/density samples. The additional binding is only
+// used by the Level Editor; no original game shader code is executed.
+struct HeightFogPreview {
+  heights_density: vec4<f32>, // bottom height, top height, bottom density, top density
+  control: vec4<f32>,         // enabled, reserved
+}
+@group(0) @binding(11) var<uniform> height_fog: HeightFogPreview;
 struct Output {
   @builtin(position) clip: vec4<f32>,
   @location(0) uv: vec2<f32>,
@@ -141,10 +148,32 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
 
 // A visually bounded preview heuristic, not an Evolve fog equation. Applying
 // this in the WORLD shader only leaves the separate Model Viewer unchanged.
+// Analytic integral of a vertically exponential density profile along the
+// camera-to-fragment ray. Horizontal rays have a stable Taylor-series path.
+// Density scaling still uses PR #157's *preview* distance calibration: this
+// is NOT an implementation of the Evolve engine's source shader equation.
+fn height_fog_depth(input:Output, distance:f32)->f32 {
+  let h=height_fog.heights_density;
+  let bottom_density=max(h.z,0.000001);
+  let top_density=max(h.w,0.000001);
+  let falloff=clamp(log(top_density/bottom_density)/max(h.y-h.x,0.01),-0.01,0.01);
+  let at_camera=h.z*exp(clamp(falloff*(camera.origin.z-h.x),-12.0,12.0));
+  let delta=falloff*(input.world.z-camera.origin.z);
+  var integral_ratio=1.0+0.5*delta+delta*delta/6.0;
+  if (abs(delta)>=0.001) {
+    integral_ratio=(exp(clamp(delta,-12.0,12.0))-1.0)/delta;
+  }
+  return clamp(at_camera*distance*max(integral_ratio,0.0)*fog.params.y*fog.params.z,0.0,12.0);
+}
+
 fn distance_fog(input:Output, color:vec4<f32>)->vec4<f32> {
   if (fog.params.x < 0.5) { return color; }
   let distance=length(camera.origin.xyz-input.world);
-  let amount=clamp(1.0-exp(-distance*fog.params.y*fog.params.z),0.0,0.92);
+  var depth=distance*fog.params.y*fog.params.z;
+  if (height_fog.control.x > 0.5) {
+    depth=height_fog_depth(input,distance);
+  }
+  let amount=clamp(1.0-exp(-depth),0.0,0.92);
   return vec4<f32>(mix(color.rgb,fog.color.rgb,amount),color.a);
 }
 
