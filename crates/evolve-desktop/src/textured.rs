@@ -1315,7 +1315,10 @@ impl Pipeline {
                 } else if can_use_role {
                     image.and_then(|pixels| {
                         let gpu_limit = device.limits().max_texture_dimension_2d;
-                        if full_size && pixels.width() <= gpu_limit && pixels.height() <= gpu_limit
+                        if full_size
+                            && size <= available
+                            && pixels.width() <= gpu_limit
+                            && pixels.height() <= gpu_limit
                         {
                             Some(pixels.dimensions())
                         } else {

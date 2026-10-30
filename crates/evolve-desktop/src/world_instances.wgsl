@@ -102,8 +102,11 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
     let bitangent=bitangent_raw-n*dot(n,bitangent_raw);
     if (dot(tangent,tangent)>0.000001 && dot(bitangent,bitangent)>0.000001) {
       let t=normalize(tangent);
-      let b=normalize(bitangent-t*dot(t,bitangent));
-      n=normalize(t*xy.x+b*xy.y+n*tangent_z);
+      let orthogonal_bitangent=bitangent-t*dot(t,bitangent);
+      if (dot(orthogonal_bitangent,orthogonal_bitangent)>0.000001) {
+        let b=normalize(orthogonal_bitangent);
+        n=normalize(t*xy.x+b*xy.y+n*tangent_z);
+      }
     }
   }
 
@@ -152,6 +155,10 @@ fn fs_foliage(input:Output)->@location(0) vec4<f32> {
 
 @fragment
 fn fs_main(input:Output)->@location(0) vec4<f32> {
-  // Preserve real authored transparency in the separately blended pipeline.
-  return shade(input,true);
+  // Glass/water opacity is continuous coverage, not an alpha-cutout test.
+  // A 20% source opacity must stay visible as 20% blended glass instead of
+  // being discarded by the solid-surface 50% mask threshold.
+  let color=shade(input,false);
+  let alpha=textureSample(authored_opacity,tex_sampler,input.uv).r;
+  return vec4<f32>(color.rgb,color.a*alpha);
 }
