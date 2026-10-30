@@ -934,6 +934,23 @@ enum Completed {
     ExportedPng(DdsInfo, PathBuf),
 }
 
+/// Reuse the level editor's exact-build indexed Asset Library lookup inside
+/// each model preview worker. Previously a CDF's individual parts and each
+/// referenced DDS/MTL could enumerate every imported PAK manifest repeatedly.
+/// The guard lives on the same blocking thread as the reads and drops even
+/// when a decode returns early with an error. All resolved assets still
+/// receive their usual file-size and canonical-path verification.
+fn model_preview_lookup(
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Option<evolve_core::ImportedLookupGuard>, String> {
+    imported
+        .zip(build)
+        .map(|(root, build)| evolve_core::begin_imported_lookup_session(root, build))
+        .transpose()
+        .map_err(|error| format!("Cannot index exact-build model dependencies: {error}"))
+}
+
 impl Operation {
     fn execute(self) -> Result<Completed, String> {
         match self {
@@ -1085,6 +1102,7 @@ impl Operation {
                 .map(Completed::Caf)
                 .map_err(|e| e.to_string()),
             Self::LoadDeclaredDba(virtual_path, inventory, imported_root, build, converter) => {
+                let _lookup = model_preview_lookup(imported_root.as_deref(), build.as_deref())?;
                 let source = auto_resources::resolve_declared_dba(
                     &inventory,
                     &virtual_path,
@@ -1125,6 +1143,7 @@ impl Operation {
                 Ok(Completed::DbaConverted(report, dest, temp))
             }
             Self::ResolveMaterial(source, root, imported_root, build_label) => {
+                let _lookup = model_preview_lookup(imported_root.as_deref(), build_label.as_deref())?;
                 let authored = read_material(&source).map_err(|e| e.to_string())?;
                 let library = scan_directory(&root).map_err(|e| e.to_string())?;
                 let mut report = resolve_materials(&library, &authored);
@@ -1240,6 +1259,7 @@ impl Operation {
                 ))
             }
             Self::LoadModelSurfaces(model, material, inventory, imported, build, cache) => {
+                let _lookup = model_preview_lookup(imported.as_deref(), build.as_deref())?;
                 let (surfaces, warnings) = assembly_materials::load_model(
                     &model,
                     &material,
@@ -1263,6 +1283,7 @@ impl Operation {
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
             Self::PreviewDds(source, relative, inventory, library, build, cache) => {
+                let _lookup = model_preview_lookup(library.as_deref(), build.as_deref())?;
                 let (info, pixels) = decoded_dds_indexed(
                     &cache,
                     &source,
@@ -1274,6 +1295,7 @@ impl Operation {
                 Ok(Completed::DdsPreview(source, info, pixels))
             }
             Self::DiscoverModelResources(relative, inventory, library_root, build) => {
+                let _lookup = model_preview_lookup(library_root.as_deref(), build.as_deref())?;
                 let discovery = auto_resources::discover(
                     &relative,
                     &inventory,
@@ -1283,6 +1305,7 @@ impl Operation {
                 Ok(Completed::ModelResources(relative, discovery))
             }
             Self::LoadDeclaredClip(index, virtual_path, inventory, library_root, build) => {
+                let _lookup = model_preview_lookup(library_root.as_deref(), build.as_deref())?;
                 let file = auto_resources::resolve_declared(
                     &inventory,
                     &virtual_path,
@@ -1300,6 +1323,7 @@ impl Operation {
                     .map_err(|e| format!("{}: {e}", render_source.display()))
             }
             Self::InspectIndexedModel(source, virtual_path, inventory, imported, build) => {
+                let _lookup = model_preview_lookup(imported.as_deref(), build.as_deref())?;
                 let render_source = auto_resources::exact_render_companion(
                     &virtual_path,
                     &inventory,
@@ -1463,6 +1487,9 @@ impl Operation {
                 progress,
             ) => {
                 progress.store(5, Ordering::Relaxed);
+                let lookup_started = Instant::now();
+                let _lookup = model_preview_lookup(imported.as_deref(), build.as_deref())?;
+                crash_diagnostics::record("cdf_dependency_index", &format!("Exact-build lookup ready in {} ms", lookup_started.elapsed().as_millis()));
                 crash_diagnostics::record("cdf_worker_begin", "reading authored CDF attachments");
                 let (mesh, report) = evolve_core::read_static_cdf_assembly_with_kala_state(
                     &source,
@@ -1602,6 +1629,7 @@ impl Operation {
                 Ok(Completed::StaticCharacter(mesh, report, surfaces, warnings))
             }
             Self::PrepareCdfDamage(source, report, base, inventory, imported, build, cache) => {
+                let _lookup = model_preview_lookup(imported.as_deref(), build.as_deref())?;
                 let mut full = base.as_ref().clone();
                 let _ = assembly_materials::apply_damage_blend(
                     &report,
