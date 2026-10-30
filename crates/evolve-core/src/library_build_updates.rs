@@ -9,7 +9,7 @@ use crate::library_import::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -492,6 +492,261 @@ pub fn apply_library_build_updates(
     })
 }
 
+/// A removable build snapshot group stored in the Asset Library. Game
+/// installations and independent Modding projects are always outside scope.
+#[derive(Clone, Debug)]
+pub struct ManagedLibraryBuild {
+    pub id: String,
+    pub source_root: String,
+    pub pak_count: usize,
+    pub extracted_bytes: u64,
+    /// Only extraction folders solely referenced by this group are eligible.
+    pub reclaimable_paks: usize,
+    pub reclaimable_bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct LibraryBuildRemovalReport {
+    pub source_root: String,
+    pub deleted_snapshots: usize,
+    pub removed_archives: usize,
+    pub reclaimed_bytes: u64,
+    pub retained_shared: usize,
+    pub failed_cleanup: Vec<String>,
+}
+
+fn build_snapshots(library: &Path) -> Result<BTreeMap<String, Vec<BuildSnapshot>>, String> {
+    let history = library.join("build-update-history");
+    if !history.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let history = real_directory(&history)?;
+    let mut builds = BTreeMap::new();
+    for entry in fs::read_dir(&history).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if builds.len() >= 128 {
+            return Err("Too many managed game builds".into());
+        }
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            return Err("Unexpected entry in build history; inspect manually".into());
+        }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if id.len() != 24 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("Unexpected build history directory; inspect manually".into());
+        }
+        let folder = real_directory(&entry.path())?;
+        let mut paths = Vec::new();
+        for file in fs::read_dir(&folder).map_err(|e| e.to_string())? {
+            let file = file.map_err(|e| e.to_string())?;
+            let name = file.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("snapshot-")
+                || !name.ends_with(".json")
+                || !file.file_type().map_err(|e| e.to_string())?.is_file()
+            {
+                return Err("Unexpected file in build snapshot folder; no deletion allowed".into());
+            }
+            paths.push(file.path());
+            if paths.len() > MAX_HISTORY_FILES {
+                return Err("Too many snapshots for a managed game build".into());
+            }
+        }
+        paths.sort_unstable();
+        let mut records = Vec::new();
+        for file in paths {
+            let meta = fs::symlink_metadata(&file).map_err(|e| e.to_string())?;
+            if !meta.file_type().is_file() || meta.len() > MAX_LEDGER_BYTES {
+                return Err("Unsafe build history snapshot".into());
+            }
+            let doc: serde_json::Value =
+                serde_json::from_reader(File::open(&file).map_err(|e| e.to_string())?)
+                    .map_err(|e| format!("Cannot read build snapshot: {e}"))?;
+            let root = doc["source_root"].as_str().ok_or("Missing build source root")?;
+            if build_identity(Path::new(root)) != id {
+                return Err("Build snapshot source identity differs from folder".into());
+            }
+            let record = read_snapshot(&file, &id, Path::new(root))?;
+            if records.first().is_some_and(|old: &BuildSnapshot| old.source_root != record.source_root) {
+                return Err("Conflicting build roots within one snapshot history".into());
+            }
+            records.push(record);
+        }
+        if !records.is_empty() {
+            builds.insert(id, records);
+        }
+    }
+    Ok(builds)
+}
+
+fn legacy_references(library: &Path) -> Result<BTreeSet<String>, String> {
+    let file = library.join("build-collections.json");
+    if !file.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let meta = fs::symlink_metadata(&file).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() || meta.len() > MAX_LEDGER_BYTES {
+        return Err("Legacy build collection file is unsafe".into());
+    }
+    let doc: serde_json::Value = serde_json::from_reader(
+        File::open(&file).map_err(|e| e.to_string())?
+    ).map_err(|e| format!("Cannot parse existing build collections: {e}"))?;
+    let builds = doc["builds"].as_object().ok_or("Legacy build collections are malformed")?;
+    let mut result = BTreeSet::new();
+    for build in builds.values() {
+        let members = build["members"].as_object().ok_or("Legacy collection members are malformed")?;
+        result.extend(members.keys().cloned());
+    }
+    Ok(result)
+}
+
+fn only_owned_extractions(
+    library: &Path,
+    target: &[BuildSnapshot],
+    others: &BTreeMap<String, Vec<BuildSnapshot>>,
+) -> Result<(Vec<(PathBuf, u64)>, usize), String> {
+    let mut referenced = legacy_references(library)?;
+    for history in others.values() {
+        for snapshot in history {
+            referenced.extend(snapshot.members.values().map(|item| item.archive_id.clone()));
+        }
+    }
+    let owned = target.iter().flat_map(|snapshot| snapshot.members.values())
+        .map(|item| item.archive_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut retained_shared = 0usize;
+    let catalog = imported_library(library).map_err(|e| e.to_string())?;
+    let source_root = Path::new(&target[0].source_root);
+    let mut unused = Vec::new();
+    for id in owned {
+        if referenced.contains(&id) {
+            retained_shared += 1;
+            continue;
+        }
+        let Some(archive) = catalog.archives.iter().find(|item| item.id == id) else {
+            continue;
+        };
+        // Reused imports from another installation do not belong to this
+        // deleted build; never delete another build's extraction by mistake.
+        if !Path::new(&archive.source).starts_with(source_root) {
+            retained_shared += 1;
+            continue;
+        }
+        let folder = Path::new(&archive.directory);
+        if folder.parent() != Some(library)
+            || !folder.file_name().and_then(|s| s.to_str()).is_some_and(|name| {
+                name == id || name.ends_with(&format!("__{id}"))
+            })
+        {
+            retained_shared += 1;
+            continue;
+        }
+        let meta = fs::symlink_metadata(folder).map_err(|e| e.to_string())?;
+        if !meta.file_type().is_dir()
+            || fs::canonicalize(folder).map_err(|e| e.to_string())? != folder
+        {
+            retained_shared += 1;
+            continue;
+        }
+        let mut valid = true;
+        let mut has_manifest = false;
+        let mut has_files = false;
+        for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name();
+            if name == "asset-library.json" && entry.file_type().map_err(|e| e.to_string())?.is_file() {
+                has_manifest = true;
+            } else if name == "files" && entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                has_files = true;
+            } else {
+                valid = false;
+            }
+        }
+        if !valid || !has_manifest || !has_files {
+            retained_shared += 1;
+            continue;
+        }
+        unused.push((folder.to_path_buf(), archive.extracted_bytes));
+    }
+    Ok((unused, retained_shared))
+}
+
+/// List only managed, incremental build snapshots. Imported game originals,
+/// legacy build collections and separate editable mod projects are untouched.
+pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>, String> {
+    let library = real_directory(library)?;
+    let all = build_snapshots(&library)?;
+    let catalog = imported_library(&library).map_err(|e| e.to_string())?;
+    let mut builds = Vec::new();
+    for (id, snapshots) in &all {
+        let latest = snapshots.last().ok_or("Empty build history")?;
+        let mut other = all.clone();
+        other.remove(id);
+        let (reclaim, _) = only_owned_extractions(&library, snapshots, &other)?;
+        let member_ids = latest.members.values().map(|v| &v.archive_id)
+            .collect::<BTreeSet<_>>();
+        let extracted_bytes = catalog.archives.iter()
+            .filter(|a| member_ids.contains(&a.id))
+            .fold(0u64, |sum, a| sum.saturating_add(a.extracted_bytes));
+        builds.push(ManagedLibraryBuild {
+            id: id.clone(),
+            source_root: latest.source_root.clone(),
+            pak_count: latest.members.len(),
+            extracted_bytes,
+            reclaimable_paks: reclaim.len(),
+            reclaimable_bytes: reclaim.iter()
+                .fold(0u64, |sum, (_, bytes)| sum.saturating_add(*bytes)),
+        });
+    }
+    Ok(builds)
+}
+
+/// Delete only a confirmed Asset Library snapshot group and its unshared,
+/// manager-created extraction folders. Never remove installed PAKs, other
+/// snapshots, or independently editable projects.
+pub fn remove_managed_library_build(
+    library: &Path,
+    id: &str,
+    expected_source_root: &str,
+) -> Result<LibraryBuildRemovalReport, String> {
+    let library = real_directory(library)?;
+    if id.len() != 24 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("Invalid selected game build".into());
+    }
+    let mut all = build_snapshots(&library)?;
+    let snapshots = all.remove(id).ok_or("Managed build is no longer available")?;
+    let latest = snapshots.last().ok_or("Selected build has no snapshots")?;
+    if latest.source_root != expected_source_root {
+        return Err("Selected build changed; refresh build management".into());
+    }
+    let (unused, retained_shared) = only_owned_extractions(&library, &snapshots, &all)?;
+    let history = snapshot_dir(&library, id);
+    if history.parent() != Some(library.join("build-update-history").as_path())
+        || !fs::symlink_metadata(&history).map_err(|e| e.to_string())?.file_type().is_dir()
+    {
+        return Err("Unsafe build history path".into());
+    }
+    fs::remove_dir_all(&history).map_err(|e| format!("Cannot remove build snapshot: {e}"))?;
+    let mut removed_archives = 0;
+    let mut reclaimed_bytes = 0u64;
+    let mut failed_cleanup = Vec::new();
+    for (folder, bytes) in unused {
+        match fs::remove_dir_all(&folder) {
+            Ok(()) => {
+                removed_archives += 1;
+                reclaimed_bytes = reclaimed_bytes.saturating_add(bytes);
+            }
+            Err(e) => failed_cleanup.push(format!("{}: {e}", folder.display())),
+        }
+    }
+    Ok(LibraryBuildRemovalReport {
+        source_root: expected_source_root.into(),
+        deleted_snapshots: snapshots.len(),
+        removed_archives,
+        reclaimed_bytes,
+        retained_shared,
+        failed_cleanup,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,6 +888,41 @@ mod tests {
         let current = scan_library_build_updates(&library, &old_game).unwrap();
         assert!(current.changed.is_empty());
         assert!(current.previous.contains_key(&old_id));
+    }
+
+    #[test]
+    fn managed_build_removal_preserves_source_and_shared_imports() {
+        let directory = tempfile::tempdir().unwrap();
+        let library = directory.path().join("library");
+        let old = directory.path().join("EvolveOld");
+        let new = directory.path().join("EvolveNew");
+        for dir in [&library, &old, &new] { fs::create_dir_all(dir).unwrap(); }
+        fn zip(path: &Path, data: &[u8]) {
+            let mut archive = zip::ZipWriter::new(File::create(path).unwrap());
+            archive.start_file("asset.bin", zip::write::SimpleFileOptions::default()).unwrap();
+            archive.write_all(data).unwrap();
+            archive.finish().unwrap();
+        }
+        zip(&old.join("shared.pak"), b"same");
+        zip(&old.join("retired.pak"), b"retired");
+        let initial = scan_library_build_updates(&library, &old).unwrap();
+        apply_library_build_updates(&library, &initial, &[], &AtomicBool::new(false), &AtomicUsize::new(0)).unwrap();
+        fs::copy(old.join("shared.pak"), new.join("shared.pak")).unwrap();
+        let updated = scan_library_build_updates(&library, &new).unwrap();
+        assert_eq!(updated.reused_count, 1);
+        apply_library_build_updates(&library, &updated, &[], &AtomicBool::new(false), &AtomicUsize::new(0)).unwrap();
+        let snapshot = managed_library_builds(&library).unwrap();
+        assert_eq!(snapshot.len(), 2);
+        let old_build = snapshot.iter().find(|entry| entry.source_root == old.to_string_lossy()).unwrap();
+        assert_eq!(old_build.reclaimable_paks, 1);
+        assert!(remove_managed_library_build(&library, &old_build.id, "wrong").is_err());
+        let removed = remove_managed_library_build(&library, &old_build.id, &old_build.source_root).unwrap();
+        assert_eq!(removed.removed_archives, 1);
+        assert_eq!(removed.retained_shared, 1);
+        assert!(old.join("retired.pak").exists());
+        assert!(old.join("shared.pak").exists());
+        assert_eq!(imported_library(&library).unwrap().archives.len(), 1);
+        assert_eq!(managed_library_builds(&library).unwrap().len(), 1);
     }
 
     #[test]
