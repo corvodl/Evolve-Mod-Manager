@@ -111,7 +111,7 @@ use evolve_core::{
     scan_library_import_sources, stage_status,
 };
 use iced::widget::{
-    canvas, column, container, image, row, scrollable, shader, slider, space, svg, text,
+    canvas, column, container, image, mouse_area, row, scrollable, shader, slider, space, svg, text,
 };
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
 use launcher_bridge::{
@@ -227,8 +227,18 @@ impl TeleportRequest {
     }
 }
 
+const SIDEBAR_COLLAPSED_WIDTH: f32 = 64.0;
+const SIDEBAR_EXPANDED_WIDTH: f32 = 174.0;
+
+fn sidebar_width(reveal: f32) -> f32 {
+    SIDEBAR_COLLAPSED_WIDTH
+        + (SIDEBAR_EXPANDED_WIDTH - SIDEBAR_COLLAPSED_WIDTH) * reveal.clamp(0.0, 1.0)
+}
+
 #[derive(Default)]
 struct State {
+    sidebar_hovered: bool,
+    sidebar_reveal: f32,
     input: String,
     output: String,
     replacements: String,
@@ -1819,6 +1829,8 @@ impl Operation {
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
+    SidebarHover(bool),
+    SidebarAnimationTick,
     LibraryPickFiles,
     LibraryPickFolder,
     LibraryUpdatePickFolder,
@@ -3241,6 +3253,22 @@ fn send_dev_bind(state: &mut State, action: developer_hotkeys::Action) {
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
+        Message::SidebarHover(hovered) => {
+            state.sidebar_hovered = hovered;
+            if state.preferences.reduce_motion {
+                state.sidebar_reveal = if hovered { 1.0 } else { 0.0 };
+            }
+        }
+        Message::SidebarAnimationTick => {
+            let target: f32 = if state.sidebar_hovered { 1.0 } else { 0.0 };
+            let delta = target - state.sidebar_reveal;
+            // Stop at exact endpoints so no timer keeps running when idle.
+            state.sidebar_reveal = if delta.abs() <= 0.12 {
+                target
+            } else {
+                (state.sidebar_reveal + delta.signum() * 0.12).clamp(0.0, 1.0)
+            };
+        }
         Message::HomeContinueEditing | Message::HomeOpenProject => {
             if state.busy {
                 state.status = "Finish the current operation before opening a project.".into();
@@ -12721,19 +12749,22 @@ fn download_action(state: &State) -> Element<'_, Message> {
 
 fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
-    // Keep the familiar rail and ordering, but give every destination a visible name.
+    // Collapse to icon-only navigation by default; labels appear once the
+    // hover-driven width animation has enough room to show them in full.
+    let labels_visible = state.sidebar_reveal >= 0.88 || state.preferences.reduce_motion && state.sidebar_hovered;
     let navigation = Page::ALL
         .into_iter()
         .fold(column![].spacing(7), |items, item| {
             let active = page == item;
-            let nav = design::button(
-                row![
-                    svg(item.icon()).style(design::icon).width(20).height(20),
-                    text(item.title()).size(13),
-                ]
-                .spacing(12)
-                .align_y(iced::Center),
-            )
+            let mut contents = row![
+                svg(item.icon()).style(design::icon).width(20).height(20),
+            ]
+            .spacing(12)
+            .align_y(iced::Center);
+            if labels_visible {
+                contents = contents.push(text(item.title()).size(13));
+            }
+            let nav = design::button(contents)
             .width(Fill)
             .height(40)
             .padding([8, 11])
@@ -12751,34 +12782,31 @@ fn view(state: &State) -> Element<'_, Message> {
     ))
     .width(20)
     .height(20);
+    let mut play_mods_row = row![play_mods_icon].spacing(11).align_y(iced::Center);
+    let mut play_clean_row = row![play_clean_icon].spacing(11).align_y(iced::Center);
+    let mut settings_row = row![
+        svg(Page::Settings.icon())
+            .style(design::icon)
+            .width(20)
+            .height(20),
+    ]
+    .spacing(11)
+    .align_y(iced::Center);
+    if labels_visible {
+        play_mods_row = play_mods_row.push(text("Play with Mods").size(12));
+        play_clean_row = play_clean_row.push(text("Play").size(12));
+        settings_row = settings_row.push(text("Settings").size(13));
+    }
     let lower = column![
-        design::button(
-            row![play_mods_icon, text("Play with Mods").size(12)]
-                .spacing(11)
-                .align_y(iced::Center)
-        )
+        design::button(play_mods_row)
         .width(Fill)
         .height(40)
         .on_press(Message::PlayWithMods),
-        design::button(
-            row![play_clean_icon, text("Play clean").size(12)]
-                .spacing(11)
-                .align_y(iced::Center)
-        )
+        design::button(play_clean_row)
         .width(Fill)
         .height(40)
         .on_press(Message::PlayWithoutMods),
-        design::button(
-            row![
-                svg(Page::Settings.icon())
-                    .style(design::icon)
-                    .width(20)
-                    .height(20),
-                text("Settings").size(13)
-            ]
-            .spacing(11)
-            .align_y(iced::Center)
-        )
+        design::button(settings_row)
         .width(Fill)
         .height(43)
         .padding(10)
@@ -12792,7 +12820,7 @@ fn view(state: &State) -> Element<'_, Message> {
             .height(Fill)
             .padding([12, 9]),
     )
-    .width(174)
+    .width(Length::Fixed(sidebar_width(state.sidebar_reveal)))
     .height(Fill)
     .style(|theme| container::Style {
         background: Some(iced::Background::Color(design::sidebar(theme))),
@@ -12803,18 +12831,16 @@ fn view(state: &State) -> Element<'_, Message> {
         },
         ..container::Style::default()
     });
+    let sidebar = mouse_area(sidebar)
+        .on_enter(Message::SidebarHover(true))
+        .on_exit(Message::SidebarHover(false));
     let mut headline = row![
         design::button(
-            row![
-                image(image::Handle::from_bytes(
-                    include_bytes!("../../../assets/hunt.png").to_vec()
-                ))
-                .width(34)
-                .height(34),
-                text("EVOLVE").size(18),
-            ]
-            .spacing(10)
-            .align_y(iced::Center)
+            image(image::Handle::from_bytes(
+                include_bytes!("../../../assets/hunt.png").to_vec()
+            ))
+            .width(34)
+            .height(34)
         )
         .style(design::text_button)
         .on_press(Message::Navigate(Page::Home)),
@@ -13773,6 +13799,17 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let sidebar_animation = if !self.state.preferences.reduce_motion
+            && (self.state.sidebar_reveal
+                - if self.state.sidebar_hovered { 1.0 } else { 0.0 })
+                .abs()
+                > 0.001
+        {
+            iced::time::every(Duration::from_millis(16))
+                .map(|_| Message::SidebarAnimationTick)
+        } else {
+            Subscription::none()
+        };
         let level_camera_tick = if self.level_id.is_some()
             && self.state.level_window_focused
             && !self.state.level_keys.is_empty()
@@ -13842,6 +13879,7 @@ impl Desktop {
             armor_recovery,
             armor_pulse,
             playback,
+            sidebar_animation,
             level_camera_tick,
             startup,
             scan_progress,
