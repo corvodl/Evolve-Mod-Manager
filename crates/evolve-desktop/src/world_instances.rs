@@ -22,7 +22,7 @@ const MAX_SCENE_BALANCED_TEXTURE_BYTES: u64 = 384 * 1024 * 1024;
 // A shared source Arc must produce only one GPU texture per role, even when
 // dozens of original meshes/material slots use it. Cache lifetime is one
 // imported scene; never retain a source pointer beyond that scene.
-type TextureCache = HashMap<(usize, u8), (wgpu::Texture, wgpu::TextureView)>;
+type TextureCache = HashMap<(usize, u8, bool), (wgpu::Texture, wgpu::TextureView)>;
 
 /// Choose a size within the device and the per-material upload budget.
 /// Non-terrain 4K DDS assets must retain their colors and alpha mask; a
@@ -639,7 +639,7 @@ impl Renderer {
             {
                 continue;
             }
-            let key = (surf.diffuse.as_ref().map_or(0, |img| Arc::as_ptr(img) as usize), 0);
+            let key = (surf.diffuse.as_ref().map_or(0, |img| Arc::as_ptr(img) as usize), 0, terrain);
             let (tex, view, diffuse_uploaded) = if let Some((tex, view)) = cache.get(&key) {
                 (tex.clone(), view.clone(), key.0 != 0)
             } else {
@@ -680,7 +680,7 @@ impl Renderer {
             // A distinct authored opacity texture must control foliage
             // cutouts. Never misinterpret a packed diffuse alpha channel
             // (which may be gloss or specular) as vegetation coverage.
-            let mask_key = (surf.opacity.as_ref().map_or(0, |img| Arc::as_ptr(img) as usize), 1);
+            let mask_key = (surf.opacity.as_ref().map_or(0, |img| Arc::as_ptr(img) as usize), 1, false);
             let (opacity_tex, opacity_view) = if let Some((tex, view)) = cache.get(&mask_key) {
                 (tex.clone(), view.clone())
             } else {
