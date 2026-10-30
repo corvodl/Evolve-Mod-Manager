@@ -225,6 +225,8 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 shift: state.keyboard_modifiers.shift(),
                 level_camera: state.level_camera,
                 world: state.level_world.clone(),
+                level_hour: state.level_time_of_day,
+                level_full_textures: state.level_full_textures,
             },
         })
         .width(Fill)
