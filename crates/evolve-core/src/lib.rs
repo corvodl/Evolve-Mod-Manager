@@ -107,8 +107,10 @@ pub use library_build_updates::{
     scan_library_build_updates,
 };
 pub use library_catalog::{
-    ImportedLibrary, ImportedPak, LibraryError, LibraryReference, LibraryReferenceStatus,
-    describe_archive, imported_archive_files, imported_library, resolve_imported_reference,
+    ImportedLibrary, ImportedLookupGuard, ImportedPak, LibraryError, LibraryReference,
+    LibraryReferenceStatus, begin_imported_lookup_session, describe_archive,
+    imported_archive_files, imported_archive_preview_inventory, imported_library,
+    resolve_imported_reference,
 };
 pub use library_import::{
     LibraryBatchImportReport, LibraryImportFailure, LibraryImportPlan, LibraryImportReport,

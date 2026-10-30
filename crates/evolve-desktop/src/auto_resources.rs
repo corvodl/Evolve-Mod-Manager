@@ -36,11 +36,22 @@ pub(crate) fn exact(
     match resolve_virtual(inv, virtual_name) {
         AssetResolution::Found(relative) => {
             let root = std::fs::canonicalize(&inv.root).map_err(|e| e.to_string())?;
-            let file = PathBuf::from(&inv.root).join(relative);
+            let file = PathBuf::from(&inv.root).join(&relative);
             let meta = std::fs::symlink_metadata(&file).map_err(|e| e.to_string())?;
             let canonical = std::fs::canonicalize(&file).map_err(|e| e.to_string())?;
-            if !meta.file_type().is_file() || !canonical.starts_with(root) {
-                return Err(format!("Unsafe indexed asset: {virtual_name}"));
+            // Read-only preview inventories may defer checks on unrelated
+            // members. Verify the actual requested member against its manifest
+            // byte length as well as canonical path before opening it.
+            let expected = inv
+                .entries
+                .iter()
+                .find(|entry| entry.relative_path == relative)
+                .map(|entry| entry.byte_size);
+            if !meta.file_type().is_file()
+                || !canonical.starts_with(root)
+                || expected != Some(meta.len())
+            {
+                return Err(format!("Unsafe or modified indexed asset: {virtual_name}"));
             }
             Ok(Some(canonical))
         }
