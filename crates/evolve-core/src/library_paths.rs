@@ -5,10 +5,10 @@
 /// Remove only known Windows verbatim drive/UNC transport prefixes. Device
 /// namespaces (such as \\.\ or \\?\Volume{...}) are deliberately untouched.
 pub fn ordinary_path(value: &str) -> String {
-    if let Some(tail) = value.strip_prefix(r"\\?\UNC\") {
-        if !tail.is_empty() {
-            return format!(r"\\{tail}");
-        }
+    if let Some(tail) = value.strip_prefix(r"\\?\UNC\")
+        && !tail.is_empty()
+    {
+        return format!(r"\\{tail}");
     }
     if let Some(tail) = value.strip_prefix(r"\\?\") {
         let bytes = tail.as_bytes();

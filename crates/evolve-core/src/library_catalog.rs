@@ -351,9 +351,11 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
             manifest.name.to_ascii_lowercase(),
             manifest.source_sha256.to_ascii_lowercase(),
         );
-        if key.2.len() == 64 && key.2.bytes().all(|b| b.is_ascii_hexdigit()) {
-            if let Some(&previous) = identical_sources.get(&key) {
-                let candidate = &mut archives[previous];
+        if key.2.len() == 64
+            && key.2.bytes().all(|b| b.is_ascii_hexdigit())
+            && let Some(&previous) = identical_sources.get(&key)
+        {
+            let candidate = &mut archives[previous];
                 if candidate.entries == manifest.entries.len()
                     && candidate.extracted_bytes == manifest.extracted_bytes
                 {
@@ -364,7 +366,6 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
                     candidate.builds.dedup();
                     continue;
                 }
-            }
         }
         let (group, description) = describe_archive(&manifest.name);
         total_bytes = total_bytes.saturating_add(manifest.extracted_bytes);

@@ -1023,9 +1023,10 @@ pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>
     let registrations = migrate_registry(&library, &all)?;
     let catalog = imported_library(&library).map_err(|e| e.to_string())?;
     let mut builds = Vec::new();
-    if let Some(legacy) = legacy_collection_document(&library)? {
-        if let Some(groups) = legacy["builds"].as_object() {
-            for (id, group) in groups {
+    if let Some(legacy) = legacy_collection_document(&library)?
+        && let Some(groups) = legacy["builds"].as_object()
+    {
+        for (id, group) in groups {
                 if id == "unassigned" {
                     continue;
                 }
@@ -1048,7 +1049,6 @@ pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>
                     reclaimable_paks: 0,
                     reclaimable_bytes: 0,
                 });
-            }
         }
     }
     for (id, snapshots) in &all {
