@@ -845,7 +845,10 @@ fn resolve_imported_reference_scoped(
         .into_iter()
         .find(|group| !group.is_empty())
         .unwrap_or_default();
-    Ok(resolve_verified_duplicate_textures(hits, build_label.is_some()))
+    Ok(resolve_verified_duplicate_textures(
+        hits,
+        build_label.is_some(),
+    ))
 }
 
 #[cfg(test)]
@@ -900,29 +903,38 @@ mod tests {
             absolute_path: file.to_string_lossy().into_owned(),
         };
         assert!(matches!(
-            resolve_verified_duplicate_textures(vec![
-                hit("a", "objects/a.dds", &a),
-                hit("b", "objects/b.dds", &b)
-            ], true),
+            resolve_verified_duplicate_textures(
+                vec![hit("a", "objects/a.dds", &a), hit("b", "objects/b.dds", &b)],
+                true
+            ),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         assert!(matches!(
-            resolve_verified_duplicate_textures(vec![
-                hit("a", "objects/tree.mtl", &a),
-                hit("b", "objects/tree.mtl", &b)
-            ], true),
+            resolve_verified_duplicate_textures(
+                vec![
+                    hit("a", "objects/tree.mtl", &a),
+                    hit("b", "objects/tree.mtl", &b)
+                ],
+                true
+            ),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         assert!(matches!(
-            resolve_verified_duplicate_textures(vec![
-                hit("a", "objects/tree.dds.0", &a),
-                hit("b", "objects/tree.dds.0", &b)
-            ], false),
+            resolve_verified_duplicate_textures(
+                vec![
+                    hit("a", "objects/tree.dds.0", &a),
+                    hit("b", "objects/tree.dds.0", &b)
+                ],
+                false
+            ),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         let duplicate = hit("a", "objects/tree.dds.0", &a);
         assert!(matches!(
-            resolve_verified_duplicate_textures(vec![duplicate; MAX_IDENTICAL_TEXTURE_COPIES + 1], true),
+            resolve_verified_duplicate_textures(
+                vec![duplicate; MAX_IDENTICAL_TEXTURE_COPIES + 1],
+                true
+            ),
             LibraryReferenceStatus::Ambiguous(_)
         ));
     }
