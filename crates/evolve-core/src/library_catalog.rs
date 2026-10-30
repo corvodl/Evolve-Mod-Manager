@@ -3,7 +3,8 @@
 //! files or an assertion that the imported files are still byte-for-byte valid.
 use crate::archive::safe_member_name;
 use crate::inventory::{AssetEntry, Inventory, classify_path};
-use crate::library_paths::ordinary_path;
+use crate::library_paths::{ordinary_path, source_path_key};
+use crate::library_build_updates::registered_build_name;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -69,6 +70,8 @@ struct Manifest {
     version: u32,
     name: String,
     source: String,
+    #[serde(default)]
+    source_sha256: String,
     #[serde(default)]
     extracted_bytes: u64,
     #[serde(default)]
@@ -250,17 +253,20 @@ fn manifests_by_build(root: &Path) -> Result<HashMap<String, Vec<String>>, Libra
                 .split(['/', '\\'])
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>();
+            let identity_key = source_path_key(root_path);
+            let logical_id = format!("{:x}", Sha256::digest(identity_key.as_bytes()))[..24].to_owned();
+            let friendly = registered_build_name(root, &logical_id);
             let label = format!(
                 "{} [{}]",
-                chunks
+                friendly.unwrap_or_else(|| chunks
                     .iter()
                     .rev()
                     .take(3)
                     .rev()
                     .copied()
                     .collect::<Vec<_>>()
-                    .join("/"),
-                &id[..8]
+                    .join("/")),
+                &logical_id[..8]
             );
             for member in members.values() {
                 if let Some(archive_id) = member["archive_id"].as_str()
@@ -294,6 +300,7 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
     let mut archives = Vec::new();
     let mut ignored = 0usize;
     let mut total_bytes = 0u64;
+    let mut identical_sources = HashMap::<(String, String, String), usize>::new();
     let mut dirs: Vec<_> = fs::read_dir(&root)?.collect::<Result<_, _>>()?;
     if dirs.len() > MAX_ARCHIVES + 40 {
         return Err(LibraryError::Limit);
@@ -334,8 +341,31 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
             ignored += 1;
             continue;
         }
+        // Legacy imports may have been registered twice because canonical
+        // Windows paths acquired a \\?\ prefix. Retain both extracted copies
+        // on disk; list one verified content identity, merging its build labels.
+        // Different source PAK bytes or member inventories never coalesce.
+        let key = (
+            source_path_key(&manifest.source),
+            manifest.name.to_ascii_lowercase(),
+            manifest.source_sha256.to_ascii_lowercase(),
+        );
+        if key.2.len() == 64 && key.2.bytes().all(|b| b.is_ascii_hexdigit()) {
+            if let Some(&previous) = identical_sources.get(&key) {
+                let candidate = &mut archives[previous];
+                if candidate.entries == manifest.entries.len()
+                    && candidate.extracted_bytes == manifest.extracted_bytes
+                {
+                    candidate.builds.extend(owners.get(id).cloned().unwrap_or_default());
+                    candidate.builds.sort();
+                    candidate.builds.dedup();
+                    continue;
+                }
+            }
+        }
         let (group, description) = describe_archive(&manifest.name);
         total_bytes = total_bytes.saturating_add(manifest.extracted_bytes);
+        let next_index = archives.len();
         archives.push(ImportedPak {
             id: id.into(),
             name: manifest.name,
@@ -348,6 +378,9 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
             warnings: manifest.warnings.len(),
             builds: owners.get(id).cloned().unwrap_or_default(),
         });
+        if key.2.len() == 64 && key.2.bytes().all(|b| b.is_ascii_hexdigit()) {
+            identical_sources.entry(key).or_insert(next_index);
+        }
     }
     archives.sort_by(|a, b| {
         a.group
