@@ -4,8 +4,252 @@
 use crate::{level_camera, textured::Surface};
 use evolve_core::{RenderMesh, Transform};
 use iced::wgpu;
-use iced::wgpu::util::{DeviceExt, TextureDataOrder};
+use iced::wgpu::util::DeviceExt;
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+// Ordinary world-model diffuse textures are limited to 32 MiB so one map
+// cannot flood GPU memory with hundreds of oversized props. Baked ground
+// color is a single, verified atlas: the original Ice_Crashsite layout is
+// 4096×4096 RGBA8 (64 MiB), which must NOT silently fall back to gray.
+const MAX_WORLD_DIFFUSE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_TERRAIN_ATLAS_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_FULL_TEXTURE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_SCENE_FULL_TEXTURE_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_SCENE_BALANCED_TEXTURE_BYTES: u64 = 384 * 1024 * 1024;
+
+// A shared source Arc must produce only one GPU texture per role, even when
+// dozens of original meshes/material slots use it. Cache lifetime is one
+// imported scene; never retain a source pointer beyond that scene.
+type TextureCache = HashMap<(usize, u8, bool), (wgpu::Texture, wgpu::TextureView)>;
+
+/// Choose a size within the device and the per-material upload budget.
+/// Non-terrain 4K DDS assets must retain their colors and alpha mask; a
+/// bounded downscale is safer than substituting an opaque 1×1 fallback.
+#[cfg(test)]
+fn upload_dimensions(width: u32, height: u32, ground: bool, gpu_max: u32) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 || gpu_max == 0 {
+        return None;
+    }
+    let cap = if ground {
+        MAX_TERRAIN_ATLAS_BYTES
+    } else {
+        MAX_WORLD_DIFFUSE_BYTES
+    };
+    let (mut w, mut h) = (width, height);
+    while w > gpu_max || h > gpu_max || u64::from(w) * u64::from(h) * 4 > cap {
+        if w == 1 && h == 1 {
+            return None;
+        }
+        w = w.div_ceil(2);
+        h = h.div_ceil(2);
+    }
+    Some((w, h))
+}
+
+#[cfg(test)]
+fn gpu_diffuse<'a>(
+    img: &'a image::RgbaImage,
+    ground: bool,
+    gpu_max: u32,
+) -> Option<Cow<'a, image::RgbaImage>> {
+    let dims = upload_dimensions(img.width(), img.height(), ground, gpu_max)?;
+    if dims == img.dimensions() {
+        Some(Cow::Borrowed(img))
+    } else {
+        Some(Cow::Owned(image::imageops::resize(
+            img,
+            dims.0,
+            dims.1,
+            image::imageops::FilterType::Triangle,
+        )))
+    }
+}
+
+fn full_quality_dimensions(
+    width: u32,
+    height: u32,
+    ground: bool,
+    gpu_max: u32,
+    full: bool,
+    remaining: u64,
+) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 || gpu_max == 0 || remaining < 4 {
+        return None;
+    }
+    let cap = if ground {
+        MAX_TERRAIN_ATLAS_BYTES
+    } else if full {
+        MAX_FULL_TEXTURE_BYTES
+    } else {
+        MAX_WORLD_DIFFUSE_BYTES
+    }
+    .min(remaining);
+    let (mut w, mut h) = (width, height);
+    while w > gpu_max || h > gpu_max || u64::from(w) * u64::from(h) * 4 > cap {
+        if w == 1 && h == 1 {
+            return None;
+        }
+        w = w.div_ceil(2);
+        h = h.div_ceil(2);
+    }
+    Some((w, h))
+}
+
+fn gpu_diffuse_quality<'a>(
+    img: &'a image::RgbaImage,
+    ground: bool,
+    gpu_max: u32,
+    full: bool,
+    remaining: u64,
+) -> Option<Cow<'a, image::RgbaImage>> {
+    let dims =
+        full_quality_dimensions(img.width(), img.height(), ground, gpu_max, full, remaining)?;
+    if dims == img.dimensions() {
+        Some(Cow::Borrowed(img))
+    } else {
+        Some(Cow::Owned(image::imageops::resize(
+            img,
+            dims.0,
+            dims.1,
+            image::imageops::FilterType::Triangle,
+        )))
+    }
+}
+
+fn mip_chain_bytes(mut width: u32, mut height: u32) -> u64 {
+    let mut total = 0u64;
+    loop {
+        total = total.saturating_add(u64::from(width) * u64::from(height) * 4);
+        if width == 1 && height == 1 {
+            break;
+        }
+        width = (width / 2).max(1);
+        height = (height / 2).max(1);
+    }
+    total
+}
+
+fn upload_rgba_mips(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    source: Option<&image::RgbaImage>,
+    fallback: [u8; 4],
+    format: wgpu::TextureFormat,
+    label: &'static str,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let (width, height) = source.map_or((1, 1), image::RgbaImage::dimensions);
+    let mip_count = width.max(height).ilog2() + 1;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: mip_count,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let mut current = source.map(Cow::Borrowed);
+    for level in 0..mip_count {
+        let w = (width >> level).max(1);
+        let h = (height >> level).max(1);
+        let pixels = current
+            .as_ref()
+            .map_or(fallback.as_slice(), |img| img.as_raw());
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        if level + 1 < mip_count
+            && let Some(img) = current.as_ref()
+        {
+            current = Some(Cow::Owned(image::imageops::resize(
+                img.as_ref(),
+                (w / 2).max(1),
+                (h / 2).max(1),
+                image::imageops::FilterType::Triangle,
+            )));
+        }
+    }
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+/// Bounded, source-verified auxiliary MTL maps (normal/specular/gloss/emissive).
+/// Original decoded Arc texture data is shared between world meshes. When a
+/// GPU limit is reached the exact neutral fallback is used, never an unrelated
+/// texture from a different game build.
+#[allow(clippy::too_many_arguments)]
+fn auxiliary_map(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    source: Option<&Arc<image::RgbaImage>>,
+    role: u8,
+    fallback: [u8; 4],
+    format: wgpu::TextureFormat,
+    label: &'static str,
+    full_textures: bool,
+    device_limit: u32,
+    cache: &mut TextureCache,
+    used_bytes: &mut u64,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let key = (
+        source.map_or(0, |img| Arc::as_ptr(img) as usize),
+        role,
+        false,
+    );
+    if let Some((texture, view)) = cache.get(&key) {
+        return (texture.clone(), view.clone());
+    }
+    let remaining = (if full_textures {
+        MAX_SCENE_FULL_TEXTURE_BYTES
+    } else {
+        MAX_SCENE_BALANCED_TEXTURE_BYTES
+    })
+    .saturating_sub(*used_bytes);
+    let selected = source.and_then(|img| {
+        gpu_diffuse_quality(
+            img,
+            false,
+            device_limit,
+            full_textures,
+            remaining.saturating_mul(3) / 4,
+        )
+    });
+    let (w, h) = selected.as_ref().map_or((1, 1), |img| img.dimensions());
+    let (texture, view) =
+        upload_rgba_mips(device, queue, selected.as_deref(), fallback, format, label);
+    if selected.is_some() {
+        *used_bytes = used_bytes.saturating_add(mip_chain_bytes(w, h));
+    }
+    cache.insert(key, (texture.clone(), view.clone()));
+    (texture, view)
+}
+
+fn is_ground(group: &ModelGroup) -> bool {
+    group.instances.len() == 1 && group.instances[0].object_index == usize::MAX
+}
 
 #[derive(Clone)]
 pub(super) struct ModelGroup {
@@ -23,6 +267,8 @@ pub(super) struct Instance {
 pub(super) struct World {
     pub groups: Vec<ModelGroup>,
     pub instance_count: usize,
+    pub time_of_day: Option<Arc<super::level_environment::TimeOfDay>>,
+    pub source_resources: super::level_environment::ResourceSummary,
 }
 impl std::fmt::Debug for World {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -273,6 +519,10 @@ struct GpuSurface {
     bind: wgpu::BindGroup,
     _image: wgpu::Texture,
     _opacity_image: wgpu::Texture,
+    _normal_image: wgpu::Texture,
+    _specular_image: wgpu::Texture,
+    _gloss_image: wgpu::Texture,
+    _emissive_image: wgpu::Texture,
     _alpha_uniform: wgpu::Buffer,
 }
 struct GpuGroup {
@@ -289,15 +539,19 @@ pub(super) struct Renderer {
     transparent: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     camera_uniform: wgpu::Buffer,
+    lighting_uniform: wgpu::Buffer,
+    last_lighting_hour: f32,
     sampler: wgpu::Sampler,
+    terrain_sampler: wgpu::Sampler,
     world_identity: usize,
+    last_full_textures: bool,
     groups: Vec<GpuGroup>,
     last_camera: Option<CameraGpu>,
 }
 impl Renderer {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Original level model diffuse bindings"),
+            label: Some("Original level full source material bindings"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -345,6 +599,59 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Source normal, specular, gloss and emissive textures.
+                // Keep all four in linear space where encoded data demands it;
+                // colors use sRGB decoding when uploaded in the GPU helper.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let camera_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -353,11 +660,27 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let lighting_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Level time-of-day lighting preview"),
+            contents: bytemuck::cast_slice(&super::level_lighting::Lighting::at(12.0).uniforms()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        // Baked terrain UVs are normalized across the entire map: an edge
+        // at exactly 1.0 must not repeat the opposite side of the atlas.
+        let terrain_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -432,13 +755,25 @@ impl Renderer {
             transparent: make(true, false),
             layout,
             camera_uniform,
+            lighting_uniform,
+            last_lighting_hour: f32::NAN,
             sampler,
+            terrain_sampler,
             world_identity: 0,
+            last_full_textures: true,
             groups: Vec::new(),
             last_camera: None,
         }
     }
-    fn group(&self, device: &wgpu::Device, queue: &wgpu::Queue, model: &ModelGroup) -> GpuGroup {
+    fn group(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        model: &ModelGroup,
+        full_textures: bool,
+        cache: &mut TextureCache,
+        used_bytes: &mut u64,
+    ) -> GpuGroup {
         let vert: Vec<Vertex> = model
             .mesh
             .positions
@@ -453,13 +788,16 @@ impl Renderer {
                     .and_then(|s| s.get(i))
                     .copied()
                     .unwrap_or([0.0; 2]),
+                // Zero explicitly requests geometric face-normal recovery in
+                // WGSL when a compiled mesh contains no usable normal stream.
                 normal: model
                     .mesh
                     .normals
                     .as_ref()
                     .and_then(|s| s.get(i))
                     .copied()
-                    .unwrap_or([0.0, 0.0, 1.0]),
+                    .filter(|n| n.iter().all(|component| component.is_finite()))
+                    .unwrap_or([0.0; 3]),
             })
             .collect();
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -481,6 +819,8 @@ impl Renderer {
         });
         let mut surfaces = Vec::new();
         let fallback = [210u8, 205, 205, 255];
+        let terrain = is_ground(model);
+        let limit_2d = device.limits().max_texture_dimension_2d;
         for surf in &model.surfaces {
             if !surf.visible
                 || surf.index_count == 0
@@ -488,67 +828,150 @@ impl Renderer {
             {
                 continue;
             }
-            let source = surf
-                .diffuse
-                .as_ref()
-                .filter(|img| (img.width() as u64) * (img.height() as u64) * 4 <= 32 * 1024 * 1024);
-            let (w, h, bytes) = source
-                .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
-                .unwrap_or((1, 1, &fallback[..]));
-            let tex = device.create_texture_with_data(
-                queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("Original world-model diffuse DDS"),
-                    size: wgpu::Extent3d {
-                        width: w,
-                        height: h,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                },
-                TextureDataOrder::LayerMajor,
-                bytes,
+            let key = (
+                surf.diffuse
+                    .as_ref()
+                    .map_or(0, |img| Arc::as_ptr(img) as usize),
+                0,
+                terrain,
             );
-            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let (tex, view, diffuse_uploaded) = if let Some((tex, view)) = cache.get(&key) {
+                (tex.clone(), view.clone(), key.0 != 0)
+            } else {
+                let remaining = (if full_textures {
+                    MAX_SCENE_FULL_TEXTURE_BYTES
+                } else {
+                    MAX_SCENE_BALANCED_TEXTURE_BYTES
+                })
+                .saturating_sub(*used_bytes);
+                let source = surf.diffuse.as_ref().and_then(|img| {
+                    gpu_diffuse_quality(
+                        img,
+                        terrain,
+                        limit_2d,
+                        full_textures,
+                        remaining.saturating_mul(3) / 4,
+                    )
+                });
+                let (w, h) = source.as_ref().map_or((1, 1), |img| img.dimensions());
+                let (tex, view) = upload_rgba_mips(
+                    device,
+                    queue,
+                    source.as_deref(),
+                    fallback,
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "Original diffuse / baked ground atlas",
+                );
+                if source.is_some() {
+                    *used_bytes = used_bytes.saturating_add(mip_chain_bytes(w, h));
+                }
+                cache.insert(key, (tex.clone(), view.clone()));
+                (tex, view, source.is_some())
+            };
             // A distinct authored opacity texture must control foliage
             // cutouts. Never misinterpret a packed diffuse alpha channel
             // (which may be gloss or specular) as vegetation coverage.
-            let opaque = [255u8, 255, 255, 255];
-            let mask = surf
-                .opacity
-                .as_ref()
-                .filter(|img| (img.width() as u64) * (img.height() as u64) * 4 <= 32 * 1024 * 1024);
-            let (mw, mh, mask_bytes) = mask
-                .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
-                .unwrap_or((1, 1, &opaque[..]));
-            let opacity_tex = device.create_texture_with_data(
-                queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("Exact original CryEngine opacity / vegetation coverage"),
-                    size: wgpu::Extent3d {
-                        width: mw,
-                        height: mh,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                },
-                TextureDataOrder::LayerMajor,
-                mask_bytes,
+            let mask_key = (
+                surf.opacity
+                    .as_ref()
+                    .map_or(0, |img| Arc::as_ptr(img) as usize),
+                1,
+                false,
             );
-            let opacity_view = opacity_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let (opacity_tex, opacity_view) = if let Some((tex, view)) = cache.get(&mask_key) {
+                (tex.clone(), view.clone())
+            } else {
+                let opaque = [255u8, 255, 255, 255];
+                let remaining = (if full_textures {
+                    MAX_SCENE_FULL_TEXTURE_BYTES
+                } else {
+                    MAX_SCENE_BALANCED_TEXTURE_BYTES
+                })
+                .saturating_sub(*used_bytes);
+                let mask = surf.opacity.as_ref().and_then(|img| {
+                    gpu_diffuse_quality(
+                        img,
+                        false,
+                        limit_2d,
+                        full_textures,
+                        remaining.saturating_mul(3) / 4,
+                    )
+                });
+                let (mw, mh) = mask.as_ref().map_or((1, 1), |img| img.dimensions());
+                let (opacity_tex, view) = upload_rgba_mips(
+                    device,
+                    queue,
+                    mask.as_deref(),
+                    opaque,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    "Original authored opacity mask",
+                );
+                if mask.is_some() {
+                    *used_bytes = used_bytes.saturating_add(mip_chain_bytes(mw, mh));
+                }
+                cache.insert(mask_key, (opacity_tex.clone(), view.clone()));
+                (opacity_tex, view)
+            };
+            let (normal_tex, normal_view) = auxiliary_map(
+                device,
+                queue,
+                surf.normal.as_ref(),
+                2,
+                [128, 128, 255, 255],
+                wgpu::TextureFormat::Rgba8Unorm,
+                "Original linear BC5 normal",
+                full_textures,
+                limit_2d,
+                cache,
+                used_bytes,
+            );
+            let (specular_tex, specular_view) = auxiliary_map(
+                device,
+                queue,
+                surf.specular.as_ref(),
+                3,
+                [0, 0, 0, 255],
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                "Original specular reflectance",
+                full_textures,
+                limit_2d,
+                cache,
+                used_bytes,
+            );
+            let (gloss_tex, gloss_view) = auxiliary_map(
+                device,
+                queue,
+                surf.gloss.as_ref(),
+                4,
+                [128, 128, 128, 255],
+                wgpu::TextureFormat::Rgba8Unorm,
+                "Original gloss smoothness",
+                full_textures,
+                limit_2d,
+                cache,
+                used_bytes,
+            );
+            let (emissive_tex, emissive_view) = auxiliary_map(
+                device,
+                queue,
+                surf.emissive.as_ref(),
+                5,
+                [0, 0, 0, 255],
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                "Original emissive color",
+                full_textures,
+                limit_2d,
+                cache,
+                used_bytes,
+            );
             let alpha_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Authored per-material Vegetation AlphaTest"),
-                contents: bytemuck::cast_slice(&[surf.alpha_cutoff.clamp(0.0, 1.0), 0.0, 0.0, 0.0]),
+                contents: bytemuck::cast_slice(&[
+                    surf.alpha_cutoff.clamp(0.0, 1.0),
+                    surf.emission_strength.clamp(0.0, 30.0),
+                    if surf.normal.is_some() { 1.0 } else { 0.0 },
+                    0.0,
+                ]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
             let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -561,7 +984,11 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        resource: wgpu::BindingResource::Sampler(if terrain {
+                            &self.terrain_sampler
+                        } else {
+                            &self.sampler
+                        }),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -575,16 +1002,40 @@ impl Renderer {
                         binding: 4,
                         resource: alpha_uniform.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: self.lighting_uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&normal_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(&specular_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(&gloss_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: wgpu::BindingResource::TextureView(&emissive_view),
+                    },
                 ],
             });
             surfaces.push(GpuSurface {
                 first: surf.first_index,
                 count: surf.index_count,
                 transparent: surf.transparent,
-                foliage_cutout: surf.foliage_cutout && source.is_some(),
+                foliage_cutout: surf.foliage_cutout && diffuse_uploaded,
                 bind,
                 _image: tex,
                 _opacity_image: opacity_tex,
+                _normal_image: normal_tex,
+                _specular_image: specular_tex,
+                _gloss_image: gloss_tex,
+                _emissive_image: emissive_tex,
                 _alpha_uniform: alpha_uniform,
             });
         }
@@ -612,6 +1063,8 @@ impl Renderer {
         pitch: f32,
         aspect: f32,
         zoom: f32,
+        hour: f32,
+        full_textures: bool,
     ) {
         let Some(world) = world else {
             self.groups.clear();
@@ -620,14 +1073,32 @@ impl Renderer {
             return;
         };
         let key = Arc::as_ptr(world) as usize;
-        if key != self.world_identity {
+        if key != self.world_identity || self.last_full_textures != full_textures {
+            let mut cache = TextureCache::new();
+            let mut used_bytes = 0u64;
             self.groups = world
                 .groups
                 .iter()
-                .map(|g| self.group(device, queue, g))
+                .map(|g| self.group(device, queue, g, full_textures, &mut cache, &mut used_bytes))
                 .collect();
             self.world_identity = key;
+            self.last_full_textures = full_textures;
             self.last_camera = None;
+            self.last_lighting_hour = f32::NAN;
+        }
+        let hour = if hour.is_finite() {
+            hour.clamp(0.0, 24.0)
+        } else {
+            12.0
+        };
+        if self.last_lighting_hour != hour {
+            let lighting = world.time_of_day.as_ref().map_or_else(
+                || super::level_lighting::Lighting::at(hour),
+                |profile| super::level_lighting::Lighting::from_original(hour, profile),
+            );
+            let values = lighting.uniforms();
+            queue.write_buffer(&self.lighting_uniform, 0, bytemuck::cast_slice(&values));
+            self.last_lighting_hour = hour;
         }
         let Some(camera) = camera else {
             return;
@@ -695,17 +1166,154 @@ mod tests {
         assert!(shader.contains("let color=shade(input,false);"));
         // Explicitly transparent materials still use authored coverage.
         assert!(shader.contains("fn fs_main(input:Output)"));
-        assert!(shader.contains("return shade(input,true);"));
+        assert!(shader.contains("return vec4<f32>(color.rgb,color.a*alpha);"));
         let pipeline_source = include_str!("world_instances.rs");
         // Search only production code; searching this entire file would let
         // the assertion's own string literal create a false positive.
-        let production = pipeline_source.split("#[cfg(test)]").next().unwrap();
+        let production = pipeline_source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap();
         assert!(production.contains("entry_point: Some(if cutout {"));
         assert!(production.contains("\"fs_foliage\""));
         assert!(production.contains("foliage_cutout: make(false, true)"));
         assert!(production.contains("blend: if blend {"));
         assert!(production.contains("depth_write_enabled: !blend"));
-        assert!(production.contains("foliage_cutout: surf.foliage_cutout && source.is_some()"));
+        assert!(production.contains("foliage_cutout: surf.foliage_cutout && diffuse_uploaded"));
+        assert!(shader.contains("@group(0) @binding(5) var<uniform> light"));
+        let module = naga::front::wgsl::parse_str(shader)
+            .expect("time-of-day world shader must parse as WGSL");
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_opaque")
+        );
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_foliage")
+        );
+    }
+
+    #[test]
+    fn world_material_shader_uses_original_bump_specular_gloss_and_emittance() {
+        let shader = include_str!("world_instances.wgsl");
+        for source in ["normal_map", "specular_map", "gloss_map", "emissive_map"] {
+            assert!(shader.contains(source));
+        }
+        assert!(shader.contains("cross(b,c)"));
+        assert!(shader.contains("let face_normal = cross(dpdx(input.world), dpdy(input.world));"));
+        let rust = include_str!("world_instances.rs");
+        for field in [
+            "surf.normal.as_ref()",
+            "surf.specular.as_ref()",
+            "surf.gloss.as_ref()",
+            "surf.emissive.as_ref()",
+        ] {
+            assert!(rust.contains(field));
+        }
+        naga::front::wgsl::parse_str(shader).expect("full-source world material WGSL");
+    }
+    #[test]
+    fn baked_terrain_atlas_is_not_silently_replaced_by_32mb_world_cap() {
+        assert_eq!(MAX_TERRAIN_ATLAS_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MAX_WORLD_DIFFUSE_BYTES, 32 * 1024 * 1024);
+        assert_eq!(
+            upload_dimensions(4096, 4096, true, 4096),
+            Some((4096, 4096))
+        );
+        assert_eq!(
+            upload_dimensions(4096, 4096, false, 4096),
+            Some((2048, 2048))
+        );
+        assert_eq!(
+            upload_dimensions(4096, 4096, true, 2048),
+            Some((2048, 2048))
+        );
+    }
+
+    #[test]
+    fn oversized_valid_model_texture_is_downscaled_not_discarded() {
+        assert_eq!(
+            upload_dimensions(4096, 4096, false, 4096),
+            Some((2048, 2048))
+        );
+        assert_eq!(
+            upload_dimensions(4096, 4096, true, 4096),
+            Some((4096, 4096))
+        );
+        assert_eq!(
+            upload_dimensions(2048, 2048, true, 1024),
+            Some((1024, 1024))
+        );
+        let mut card = image::RgbaImage::from_pixel(64, 64, image::Rgba([3, 9, 15, 0]));
+        card.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let decoded = gpu_diffuse(&card, false, 32).unwrap();
+        assert_eq!(decoded.dimensions(), (32, 32));
+        assert!(decoded.pixels().any(|px| px[3] < 255));
+        assert!(decoded.pixels().any(|px| px[3] > 0));
+    }
+
+    #[test]
+    fn mipmaps_are_bounded_and_accounted_for_in_shared_texture_budget() {
+        assert_eq!(mip_chain_bytes(1, 1), 4);
+        assert_eq!(mip_chain_bytes(4, 4), 64 + 16 + 4);
+        assert!(mip_chain_bytes(4096, 4096) < 90 * 1024 * 1024);
+        assert!(mip_chain_bytes(4096, 4096) > 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn full_quality_retains_original_4096_model_textures_and_bounds_scene_budget() {
+        assert_eq!(
+            full_quality_dimensions(4096, 4096, false, 8192, true, 256 * 1024 * 1024),
+            Some((4096, 4096))
+        );
+        assert_eq!(
+            full_quality_dimensions(4096, 4096, false, 8192, false, 256 * 1024 * 1024),
+            Some((2048, 2048))
+        );
+        assert_eq!(
+            full_quality_dimensions(4096, 4096, false, 8192, true, 4 * 1024 * 1024),
+            Some((1024, 1024))
+        );
+        assert_eq!(
+            full_quality_dimensions(4096, 4096, false, 2048, true, 256 * 1024 * 1024),
+            Some((2048, 2048))
+        );
+        assert!(full_quality_dimensions(4096, 4096, false, 8192, true, 0).is_none());
+    }
+
+    #[test]
+    fn terrain_is_identified_by_nonselectable_ground_instance_not_asset_name() {
+        let mesh = Arc::new(RenderMesh {
+            info: evolve_core::ModelInfo {
+                format: "test".into(),
+                version: 1,
+                chunk_count: 0,
+                vertex_count: 0,
+                triangle_count: 0,
+                original_uv0: true,
+                original_normals: true,
+            },
+            positions: Vec::new(),
+            indices: Vec::new(),
+            uv0: None,
+            normals: None,
+        });
+        let mut group = ModelGroup {
+            mesh,
+            surfaces: Vec::new(),
+            instances: vec![Instance {
+                object_index: usize::MAX,
+                transform: Transform::default(),
+            }],
+            radius: 0.0,
+        };
+        assert!(is_ground(&group));
+        group.instances[0].object_index = 0;
+        assert!(!is_ground(&group));
     }
 
     #[test]

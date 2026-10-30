@@ -335,9 +335,80 @@ pub fn parse_level_scene(layers: &[(&str, &[u8])]) -> Result<LevelScene, SceneEr
             }
         }
     }
+    resolve_placements(objects, &HashSet::new())
+}
+
+/// Read-only recovery is deliberately separate from the strict editing
+/// parser. Identical cross-layer GUID duplicates are harmless replicated
+/// declarations; conflicting duplicates retain only the first source-order
+/// placement, and no parent is ever resolved *through* an ambiguous GUID.
+/// All unique placements are then transformed against the combined cross-layer
+/// hierarchy, unlike per-layer parsing which loses valid parent transforms.
+#[derive(Debug)]
+pub struct ReadOnlySceneRecovery {
+    pub scene: LevelScene,
+    pub duplicate_declarations: usize,
+    pub conflicting_guids: usize,
+}
+
+pub fn parse_level_scene_read_only(
+    layers: &[(&str, &[u8])],
+) -> Result<ReadOnlySceneRecovery, SceneError> {
+    if layers.is_empty() || layers.len() > 1024 {
+        return Err(SceneError::Limits);
+    }
+    let mut objects = Vec::<PlacedObject>::new();
+    let mut seen = HashMap::<String, usize>::new();
+    let mut ambiguous = HashSet::<String>::new();
+    let mut duplicates = 0usize;
+    for (layer, data) in layers {
+        let decoded = crate::cryxml::xml_bytes(data, MAX_LAYER_BYTES)
+            .map_err(|e| SceneError::Xml(e.to_string()))?;
+        for obj in scan_placements(&decoded, layer)? {
+            if let Some(previous) = seen.get(&obj.id).copied() {
+                duplicates += 1;
+                let prior = &objects[previous];
+                if prior.parent != obj.parent
+                    || prior.name != obj.name
+                    || prior.kind != obj.kind
+                    || prior.model != obj.model
+                    || prior.material != obj.material
+                    || prior.hidden != obj.hidden
+                    || prior.local != obj.local
+                {
+                    ambiguous.insert(obj.id);
+                }
+            } else {
+                seen.insert(obj.id.clone(), objects.len());
+                objects.push(obj);
+                if objects.len() > MAX_OBJECTS {
+                    return Err(SceneError::Limits);
+                }
+            }
+        }
+    }
+    let mut scene = resolve_placements(objects, &ambiguous)?;
+    if duplicates > 0 {
+        scene.diagnostics.push(format!(
+            "Read-only recovery skipped {duplicates} duplicate GUID declarations ({} conflicting IDs).              Cross-layer parent transforms were recovered for uniquely identified parents;              ambiguous parents remain unresolved. Original layer XML was not modified.",
+            ambiguous.len()
+        ));
+    }
+    Ok(ReadOnlySceneRecovery {
+        scene,
+        duplicate_declarations: duplicates,
+        conflicting_guids: ambiguous.len(),
+    })
+}
+
+fn resolve_placements(
+    mut objects: Vec<PlacedObject>,
+    ambiguous: &HashSet<String>,
+) -> Result<LevelScene, SceneError> {
     let index = objects
         .iter()
         .enumerate()
+        .filter(|(_, obj)| !ambiguous.contains(&obj.id))
         .map(|(i, obj)| (obj.id.clone(), i))
         .collect::<HashMap<_, _>>();
     let mut world: Vec<Option<Transform>> = vec![None; objects.len()];
@@ -1014,6 +1085,46 @@ mod tests {
             Err(SceneError::Cycle(_))
         ));
     }
+    #[test]
+    fn read_only_duplicate_layer_recovery_keeps_cross_layer_parents() {
+        let root = br#"<Objects><Object Id="root" Name="Root" Pos="5,0,0" Geometry="Objects/root.cgf"/></Objects>"#;
+        let repeated = br#"<Objects><Object Id="root" Name="Root" Pos="5,0,0" Geometry="Objects/root.cgf"/><Object Id="child" Parent="root" Pos="1,0,0" Geometry="Objects/child.cgf"/></Objects>"#;
+        assert!(matches!(
+            parse_level_scene(&[("a.lyr", root), ("b.lyr", repeated)]),
+            Err(SceneError::DuplicateGuid(_))
+        ));
+        let result = parse_level_scene_read_only(&[("a.lyr", root), ("b.lyr", repeated)]).unwrap();
+        assert_eq!(result.duplicate_declarations, 1);
+        assert_eq!(result.conflicting_guids, 0);
+        assert_eq!(result.scene.objects.len(), 2);
+        let child = result
+            .scene
+            .objects
+            .iter()
+            .find(|obj| obj.id == "child")
+            .unwrap();
+        assert_eq!(child.world.position, [6.0, 0.0, 0.0]);
+        assert_eq!(child.parent, "root");
+    }
+
+    #[test]
+    fn conflicting_guid_never_becomes_a_trusted_parent_in_read_only_preview() {
+        let root = br#"<Objects><Object Id="root" Pos="5,0,0"/></Objects>"#;
+        let conflict = br#"<Objects><Object Id="root" Pos="100,0,0"/><Object Id="child" Parent="root" Pos="1,0,0"/></Objects>"#;
+        let result = parse_level_scene_read_only(&[("a.lyr", root), ("b.lyr", conflict)]).unwrap();
+        assert_eq!(result.conflicting_guids, 1);
+        assert_eq!(result.duplicate_declarations, 1);
+        let child = result
+            .scene
+            .objects
+            .iter()
+            .find(|obj| obj.id == "child")
+            .unwrap();
+        assert_eq!(child.world.position, [1.0, 0.0, 0.0]);
+        assert_eq!(child.status, "unresolved parent GUID");
+        assert_eq!(result.scene.objects.len(), 2);
+    }
+
     #[test]
     fn refuses_duplicate_ids_and_untrusted_xml() {
         let xml = br#"<Objects><Object Id="A"/><Object Id="a"/></Objects>"#;

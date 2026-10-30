@@ -4,6 +4,15 @@
 #[path = "png_dds_import.rs"]
 mod png_dds_import;
 
+/// Built into public builds: original Rust conversion, no private SDK dependency.
+pub(crate) fn compile_standalone_dds(
+    png: &Path,
+    output: &Path,
+    format: evolve_core::DdsFormat,
+) -> Result<evolve_core::DdsInfo, String> {
+    png_dds_import::compile_standalone(png, output, format)
+}
+
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};

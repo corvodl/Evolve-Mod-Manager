@@ -3,13 +3,14 @@
 //! Only manifest-listed files in the selected archive are used. There is no
 //! guessed global map root, automatic editing, or modification of game files.
 use crate::{
-    asset_cache::SharedCache, auto_resources, level_scene_renderer, modding_projects::ProjectRow,
+    asset_cache::SharedCache, auto_resources, level_environment, level_scene_renderer,
+    modding_projects::ProjectRow,
 };
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
-    imported_archive_preview_inventory, imported_library, parse_level_scene, read_terrain,
-    read_terrain_paint, read_terrain_rgb24_tiles, read_terrain_texture_atlas,
-    read_terrain_texture_header, scan_directory,
+    imported_archive_preview_inventory, imported_library, parse_level_scene,
+    parse_level_scene_read_only, read_terrain, read_terrain_paint, read_terrain_rgb24_tiles,
+    read_terrain_texture_atlas, read_terrain_texture_header, scan_directory,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -408,6 +409,95 @@ fn verified_source(root: &Path, relative: &Path, max_bytes: u64) -> Result<PathB
     Ok(exact)
 }
 
+// Exact, authored map owner + selected build only; no filename guessing.
+fn authored_time_of_day(
+    archive: &ImportedPak,
+    map: &MapCandidate,
+    inventory: &Inventory,
+) -> Result<Option<PathBuf>, String> {
+    let folder = map_virtual_folder(map).ok_or("Unknown original map folder")?;
+    let build = (archive.builds.len() == 1).then(|| archive.builds[0].as_str());
+    let library = build.and_then(|_| Path::new(&archive.directory).parent());
+    for name in [
+        format!("{folder}/LevelData/TimeOfDay.xml"),
+        format!("{folder}/TimeOfDay.xml"),
+    ] {
+        if let Some(path) = auto_resources::exact(inventory, &name, library, build)? {
+            return Ok(Some(path));
+        }
+    }
+    // A single map's original level.pak may contain map-relative LevelData/.
+    if source_game_root(archive).is_some_and(|game| source_map_parent(archive, &game, &folder)) {
+        for name in ["LevelData/TimeOfDay.xml", "TimeOfDay.xml"] {
+            if let Some(path) = auto_resources::exact(inventory, name, None, None)? {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn authored_fx_catalog(
+    root: &Path,
+    inventory: &Inventory,
+    scene: Option<&LevelScene>,
+) -> level_environment::ResourceSummary {
+    let mut data = level_environment::ResourceSummary {
+        emitters: scene.map_or(0, |scene| {
+            scene
+                .objects
+                .iter()
+                .filter(|obj| obj.kind.to_ascii_lowercase().contains("particle"))
+                .count()
+        }),
+        ..Default::default()
+    };
+    let mut inspected_fx = 0;
+    let mut inspected_mtl = 0;
+    for entry in &inventory.entries {
+        let lower = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
+        let is_fx = (lower.starts_with("libs/particles/") || lower.contains("/libs/particles/"))
+            && lower.ends_with(".xml");
+        if is_fx {
+            data.particle_libraries += 1;
+        }
+        if lower.ends_with(".mtl") {
+            data.material_files += 1;
+        }
+        if lower.ends_with(".cfx") {
+            data.shader_sources += 1;
+        }
+        let (tag, field) = if is_fx && inspected_fx < 32 {
+            inspected_fx += 1;
+            (b"Item".as_slice(), b"Name".as_slice())
+        } else if lower.ends_with(".mtl") && inspected_mtl < 64 {
+            inspected_mtl += 1;
+            (b"Material".as_slice(), b"Shader".as_slice())
+        } else {
+            continue;
+        };
+        if entry.byte_size > 512 * 1024 {
+            continue;
+        }
+        let Ok(file) = verified_source(root, Path::new(&entry.relative_path), 512 * 1024) else {
+            continue;
+        };
+        let Ok(source) = fs::read(file) else {
+            continue;
+        };
+        let dest = if is_fx {
+            &mut data.particle_effects
+        } else {
+            &mut data.authored_shaders
+        };
+        for item in level_environment::named_items(&source, tag, field) {
+            if dest.len() < 256 && !dest.contains(&item) {
+                dest.push(item);
+            }
+        }
+    }
+    data
+}
 fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), String> {
     // Revalidate the imported manifest and every original extracted file before
     // the editor uses a single byte.
@@ -553,6 +643,43 @@ fn open_selected(
     let index = index.min(maps.len().saturating_sub(1));
     let chosen = &maps[index];
     let mut diagnostics = Vec::new();
+    let inventory = project_inventory
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(|| imported_archive_files(&archive).map_err(|e| e.to_string()))?;
+    let original_time = match authored_time_of_day(&archive, chosen, &inventory) {
+        Ok(Some(file)) => match fs::read(file) {
+            Ok(bytes) => match level_environment::TimeOfDay::parse(&bytes) {
+                Ok(profile) => {
+                    diagnostics.push(format!(
+                        "Imported original TimeOfDay.xml: {} variables, {} keyframed curves; skipped {} out-of-day editor spline keys; {}.",
+                        profile.count(),
+                        profile.keyed_variables,
+                        profile.ignored_out_of_range_keys,
+                        profile.playback_window_description()
+                    ));
+                    Some(profile)
+                }
+                Err(reason) => {
+                    diagnostics.push(format!(
+                        "Original TimeOfDay.xml unsupported: {reason}; fallback preview."
+                    ));
+                    None
+                }
+            },
+            Err(reason) => {
+                diagnostics.push(format!("Could not read original TimeOfDay.xml: {reason}"));
+                None
+            }
+        },
+        Ok(None) => None,
+        Err(reason) => {
+            diagnostics.push(format!(
+                "Could not resolve original TimeOfDay.xml: {reason}"
+            ));
+            None
+        }
+    };
     let mut sources = Vec::<(String, Vec<u8>)>::new();
     // Keep both memory and parser work bounded. A map with more than this
     // requires an incremental scene loader rather than silent unbounded reads.
@@ -580,43 +707,56 @@ fn open_selected(
                 diagnostics.push(format!(
                     "Combined layers could not be assembled: {error}. Trying individual sources."
                 ));
-                // A cross-layer duplicate ID must not make the imported map
-                // lose every other valid layer. For a READ-ONLY preview, parse
-                // independently and union verified placements without changing
-                // source GUIDs or authoring files. Cross-layer parenting cannot
-                // be reconstructed reliably on this recovery path.
+                // An identical duplicate declaration in separate source layers
+                // should not force every layer to resolve its parents in
+                // isolation. Recover ALL unique placements into one read-only
+                // scene and resolve unambiguous cross-layer parent transforms.
+                // Conflicting IDs remain explicitly unresolved; editing still
+                // uses the strict parser and never silently rewrites GUIDs.
                 if project.is_none() {
-                    let mut recovered = LevelScene {
-                        schema: 1,
-                        objects: Vec::new(),
-                        diagnostics: Vec::new(),
-                    };
-                    let mut valid_layers = 0usize;
-                    let mut duplicate_ids = 0usize;
-                    let mut seen_ids = std::collections::HashSet::new();
-                    for (name, bytes) in &sources {
-                        match parse_level_scene(&[(name.as_str(), bytes)]) {
-                            Ok(parsed) => {
-                                valid_layers += 1;
-                                for object in parsed.objects {
-                                    if seen_ids.insert(object.id.clone()) {
-                                        recovered.objects.push(object);
-                                    } else {
-                                        duplicate_ids += 1;
+                    match parse_level_scene_read_only(&slices) {
+                        Ok(recovery) => {
+                            diagnostics.push(format!(
+                                "Read-only combined scene recovery: {} unique placements, {} repeated GUID declarations omitted ({} conflicting IDs); unambiguous cross-layer parent transforms resolved.",
+                                recovery.scene.objects.len(),
+                                recovery.duplicate_declarations,
+                                recovery.conflicting_guids,
+                            ));
+                            diagnostics.extend(recovery.scene.diagnostics.iter().take(4).cloned());
+                            scene = Some(recovery.scene);
+                        }
+                        Err(recovery_error) => {
+                            diagnostics.push(format!(
+                                "Read-only combined recovery could not validate all layers: {recovery_error}; falling back to individually validated layers."
+                            ));
+                            let mut recovered = LevelScene {
+                                schema: 1,
+                                objects: Vec::new(),
+                                diagnostics: Vec::new(),
+                            };
+                            let mut seen_ids = std::collections::HashSet::new();
+                            for (name, bytes) in &sources {
+                                match parse_level_scene(&[(name.as_str(), bytes)]) {
+                                    Ok(layer) => {
+                                        for object in layer.objects {
+                                            if seen_ids.insert(object.id.clone()) {
+                                                recovered.objects.push(object);
+                                            }
+                                        }
                                     }
+                                    Err(error) => diagnostics.push(format!(
+                                        "Layer {name} could not be recovered: {error}"
+                                    )),
                                 }
                             }
-                            Err(layer_error) => diagnostics.push(format!(
-                                "Layer {name} could not be recovered: {layer_error}"
-                            )),
+                            if !recovered.objects.is_empty() {
+                                diagnostics.push(
+                                    "Per-layer fallback has incomplete cross-layer parent transforms."
+                                        .into(),
+                                );
+                                scene = Some(recovered);
+                            }
                         }
-                    }
-                    if !recovered.objects.is_empty() {
-                        diagnostics.push(format!(
-                            "Read-only recovery assembled {valid_layers} individually valid layers ({} unique placements; {duplicate_ids} repeated IDs omitted). Cross-layer parent transforms may be incomplete.",
-                            recovered.objects.len()
-                        ));
-                        scene = Some(recovered);
                     }
                 }
                 if scene.is_none() {
@@ -829,7 +969,13 @@ fn open_selected(
             )),
         }
     }
-    if let Some(assembled) = &full_scene {
+    let resources = authored_fx_catalog(&root, &inventory, scene.as_ref());
+    diagnostics.push(resources.description());
+    if let Some(assembled) = full_scene.as_mut() {
+        let mut world = (*assembled.world).clone();
+        world.time_of_day = original_time.map(std::sync::Arc::new);
+        world.source_resources = resources;
+        assembled.world = std::sync::Arc::new(world);
         diagnostics.push(assembled.report.status());
     }
     Ok(LoadedMap {

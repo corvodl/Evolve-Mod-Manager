@@ -62,3 +62,94 @@ Objects map to author-defined \`FileName\` .cgf paths in the same XML, then ente
 ## Performance and shader limitations remain
 
 The world viewport still uses the existing CPU-projected, textured wgpu pipeline and a bounded combined mesh. The new triangle picker and in-memory transform updates do **not** constitute a dedicated scalable GPU-instanced or streamed scene renderer. A real world renderer must retain one GPU mesh per unique source model and use per-instance GPU transforms, camera frustum culling, spatial indexing/BVH, geometry/texture LOD and streaming; frame-time and memory tests on real multi-PAK Stage 2 maps are required. Lighting, terrain splats, physics and CryEngine vegetation wind/material shaders also remain unsupported.
+
+## Terrain atlas GPU upload and duplicate-layer recovery (PR #156)
+
+The original Tutorial baked atlas is 2048×2048 (16 MiB RGBA8); Ice_Crashsite
+is 4096×4096 (64 MiB RGBA8). Previously the Level Editor reported that both
+were decoded and assigned to an original terrain material, **but** the world
+GPU uploader silently rejected any diffuse larger than its general 32 MiB
+model-material budget. Ice_Crashsite therefore sampled a one-pixel fallback.
+
+The terrain world's nonselectable ground group now uses an independent
+64 MiB source-atlas budget, subject to the GPU device's maximum supported
+2D texture dimension. Other original model textures retain their 32 MiB
+budget. If they are bigger, they are **downscaled with their RGBA mask**
+instead of being replaced by a solid fallback. Normalized terrain UVs use
+clamp-to-edge sampling while prop materials retain repeat sampling.
+No source file is changed and no texture is borrowed from another build.
+
+CryEngine layers sometimes repeat identical object GUIDs. A new read-only
+combined scene-recovery parser retains one source-ordered declaration,
+records conflicts, and resolves parent transforms across the entire
+validated set of layers. Conflicting GUIDs may not serve as parents, so
+an ambiguous placement is not used to move children to an arbitrary
+coordinate. The strict editable scene parser still rejects all duplicate
+GUIDs. If combined recovery cannot validate the sources, the previous
+per-layer fallback remains available.
+
+**Remaining source-data limitations.** The screenshot logs also identify
+58 (Tutorial) / 122 (Ice_Crashsite) model-material pairs with no verified
+diffuse and explicit missing original vehicle DDS candidates. These files
+are *not* made available by changing GPU upload limits; the exact selected
+build still must supply the correct cooked DDS. Missing textures must remain
+explicitly diagnosed, rather than substituted with similarly named images.
+An interactive Windows screenshot comparison of the actual maps is still
+required to confirm terrain orientation and the visual outcome.
+
+## Source-authored time of day, particle libraries, and shader discovery (PR #156)
+
+The editor now searches the verified selected map and same-build imports for
+`LevelData/TimeOfDay.xml` by exact authored virtual path. It decodes
+CryEngine `Variable` entries and `Spline Keys` (normalized 0–1 clock)
+and uses the original sun color, sun intensity, sun color multiplier, and
+recognized sky/ambient values while scrubbing Scene Settings. XML remains
+untouched. If unsupported or missing, it reports approximation mode.
+Original source keyframes are **linearly** sampled for this preview:
+CryEngine spline tangents, fog, sky, HDR, GI, probes, light entities,
+shadows, and native shaders are **not** reproduced.
+
+Verified selected-import `Libs/Particles/*.xml` libraries, `.mtl` authored
+shader assignments and `.cfx` source scripts are catalogued with bounded
+name reads, and particle-entity placements are counted. Their presence is
+shown in Scene Settings. This imports **source descriptions**, not live
+particle simulation or engine-equivalent shader code. Source-dependent
+materials continue through the existing wgpu material pipeline. Full
+particle rendering, proprietary shader translation, and accurate
+environment composition remain separate implementation and acceptance
+work. Different-game and unrelated-build fallback assets are not borrowed.
+
+CI and screenshot acceptance on actual Stage 2 maps remain necessary.
+
+## CryEngine 3.5.8 SDK spline compatibility (October 30)
+
+The user-supplied CryEngine FreeSDK 3.5.8 Forest example contains authentic
+`TimeOfDay.xml` curves with otherwise valid 0–1 normalized clock keys alongside
+out-of-day editor artifacts (including very large exponent-form times and keys
+slightly above 1). The source importer now **ignores and counts those specific
+out-of-day keys**, retaining legitimate curve endpoints rather than clamping
+outliers to 24:00 and changing map lighting. Malformed/non-finite times and
+outlier-only splines still fail closed, and the source XML is not rewritten.
+The Scene Settings panel and import diagnostics disclose the count.
+
+This improves coverage of original environment XML, **not** engine spline
+interpolation parity. Real CryEngine tangent handling and rendering of fog,
+HDR, atmosphere, shadows and particles remain separate acceptance work.
+
+## Original instanced world material maps (PR #156)
+
+The dedicated GPU-instanced world preview now reads the same **exact-build** MTL
+surface maps resolved for the Model Viewer: diffuse, separately authored
+opacity, **linear BC5 normal**, **sRGB specular reflectance**, **linear gloss**,
+and **sRGB emissive color**. Original normal maps use derivative-recovered
+UV tangent frames. Instances transform source vertex normals by the
+inverse-transpose of their nonuniform/mirrored world transforms; absent or
+singular normal streams fall back to geometry derivatives. Shared source
+images upload once per role under the existing per-texture/scene VRAM budgets,
+using neutral maps if a source is absent or exceeds the GPU budget. This is
+preview shading, **not** original CryEngine shader execution, HDR, bloom,
+shadow cascades or light-probe parity.
+
+Actual Stage 2 maps need screenshot comparison for BC5 channel orientation,
+specular levels, emissive tuning, mirrored buildings/vegetation and the
+reported originally missing DDS files. The source game files remain unchanged.

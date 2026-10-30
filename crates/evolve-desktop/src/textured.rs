@@ -13,14 +13,56 @@ use std::sync::Arc;
 // A large CDF can reuse the same original DDS in dozens of material ranges.
 // Allocate each source/role only once per scene and bound unique GPU copies.
 pub(crate) const MAX_GPU_PREVIEW_TEXTURE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_GPU_FULL_PREVIEW_TEXTURE_BYTES: usize = 1024 * 1024 * 1024;
+
+fn preview_budget(full: bool) -> usize {
+    if full {
+        MAX_GPU_FULL_PREVIEW_TEXTURE_BYTES
+    } else {
+        MAX_GPU_PREVIEW_TEXTURE_BYTES
+    }
+}
 
 fn texture_cache_key(image: Option<&Arc<image::RgbaImage>>, role: usize) -> (usize, usize) {
     (image.map_or(0, |pixels| Arc::as_ptr(pixels) as usize), role)
 }
 
-fn gpu_budget_allows(used: usize, additional: usize) -> bool {
+fn gpu_budget_allows(used: usize, additional: usize, budget: usize) -> bool {
     used.checked_add(additional)
-        .is_some_and(|total| total <= MAX_GPU_PREVIEW_TEXTURE_BYTES)
+        .is_some_and(|total| total <= budget)
+}
+
+/// Preserve the original source image whenever possible. When a character
+/// exceeds the preview VRAM budget or GPU dimension limit, choose a bounded
+/// RGBA downsample rather than making a real DDS material disappear.
+/// This only changes the in-memory GPU preview, never an imported file.
+fn fitted_source_dimensions(
+    width: u32,
+    height: u32,
+    limit: usize,
+    max_dimension: u32,
+) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 || max_dimension == 0 || limit < 4 {
+        return None;
+    }
+    let (mut w, mut h) = (width, height);
+    while w > max_dimension || h > max_dimension || (u64::from(w) * u64::from(h) * 4) > limit as u64
+    {
+        if w == 1 && h == 1 {
+            return None;
+        }
+        w = w.div_ceil(2);
+        h = h.div_ceil(2);
+    }
+    Some((w, h))
+}
+
+/// For extremely large multi-part characters, divide the *remaining* GPU
+/// budget among remaining unique diffuse images. Without this, the first
+/// few 4K textures can use the entire scene budget, leaving the final
+/// character head/armor pieces untextured despite valid source DDS files.
+fn diffuse_budget_share(used: usize, remaining_unique: usize, budget: usize) -> usize {
+    budget.saturating_sub(used) / remaining_unique.max(1)
 }
 
 /// Reserve GPU space for ALL source diffuse maps before accepting optional
@@ -32,12 +74,13 @@ fn allows_cdf_role(
     remaining_diffuse: usize,
     role: usize,
     can_fit_all_diffuse: bool,
+    budget: usize,
 ) -> bool {
     if role != 0 && !can_fit_all_diffuse {
         return false;
     }
     let reserve = if role == 0 { 0 } else { remaining_diffuse };
-    gpu_budget_allows(used.saturating_add(reserve), additional)
+    gpu_budget_allows(used.saturating_add(reserve), additional, budget)
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +136,9 @@ pub struct Scene {
     pub shift: bool,
     pub level_camera: Option<super::level_camera::Camera>,
     pub world: Option<Arc<super::world_instances::World>>,
+    pub level_hour: f32,
+    pub level_full_textures: bool,
+    pub viewer_full_textures: bool,
 }
 
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -160,6 +206,9 @@ pub struct Primitive {
     emissive_gain: f32,
     emissive_time: f32,
     world: Option<Arc<super::world_instances::World>>,
+    level_hour: f32,
+    level_full_textures: bool,
+    viewer_full_textures: bool,
     camera: Option<super::level_camera::Camera>,
     yaw: f32,
     pitch: f32,
@@ -320,6 +369,9 @@ impl shader::Program<super::Message> for Scene {
             emissive_gain: self.emissive_gain,
             emissive_time: self.emissive_time,
             world: self.world.clone(),
+            level_hour: self.level_hour,
+            level_full_textures: self.level_full_textures,
+            viewer_full_textures: self.viewer_full_textures,
             camera: self.level_camera,
             yaw: self.yaw,
             pitch: self.pitch,
@@ -383,6 +435,7 @@ pub struct Pipeline {
     last_specular_identity: usize,
     last_gloss_identity: usize,
     last_surfaces_identity: usize,
+    last_viewer_full_textures: bool,
     last_emissive_gain: f32,
     last_emissive_time: f32,
     gpu_surfaces: Vec<GpuSurface>,
@@ -547,6 +600,24 @@ impl Pipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         source: Option<&Arc<image::RgbaImage>>,
+        fallback: &[u8; 4],
+        format: wgpu::TextureFormat,
+        label: &'static str,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        Self::upload_map_pixels(
+            device,
+            queue,
+            source.map(|pixels| pixels.as_ref()),
+            fallback,
+            format,
+            label,
+        )
+    }
+
+    fn upload_map_pixels(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: Option<&image::RgbaImage>,
         fallback: &[u8; 4],
         format: wgpu::TextureFormat,
         label: &'static str,
@@ -1086,6 +1157,7 @@ impl Pipeline {
             last_specular_identity: usize::MAX,
             last_gloss_identity: usize::MAX,
             last_surfaces_identity: usize::MAX,
+            last_viewer_full_textures: false,
             last_emissive_gain: f32::NAN,
             last_emissive_time: f32::NAN,
             gpu_surfaces: Vec::new(),
@@ -1119,12 +1191,17 @@ impl Pipeline {
         queue: &wgpu::Queue,
         surfaces: Option<&Arc<Vec<Surface>>>,
         index_count: usize,
+        full_textures: bool,
     ) {
         let identity = surfaces.map_or(0, |parts| Arc::as_ptr(parts) as usize);
-        if identity == self.last_surfaces_identity {
+        if identity == self.last_surfaces_identity
+            && full_textures == self.last_viewer_full_textures
+        {
             return;
         }
         self.last_surfaces_identity = identity;
+        self.last_viewer_full_textures = full_textures;
+        let budget = preview_budget(full_textures);
         // New bind groups require fresh gain uploads even if the slider did
         // not move. Reuse the already-decoded images on subsequent slider drags.
         self.last_emissive_gain = f32::NAN;
@@ -1178,7 +1255,8 @@ impl Pipeline {
                 remaining_diffuse = remaining_diffuse.saturating_add(diffuse.as_raw().len());
             }
         }
-        let can_fit_all_diffuse = remaining_diffuse <= MAX_GPU_PREVIEW_TEXTURE_BYTES;
+        let can_fit_all_diffuse = remaining_diffuse <= budget;
+        let mut remaining_unique_diffuse = unique_diffuse.len();
         for part in surfaces.iter() {
             if !part.visible {
                 continue;
@@ -1236,18 +1314,51 @@ impl Pipeline {
                 let size = image.map_or(4, |pixels| pixels.as_raw().len());
                 let key = texture_cache_key(image, role);
                 let already_uploaded = uploaded.contains_key(&key);
-                let allow_source = image.is_none()
-                    || already_uploaded
-                    || allows_cdf_role(
-                        used_bytes,
-                        size,
-                        remaining_diffuse,
-                        role,
-                        can_fit_all_diffuse,
-                    );
+                // Budget original diffuse maps first: decorative spec/gloss
+                // maps must not crowd out the head/body colors of a CDF.
+                let reserve = if role == 0 { 0 } else { remaining_diffuse };
+                let available = if role == 0 && !can_fit_all_diffuse {
+                    diffuse_budget_share(used_bytes, remaining_unique_diffuse, budget)
+                } else {
+                    budget.saturating_sub(used_bytes.saturating_add(reserve))
+                };
+                let can_use_role = role == 0 || can_fit_all_diffuse;
+                let full_size = allows_cdf_role(
+                    used_bytes,
+                    size,
+                    remaining_diffuse,
+                    role,
+                    can_fit_all_diffuse,
+                    budget,
+                );
+                let desired = if already_uploaded {
+                    None
+                } else if can_use_role {
+                    image.and_then(|pixels| {
+                        let gpu_limit = device.limits().max_texture_dimension_2d;
+                        if full_size
+                            && size <= available
+                            && pixels.width() <= gpu_limit
+                            && pixels.height() <= gpu_limit
+                        {
+                            Some(pixels.dimensions())
+                        } else {
+                            fitted_source_dimensions(
+                                pixels.width(),
+                                pixels.height(),
+                                available,
+                                gpu_limit,
+                            )
+                        }
+                    })
+                } else {
+                    None
+                };
+                let allow_source = image.is_none() || already_uploaded || desired.is_some();
                 let selected = if allow_source { image } else { None };
                 if role == 0 && selected.is_some() && !already_uploaded {
                     remaining_diffuse = remaining_diffuse.saturating_sub(size);
+                    remaining_unique_diffuse = remaining_unique_diffuse.saturating_sub(1);
                 }
                 if !allow_source {
                     omitted_count += 1;
@@ -1256,12 +1367,31 @@ impl Pipeline {
                 if let Some(view) = uploaded.get(&selected_key) {
                     views.push(view.clone());
                 } else {
-                    let (texture, view) =
-                        Self::upload_map(device, queue, selected, &fallback, format, label);
-                    // The fallback is a four-byte neutral placeholder; large
-                    // unverified maps are omitted instead of risking GPU OOM.
+                    let downsampled = selected.and_then(|pixels| {
+                        desired
+                            .filter(|dims| *dims != pixels.dimensions())
+                            .map(|(w, h)| {
+                                image::imageops::resize(
+                                    pixels.as_ref(),
+                                    w,
+                                    h,
+                                    image::imageops::FilterType::Triangle,
+                                )
+                            })
+                    });
+                    let upload_pixels = downsampled
+                        .as_ref()
+                        .or_else(|| selected.map(|pixels| pixels.as_ref()));
+                    let (texture, view) = Self::upload_map_pixels(
+                        device,
+                        queue,
+                        upload_pixels,
+                        &fallback,
+                        format,
+                        label,
+                    );
                     used_bytes = used_bytes
-                        .saturating_add(selected.map_or(4, |pixels| pixels.as_raw().len()));
+                        .saturating_add(upload_pixels.map_or(4, |pixels| pixels.as_raw().len()));
                     uploaded.insert(selected_key, view.clone());
                     self._surface_textures.push(texture);
                     views.push(view);
@@ -1340,6 +1470,8 @@ impl Pipeline {
             primitive.pitch,
             size.0 as f32 / size.1.max(1) as f32,
             primitive.zoom,
+            primitive.level_hour,
+            primitive.level_full_textures,
         );
         let floor_bytes = bytemuck::cast_slice(&primitive.ground);
         self.ground_count = primitive.ground.len() as u32;
@@ -1360,6 +1492,7 @@ impl Pipeline {
             queue,
             primitive.surfaces.as_ref(),
             primitive.indices.len(),
+            primitive.viewer_full_textures,
         );
         if self.last_emissive_time.to_bits() != primitive.emissive_time.to_bits() {
             self.last_emissive_time = primitive.emissive_time;
@@ -1647,19 +1780,123 @@ mod tests {
 
     #[test]
     fn preview_upload_budget_rejects_oversized_unique_texture_without_overflow() {
-        assert!(super::gpu_budget_allows(0, 256 * 1024 * 1024));
-        assert!(!super::gpu_budget_allows(256 * 1024 * 1024, 4));
-        assert!(!super::gpu_budget_allows(usize::MAX, 64));
+        assert!(super::gpu_budget_allows(
+            0,
+            256 * 1024 * 1024,
+            super::preview_budget(false)
+        ));
+        assert!(!super::gpu_budget_allows(
+            256 * 1024 * 1024,
+            4,
+            super::preview_budget(false)
+        ));
+        assert!(!super::gpu_budget_allows(
+            usize::MAX,
+            64,
+            super::preview_budget(false)
+        ));
         // With 180 MiB still owed to later original diffuse textures,
         // a new 90 MiB optional specular must NOT crowd them out.
         let mib = 1024 * 1024;
-        assert!(!super::allows_cdf_role(0, 90 * mib, 180 * mib, 3, true));
-        assert!(super::allows_cdf_role(0, 90 * mib, 180 * mib, 0, true));
+        assert!(!super::allows_cdf_role(
+            0,
+            90 * mib,
+            180 * mib,
+            3,
+            true,
+            super::preview_budget(false)
+        ));
+        assert!(super::allows_cdf_role(
+            0,
+            90 * mib,
+            180 * mib,
+            0,
+            true,
+            super::preview_budget(false)
+        ));
         // If all diffuse assets exceed the fixed budget, omit optional
         // maps first while still allowing each original diffuse to compete
         // for the remaining protected budget.
-        assert!(!super::allows_cdf_role(0, 4 * mib, 300 * mib, 2, false));
-        assert!(super::allows_cdf_role(0, 4 * mib, 300 * mib, 0, false));
+        assert!(!super::allows_cdf_role(
+            0,
+            4 * mib,
+            300 * mib,
+            2,
+            false,
+            super::preview_budget(false)
+        ));
+        assert!(super::allows_cdf_role(
+            0,
+            4 * mib,
+            300 * mib,
+            0,
+            false,
+            super::preview_budget(false)
+        ));
+    }
+
+    #[test]
+    fn full_quality_raises_source_budget_to_level_editor_equivalent() {
+        assert_eq!(super::preview_budget(false), 256 * 1024 * 1024);
+        assert_eq!(super::preview_budget(true), 1024 * 1024 * 1024);
+        assert!(super::allows_cdf_role(
+            0,
+            400 * 1024 * 1024,
+            400 * 1024 * 1024,
+            0,
+            true,
+            super::preview_budget(true)
+        ));
+        assert!(!super::allows_cdf_role(
+            0,
+            400 * 1024 * 1024,
+            400 * 1024 * 1024,
+            0,
+            false,
+            super::preview_budget(false)
+        ));
+    }
+
+    #[test]
+    fn valid_original_character_maps_are_downscaled_not_discarded() {
+        use super::fitted_source_dimensions;
+        assert_eq!(
+            fitted_source_dimensions(4096, 4096, 16 * 1024 * 1024, 8192),
+            Some((2048, 2048))
+        );
+        assert_eq!(
+            fitted_source_dimensions(4096, 4096, 4 * 1024 * 1024, 8192),
+            Some((1024, 1024))
+        );
+        assert_eq!(
+            fitted_source_dimensions(4096, 4096, 256 * 1024 * 1024, 2048),
+            Some((2048, 2048))
+        );
+        assert_eq!(fitted_source_dimensions(4096, 4096, 0, 8192), None);
+        assert_eq!(
+            super::diffuse_budget_share(0, 8, super::preview_budget(false)),
+            32 * 1024 * 1024
+        );
+        assert_eq!(
+            super::diffuse_budget_share(128 * 1024 * 1024, 4, super::preview_budget(false)),
+            32 * 1024 * 1024
+        );
+        assert_eq!(
+            super::diffuse_budget_share(256 * 1024 * 1024, 4, super::preview_budget(false)),
+            0
+        );
+        let mut source = image::RgbaImage::from_pixel(32, 32, image::Rgba([10, 15, 200, 0]));
+        source.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let limited = fitted_source_dimensions(32, 32, 16 * 16 * 4, 32).unwrap();
+        let reduced = image::imageops::resize(
+            &source,
+            limited.0,
+            limited.1,
+            image::imageops::FilterType::Triangle,
+        );
+        assert_eq!(reduced.dimensions(), (16, 16));
+        assert!(reduced.pixels().any(|px| px.0[3] < 255));
+        assert!(reduced.pixels().any(|px| px.0[3] > 0));
     }
 
     #[test]

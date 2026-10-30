@@ -2,6 +2,7 @@
 //! All game data is local and opt-in. No assets are embedded or downloaded.
 mod animated_glb_preview;
 pub mod animation;
+pub mod animation_events;
 pub mod archive;
 pub mod asset_compare;
 pub mod batch;
@@ -31,6 +32,7 @@ pub mod level_export;
 pub mod library_build_updates;
 pub mod library_catalog;
 pub mod library_import;
+pub mod material_effects;
 pub mod materials;
 pub mod model;
 pub mod native_caf;
@@ -49,6 +51,11 @@ mod terrain_tiles;
 pub use animation::{
     AnimatedGlb, AnimationError, AnimationReference, CafInspection, MotionClip, PoseSample,
     animation_references, inspect_caf_bytes, inspect_caf_file,
+};
+pub use animation_events::{
+    AnimationEvent, AnimationEventDatabase, AnimationEventDiagnostic, AnimationEventError,
+    AnimationEventTimeline, normalize_animation_path, parse_animation_events,
+    read_animation_events,
 };
 pub use archive::{
     PakError, PakInventory, PakMember, RebuildReport, extract_legacy_pak, inspect_legacy_pak,
@@ -105,8 +112,9 @@ pub use inventory::{
 pub use legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
 pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
 pub use library_build_updates::{
-    BuildUpdateFile, LibraryBuildUpdatePlan, LibraryBuildUpdateReport, apply_library_build_updates,
-    scan_library_build_updates,
+    BuildUpdateFile, LibraryBuildRemovalReport, LibraryBuildUpdatePlan, LibraryBuildUpdateReport,
+    ManagedLibraryBuild, apply_library_build_updates, managed_library_builds,
+    remove_managed_library_build, scan_library_build_updates,
 };
 pub use library_catalog::{
     ImportedLibrary, ImportedLookupGuard, ImportedPak, LibraryError, LibraryReference,
@@ -144,8 +152,9 @@ pub use rig::{
     parse_compiled_skeleton, remap_verified_weights, rigged_glb_bytes,
 };
 pub use scene::{
-    LevelScene, PlacedObject, SceneError, Transform, edit_level_transform, export_edited_layer,
-    export_edited_layers, export_edited_layers_guarded, load_level_scene, parse_level_scene,
+    LevelScene, PlacedObject, ReadOnlySceneRecovery, SceneError, Transform, edit_level_transform,
+    export_edited_layer, export_edited_layers, export_edited_layers_guarded, load_level_scene,
+    parse_level_scene, parse_level_scene_read_only,
 };
 pub use signed_pak::{
     SignedEntry, SignedPakError, SignedPakInfo, SignedRebuildReport, extract_signed_pak,

@@ -38,7 +38,9 @@ mod initial_setup;
 mod launcher_bridge;
 mod level_camera;
 mod level_editor_shell;
+mod level_environment;
 mod level_library;
+mod level_lighting;
 mod level_pick;
 mod level_scene_renderer;
 mod level_workspace;
@@ -90,22 +92,23 @@ mod world_instances;
 use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
-    CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
+    CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsFormat, DdsInfo, DependencyGraph,
     EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
-    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryBuildUpdatePlan,
-    LibraryBuildUpdateReport, LibraryImportPlan, LibraryReferenceStatus, MaterialReport,
-    ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog,
-    ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
-    VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_library_build_updates,
-    apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
-    convert_original_motion, create_mod_profile, decode_dds_rgba, discover_equipment,
-    export_dds_png, export_level_scene_glb, export_rigged_character_fbx_textured_animated,
-    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
-    import_library_plan_with_keys, import_stage_pak, imported_archive_files, imported_library,
-    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
-    inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
-    plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
-    read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf,
+    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryBuildRemovalReport,
+    LibraryBuildUpdatePlan, LibraryBuildUpdateReport, LibraryImportPlan, LibraryReferenceStatus,
+    ManagedLibraryBuild, MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport,
+    PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
+    StageTransaction, TerrainInfo, VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile,
+    apply_library_build_updates, apply_profile_stage, apply_stage_pak, batch_stage_status,
+    compare_assets, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
+    decode_dds_rgba, discover_equipment, export_dds_png, export_level_scene_glb,
+    export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
+    extract_signed_pak, import_library_plan_with_keys, import_stage_pak, imported_archive_files,
+    imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
+    inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
+    managed_library_builds, material_texture_candidates, plan_mod_profile, prepare_client_hook,
+    read_cdf, read_material, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
+    rebuild_signed_pak_entry, remove_managed_library_build, resign_signed_pak, resolve_cdf,
     resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
     scan_directory, scan_directory_with_progress, scan_library_build_updates,
     scan_library_import_sources, stage_status,
@@ -314,6 +317,9 @@ struct State {
     material_input: String,
     material_report: Option<MaterialReport>,
     auto_clips: Vec<auto_resources::AutoClip>,
+    animation_events: Option<Arc<evolve_core::AnimationEventDatabase>>,
+    animation_event_source: String,
+    current_caf_virtual_path: Option<String>,
     auto_resource_note: String,
     auto_clip_filter: String,
     export_include_animation: bool,
@@ -390,6 +396,9 @@ struct State {
     level_open_after_copy: bool,
     level_diagnostics: Vec<String>,
     level_show_overview: bool,
+    /// Preview-only lighting controls, never written to original game files.
+    level_time_of_day: f32,
+    level_full_textures: bool,
     terrain: Option<TerrainInfo>,
     selected: Option<usize>,
     file_selection: MultiSelection,
@@ -534,6 +543,9 @@ struct State {
     library_root: String,
     library_import_plan: Option<LibraryImportPlan>,
     library_update_plan: Option<LibraryBuildUpdatePlan>,
+    library_manage_builds_open: bool,
+    library_managed_builds: Vec<ManagedLibraryBuild>,
+    library_delete_build_confirm: Option<String>,
     library_import_scanning: bool,
     library_import_cancel: Option<Arc<AtomicBool>>,
     library_import_progress: Option<Arc<AtomicUsize>>,
@@ -556,6 +568,7 @@ struct State {
     playback_speed: f32,
     playback_loop: bool,
     viewer_wireframe: bool,
+    viewer_full_textures: bool,
     light_strength: f32,
     level_filter: String,
     level_selected: Option<usize>,
@@ -680,6 +693,7 @@ enum Operation {
         Arc<AtomicBool>,
         Arc<AtomicUsize>,
     ),
+    RemoveManagedLibraryBuild(PathBuf, String, String),
     OpenImportedPak(ImportedPak),
     CreateProjectFromLibrary(ImportedPak, PathBuf, PathBuf, Arc<ProjectCopyProgress>),
     RefreshGamePakBaseline(PathBuf, PathBuf, PathBuf, bool),
@@ -834,6 +848,7 @@ enum Operation {
     ExtractPak(PathBuf, PathBuf),
     RebuildPak(PathBuf, PathBuf, PathBuf),
     ExportPng(PathBuf, PathBuf),
+    CompileDds(PathBuf, PathBuf, DdsFormat),
 }
 
 #[derive(Debug, Clone)]
@@ -852,6 +867,11 @@ enum Completed {
     ImportedLibrary(ImportedLibrary),
     ImportedSignedLibrary(LibraryBatchImportReport, ImportedLibrary),
     ImportedBuildUpdated(LibraryBuildUpdateReport, ImportedLibrary),
+    ManagedLibraryBuildRemoved(
+        LibraryBuildRemovalReport,
+        ImportedLibrary,
+        Vec<ManagedLibraryBuild>,
+    ),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
     Comparison(AssetComparison),
@@ -938,6 +958,7 @@ enum Completed {
     Extracted(usize, PathBuf),
     Rebuilt(usize, PathBuf),
     ExportedPng(DdsInfo, PathBuf),
+    CompiledDds(DdsInfo, PathBuf),
 }
 
 /// Reuse the level editor's exact-build indexed Asset Library lookup inside
@@ -1001,11 +1022,27 @@ impl Operation {
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
             Self::ApplyLibraryBuildUpdates(root, plan, stage, cancelled, progress) => {
-                let keys = modding_keys::archive_verification_keys(&stage)?;
+                let keys = if plan
+                    .changed
+                    .iter()
+                    .any(|part| part.reuse_archive_id.is_none())
+                {
+                    modding_keys::archive_verification_keys(&stage)?.paths
+                } else {
+                    Vec::new()
+                };
                 let report =
-                    apply_library_build_updates(&root, &plan, &keys.paths, &cancelled, &progress)?;
+                    apply_library_build_updates(&root, &plan, &keys, &cancelled, &progress)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedBuildUpdated(report, catalog))
+            }
+            Self::RemoveManagedLibraryBuild(root, id, source_root) => {
+                let report = remove_managed_library_build(&root, &id, &source_root)?;
+                let catalog = imported_library(&root).map_err(|e| e.to_string())?;
+                let builds = managed_library_builds(&root)?;
+                Ok(Completed::ManagedLibraryBuildRemoved(
+                    report, catalog, builds,
+                ))
             }
             Self::ImportSignedLibraryPlan(root, plan, stage, cancelled, progress) => {
                 // Keep the original signed-archive authentication path.
@@ -1899,6 +1936,10 @@ impl Operation {
             Self::ExportPng(source, dest) => export_dds_png(&source, &dest)
                 .map(|info| Completed::ExportedPng(info, dest))
                 .map_err(|e| e.to_string()),
+            Self::CompileDds(source, dest, format) => {
+                modding_projects::compile_standalone_dds(&source, &dest, format)
+                    .map(|info| Completed::CompiledDds(info, dest))
+            }
         }
     }
 }
@@ -1917,6 +1958,12 @@ enum Message {
     LibraryUpdateFolderPicked(Result<Option<Vec<PathBuf>>, String>),
     LibraryUpdateScanned(Result<LibraryBuildUpdatePlan, String>),
     LibraryUpdateStart,
+    LibraryManageBuildsToggle,
+    LibraryManageBuildsRefresh,
+    LibraryManagedBuildsLoaded(Result<Vec<ManagedLibraryBuild>, String>),
+    LibraryDeleteBuildConfirm(String),
+    LibraryDeleteBuildCancel,
+    LibraryDeleteBuildNow(String),
     LibrarySourcesPicked(Result<Option<Vec<PathBuf>>, String>),
     LibraryImportScanned(Result<LibraryImportPlan, String>),
     LibraryImportStart,
@@ -2145,10 +2192,14 @@ enum Message {
     PlaybackSpeedChanged(f32),
     PlaybackLoopChanged,
     ViewerToggleWireframe,
+    ViewerFullTexturesToggled,
     LightStrengthChanged(f32),
     LevelSelect(usize),
     LevelFilterChanged(String),
     LevelZoomChanged(f32),
+    LevelTimeOfDayChanged(f32),
+    LevelTimePreset(f32),
+    LevelFullTexturesToggled,
     LevelEditPositionChanged(String),
     LevelEditRotationChanged(String),
     LevelEditScaleChanged(String),
@@ -2383,6 +2434,7 @@ enum Message {
     StartExtract,
     StartRebuild,
     StartPngExport,
+    StartDdsCompile(DdsFormat),
     Finished(Result<Completed, String>),
 }
 
@@ -2735,6 +2787,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::LoadImportedLibrary(..) => "Opening Asset Library",
         Operation::ImportSignedLibraryPlan(..) => "Importing signed game PAKs",
         Operation::ApplyLibraryBuildUpdates(..) => "Updating Asset Library PAKs",
+        Operation::RemoveManagedLibraryBuild(..) => "Removing imported game build",
         Operation::OpenImportedPak(..) | Operation::InspectPak(..) => "Inspecting game PAK",
         Operation::CreateProjectFromLibrary(..) => "Creating editable mod project",
         Operation::RefreshGamePakBaseline(..) => "Verifying original game PAKs",
@@ -2804,6 +2857,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::RecoverProfile(..) => "Recovering mod profile",
         Operation::StatusProfile(..) => "Checking active mod profile",
         Operation::ExportPng(..) => "Exporting full-resolution PNG",
+        Operation::CompileDds(..) => "Compiling native PC DDS texture",
     }
 }
 
@@ -3054,6 +3108,9 @@ fn clear_viewer_asset(state: &mut State) {
     state.converted_glbs.clear();
     state.converted_dba_cache = None;
     state.auto_clips.clear();
+    state.animation_events = None;
+    state.animation_event_source.clear();
+    state.current_caf_virtual_path = None;
     state.auto_idle_pending = None;
     state.auto_play_native_caf = false;
     state.auto_material_pending = false;
@@ -4256,6 +4313,79 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
+        Message::LibraryManageBuildsToggle => {
+            state.library_manage_builds_open = !state.library_manage_builds_open;
+            state.library_delete_build_confirm = None;
+            if !state.library_manage_builds_open {
+                return Task::none();
+            }
+            return update(state, Message::LibraryManageBuildsRefresh);
+        }
+        Message::LibraryManageBuildsRefresh => {
+            if state.busy || state.library_import_scanning || !state.library_manage_builds_open {
+                return Task::none();
+            }
+            state.library_delete_build_confirm = None;
+            let root = PathBuf::from(&state.library_root);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || managed_library_builds(&root))
+                        .await
+                        .map_err(|e| format!("Build manager worker failed: {e}"))?
+                },
+                Message::LibraryManagedBuildsLoaded,
+            );
+        }
+        Message::LibraryManagedBuildsLoaded(result) => match result {
+            Ok(builds) => {
+                state.status = format!("Found {} managed Asset Library build(s).", builds.len());
+                state.library_managed_builds = builds;
+            }
+            Err(error) => {
+                state.library_managed_builds.clear();
+                state.status = format!("Cannot inspect managed builds: {error}");
+            }
+        },
+        Message::LibraryDeleteBuildConfirm(id) => {
+            if !state.busy
+                && state
+                    .library_managed_builds
+                    .iter()
+                    .any(|build| build.id == id)
+            {
+                state.library_delete_build_confirm = Some(id);
+            }
+        }
+        Message::LibraryDeleteBuildCancel => {
+            state.library_delete_build_confirm = None;
+        }
+        Message::LibraryDeleteBuildNow(id) => {
+            if state.busy
+                || state.library_import_scanning
+                || state.library_delete_build_confirm.as_deref() != Some(id.as_str())
+            {
+                return Task::none();
+            }
+            let Some(build) = state
+                .library_managed_builds
+                .iter()
+                .find(|build| build.id == id)
+                .cloned()
+            else {
+                state.status = "Refresh managed builds before deletion.".into();
+                return Task::none();
+            };
+            state.library_delete_build_confirm = None;
+            state.library_update_plan = None;
+            return launch(
+                state,
+                Operation::RemoveManagedLibraryBuild(
+                    PathBuf::from(&state.library_root),
+                    build.id,
+                    build.source_root,
+                ),
+            );
+        }
         Message::LibraryUpdatePickFolder => {
             if state.busy || state.library_import_scanning {
                 return Task::none();
@@ -4303,11 +4433,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match result {
                 Ok(plan) => {
                     state.status = format!(
-                        "Build scan complete: {} new, {} updated, {} unchanged, {} removed source PAKs. Review the plan before importing.",
+                        "Build scan: {} new, {} changed, {} unchanged, {} removed; {} PAKs can reuse existing extractions without copying. Review before applying.",
                         plan.new_count,
                         plan.changed_count,
                         plan.unchanged,
-                        plan.removed.len()
+                        plan.removed.len(),
+                        plan.reused_count
                     );
                     state.library_update_plan = Some(plan);
                 }
@@ -7291,6 +7422,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PlaybackSpeedChanged(value) => state.playback_speed = value.clamp(0.1, 3.0),
         Message::PlaybackLoopChanged => state.playback_loop = !state.playback_loop,
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
+        Message::ViewerFullTexturesToggled => {
+            state.viewer_full_textures = !state.viewer_full_textures;
+            state.preferences.viewer_full_textures = state.viewer_full_textures;
+            persist_preferences(state);
+            state.status = if state.viewer_full_textures {
+                "Model Viewer: Full-quality source textures enabled (subject to GPU memory and adapter limits).".into()
+            } else {
+                "Model Viewer: Balanced texture quality enabled.".into()
+            };
+        }
         Message::LightStrengthChanged(value) => state.light_strength = value.clamp(0.2, 4.0),
         Message::LevelSelect(index) => {
             if let Some(scene) = &state.level_scene
@@ -7328,6 +7469,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelFilterChanged(value) => state.level_filter = value,
         Message::LevelZoomChanged(value) => state.level_zoom = value.clamp(0.3, 3.0),
+        Message::LevelTimeOfDayChanged(value) => {
+            if value.is_finite() {
+                state.level_time_of_day = value.clamp(0.0, 24.0);
+            }
+        }
+        Message::LevelTimePreset(value) => {
+            state.level_time_of_day = value.clamp(0.0, 24.0);
+        }
+        Message::LevelFullTexturesToggled => {
+            state.level_full_textures = !state.level_full_textures;
+        }
         Message::LevelEditPositionChanged(value) => state.level_edit_position = value,
         Message::LevelEditRotationChanged(value) => state.level_edit_rotation = value,
         Message::LevelEditScaleChanged(value) => state.level_edit_scale = value,
@@ -7519,6 +7671,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.viewer_explorer_visible = state.viewer_explorer_visible;
             state.preferences.viewer_show_inspector = state.viewer_show_inspector;
             state.preferences.viewer_wireframe = state.viewer_wireframe;
+            state.preferences.viewer_full_textures = state.viewer_full_textures;
             state.preferences.light_strength = state.light_strength;
             state.preferences.animation_speed = state.playback_speed;
             state.preferences.animation_loop = state.playback_loop;
@@ -11216,6 +11369,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let output = PathBuf::from(&state.output);
             return launch(state, Operation::ExportPng(source, output));
         }
+        Message::StartDdsCompile(format) => {
+            if state.output.trim().is_empty() {
+                state.status = "Choose a NEW .dds output file first.".into();
+                return Task::none();
+            }
+            return launch(
+                state,
+                Operation::CompileDds(
+                    PathBuf::from(&state.input),
+                    PathBuf::from(&state.output),
+                    format,
+                ),
+            );
+        }
         Message::Finished(result) => {
             let launch_notice = state.active_play.take().map(|kind| {
                 match &result {
@@ -11505,6 +11672,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         return begin_scan(state, path.join("files"));
                     }
                 }
+                Ok(Completed::ManagedLibraryBuildRemoved(report, catalog, builds)) => {
+                    state.status = format!(
+                        "Removed imported build at {}: {} history snapshots, {} unshared PAK extractions ({:.2} GiB), {} shared/foreign entries retained, {} cleanup failures. Installed games and Mod Projects untouched.",
+                        report.source_root,
+                        report.deleted_snapshots,
+                        report.removed_archives,
+                        report.reclaimed_bytes as f64 / 1_073_741_824.0,
+                        report.retained_shared,
+                        report.failed_cleanup.len()
+                    );
+                    state.library_managed_builds = builds;
+                    state.library_delete_build_confirm = None;
+                    state.library_catalog = Some(catalog);
+                    state.library_selection.clear();
+                    state.library_selected = None;
+                    state.library_page = 0;
+                    state.library_by_build = false;
+                    refresh_library_matches(state);
+                    guided_modding::refresh_imports(state);
+                }
                 Ok(Completed::ImportedBuildUpdated(report, catalog)) => {
                     let failures = report.batch.failed.len();
                     let error_detail = report
@@ -11516,12 +11703,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .collect::<Vec<_>>()
                         .join("; ");
                     state.status = format!(
-                        "Build {} refreshed: {} new, {} changed, {} unchanged, {} removed from current inventory; {} failed. Old imports and projects preserved.{}",
+                        "Build {} refreshed: {} new, {} changed, {} unchanged, {} removed; {} PAK extractions reused, {} failed. Originals and projects preserved.{}",
                         &report.build_id[..8],
                         report.added,
                         report.updated,
                         report.unchanged,
                         report.removed,
+                        report.reused,
                         failures,
                         if error_detail.is_empty() {
                             String::new()
@@ -11861,6 +12049,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Caf(source, motion)) => {
                     state.caf_path = source.to_string_lossy().into_owned();
+                    state.current_caf_virtual_path = state
+                        .auto_clips
+                        .iter()
+                        .find(|clip| clip.kind == "caf" && clip.source.as_ref() == Some(&source))
+                        .map(|clip| clip.virtual_path.clone());
                     state.status = format!(
                         "Native CAF decoded: {} controllers at {:.1} FPS; {} seconds. Bind-pose matching is required for mesh animation.",
                         motion.controllers.len(),
@@ -11895,6 +12088,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.auto_idle_pending = None;
                     } else {
                         state.auto_clips = resources.clips;
+                        if let Some((source, events)) = resources.event_database {
+                            state.animation_event_source = source;
+                            state.animation_events = Some(Arc::new(events));
+                        } else {
+                            state.animation_event_source.clear();
+                            state.animation_events = None;
+                        }
                         state.auto_idle_pending = resources.idle;
                         if let Some(skeleton) = resources.skeleton {
                             state.skeleton_path = skeleton.to_string_lossy().into_owned();
@@ -11951,6 +12151,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         });
                     if selected && !motion.additive {
                         state.caf_path = source.to_string_lossy().into_owned();
+                        state.current_caf_virtual_path = Some(virtual_path.clone());
                         state.skin_preview = None;
                         state.cdf_caf_preview = None;
                         if let Some(rest) = &state.cdf_rest_mesh {
@@ -12519,6 +12720,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_selection.clear();
                     state.level_selected = None;
                     if let Some(assembled) = loaded.full_scene {
+                        state.level_time_of_day = assembled
+                            .world
+                            .time_of_day
+                            .as_ref()
+                            .map_or(12.0, |profile| profile.initial_hour);
                         state.level_world = Some(assembled.world.clone());
                         state.level_surfaces = Some(Arc::new(assembled.surfaces));
                         state.level_picks = Some(Arc::new(assembled.picks));
@@ -12974,6 +13180,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         target.display()
                     );
                 }
+                Ok(Completed::CompiledDds(info, target)) => {
+                    state.status = format!(
+                        "Compiled standalone {} × {} {:?} DDS with {} mip(s) to {} (native Rust; no external SDK)",
+                        info.width,
+                        info.height,
+                        info.format,
+                        info.mipmaps,
+                        target.display()
+                    );
+                }
                 Err(e) => {
                     if state.cdf_damage_preparing {
                         state.cdf_damage_preparing = false;
@@ -13200,6 +13416,13 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8),
         row![
+            text("Built-in PNG → DDS (new asset, no CryEngine SDK)").size(12),
+            design::button("BC1 / DXT1").on_press(Message::StartDdsCompile(DdsFormat::Bc1)),
+            design::button("BC3 / DXT5").on_press(Message::StartDdsCompile(DdsFormat::Bc3)),
+            design::button("BC5 / ATI2").on_press(Message::StartDdsCompile(DdsFormat::Bc5)),
+        ]
+        .spacing(8),
+        row![
             design::text_input(
                 "Folder containing exact original PAK member replacements...",
                 &state.replacements
@@ -13357,6 +13580,9 @@ fn view(state: &State) -> Element<'_, Message> {
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                             level_camera: None,
                             world: None,
+                            level_hour: 12.0,
+                            level_full_textures: true,
+                            viewer_full_textures: state.viewer_full_textures,
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
                         canvas(MeshViewport{
@@ -13551,6 +13777,9 @@ fn initial_state() -> State {
         export_embed_textures: true,
         viewer_split: 0.67,
         level_zoom: 1.0,
+        level_time_of_day: 12.0,
+        level_full_textures: true,
+        viewer_full_textures: true,
         light_strength: 1.6,
         emissive_strength: 1.0,
         viewer_explorer_visible: true,
@@ -13565,6 +13794,7 @@ fn initial_state() -> State {
                 result.viewer_explorer_visible = saved.viewer_explorer_visible;
                 result.viewer_show_inspector = saved.viewer_show_inspector;
                 result.viewer_wireframe = saved.viewer_wireframe;
+                result.viewer_full_textures = saved.viewer_full_textures;
                 result.light_strength = saved.light_strength;
                 result.playback_speed = saved.animation_speed;
                 result.playback_loop = saved.animation_loop;
