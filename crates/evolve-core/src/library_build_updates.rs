@@ -1267,7 +1267,7 @@ mod tests {
         assert_eq!(snapshot.len(), 2);
         let old_build = snapshot
             .iter()
-            .find(|entry| entry.source_root == real_directory(&old).unwrap().to_string_lossy())
+            .find(|entry| entry.source_root == ordinary_path(&real_directory(&old).unwrap().to_string_lossy()))
             .unwrap();
         assert_eq!(old_build.reclaimable_paks, 1);
         assert!(remove_managed_library_build(&library, &old_build.id, "wrong").is_err());
@@ -1321,6 +1321,91 @@ mod tests {
                 .iter()
                 .any(|archive| archive.id == manually_imported.id)
         );
+    }
+
+    #[test]
+    fn path_alias_snapshots_migrate_non_destructively_and_remain_renameable() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let history = library.join("build-update-history");
+        fs::create_dir_all(&history).unwrap();
+        let old_root = r"\\?\C:\Games\ModdedEvolve\EvolveGame\Game";
+        let plain_root = r"C:\Games\ModdedEvolve\EvolveGame\Game";
+        let old_id = legacy_build_identity(Path::new(old_root));
+        let canonical_id = build_identity(Path::new(plain_root));
+        assert_ne!(old_id, canonical_id);
+        assert_eq!(build_identity(Path::new(old_root)), canonical_id);
+        for (id, root, stamp, number) in [
+            (&old_id, old_root, 1u32, 1u8),
+            (&canonical_id, plain_root, 2u32, 2u8),
+        ] {
+            let folder = history.join(id);
+            fs::create_dir_all(&folder).unwrap();
+            let record = BuildSnapshot {
+                version: 1,
+                build_id: id.clone(),
+                source_root: root.into(),
+                members: BTreeMap::from([(
+                    "Game/example.pak".into(),
+                    BuildMember {
+                        sha256: format!("{number:064x}"),
+                        archive_id: format!("{number:020x}"),
+                    },
+                )]),
+                owned_extractions: BTreeSet::new(),
+            };
+            fs::write(
+                folder.join(format!("snapshot-{stamp:025}.json")),
+                serde_json::to_vec(&record).unwrap(),
+            ).unwrap();
+        }
+        let previous = fs::read(history.join(&old_id).join(format!("snapshot-{:025}.json", 1))).unwrap();
+        let builds = managed_library_builds(&library).unwrap();
+        assert_eq!(builds.len(), 1);
+        assert_eq!(builds[0].id, canonical_id);
+        assert_eq!(builds[0].aliases, 2);
+        assert_eq!(builds[0].source_root, plain_root);
+        assert!(registry_path(&library).exists());
+        assert_eq!(build_snapshots(&library).unwrap()[&canonical_id].len(), 2);
+        assert_eq!(latest_snapshot(&library, &canonical_id, Path::new(plain_root))
+            .unwrap().unwrap().members["Game/example.pak"].sha256, format!("{:064x}", 2));
+        let renamed = rename_managed_library_build(
+            &library, &canonical_id, plain_root, "Stage 2 Production",
+        ).unwrap();
+        assert_eq!(renamed[0].display_name, "Stage 2 Production");
+        assert_eq!(managed_library_builds(&library).unwrap()[0].display_name, "Stage 2 Production");
+        assert_eq!(fs::read(history.join(&old_id).join(format!("snapshot-{:025}.json", 1))).unwrap(), previous);
+        assert!(remove_managed_library_build(&library, &canonical_id, "wrong").is_err());
+        let removal = remove_managed_library_build(&library, &canonical_id, plain_root).unwrap();
+        assert_eq!(removal.deleted_snapshots, 2);
+        assert!(!history.join(old_id).exists());
+        assert!(!history.join(canonical_id).exists());
+    }
+
+    #[test]
+    fn legacy_collections_can_be_renamed_and_unlinked_without_deleting_archive_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(&library).unwrap();
+        let marker = library.join("keep-original-extraction.dat");
+        fs::write(&marker, b"preserve").unwrap();
+        fs::write(library.join("build-collections.json"), serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "builds": {
+                "legacy-2012": {"label": "Legacy", "members": {}},
+                "unassigned": {"label": "Unassigned", "members": {}}
+            }
+        })).unwrap()).unwrap();
+        let builds = managed_library_builds(&library).unwrap();
+        assert_eq!(builds.len(), 1);
+        assert_eq!(builds[0].id, "legacy:legacy-2012");
+        rename_managed_library_build(&library, &builds[0].id, &builds[0].source_root, "Legacy 2012").unwrap();
+        assert_eq!(managed_library_builds(&library).unwrap()[0].display_name, "Legacy 2012");
+        let report = remove_managed_library_build(&library, &builds[0].id, &builds[0].source_root).unwrap();
+        assert_eq!(report.removed_archives, 0);
+        assert_eq!(fs::read(&marker).unwrap(), b"preserve");
+        assert!(legacy_collection_document(&library).unwrap().unwrap()["builds"]["unassigned"].is_object());
+        assert!(managed_library_builds(&library).unwrap().is_empty());
     }
 
     #[test]
