@@ -14,6 +14,7 @@ pub mod character_folder_fbx;
 pub mod character_unified_fbx;
 pub mod client_hook;
 pub mod converter;
+pub mod converted_glb_transfer;
 pub mod cryxml;
 pub mod dds;
 pub mod dependency_graph;
