@@ -174,9 +174,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             } else {
                 "Manage Game Builds"
             })
-                .style(design::secondary)
-                .on_press_maybe((!state.busy && !state.library_import_scanning)
-                    .then_some(Message::LibraryManageBuildsToggle)),
+            .style(design::secondary)
+            .on_press_maybe(
+                (!state.busy && !state.library_import_scanning)
+                    .then_some(Message::LibraryManageBuildsToggle)
+            ),
             design::button("Storage Settings")
                 .style(design::secondary)
                 .on_press(Message::OpenLibrarySettings),
@@ -195,7 +197,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     "{} · {}{}",
                     if change.was_present { "Updated" } else { "New" },
                     change.relative,
-                    if change.reuse_archive_id.is_some() { " (already imported — reuse)" } else { "" }
+                    if change.reuse_archive_id.is_some() {
+                        " (already imported — reuse)"
+                    } else {
+                        ""
+                    }
                 ))
                 .size(11)
                 .style(design::muted),
@@ -264,7 +270,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .style(design::muted),
         );
     }
-
 
     if state.library_manage_builds_open {
         let mut builds = column![

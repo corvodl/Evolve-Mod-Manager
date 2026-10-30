@@ -94,22 +94,21 @@ use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsFormat, DdsInfo, DependencyGraph,
     EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
-    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryBuildUpdatePlan,
-    LibraryBuildUpdateReport, LibraryBuildRemovalReport, LibraryImportPlan, LibraryReferenceStatus,
-    ManagedLibraryBuild, MaterialReport,
-    ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog,
-    ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
-    VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_library_build_updates,
-    apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
-    convert_original_motion, create_mod_profile, decode_dds_rgba, discover_equipment,
-    export_dds_png, export_level_scene_glb, export_rigged_character_fbx_textured_animated,
-    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
-    import_library_plan_with_keys, import_stage_pak, imported_archive_files, imported_library,
-    managed_library_builds, remove_managed_library_build,
-    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
-    inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
-    plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
-    read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf,
+    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryBuildRemovalReport,
+    LibraryBuildUpdatePlan, LibraryBuildUpdateReport, LibraryImportPlan, LibraryReferenceStatus,
+    ManagedLibraryBuild, MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport,
+    PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
+    StageTransaction, TerrainInfo, VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile,
+    apply_library_build_updates, apply_profile_stage, apply_stage_pak, batch_stage_status,
+    compare_assets, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
+    decode_dds_rgba, discover_equipment, export_dds_png, export_level_scene_glb,
+    export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
+    extract_signed_pak, import_library_plan_with_keys, import_stage_pak, imported_archive_files,
+    imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
+    inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
+    managed_library_builds, material_texture_candidates, plan_mod_profile, prepare_client_hook,
+    read_cdf, read_material, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
+    rebuild_signed_pak_entry, remove_managed_library_build, resign_signed_pak, resolve_cdf,
     resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
     scan_directory, scan_directory_with_progress, scan_library_build_updates,
     scan_library_import_sources, stage_status,
@@ -1020,7 +1019,11 @@ impl Operation {
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
             Self::ApplyLibraryBuildUpdates(root, plan, stage, cancelled, progress) => {
-                let keys = if plan.changed.iter().any(|part| part.reuse_archive_id.is_none()) {
+                let keys = if plan
+                    .changed
+                    .iter()
+                    .any(|part| part.reuse_archive_id.is_none())
+                {
                     modding_keys::archive_verification_keys(&stage)?.paths
                 } else {
                     Vec::new()
@@ -1034,7 +1037,9 @@ impl Operation {
                 let report = remove_managed_library_build(&root, &id, &source_root)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 let builds = managed_library_builds(&root)?;
-                Ok(Completed::ManagedLibraryBuildRemoved(report, catalog, builds))
+                Ok(Completed::ManagedLibraryBuildRemoved(
+                    report, catalog, builds,
+                ))
             }
             Self::ImportSignedLibraryPlan(root, plan, stage, cancelled, progress) => {
                 // Keep the original signed-archive authentication path.
@@ -4336,7 +4341,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         },
         Message::LibraryDeleteBuildConfirm(id) => {
-            if !state.busy && state.library_managed_builds.iter().any(|build| build.id == id) {
+            if !state.busy
+                && state
+                    .library_managed_builds
+                    .iter()
+                    .any(|build| build.id == id)
+            {
                 state.library_delete_build_confirm = Some(id);
             }
         }
@@ -4344,12 +4354,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_delete_build_confirm = None;
         }
         Message::LibraryDeleteBuildNow(id) => {
-            if state.busy || state.library_import_scanning
+            if state.busy
+                || state.library_import_scanning
                 || state.library_delete_build_confirm.as_deref() != Some(id.as_str())
             {
                 return Task::none();
             }
-            let Some(build) = state.library_managed_builds.iter()
+            let Some(build) = state
+                .library_managed_builds
+                .iter()
                 .find(|build| build.id == id)
                 .cloned()
             else {
