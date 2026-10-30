@@ -531,3 +531,93 @@ impl RiggedGlbPreview {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn preview_doc() -> (Value, Vec<u8>) {
+        let mut bytes = Vec::new();
+        let mut views = Vec::new();
+        let mut add = |data: Vec<u8>| {
+            let offset = bytes.len();
+            bytes.extend_from_slice(&data);
+            let index = views.len();
+            views.push(json!({"buffer":0, "byteOffset":offset, "byteLength":data.len()}));
+            index
+        };
+        let packed_f32 = |values: &[f32]| {
+            values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()
+        };
+        let packed_u16 = |values: &[u16]| {
+            values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()
+        };
+        let pos = add(packed_f32(&[0.,0.,0.,1.,0.,0.,0.,1.,0.]));
+        let ids = add(packed_u16(&[0,0,0,0,0,0,0,0,0,0,0,0]));
+        let weights = add(packed_f32(&[1.,0.,0.,0.,1.,0.,0.,0.,1.,0.,0.,0.]));
+        let uv = add(packed_f32(&[0.,0.,1.,0.,0.,1.]));
+        let indices = add(packed_u16(&[0,1,2]));
+        let inverse_bind = add(packed_f32(&[
+            1.,0.,0.,0., 0.,1.,0.,0., 0.,0.,1.,0., 0.,0.,0.,1.
+        ]));
+        let doc = json!({
+            "nodes":[
+                {"name":"converted_mesh","mesh":0,"skin":0},
+                {"name":"rig_root"}
+            ],
+            "skins":[{"joints":[1], "inverseBindMatrices":5}],
+            "meshes":[{"primitives":[{"mode":4,
+                "attributes":{
+                    "POSITION":0, "JOINTS_0":1, "WEIGHTS_0":2, "TEXCOORD_0":3
+                }, "indices":4
+            }]}],
+            "accessors":[
+                {"bufferView":pos,"componentType":5126,"count":3,"type":"VEC3"},
+                {"bufferView":ids,"componentType":5123,"count":3,"type":"VEC4"},
+                {"bufferView":weights,"componentType":5126,"count":3,"type":"VEC4"},
+                {"bufferView":uv,"componentType":5126,"count":3,"type":"VEC2"},
+                {"bufferView":indices,"componentType":5123,"count":3,"type":"SCALAR"},
+                {"bufferView":inverse_bind,"componentType":5126,"count":1,"type":"MAT4"}
+            ],
+            "bufferViews":views
+        });
+        (doc, bytes)
+    }
+
+    #[test]
+    fn sampled_converter_joint_deforms_actual_vertices_but_preserves_mesh_topology_and_uv() {
+        let (doc, binary) = preview_doc();
+        let rig = RiggedGlbPreview::from_doc(&doc, &binary).unwrap();
+        let rest = rig.mesh_at(&[]).unwrap();
+        let moved = rig.mesh_at(&[PoseSample {
+            node: 1,
+            path: "translation".into(),
+            value: vec![2., 0., 0.],
+        }]).unwrap();
+        assert_eq!(rest.positions.len(), 3);
+        assert_eq!(moved.positions[0], [2., 0., 0.]);
+        assert_eq!(moved.positions[1], [3., 0., 0.]);
+        assert_eq!(moved.positions[2], [2., 0., 1.]);
+        assert_eq!(rest.indices, moved.indices);
+        assert_eq!(rest.uv0, moved.uv0);
+    }
+
+    #[test]
+    fn rejects_malformed_weights_hierarchy_and_non_matching_joint_data() {
+        let (mut doc, binary) = preview_doc();
+        doc["skins"][0]["joints"] = json!([2]);
+        assert!(RiggedGlbPreview::from_doc(&doc, &binary).is_err());
+        let (mut doc, binary) = preview_doc();
+        doc["nodes"][0]["children"] = json!([1]);
+        doc["nodes"][1]["children"] = json!([0]);
+        assert!(RiggedGlbPreview::from_doc(&doc, &binary).is_err());
+        let (doc, binary) = preview_doc();
+        let rig = RiggedGlbPreview::from_doc(&doc, &binary).unwrap();
+        assert!(rig.mesh_at(&[PoseSample {
+            node: 9000,
+            path: "rotation".into(),
+            value: vec![0.,0.,0.,1.],
+        }]).is_err());
+    }
+}
