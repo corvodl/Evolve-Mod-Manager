@@ -726,6 +726,25 @@ mod tests {
     use crate::inventory::{AssetEntry, AssetKind};
 
     #[test]
+    fn world_vehicle_texture_lookup_does_not_use_unrelated_basename() {
+        let result = scoped_texture_candidates(
+            "allterraincar01.tif",
+            "objects/man_made/vehicles/allterraincar01/allterraincar01.mtl",
+        ).unwrap();
+        assert_eq!(result[0],
+            "objects/man_made/vehicles/allterraincar01/allterraincar01.dds.0");
+        assert!(result.iter().any(|p|
+            p == "objects/man_made/vehicles/allterraincar01/allterraincar01.dds"));
+        assert!(!result.iter().any(|p| p.contains("vehicles/other_car/")));
+        let spec = scoped_texture_candidates(
+            "allterraincar01_spec.tif",
+            "objects/man_made/vehicles/allterraincar01/allterraincar01.mtl",
+        ).unwrap();
+        assert_eq!(spec[0],
+            "objects/man_made/vehicles/allterraincar01/allterraincar01_spec.dds.0");
+    }
+
+    #[test]
     fn authored_alpha_test_cutoff_is_per_leaf_and_does_not_change_opacity() {
         let doc = parse_material(br#"<Material><SubMaterials>
             <Material Name="Leaves" Shader="Vegetation" Opacity="1" AlphaTest="0.72"/>
