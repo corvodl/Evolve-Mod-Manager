@@ -290,8 +290,8 @@ fn prefetch_world_diffuse(
         for surface in &group.surfaces {
             if !surface.visible
                 || surface.index_count == 0
-                || (surface.first_index as usize)
-                    .saturating_add(surface.index_count as usize) > group.mesh.indices.len()
+                || (surface.first_index as usize).saturating_add(surface.index_count as usize)
+                    > group.mesh.indices.len()
             {
                 continue;
             }
@@ -309,8 +309,7 @@ fn prefetch_world_diffuse(
         // Full quality intentionally has no software texture memory ceiling.
         // Upload every distinct original diffuse before optional MTL channels.
         for (key, image, terrain) in sources {
-            let Some(selected) =
-                gpu_diffuse_quality(image, terrain, max_size, true, u64::MAX)
+            let Some(selected) = gpu_diffuse_quality(image, terrain, max_size, true, u64::MAX)
             else {
                 continue;
             };
@@ -358,13 +357,7 @@ fn prefetch_world_diffuse(
         } else {
             quota.saturating_mul(3) / 4
         };
-        let source = gpu_diffuse_quality(
-            original,
-            terrain,
-            max_size,
-            full,
-            source_budget,
-        );
+        let source = gpu_diffuse_quality(original, terrain, max_size, full, source_budget);
         let Some(source) = source else {
             continue;
         };
