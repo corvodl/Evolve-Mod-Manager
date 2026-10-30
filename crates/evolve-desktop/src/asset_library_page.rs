@@ -2,7 +2,7 @@
 //! extracted Asset Library files remain read-only; mod editing lives elsewhere.
 use super::{Message, Page, State};
 use crate::design;
-use iced::widget::{column, container, row, scrollable, space, text};
+use iced::widget::{column, container, mouse_area, row, scrollable, space, stack, text};
 use iced::{Background, Border, Element, Fill, Length};
 use std::path::Path;
 
@@ -271,50 +271,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         );
     }
 
-    if state.library_manage_builds_open {
-        let mut builds = column![
-            text("MANAGE IMPORTED GAME BUILDS").size(15),
-            text("Remove historical build snapshots and unused, unshared extracted PAKs. Shared PAKs, installed game directories, signed staging, and editable mod projects are preserved.")
-                .size(11).style(design::muted),
-            design::button("Refresh managed builds").on_press(Message::LibraryManageBuildsRefresh),
-        ].spacing(7);
-        if state.library_managed_builds.is_empty() {
-            builds = builds.push(
-                text("No incremental build snapshots listed. Legacy build collections and standalone PAK imports are not removed from this panel.")
-                    .size(12).style(design::muted),
-            );
-        }
-        for build in &state.library_managed_builds {
-            builds = builds.push(
-                column![
-                    text(format!("{} [{}]", build.source_root, &build.id[..8])).size(12),
-                    text(format!(
-                        "{} current PAKs · {:.2} GiB indexed · {} unshared extractions, {:.2} GiB potentially reclaimable",
-                        build.pak_count,
-                        build.extracted_bytes as f64 / 1_073_741_824.0,
-                        build.reclaimable_paks,
-                        build.reclaimable_bytes as f64 / 1_073_741_824.0
-                    )).size(11).style(design::muted),
-                    if state.library_delete_build_confirm.as_deref() == Some(build.id.as_str()) {
-                        row![
-                            text("Confirm removing this imported build and its unshared extractions?").size(11),
-                            design::button("Confirm Delete")
-                                .on_press_maybe((!state.busy && !state.library_import_scanning)
-                                    .then_some(Message::LibraryDeleteBuildNow(build.id.clone()))),
-                            design::button("Cancel").on_press(Message::LibraryDeleteBuildCancel),
-                        ].spacing(8).align_y(iced::Alignment::Center)
-                    } else {
-                        row![
-                            design::button("Delete Imported Build")
-                                .on_press_maybe((!state.busy && !state.library_import_scanning)
-                                    .then_some(Message::LibraryDeleteBuildConfirm(build.id.clone()))),
-                        ].spacing(8)
-                    },
-                ].spacing(5)
-            );
-        }
-        layout = layout.push(panel(container(builds).padding(12)));
-    }
 
     if state.library_show_configuration {
         let picking = state.library_import_scanning;
@@ -557,11 +513,106 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         Some("Tools") => 142.0,
         _ => 16.0,
     };
-    crate::menu_popup::overlay(
+    let page = crate::menu_popup::overlay(
         layout.width(Fill).height(Fill),
         menu_details,
         x,
         127.0,
         280.0,
-    )
+    );
+    if !state.library_manage_builds_open {
+        return page;
+    }
+    // A floating modal never reallocates space in the archive table.
+    let backdrop = mouse_area(container(space().width(Fill).height(Fill)))
+        .on_press(Message::LibraryManageBuildsToggle);
+    let dialog = container(scrollable(manage_builds_dialog(state)).height(Length::Shrink))
+        .padding(18)
+        .width(Length::Fixed(820.0))
+        .max_height(670)
+        .style(|theme| container::Style {
+            background: Some(Background::Color(design::surface(theme))),
+            border: Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..container::Style::default()
+        });
+    let center = container(dialog).width(Fill).height(Fill).center_x(Fill).center_y(Fill);
+    stack![page, backdrop, center].into()
+}
+
+fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
+    let mut content = column![
+        row![
+            text("Manage Game Builds").size(21),
+            space().width(Fill),
+            design::button("Close").style(design::secondary)
+                .on_press(Message::LibraryManageBuildsToggle),
+        ].align_y(iced::Center).spacing(8),
+        text("Rename registered builds, refresh imported PAKs or remove obsolete library snapshots. Original game installations and mod projects are never deleted.")
+            .size(12).style(design::muted),
+        row![
+            text(format!("{} registered build(s)", state.library_managed_builds.len())).size(12),
+            space().width(Fill),
+            design::button("Import / Update Build…").style(design::secondary)
+                .on_press_maybe((!state.busy && !state.library_import_scanning)
+                    .then_some(Message::LibraryUpdatePickFolder)),
+            design::button("Refresh").style(design::secondary)
+                .on_press(Message::LibraryManageBuildsRefresh),
+        ].align_y(iced::Center).spacing(8),
+    ].spacing(12);
+    if state.library_managed_builds.is_empty() {
+        content = content.push(
+            text("No managed incremental build snapshots found. Older standalone PAK imports remain available in Asset Library.")
+                .size(12).style(design::muted),
+        );
+    }
+    for build in &state.library_managed_builds {
+        let editing = state.library_rename_build.as_deref() == Some(build.id.as_str());
+        let deleting = state.library_delete_build_confirm.as_deref() == Some(build.id.as_str());
+        let mut item = column![
+            text(if build.display_name.is_empty() {
+                build.source_root.clone()
+            } else {
+                build.display_name.clone()
+            }).size(15),
+            text(format!("Source: {}", build.source_root)).size(12).style(design::muted),
+            text(format!(
+                "{} PAKs • {:.2} GiB extracted • {} history ID(s) • {:.2} GiB potentially reclaimable",
+                build.pak_count,
+                build.extracted_bytes as f64 / 1_073_741_824.0,
+                build.aliases,
+                build.reclaimable_bytes as f64 / 1_073_741_824.0
+            )).size(11).style(design::muted),
+        ].spacing(5);
+        if editing {
+            item = item.push(row![
+                design::text_input("Build display name…", &state.library_rename_value)
+                    .on_input(Message::LibraryRenameBuildValue).width(Fill),
+                design::button("Save Name").style(design::primary)
+                    .on_press_maybe((!state.busy).then_some(Message::LibraryRenameBuildSave(build.id.clone()))),
+                design::button("Cancel").on_press(Message::LibraryRenameBuildCancel),
+            ].align_y(iced::Center).spacing(7));
+        } else if deleting {
+            item = item.push(column![
+                text("Remove the imported snapshot history and only proven unshared extractions? Original Evolve files will remain untouched.").size(12),
+                row![
+                    design::button("Confirm Remove").style(design::primary)
+                        .on_press_maybe((!state.busy).then_some(Message::LibraryDeleteBuildNow(build.id.clone()))),
+                    design::button("Cancel").on_press(Message::LibraryDeleteBuildCancel),
+                ].spacing(8),
+            ].spacing(7));
+        } else {
+            item = item.push(row![
+                design::button("Rename").style(design::secondary)
+                    .on_press_maybe((!state.busy).then_some(Message::LibraryRenameBuildBegin(build.id.clone()))),
+                design::button("Remove Imported Build").style(design::secondary)
+                    .on_press_maybe((!state.busy).then_some(Message::LibraryDeleteBuildConfirm(build.id.clone()))),
+            ].spacing(8));
+        }
+        content = content.push(panel(container(item).padding(12)));
+    }
+    content.into()
 }
