@@ -126,7 +126,12 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                 design::button("Open CAF").on_press(Message::StartCafLoad),
                 design::button(if state.playing {
                     "Pause"
-                } else if state.glb_motion.is_some() && state.native_caf.is_none() {
+                } else if state
+                    .glb_motion
+                    .as_ref()
+                    .is_some_and(|motion| !motion.has_skinned_preview())
+                    && state.native_caf.is_none()
+                {
                     "Inspect track"
                 } else {
                     "Play model"
