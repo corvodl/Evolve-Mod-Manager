@@ -8,7 +8,8 @@ use crate::{
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
     imported_archive_preview_inventory, imported_library, parse_level_scene, read_terrain,
-    read_terrain_paint, read_terrain_texture_atlas, read_terrain_texture_header, scan_directory,
+    read_terrain_paint, read_terrain_rgb24_tiles, read_terrain_texture_atlas,
+    read_terrain_texture_header, scan_directory,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -145,11 +146,26 @@ fn imported_terrain_member(
     auto_resources::exact(inventory, relative, None, None)
 }
 
+#[derive(Clone, Debug)]
+enum TerrainResource {
+    Cry(PathBuf),
+    Rgb24([PathBuf; 4]),
+}
+
+impl TerrainResource {
+    fn file(&self) -> Option<&Path> {
+        match self {
+            Self::Cry(path) => Some(path),
+            Self::Rgb24(_) => None,
+        }
+    }
+}
+
 fn imported_map_terrain(
     selected: &ImportedPak,
     folder: &str,
     member_name: &str,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<TerrainResource>, String> {
     let Some(game) = source_game_root(selected) else {
         return Ok(None);
     };
@@ -161,7 +177,7 @@ fn imported_map_terrain(
         return Err("Selected map belongs to multiple imported builds; choose a specific build before resolving terrain".into());
     }
     let selected_build = selected.builds.first().map(String::as_str);
-    let mut found = Vec::new();
+    let mut found: Vec<TerrainResource> = Vec::new();
     let mut matching_pak_details = Vec::new();
     let mut matching_pak_members = Vec::new();
     for archive in &library.archives {
@@ -195,7 +211,7 @@ fn imported_map_terrain(
                 &format!("{folder}/TerrainTexture.xml"),
             ] {
                 if let Some(path) = imported_terrain_member(&inventory, relative)? {
-                    found.push(path);
+                    found.push(TerrainResource::Cry(path));
                 }
             }
         } else if member_name.eq_ignore_ascii_case("terraintexture.pak") && is_terrain_pak {
@@ -219,13 +235,41 @@ fn imported_map_terrain(
                     continue;
                 };
                 if read_terrain_texture_header(&path).is_ok() {
-                    found.push(path);
+                    found.push(TerrainResource::Cry(path));
                 }
+            }
+            // Other builds use a four-member RGB24 tile container rather
+            // than the raw CRY quadtree. The uploaded Tutorial source proves
+            // the exact layout: files/tile0_0.raw through files/tile1_1.raw.
+            // Detect either accepted in-archive prefix, but never piece
+            // together tiles from different archives or source installations.
+            for prefix in ["", "files/"] {
+                let members = ["tile0_0.raw", "tile1_0.raw", "tile0_1.raw", "tile1_1.raw"]
+                    .map(|name| format!("{prefix}{name}"));
+                let present = members.map(|name| {
+                    inventory.entries.iter().any(|entry| entry.relative_path.eq_ignore_ascii_case(&name))
+                });
+                if present.iter().all(|present| !present) {
+                    continue;
+                }
+                if present.iter().any(|present| !present) {
+                    return Err(format!(
+                        "Imported {} for {folder} has an incomplete four-tile RGB24 terrain set ({}); expected every tile0_0, tile1_0, tile0_1, tile1_1 in one verified PAK",
+                        archive.name, prefix
+                    ));
+                }
+                let mut verified = Vec::with_capacity(4);
+                for name in &members {
+                    let path = imported_terrain_member(&inventory, name)?.ok_or_else(|| {
+                        format!("Missing verified RGB24 terrain member {name} in {}", archive.name)
+                    })?;
+                    verified.push(path);
+                }
+                let tiles: [PathBuf; 4] = verified.try_into().map_err(|_| "Invalid RGB24 tile count")?;
+                found.push(TerrainResource::Rgb24(tiles));
             }
         }
     }
-    found.sort();
-    found.dedup();
     match found.len() {
         0 if !matching_pak_details.is_empty() => Err(format!(
             "Imported {} for {folder}, but none of its extracted members has a valid CRY baked-terrain tile header. The imported ZIP/signed archive's member layout must be decoded explicitly rather than feeding the outer PAK to the raw tile decoder. Imported files: {}",
@@ -247,9 +291,10 @@ fn terrain_resource(
     map: &MapCandidate,
     manifest_entry: Option<&PathBuf>,
     member_name: &str,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<TerrainResource>, String> {
     if let Some(relative) = manifest_entry {
-        return verified_source(source_root, relative, 2 * 1024 * 1024 * 1024).map(Some);
+        return verified_source(source_root, relative, 2 * 1024 * 1024 * 1024)
+            .map(|path| Some(TerrainResource::Cry(path)));
     }
     let folder = map_virtual_folder(map)
         .ok_or_else(|| "Cannot determine the original map's virtual folder".to_owned())?;
@@ -273,7 +318,7 @@ fn terrain_resource(
         if let Some(path) =
             auto_resources::exact(selected_inventory, &requested, library_root, build)?
         {
-            return Ok(Some(path));
+            return Ok(Some(TerrainResource::Cry(path)));
         }
     }
     // The original source archive's folder may define the virtual prefix.
