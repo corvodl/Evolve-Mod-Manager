@@ -841,7 +841,7 @@ fn resolve_imported_reference_scoped(
     }
     // A high-resolution .dds.0 has priority over .dds, but never prefer one
     // archive over another with the same exact relative texture path.
-    let mut hits = found
+    let hits = found
         .into_iter()
         .find(|group| !group.is_empty())
         .unwrap_or_default();
