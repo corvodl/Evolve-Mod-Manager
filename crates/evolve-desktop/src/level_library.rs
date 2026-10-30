@@ -670,34 +670,35 @@ fn open_selected(
             ),
             Err(error) => diagnostics.push(format!("Terrain paint data unsupported: {error}")),
         }
-        match (&terrain_xml, &terrain_pak) {
-            (Some(xml), Some(pak)) => match read_terrain_texture_header(pak) {
-                Ok(header) => {
-                    diagnostics.push(format!(
-                        "Original map-owned baked terrain v{} found in the imported build ({} texture layers; formats/sizes: {}). TerrainTexture.xml: {}",
-                        header.version, header.layers.len(),
-                        header.layers.iter().map(|layer| format!(
-                            "{}×{} / format {} / {} bytes",
-                            layer.sector_pixels, layer.sector_pixels,
-                            layer.texture_format, layer.sector_bytes
-                        )).collect::<Vec<_>>().join("; "),
-                        xml.display()
-                    ));
-                }
+        match &terrain_pak {
+            Some(TerrainResource::Cry(pak)) => match read_terrain_texture_header(pak) {
+                Ok(header) => diagnostics.push(format!(
+                    "Original map-owned baked CRY terrain v{} found ({} layers, {} sectors).",
+                    header.version,
+                    header.layers.len(),
+                    header.layers.iter().map(|layer| format!(
+                        "{}×{} / format {} / {} bytes",
+                        layer.sector_pixels, layer.sector_pixels,
+                        layer.texture_format, layer.sector_bytes,
+                    )).collect::<Vec<_>>().join("; ")
+                )),
                 Err(error) => diagnostics.push(format!(
                     "Original baked terrain package {} could not be decoded: {error}",
                     pak.display()
                 )),
             },
-            (Some(_), None) => diagnostics.push(
-                "Original baked ground color unavailable: map-owned terraintexture.pak missing from the selected imported build. Import the matching map terrain PAK; another map's atlas must not be substituted.".into()
+            Some(TerrainResource::Rgb24 { paths, side }) => diagnostics.push(format!(
+                "Original map-owned baked terrain RGB24 tile grid: {side}×{side} ({} verified imported raw members).",
+                paths.len()
+            )),
+            None => diagnostics.push(
+                "Original baked terrain color unavailable: no verified map-owned CRY tile stream or complete RGB24 tile grid in the selected build.".into()
             ),
-            (None, Some(_)) => diagnostics.push(
-                "Original baked ground color unavailable: map-owned TerrainTexture.xml missing from the selected imported build. Import the matching map terrain metadata.".into()
-            ),
-            (None, None) => diagnostics.push(
-                "Original baked ground color unavailable: both map-owned TerrainTexture.xml and terraintexture.pak are missing from the selected imported build. The terrain layer-ID bitmap does not include baked ground color.".into()
-            ),
+        }
+        if terrain_xml.is_none() {
+            diagnostics.push(
+                "Original map TerrainTexture.xml is not available; the baked ground color can still be decoded from a complete RGB24 tile grid.".into()
+            );
         }
         match read_terrain(&exact, 129) {
             Ok(data) => {
@@ -741,10 +742,13 @@ fn open_selected(
         project_inventory.as_ref(),
     )?;
     if terrain.is_some()
-        && terrain_xml.is_some()
         && let Some(package) = &terrain_pak
     {
-        match read_terrain_texture_atlas(package).map_err(|err| err.to_string()) {
+        let decoded = match package {
+            TerrainResource::Cry(path) => read_terrain_texture_atlas(path),
+            TerrainResource::Rgb24 { paths, side } => read_terrain_rgb24_tiles(paths, *side),
+        };
+        match decoded.map_err(|err| err.to_string()) {
             Ok(atlas) => {
                 let mut applied = false;
                 if let (Some(assembled), Some((terrain_mesh, _))) =
@@ -772,8 +776,9 @@ fn open_selected(
                     assembled.world = std::sync::Arc::new(world);
                 }
                 diagnostics.push(format!(
-                    "Original baked terrain: decoded {} indexed surface tiles (BC/RGBA format {}) into 2048×2048 ground-color atlas. {}",
+                    "Original baked terrain: decoded {} tiles (format {}) into {}×{} ground-color atlas. {}",
                     atlas.decoded_tiles, atlas.color_format,
+                    atlas.image.width(), atlas.image.height(),
                     if applied { "Applied to terrain GPU material." }
                     else { "No verified terrain material span to receive the color atlas." }
                 ));
@@ -931,8 +936,8 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(std::fs::read(xml).unwrap(), b"XML!");
-        assert_eq!(std::fs::read(pak).unwrap(), b"PAK!");
+        assert_eq!(std::fs::read(xml.file().unwrap()).unwrap(), b"XML!");
+        assert_eq!(std::fs::read(pak.file().unwrap()).unwrap(), b"PAK!");
         assert!(
             terrain_resource(
                 source_root,
@@ -1077,7 +1082,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(std::fs::read(xml).unwrap(), b"<TerrainTexture/>");
+        assert_eq!(std::fs::read(xml.file().unwrap()).unwrap(), b"<TerrainTexture/>");
         let pak = terrain_resource(
             root,
             selected,
@@ -1088,9 +1093,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(pak.starts_with(&library_root));
-        assert_eq!(read_terrain_texture_header(&pak).unwrap().version, 9);
-        assert_eq!(read_terrain_texture_atlas(&pak).unwrap().decoded_tiles, 1);
+        let path = pak.file().unwrap();
+        assert!(path.starts_with(&library_root));
+        assert_eq!(read_terrain_texture_header(path).unwrap().version, 9);
+        assert_eq!(read_terrain_texture_atlas(path).unwrap().decoded_tiles, 1);
     }
 
     #[test]
