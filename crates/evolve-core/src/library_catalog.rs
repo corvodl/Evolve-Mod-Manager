@@ -3,6 +3,7 @@
 //! files or an assertion that the imported files are still byte-for-byte valid.
 use crate::archive::safe_member_name;
 use crate::inventory::{AssetEntry, Inventory, classify_path};
+use crate::library_paths::ordinary_path;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -244,7 +245,8 @@ fn manifests_by_build(root: &Path) -> Result<HashMap<String, Vec<String>>, Libra
             if members.len() > MAX_ARCHIVES {
                 continue;
             }
-            let chunks = root_path
+            let normalized_root = ordinary_path(root_path);
+            let chunks = normalized_root
                 .split(['/', '\\'])
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>();
@@ -337,8 +339,8 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
         archives.push(ImportedPak {
             id: id.into(),
             name: manifest.name,
-            source: manifest.source,
-            directory: folder.to_string_lossy().into_owned(),
+            source: ordinary_path(&manifest.source),
+            directory: ordinary_path(&folder.to_string_lossy()),
             group,
             description,
             entries: manifest.entries.len(),
@@ -360,7 +362,7 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
     builds.sort_unstable();
     builds.dedup();
     Ok(ImportedLibrary {
-        root: root.to_string_lossy().into_owned(),
+        root: ordinary_path(&root.to_string_lossy()),
         archives,
         builds,
         total_bytes,
