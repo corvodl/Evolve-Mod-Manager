@@ -325,6 +325,7 @@ fn neutral(first_index: u32, index_count: u32) -> Surface {
         index_count,
         visible: true,
         transparent: false,
+        foliage_cutout: false,
         diffuse: None,
         normal: None,
         emissive: None,
