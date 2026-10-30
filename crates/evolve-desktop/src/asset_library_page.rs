@@ -313,9 +313,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             let mut filenames = column![];
             for path in plan.files.iter().take(10) {
                 filenames = filenames.push(
-                    text(evolve_core::library_paths::ordinary_path(&path.to_string_lossy()))
-                        .size(11)
-                        .style(design::muted),
+                    text(evolve_core::library_paths::ordinary_path(
+                        &path.to_string_lossy(),
+                    ))
+                    .size(11)
+                    .style(design::muted),
                 );
             }
             if plan.files.len() > 10 {
