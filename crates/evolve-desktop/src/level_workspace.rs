@@ -476,8 +476,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .on_press(Message::LevelFullTexturesToggled),
             text(if let Some(source) = state.level_world.as_ref()
                 .and_then(|world| world.time_of_day.as_ref()) {
-                format!("Original TimeOfDay.xml: {} variables, {} animated splines, {} out-of-day editor keys ignored. Preview samples source sun/sky values; CryEngine fog, HDR, GI and spline tangents unavailable.",
-                    source.count(), source.keyed_variables, source.ignored_out_of_range_keys)
+                format!("Original TimeOfDay.xml: {} variables, {} animated splines, {} out-of-day editor keys ignored; {}. Source sun/sky and tangent-aware curves are preview approximations; native CryEngine particles, fog, HDR, GI and shaders are not rendered.",
+                    source.count(), source.keyed_variables, source.ignored_out_of_range_keys, source.playback_window_description())
             } else {
                 "No verified original TimeOfDay.xml; using approximate lighting.".to_owned()
             })

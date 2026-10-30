@@ -99,6 +99,10 @@ impl Curve {
 #[derive(Clone, Debug)]
 pub(super) struct TimeOfDay {
     pub initial_hour: f32,
+    /// Source's playback bounds and speed, for inspection only. The map
+    /// preview deliberately keeps its manual 0–24 hour slider independent.
+    pub playback_window: Option<(f32, f32, f32)>,
+    pub invalid_playback_window: bool,
     curves: BTreeMap<String, Curve>,
     pub keyed_variables: usize,
     /// Out-of-day keys in the source XML skipped without modifying original data.
@@ -211,6 +215,8 @@ impl TimeOfDay {
         let mut curves = BTreeMap::new();
         let mut pending: Option<(String, Curve)> = None;
         let mut initial_hour = 12.0;
+        let mut playback_window = None;
+        let mut invalid_playback_window = false;
         let mut ignored_out_of_range_keys = 0;
         let mut valid_root = false;
         loop {
@@ -225,6 +231,29 @@ impl TimeOfDay {
                             .map_err(|_| "Bad original current time")?;
                         if !initial_hour.is_finite() || !(0.0..=24.0).contains(&initial_hour) {
                             return Err("Original current hour invalid".into());
+                        }
+                    }
+                    let start = attribute(&e, b"TimeStart")?;
+                    let end = attribute(&e, b"TimeEnd")?;
+                    let speed = attribute(&e, b"TimeAnimSpeed")?;
+                    if start.is_some() || end.is_some() || speed.is_some() {
+                        let parsed = start
+                            .and_then(|v| v.parse::<f32>().ok())
+                            .zip(end.and_then(|v| v.parse::<f32>().ok()))
+                            .zip(speed.and_then(|v| v.parse::<f32>().ok()));
+                        if let Some(((start, end), speed)) =
+                            parsed.filter(|((start, end), speed)| {
+                                start.is_finite()
+                                    && end.is_finite()
+                                    && speed.is_finite()
+                                    && (0.0..=24.0).contains(start)
+                                    && (0.0..=24.0).contains(end)
+                                    && start <= end
+                            })
+                        {
+                            playback_window = Some((start, end, speed));
+                        } else {
+                            invalid_playback_window = true;
                         }
                     }
                 }
@@ -285,6 +314,8 @@ impl TimeOfDay {
         let keyed_variables = curves.values().filter(|v| v.keys.len() > 1).count();
         Ok(Self {
             initial_hour,
+            playback_window,
+            invalid_playback_window,
             curves,
             keyed_variables,
             ignored_out_of_range_keys,
@@ -304,6 +335,18 @@ impl TimeOfDay {
     }
     pub fn count(&self) -> usize {
         self.curves.len()
+    }
+    pub fn playback_window_description(&self) -> String {
+        if self.invalid_playback_window {
+            return "authored playback window malformed (manual 0–24h preview retained)".into();
+        }
+        match self.playback_window {
+            Some((start, end, speed)) => format!(
+                "authored playback {:.2}–{:.2}h at speed {:.3} (manual preview)",
+                start, end, speed
+            ),
+            None => "no authored playback window (manual 0–24h preview)".into(),
+        }
     }
 }
 #[derive(Clone, Debug, Default)]
@@ -381,6 +424,26 @@ mod tests {
         assert_eq!(parsed.scalar("Sun color multiplier", 24.0), Some(0.04));
         assert_eq!(parsed.color("Sky color", 24.0), Some([0.2, 0.3, 0.4]));
         assert_eq!(parsed.scalar("Sun color multiplier", 12.0), Some(9.3));
+    }
+    #[test]
+    fn source_playback_window_is_metadata_not_a_slider_clamp() {
+        let variable = r#"<Variable Name="Sun intensity" Value="1"><Spline Keys="0:1:36,1:3:36,"/></Variable>"#;
+        let make = |attrs: &str| {
+            TimeOfDay::parse(format!("<TimeOfDay {attrs}>{variable}</TimeOfDay>").as_bytes())
+                .unwrap()
+        };
+        let source = make(r#"Time="12" TimeStart="9.75" TimeEnd="23.833334" TimeAnimSpeed="0""#);
+        assert_eq!(source.playback_window, Some((9.75, 23.833334, 0.0)));
+        assert_eq!(source.scalar("Sun intensity", 0.0), Some(1.0));
+        assert_eq!(source.scalar("Sun intensity", 24.0), Some(3.0));
+        let missing = make(r#"Time="12""#);
+        assert_eq!(missing.playback_window, None);
+        assert!(!missing.invalid_playback_window);
+        let malformed = make(r#"Time="12" TimeStart="18" TimeEnd="6" TimeAnimSpeed="NaN""#);
+        assert!(malformed.invalid_playback_window);
+        assert_eq!(malformed.playback_window, None);
+        assert_eq!(malformed.scalar("Sun intensity", 12.0), Some(2.0));
+        assert!(make(r#"Time="12" TimeStart="4""#).invalid_playback_window);
     }
     #[test]
     fn binary_cryxmlb_time_of_day_matches_text_source() {
