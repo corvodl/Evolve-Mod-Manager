@@ -51,3 +51,117 @@ This developer-only reference documents the **user-supplied, intact six-volume**
 - **Not implemented or validated**: complete CDF/DBA character parity, high-performance full-world renderer, engine-equivalent particle/shader execution, full native equivalent of RC model/animation compilers, full GFX authoring/export parity, Evolve-specific engine runtime ABI.
 - Public release policy: no user needs, downloads, installs, or is asked to locate this private CryEngine SDK. The native feature set ships in the manager itself. The separately maintained GPLv2 Cryengine-Converter remains a distinct optional tool subject to its own license and is **not** the private CryEngine SDK.
 - CI: format, core/desktop tests, Clippy, Windows compilation and credential safeguards. Real Stage 2 and original SDK asset tests on Windows are mandatory before publishing claims of parity. Keep proprietary SDK files external and the PR draft until acceptance.
+
+## Scoped follow-ups from read-only inspection (October 30, 2026)
+
+Basis: everything below was read from `CRYENGINE_Build_PC_v3_5_8_2310_freesdk`. Archive entries were enumerated and read in memory by a developer-side script; nothing was extracted into the repository, no SDK executable was run, and no proprietary asset is redistributed. Counts are for this exact build only. The manager must recompute them from the user-selected build and must never substitute FreeSDK values for Evolve Stage 2 data.
+
+### A. `.animevents` timeline markers (animation viewer)
+
+**SDK evidence**
+
+- `Code/CryEngine/CryCommon/ICryAnimation.h:1090-1105` defines `IAnimEvents::GetAnimEventList(const char* animationFilePath)`, `SaveAnimEventToXml`/`LoadAnimEventFromXml` and `InitializeSegmentationDataFromAnimEvents`: the per-animation XML event list is the authored timeline, and segmentation data is derived from it.
+- `Code/CryEngine/CryCommon/CryCharAnimationParams.h:245-324` defines `CAnimEventData`: normalized time/end time, `SetNormalizedTime` clamps to 0..1 and raises the end time to at least the start (262-270), name plus lowercase CRC32 (272-279), custom parameter (281-282), bone (284-285), model (287-288), offset/direction (290-294). `AnimEventInstance` (328-374) exposes the same fields at playback time.
+- `Animations.pak` contains exactly two: `Animations/human/male/events.animevents` (915,158 B) and `Animations/weapons/rifle/rifle.animevents` (1,033 B). `Objects.pak` adds `Objects/weapons/ammo/claymore/claymore_eventdatabase.animevents` (2,433 B) and `Objects/weapons/equipment/medical_kit/medical_kit_eventdatabase.animevents` (1,377 B).
+- Schema: `<anim_event_list><animation name="…caf"><event name time [endTime] parameter bone offset dir model/></animation>`. `rifle.animevents` omits `endTime`; all 5,131 events in the human file include it (frequently equal to `time`).
+- Human file: 1,550 animation entries / 5,131 events / 124 distinct event names. Most frequent: `sound` 1,858, `footstep` 1,212, `foley` 1,016, `ForceFeedback` 438, `Segment1` 76, `ForbidReactions` 70, `DeathReactionEnd` 64, `RagdollStart` 63, `Segment2` 37, `rightHand` 31, `stow` 21, `effect` 20. 19 distinct non-empty `bone` values, one non-empty `model` value, no non-zero `offset` or `dir`.
+- No `.animevents` code path exists in the manager (`git grep -i animevent -- '*.rs'` is empty). Existing timeline UI: `crates/evolve-desktop/src/asset_viewer.rs:1638-1704`; clip duration `crates/evolve-core/src/native_caf.rs:436-452`; duration readout `crates/evolve-desktop/src/main.rs:13508-13510`.
+
+**Scope (read-only)**
+
+- Resolve sidecars from the selected-build inventory with the same strict path rules as the CAF, then match `animation/@name` to the loaded clip by normalized path (case-insensitive, forward slashes).
+- Place markers at `time × clip.duration_seconds()`; when `endTime` is present and later than `time`, render a range instead of a point.
+- Show name, parameter, bone and model in a read-only tooltip; group unresolved clips/sidecars into import diagnostics.
+- Do not trigger the referenced sound, particle, ragdoll, force-feedback or flow-graph events, and never edit or reserialize the sidecar.
+
+**Acceptance tests**
+
+1. Parse both attribute shapes from inline fixtures: rifle-style (no `endTime`) yields `end == start`; human-style preserves the explicit end.
+2. Clamping matches `CryCharAnimationParams.h:262-270`: `<0`→0, `>1`→1, `endTime < time`→`time`, each with a diagnostic rather than silent repair.
+3. Path matching is case-insensitive with slash normalization; a basename-only match is rejected and reported.
+4. Duplicate `(name, time)` events keep source order and all markers.
+5. Marker position equals `time × duration` within 1e-4 and does not move under Play/Pause/scrub or CAF layer-weight changes.
+6. Oversized file/event/string or malformed XML fails closed to an empty timeline plus a reason; no panic and no writes.
+7. A clip with no sidecar reports "no authored events": the rifle sidecar covers only 4 animations, so per-clip absence is normal and must not be treated as an error.
+
+**Evolve Stage 2 validation**
+
+- Read-only scan of the user's selected Stage 2 build for `.animevents`; show the exact archive path and entry count used, or "none found".
+- Open one Stage 2 character CAF and one weapon reload; screenshot markers at 0/mid/1 and after scrubbing; verify source hashes are unchanged before/after.
+- Never borrow FreeSDK event names for Evolve clips. Unresolved names stay listed as unresolved.
+
+### B. Surface-type → material-effect relationship inspector
+
+**SDK evidence**
+
+- `Code/CryEngine/CryCommon/ISurfaceType.h:24-31` defines the flags (`NO_PHYSICALIZE`, `NO_COLLIDE` for canopy only, `VEHICLE_ONLY_COLLISION`, `CAN_SHATTER`, `BULLET_PIERCEABLE` — "used by MFX system to spawn front/back FX"). `68-124` defines `SPhysicalParams`, `SBreakable2DParams` and `SBreakageParticles`; `132-170` exposes breakability, hit points and breakage particles by type; `193-210` is the name→type manager.
+- `Code/CryEngine/CryCommon/IMaterialEffects.h:545-574` defines lookup by `(lib, effect)`, `(surface1, surface2)`, `(customName, surface)` and `(entityClass, surface)`, plus `GetResources`, `ExecuteEffect`, `GetDefaultSurfaceIndex`, `GetDefaultCanopyIndex` and `PlayBreakageEffect(surface, breakageType, …)`. `28-37` defines the `MFX_PLAY_*` resource kinds.
+- `GameData.pak/Libs/MaterialEffects/SurfaceTypes.xml` has 48 `SurfaceType` entries, 45 `Physics`, 33 `BreakageParticles`, 16 `AI` and 19 entries with a `type=` grouping (e.g. `mat_glass` `type="glass"`). It uses a lower-case `<breakable_2d>` element and `Physics` attributes such as `hit_maxhits` that do not exist in `SPhysicalParams` (`ISurfaceType.h:68-88`), so unknown attributes must be preserved, not rejected.
+- `GameData.pak/Libs/MaterialEffects/MaterialEffects.xml` (279,647 B) is an Excel 2003 spreadsheet XML (`urn:schemas-microsoft-com:office:spreadsheet`, `RefModeR1C1`), not a plain matrix: 44 named columns (surface types), 73 data rows = 44 surface-name rows + 25 custom-query rows (`PistolBullet`, `RifleBullet`, `ShotgunShell`, `footstep_player`, `Breakage:Breakage`, …) + 4 blank rows, and 2,829 `lib:effect` cells (`collisions` 1,294, `bulletimpacts` 1,265, `destructibles` 124, `vehicles` 63, `foley` 40, `tornado` 40, `footsteps` 3). `ss:Index` skips cells; an empty `<Cell/>` means "no effect", not "default".
+- Four surfaces have neither a matrix row nor a column: `mat_glass_breakable_thin_small`, `mat_glass_breakable_thin_large`, `mat_glass_breakable_safetyglass_small`, `mat_glass_breakable_safetyglass_large`.
+- 25 cells reference effects that exist in none of the 13 `FXLibs/*.xml`: `collisions:canopy_canopy` ×12, `foley:bf_mud` ×12, `collisions:small_shell_default` ×1.
+- FXLib schema (`FXLibs/bulletimpacts.xml`): `<Effect name delay>` containing `<RandEffect>` groups of `<Particle><Name minscale maxscale maxscaledist>`, `<Decal minscale maxscale><Material>`, `<FlowGraph name maxdist>` and `<Sound><Name>`; 13 FXLib files and 5 Flowgraph files ship in this build.
+- 353 of the 373 `Objects.pak` MTL files declare `SurfaceType="mat_…"`. `MaterialSlot` (`crates/evolve-core/src/materials.rs:77-102`) has no surface-type field, and `ResourceSummary` (`crates/evolve-desktop/src/level_environment.rs`) counts only particle XML, MTL and CFX files.
+
+**Scope (read-only)**
+
+- For a selected MTL/subset: `SurfaceType` → surface definition (flags / `Physics` / `BreakageParticles` / `AI`) → chosen matrix cell (or custom-name row) → effect → resource list → resolution status (present/dangling).
+- Parse the workbook tolerantly (namespace, `ss:Index`, blank cells, duplicate row names, custom rows) and list unmodeled attributes so schema drift is visible.
+- No effect execution, audio, decal placement or file mutation; `mat_default` is shown only when the engine's default-surface path is actually selected.
+
+**Acceptance tests**
+
+1. Fixture workbook with an `ss:Index="2"` header, trailing blank cells, one blank `<Cell/>` and a custom-name row: assert exact row/column mapping and that blank ≠ default.
+2. Surface lookup is case-insensitive but does not fuzz names (`mat_metal_extra` ≠ `mat_metal`); unknown surfaces report "not defined" instead of silently falling back.
+3. On the private build, a developer-only report must reproduce 48 surfaces / 44 columns / 73 rows / 2,829 cells, 4 missing surfaces and 25 dangling effects; CI uses only synthetic fixtures.
+4. MTL without `SurfaceType` → explicit "unassigned"; MTL with an undefined name → dangling diagnostic; neither becomes `mat_default`.
+5. `BreakageParticles` type lookup prefers the specific entry before falling back to the default (`GetBreakageParticles(type, lookInDefault=true)`, `ISurfaceType.h:163`).
+6. Inspector mutation test: file bytes unchanged after open/navigate; no audio or particle callback is invoked.
+
+**Evolve Stage 2 validation**
+
+- Inspect the user's selected Stage 2 `Libs/MaterialEffects` plus one real Stage 2 MTL/subset; show that build's own names and counts.
+- Confirm an Evolve material's surface type reaches the correct row/cell and that a missing cell is reported as missing rather than substituted from the FreeSDK matrix.
+- Inspection only: no effect plays, no source file changes.
+
+### C. Time-of-day tangent interpolation
+
+**SDK evidence**
+
+- `Code/CryEngine/CryCommon/ISplines.h:24-52` defines `ESplineKeyTangentType` `NONE=0`, `CUSTOM=1`, `ZERO=2`, `STEP=3`, `LINEAR=4`; key flags store the in-tangent in bits 0-2, the out-tangent in bits 3-5, a unify bit at 6, while bits 16-19 are editor UI-selection bits (`ESPLINE_KEY_UI_SELECTED_MASK`). The serialized key is `time:value:flags`.
+- `ISplines.h:661-712` computes slopes (LINEAR keys use the segment chord; auto keys use 0.5·(next − previous)); `786-856` applies STEP (hold), ZERO (flat) and LINEAR per side; `947-957` returns the neighbor value across a STEP boundary.
+- `GameSDK/Levels/Singleplayer/Forest/LevelData/TimeOfDay.xml` has 107 variables / 1,669 keys / 12 out-of-range editor keys. Flag histogram: `0`×1,169, `36`×482, `65536`×7, `458752`×3, `65556`×2, and one each of `28`, `24`, `20`, `35`, `65572`, `3`. Four curves carry STEP/ZERO tangents: `Skybox multiplier` (`35` at 0, `3` at 1.0), `Volumetric fog: Shadow darkening sun` (`28`, `24`), `Sky color multiplier` (`65556` ×2), `Night sky: Moon inner corona scale` (`20`). A fifth, `Sky light: Rayleigh scattering` (`65572`), is LINEAR/LINEAR plus a UI-selection bit and must sample like flag `36`.
+- `Editor/CryDesigner_TimeOfDay.xml` (editor-side sample) mixes selection bits with tangents (`65572`, `458788`) and uses one key per curve.
+- The shipped `Code` tree contains only the `ITimeOfDay` interface (`I3DEngine.h:972-1206`); no TimeOfDay spline implementation is included, so the exact auto-smooth (`NONE`) evaluator cannot be confirmed from SDK source.
+- Manager status: this branch now decodes the in/out tangent bits and evaluates a cubic Bezier basis with a linear fallback for unsupported modes (`Curve::sample` in `crates/evolve-desktop/src/level_environment.rs`, commit "Preview TimeOfDay splines with SDK tangent flags"); earlier builds sampled linearly. Diagnostics are emitted by `crates/evolve-desktop/src/level_library.rs:652-660` and `crates/evolve-desktop/src/level_workspace.rs:476-479`. The gates below decide when the preview may stop being labelled approximate.
+
+**Scope (phased, no reserialization)**
+
+1. Lock the flag decode: mask UI-selection bits 16-19 and never let editor state change a sample; count tangent types per curve in diagnostics.
+2. Validate STEP/ZERO/LINEAR against the `ISplines.h` formulas; keep the unsupported-mode path linear and explicitly reported rather than presented as engine output.
+3. Treat `CUSTOM` as unsupported: the `time:value:flags` field carries no tangent magnitude (and Forest has none), so diagnose instead of inventing handles.
+4. Keep duplicate-time handling explicit (`keys()` sort + dedup in `level_environment.rs`); never emit NaN or zero-length segments.
+5. Never rewrite the original XML, and never extrapolate beyond authored keys.
+
+**Acceptance tests**
+
+1. Bit-decode table: `0`→(NONE,NONE); `36`→(LINEAR,LINEAR); `20`→(LINEAR,ZERO); `28`→(LINEAR,STEP); `24`→(NONE,STEP); `35`→(STEP,LINEAR); `3`→(STEP,NONE); `65556`→(LINEAR,ZERO + one UI bit); `65572`→(LINEAR,LINEAR + one); `458752`→(NONE,NONE + three); `458788`→(LINEAR,LINEAR + three); unify bit `64` surfaced separately.
+2. STEP boundary: with `0.75:1:36,1:0:3`, sampling at 23.0 h must be exactly 1.0 and at 24.0 h 0.0 (the previous linear preview returns ≈0.167 at 23.0 h).
+3. ZERO tangent: at `0.5:0.76:65556` (the second `65556` key of `Sky color multiplier`) the right-hand derivative is ≈0 (finite-difference tolerance 1e-3), whereas the old linear preview leaves 0.76 toward 3.07738 at 0.5625 at ≈37 per normalized unit.
+4. LINEAR: between two LINEAR keys, samples at 0.25/0.5/0.75 of the segment stay exactly on the chord.
+5. Regression: Forest parses 107 variables / 1,669 keys and keeps skipping 12 out-of-range keys, with the 5 non-default-flag curves classified correctly (4 STEP/ZERO, 1 LINEAR + UI bit). `NONE`-tangent golden samples are intentionally different from the old linear preview and must be re-reviewed; `LINEAR`-key segments stay exactly on the chord.
+6. UI-selection bits never change a sample: identical curves carrying `0`, `65536`, `458752` (and the `65572`/`458788` pair) must evaluate identically. Non-integer or missing flags fail parsing, and an unsupported tangent (`CUSTOM`) is reported as approximate while returning the documented linear fallback.
+
+**Evolve Stage 2 validation**
+
+- Parse the user's selected Stage 2 TOD files and print the same flag histogram and flagged-variable list.
+- Screenshot an Evolve map immediately before/after each STEP/ZERO key and compare with the previously approved linear-preview screenshots; only then expose tangent-aware sampling.
+- Keep `NONE` and `CUSTOM` explicitly marked approximate in the UI until an independently validated evaluator exists.
+
+### Additional concrete findings
+
+**D1. TOD root playback window is discarded.** `GameSDK/Levels/Singleplayer/Forest/LevelData/TimeOfDay.xml:1` carries `Time="9.75" TimeStart="9.75" TimeEnd="23.833334" TimeAnimSpeed="0"`, and `Editor/CryDesigner_TimeOfDay.xml:1` carries `Time="12" TimeStart="12" TimeEnd="12" TimeAnimSpeed="0"`. The `TimeOfDay` struct (`level_environment.rs`) stores only `initial_hour`, and `TimeOfDay::parse` reads only `Time`, so the authored cycle window and animation speed are lost. Scope: parse/validate the three extra attributes (0–24, finite, start ≤ end) and expose them read-only in diagnostics; do not change sampling or clamp the slider without acceptance. Tests: exact Forest/template values, missing attributes → defaults, invalid/non-finite → diagnostic with the profile retained. Evolve: display the selected map's own authored window, screenshot at `TimeStart`/`TimeEnd`, and never substitute the FreeSDK window.
+
+**D2. Per-CAF `.animsettings` sidecars are ignored.** `Animations.pak` contains 1,566 `.animsettings` entries (106–2,715 B); 358 set `AdditiveAnimation value="1"`. Schema: `<AnimationSettings><AdditiveAnimation value/><Skeleton value/><CompressionSettings><Version/><Compression/><RotEpsilon/><PosEpsilon/><PerBoneCompression><Bone Name Multiply/>…</PerBoneCompression></CompressionSettings></AnimationSettings>`, where `PerBoneCompression` carries per-bone multipliers (0.1/10) and accounts for the 2,715 B maximum. Examples: `Animations/human/male/additive/Additive_Breathing_heavy_01.animsettings` uses `skeleton_player_generic`; `Animations/animals/amphibians/toad/toad_idle01.animsettings` uses `toad_skel`. The manager never reads them (`git grep -i animsettings -- '*.rs'` is empty) and takes `additive` only from the CAF asset flags (`native_caf.rs:370`, surfaced by `main.rs:13508`; `caf_layers.rs:178`). Scope: read-only sidecar resolution next to the selected CAF plus a parity report (sidecar additive vs CAF additive, skeleton alias, compression block). Do not change playback or retargeting until parity is verified. Tests: stem matching (`.caf`↔`.animsettings`), missing sidecar is not an error, malformed sidecar → diagnostic, no cross-build pairing, and additive mismatch is shown without silently overriding the CAF flag. Evolve: scan the selected Stage 2 build, report counts, compare one known additive idle, and keep the CAF-derived state authoritative until parity is proven.
+
+A, B, D1 and D2 are **not implemented**. C now has a flag-aware Bezier preview on this branch, but none of its parity gates above has been met. Each item remains unscoped for delivery until it has synthetic unit fixtures plus the private-build and Evolve checks listed. None authorizes shipping SDK data or executing SDK binaries.
