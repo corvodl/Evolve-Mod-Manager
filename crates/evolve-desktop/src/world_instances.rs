@@ -342,6 +342,8 @@ pub(super) struct Renderer {
     transparent: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     camera_uniform: wgpu::Buffer,
+    lighting_uniform: wgpu::Buffer,
+    last_lighting_hour: f32,
     sampler: wgpu::Sampler,
     terrain_sampler: wgpu::Sampler,
     world_identity: usize,
@@ -399,6 +401,16 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let camera_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -406,6 +418,11 @@ impl Renderer {
             size: 64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        });
+        let lighting_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Level time-of-day lighting preview"),
+            contents: bytemuck::cast_slice(&super::level_lighting::Lighting::at(12.0).uniforms()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -495,6 +512,8 @@ impl Renderer {
             transparent: make(true, false),
             layout,
             camera_uniform,
+            lighting_uniform,
+            last_lighting_hour: f32::NAN,
             sampler,
             terrain_sampler,
             world_identity: 0,
@@ -646,6 +665,10 @@ impl Renderer {
                         binding: 4,
                         resource: alpha_uniform.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: self.lighting_uniform.as_entire_binding(),
+                    },
                 ],
             });
             surfaces.push(GpuSurface {
@@ -683,6 +706,8 @@ impl Renderer {
         pitch: f32,
         aspect: f32,
         zoom: f32,
+        hour: f32,
+        full_textures: bool,
     ) {
         let Some(world) = world else {
             self.groups.clear();
@@ -700,6 +725,13 @@ impl Renderer {
             self.world_identity = key;
             self.last_camera = None;
         }
+        let hour = if hour.is_finite() { hour.clamp(0.0, 24.0) } else { 12.0 };
+        if self.last_lighting_hour != hour {
+            let values = super::level_lighting::Lighting::at(hour).uniforms();
+            queue.write_buffer(&self.lighting_uniform, 0, bytemuck::cast_slice(&values));
+            self.last_lighting_hour = hour;
+        }
+        let _ = full_textures;
         let Some(camera) = camera else {
             return;
         };
