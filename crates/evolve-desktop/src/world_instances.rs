@@ -269,6 +269,7 @@ struct GpuSurface {
     first: u32,
     count: u32,
     transparent: bool,
+    foliage_cutout: bool,
     bind: wgpu::BindGroup,
     _image: wgpu::Texture,
     _opacity_image: wgpu::Texture,
@@ -283,6 +284,7 @@ struct GpuGroup {
 }
 pub(super) struct Renderer {
     solid: wgpu::RenderPipeline,
+    foliage_cutout: wgpu::RenderPipeline,
     transparent: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     camera_uniform: wgpu::Buffer,
@@ -358,10 +360,12 @@ impl Renderer {
             bind_group_layouts: &[&layout],
             push_constant_ranges: &[],
         });
-        let make = |blend: bool| {
+        let make = |blend: bool, cutout: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(if blend {
                     "Transparent instanced world geometry"
+                } else if cutout {
+                    "Alpha-tested CryEngine vegetation (depth-writing)"
                 } else {
                     "Opaque instanced world geometry"
                 }),
@@ -377,7 +381,13 @@ impl Renderer {
                     // Solid world meshes must NOT forward packed diffuse alpha
                     // into the Iced window target; it can make the actual
                     // window transparent to applications beneath it.
-                    entry_point: Some(if blend { "fs_main" } else { "fs_opaque" }),
+                    entry_point: Some(if cutout {
+                        "fs_foliage"
+                    } else if blend {
+                        "fs_main"
+                    } else {
+                        "fs_opaque"
+                    }),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
                         blend: if blend {
@@ -406,8 +416,9 @@ impl Renderer {
             })
         };
         Self {
-            solid: make(false),
-            transparent: make(true),
+            solid: make(false, false),
+            foliage_cutout: make(false, true),
+            transparent: make(true, false),
             layout,
             camera_uniform,
             sampler,
@@ -550,6 +561,7 @@ impl Renderer {
                 first: surf.first_index,
                 count: surf.index_count,
                 transparent: surf.transparent,
+                foliage_cutout: surf.foliage_cutout && source.is_some(),
                 bind,
                 _image: tex,
                 _opacity_image: opacity_tex,
@@ -618,11 +630,13 @@ impl Renderer {
         self.last_camera = Some(uniform);
     }
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
-        for transparent in [false, true] {
-            pass.set_pipeline(if transparent {
-                &self.transparent
-            } else {
-                &self.solid
+        // Opaque, masked foliage, then blended glass/water. Alpha-tested
+        // vegetation writes depth, unlike translucent overlays.
+        for mode in 0..3 {
+            pass.set_pipeline(match mode {
+                0 => &self.solid,
+                1 => &self.foliage_cutout,
+                _ => &self.transparent,
             });
             for group in &self.groups {
                 if group.visible == 0 {
@@ -634,7 +648,11 @@ impl Renderer {
                 for surf in group
                     .surfaces
                     .iter()
-                    .filter(|s| s.transparent == transparent)
+                    .filter(|s| match mode {
+                        0 => !s.transparent && !s.foliage_cutout,
+                        1 => s.foliage_cutout,
+                        _ => s.transparent,
+                    })
                 {
                     pass.set_bind_group(0, &surf.bind, &[]);
                     pass.draw_indexed(surf.first..surf.first + surf.count, 0, 0..group.visible);
@@ -654,18 +672,22 @@ mod tests {
         // including source DDS textures with packed spec/gloss alpha.
         assert!(shader.contains("fn fs_opaque(input:Output)"));
         assert!(shader.contains("return vec4<f32>(color.rgb,1.0);"));
+        assert!(shader.contains("fn fs_foliage(input:Output)"));
+        assert!(shader.contains("let leaf_alpha=textureSample(albedo,tex_sampler,input.uv).a;"));
+        assert!(shader.contains("let color=shade(input,false);"));
         // Explicitly transparent materials still use authored coverage.
         assert!(shader.contains("fn fs_main(input:Output)"));
-        assert!(shader.contains("return shade(input);"));
+        assert!(shader.contains("return shade(input,true);"));
         let pipeline_source = include_str!("world_instances.rs");
         // Search only production code; searching this entire file would let
         // the assertion's own string literal create a false positive.
         let production = pipeline_source.split("#[cfg(test)]").next().unwrap();
-        assert!(
-            production
-                .contains("entry_point: Some(if blend { \"fs_main\" } else { \"fs_opaque\" })")
-        );
+        assert!(production.contains("entry_point: Some(if cutout {"));
+        assert!(production.contains("\"fs_foliage\""));
+        assert!(production.contains("foliage_cutout: make(false, true)"));
         assert!(production.contains("blend: if blend {"));
+        assert!(production.contains("depth_write_enabled: !blend"));
+        assert!(production.contains("foliage_cutout: surf.foliage_cutout && source.is_some()"));
     }
 
     #[test]
