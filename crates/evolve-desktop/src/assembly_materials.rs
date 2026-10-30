@@ -800,6 +800,7 @@ pub fn original_single_leaf_surface(
         visible,
         transparent: false,
         foliage_cutout: false,
+        alpha_cutoff: 0.5,
         diffuse: None,
         normal: None,
         emissive: None,
@@ -835,6 +836,7 @@ pub fn original_single_leaf_surface(
     surface.specular = specular;
     surface.gloss = gloss;
     surface.foliage_cutout = source_vegetation_cutout(leaf) && surface.diffuse.is_some();
+    surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
     surface.opacity = if surface.foliage_cutout {
         None
     } else {
@@ -875,6 +877,7 @@ pub fn load_model(
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
             emissive: None,
@@ -936,6 +939,7 @@ pub fn load_model(
                         // body unless there is explicit authored evidence.
                         surface.foliage_cutout =
                             source_vegetation_cutout(leaf) && surface.diffuse.is_some();
+                        surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
                         surface.opacity = if surface.foliage_cutout {
                             None
                         } else {
@@ -1190,6 +1194,7 @@ pub fn load_with_progress(
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
             emissive: None,
@@ -1293,6 +1298,7 @@ pub fn load_with_progress(
             surface.specular = specular;
             surface.gloss = gloss;
             surface.foliage_cutout = source_vegetation_cutout(leaf) && surface.diffuse.is_some();
+    surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
             surface.opacity = if surface.foliage_cutout {
                 None
             } else {
@@ -1374,6 +1380,7 @@ mod tests {
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&base_pixels)),
             normal: None,
             emissive: None,
@@ -1788,6 +1795,7 @@ mod tests {
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&image)),
             normal: None,
             emissive: None,
