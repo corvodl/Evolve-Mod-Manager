@@ -108,7 +108,7 @@ use evolve_core::{
     inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
     managed_library_builds, material_texture_candidates, plan_mod_profile, prepare_client_hook,
     read_cdf, read_material, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, remove_managed_library_build, resign_signed_pak, resolve_cdf,
+    rebuild_signed_pak_entry, remove_managed_library_build, rename_managed_library_build, resign_signed_pak, resolve_cdf,
     resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
     scan_directory, scan_directory_with_progress, scan_library_build_updates,
     scan_library_import_sources, stage_status,
@@ -546,6 +546,8 @@ struct State {
     library_manage_builds_open: bool,
     library_managed_builds: Vec<ManagedLibraryBuild>,
     library_delete_build_confirm: Option<String>,
+    library_rename_build: Option<String>,
+    library_rename_value: String,
     library_import_scanning: bool,
     library_import_cancel: Option<Arc<AtomicBool>>,
     library_import_progress: Option<Arc<AtomicUsize>>,
@@ -694,6 +696,7 @@ enum Operation {
         Arc<AtomicUsize>,
     ),
     RemoveManagedLibraryBuild(PathBuf, String, String),
+    RenameManagedLibraryBuild(PathBuf, String, String, String),
     OpenImportedPak(ImportedPak),
     CreateProjectFromLibrary(ImportedPak, PathBuf, PathBuf, Arc<ProjectCopyProgress>),
     RefreshGamePakBaseline(PathBuf, PathBuf, PathBuf, bool),
@@ -872,6 +875,7 @@ enum Completed {
         ImportedLibrary,
         Vec<ManagedLibraryBuild>,
     ),
+    ManagedLibraryBuildRenamed(Vec<ManagedLibraryBuild>, ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
     Comparison(AssetComparison),
@@ -1043,6 +1047,11 @@ impl Operation {
                 Ok(Completed::ManagedLibraryBuildRemoved(
                     report, catalog, builds,
                 ))
+            }
+            Self::RenameManagedLibraryBuild(root, id, source, label) => {
+                let builds = rename_managed_library_build(&root, &id, &source, &label)?;
+                let catalog = imported_library(&root).map_err(|e| e.to_string())?;
+                Ok(Completed::ManagedLibraryBuildRenamed(builds, catalog))
             }
             Self::ImportSignedLibraryPlan(root, plan, stage, cancelled, progress) => {
                 // Keep the original signed-archive authentication path.
@@ -1964,6 +1973,10 @@ enum Message {
     LibraryDeleteBuildConfirm(String),
     LibraryDeleteBuildCancel,
     LibraryDeleteBuildNow(String),
+    LibraryRenameBuildBegin(String),
+    LibraryRenameBuildValue(String),
+    LibraryRenameBuildCancel,
+    LibraryRenameBuildSave(String),
     LibrarySourcesPicked(Result<Option<Vec<PathBuf>>, String>),
     LibraryImportScanned(Result<LibraryImportPlan, String>),
     LibraryImportStart,
@@ -2788,6 +2801,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::ImportSignedLibraryPlan(..) => "Importing signed game PAKs",
         Operation::ApplyLibraryBuildUpdates(..) => "Updating Asset Library PAKs",
         Operation::RemoveManagedLibraryBuild(..) => "Removing imported game build",
+        Operation::RenameManagedLibraryBuild(..) => "Renaming managed game build",
         Operation::OpenImportedPak(..) | Operation::InspectPak(..) => "Inspecting game PAK",
         Operation::CreateProjectFromLibrary(..) => "Creating editable mod project",
         Operation::RefreshGamePakBaseline(..) => "Verifying original game PAKs",
@@ -4316,6 +4330,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LibraryManageBuildsToggle => {
             state.library_manage_builds_open = !state.library_manage_builds_open;
             state.library_delete_build_confirm = None;
+            state.library_rename_build = None;
             if !state.library_manage_builds_open {
                 return Task::none();
             }
@@ -4346,6 +4361,48 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = format!("Cannot inspect managed builds: {error}");
             }
         },
+        Message::LibraryRenameBuildBegin(id) => {
+            if state.busy || state.library_import_scanning {
+                return Task::none();
+            }
+            if let Some(build) = state.library_managed_builds.iter().find(|b| b.id == id) {
+                state.library_rename_value = if build.display_name.is_empty() {
+                    Path::new(&build.source_root).parent()
+                        .and_then(|p| p.file_name()).and_then(|n| n.to_str())
+                        .unwrap_or("Evolve Game Build").to_owned()
+                } else {
+                    build.display_name.clone()
+                };
+                state.library_rename_build = Some(id);
+                state.library_delete_build_confirm = None;
+            }
+        }
+        Message::LibraryRenameBuildValue(value) => state.library_rename_value = value,
+        Message::LibraryRenameBuildCancel => {
+            state.library_rename_build = None;
+            state.library_rename_value.clear();
+        }
+        Message::LibraryRenameBuildSave(id) => {
+            if state.busy || state.library_import_scanning ||
+                state.library_rename_build.as_deref() != Some(id.as_str()) {
+                return Task::none();
+            }
+            let Some(build) = state.library_managed_builds.iter().find(|b| b.id == id).cloned()
+            else {
+                state.status = "Refresh managed builds before renaming.".into();
+                return Task::none();
+            };
+            let name = state.library_rename_value.trim().to_owned();
+            if name.is_empty() || name.len() > 80 ||
+                name.chars().any(|ch| ch.is_control() || matches!(ch, '/' | '\\')) {
+                state.status = "Build name must be 1–80 characters without path separators.".into();
+                return Task::none();
+            }
+            state.library_rename_build = None;
+            return launch(state, Operation::RenameManagedLibraryBuild(
+                PathBuf::from(&state.library_root), id, build.source_root, name,
+            ));
+        }
         Message::LibraryDeleteBuildConfirm(id) => {
             if !state.busy
                 && state
@@ -11671,6 +11728,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.modding_open_editor_when_scanned = true;
                         return begin_scan(state, path.join("files"));
                     }
+                }
+                Ok(Completed::ManagedLibraryBuildRenamed(builds, catalog)) => {
+                    state.status = "Managed game build renamed.".into();
+                    state.library_managed_builds = builds;
+                    state.library_catalog = Some(catalog);
+                    refresh_library_matches(state);
                 }
                 Ok(Completed::ManagedLibraryBuildRemoved(report, catalog, builds)) => {
                     state.status = format!(
