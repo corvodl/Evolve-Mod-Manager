@@ -49,7 +49,8 @@ impl Lighting {
     }
 
     /// Original authored light properties mapped onto the existing wgpu
-    /// preview. Native tangent curves, sun position and HDR are not simulated.
+    /// preview. Tangents use an approximate SDK-backed curve; original sun
+    /// position and HDR are not simulated.
     pub fn from_original(hour: f32, source: &super::level_environment::TimeOfDay) -> Self {
         let mut lit = Self::at(hour);
         if let Some(rgb) = source.color("Sun color", hour) {
