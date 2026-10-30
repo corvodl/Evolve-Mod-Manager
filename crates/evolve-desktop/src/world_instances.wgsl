@@ -13,6 +13,13 @@ struct Camera {
 // Material-authored AlphaTest normalized to 0..1. The default 0.5 is
 // supplied only if the selected original MTL did not specify a threshold.
 @group(0) @binding(4) var<uniform> authored_cutoff: vec4<f32>;
+// Viewport-only time-of-day lighting. Never reads or edits game engine state.
+struct TimeOfDayLight {
+  sun: vec4<f32>,
+  ambient: vec4<f32>,
+  sun_color: vec4<f32>,
+}
+@group(0) @binding(5) var<uniform> light: TimeOfDayLight;
 struct Output {
   @builtin(position) clip: vec4<f32>,
   @location(0) uv: vec2<f32>,
@@ -56,8 +63,9 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   if length(n)<0.01 {
     n=normalize(cross(dpdx(input.world),dpdy(input.world)));
   }
-  let sunlight=abs(dot(normalize(n),normalize(vec3<f32>(0.48,-0.46,0.75))));
-  return vec4<f32>(base.rgb*(0.35+0.65*sunlight),base.a);
+  let lambert = max(dot(normalize(n), normalize(light.sun.xyz)), 0.0);
+  let sun = light.sun_color.rgb * (light.sun.w * lambert);
+  return vec4<f32>(base.rgb * (light.ambient.rgb + sun), base.a);
 }
 
 @fragment
