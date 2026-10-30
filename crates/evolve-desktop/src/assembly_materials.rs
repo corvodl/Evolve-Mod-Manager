@@ -490,8 +490,9 @@ fn authored_texture(
     build: Option<&str>,
 ) -> Result<(PathBuf, String), String> {
     let owner = material_virtual_owner(material, binding, inventory, imported);
-    for candidate in scoped_texture_candidates(reference, &owner)? {
-        if let Some(path) = auto_resources::exact(inventory, &candidate, imported, build)? {
+    let candidates = scoped_texture_candidates(reference, &owner)?;
+    for candidate in &candidates {
+        if let Some(path) = auto_resources::exact(inventory, candidate, imported, build)? {
             // The core imported resolver may normalize a .dds request to a
             // preferred .dds.0. Keep the exact cooked fragment identity for
             // subsequent cross-archive high-mip reconstruction.
@@ -503,13 +504,17 @@ fn authored_texture(
                 }) {
                 format!("{candidate}.0")
             } else {
-                candidate
+                candidate.clone()
             };
             return Ok((path, relative));
         }
     }
     Err(format!(
-        "Missing exact cooked DDS for {reference} in material {owner}"
+        "Missing exact cooked DDS for {reference} in material {owner}; checked {} source-qualified paths{} (build: {}). Confirm the original texture PAK for this build was imported. First candidates: {}",
+        candidates.len(),
+        if imported.is_some() { " in the selected archive and imported library" } else { " in the selected archive" },
+        build.unwrap_or("unselected"),
+        candidates.iter().take(3).cloned().collect::<Vec<_>>().join(", "),
     ))
 }
 
