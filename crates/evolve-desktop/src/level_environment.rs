@@ -349,6 +349,93 @@ impl TimeOfDay {
         }
     }
 }
+/// Source-backed height-density curve samples. These are read-only TimeOfDay
+/// values, not a claim that the general FreeSDK matches Evolve's renderer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct HeightFog {
+    pub bottom_height: f32,
+    pub top_height: f32,
+    pub bottom_density: f32,
+    pub top_density: f32,
+}
+
+impl HeightFog {
+    /// Bounded exponential profile optical depth along a camera-to-pixel ray.
+    /// This is a deterministic reference for the wgpu approximation, not the
+    /// unpublished Evolve fog shader. It integrates a vertically exponential
+    /// density distribution analytically and handles horizontal rays.
+    #[cfg(test)]
+    pub fn integrated_density(self, camera_z: f32, target_z: f32, distance: f32) -> f32 {
+        if !camera_z.is_finite() || !target_z.is_finite()
+            || !distance.is_finite() || distance <= 0.0
+        {
+            return 0.0;
+        }
+        let slope = ((self.top_density.max(0.000001)
+            / self.bottom_density.max(0.000001))
+            .ln() / (self.top_height - self.bottom_height)).clamp(-0.01, 0.01);
+        let origin_density = self.bottom_density
+            * (slope * (camera_z - self.bottom_height)).clamp(-12.0, 12.0).exp();
+        let delta = slope * (target_z - camera_z);
+        let ratio = if delta.abs() < 0.001 {
+            1.0 + delta * 0.5 + delta * delta / 6.0
+        } else {
+            delta.clamp(-12.0, 12.0).exp_m1() / delta
+        };
+        (origin_density * distance * ratio).clamp(0.0, 1.0e9)
+    }
+
+    pub fn gpu_uniform(self) -> [f32; 4] {
+        [
+            self.bottom_height,
+            self.top_height,
+            self.bottom_density,
+            self.top_density,
+        ]
+    }
+}
+
+impl TimeOfDay {
+    /// Sample only explicitly authored height/density variables. Missing or
+    /// malformed curves must leave the old distance-only preview intact.
+    /// These names are accepted CRYENGINE Time of Day label variants; verify
+    /// actual Evolve names before claiming game-specific coverage.
+    pub fn height_fog(&self, hour: f32) -> Option<HeightFog> {
+        let sample = |names: &[&str]| -> Option<f32> {
+            names.iter().find_map(|name| self.scalar(name, hour))
+        };
+        let bottom_height = sample(&[
+            "Fog height (bottom)", "Fog bottom height", "Fog height bottom",
+        ])?;
+        let top_height = sample(&[
+            "Fog height (top)", "Fog top height", "Fog height top",
+        ])?;
+        let bottom_density = sample(&[
+            "Fog density (bottom)", "Fog bottom density", "Fog density bottom",
+        ])?;
+        let top_density = sample(&[
+            "Fog density (top)", "Fog top density", "Fog density top",
+        ])?;
+        if ![bottom_height, top_height, bottom_density, top_density]
+            .iter().all(|v| v.is_finite())
+            || !(-5000.0..=35000.0).contains(&bottom_height)
+            || !(-5000.0..=35000.0).contains(&top_height)
+            || top_height - bottom_height < 0.01
+            || !(0.0..=1.0).contains(&bottom_density)
+            || !(0.0..=1.0).contains(&top_density)
+            || (bottom_density == 0.0 && top_density == 0.0)
+        {
+            return None;
+        }
+        Some(HeightFog {
+            bottom_height,
+            top_height,
+            bottom_density,
+            top_density,
+        })
+    }
+}
+
 /// Bounded, read-only fog parameters from an exact imported map owner.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct FogProfile {
@@ -485,6 +572,43 @@ pub(super) fn named_items(source: &[u8], tag: &[u8], key: &[u8]) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_tod_height_density_curves_sample_and_integrate() {
+        let xml = br#"<TimeOfDay>
+            <Variable Name="Fog height (bottom)" Value="0"></Variable>
+            <Variable Name="Fog height (top)" Value="1000"></Variable>
+            <Variable Name="Fog density (bottom)" Value="1"></Variable>
+            <Variable Name="Fog density (top)" Value="0.1"></Variable>
+            <Variable Name="Fog color" Color="0.4,0.5,0.6"></Variable>
+        </TimeOfDay>"#;
+        let tod = TimeOfDay::parse(xml).unwrap();
+        let fog = tod.height_fog(12.0).unwrap();
+        assert_eq!(fog.gpu_uniform(), [0.0, 1000.0, 1.0, 0.1]);
+        let horizontal = fog.integrated_density(0.0, 0.0, 100.0);
+        assert!((horizontal - 100.0).abs() < 0.001);
+        let upward = fog.integrated_density(0.0, 1000.0, 1000.0);
+        let downward = fog.integrated_density(1000.0, 0.0, 1000.0);
+        assert!((upward - downward).abs() < 0.01);
+        assert!(upward < 1000.0);
+        assert!(upward > 100.0);
+        assert_eq!(fog.integrated_density(0.0, 0.0, f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn height_fog_requires_a_complete_and_finite_original_profile() {
+        let partial = TimeOfDay::parse(
+            br#"<TimeOfDay><Variable Name="Fog density (top)" Value="0.1"></Variable></TimeOfDay>"#
+        ).unwrap();
+        assert!(partial.height_fog(12.0).is_none());
+        let reversed = TimeOfDay::parse(br#"<TimeOfDay>
+          <Variable Name="Fog height (bottom)" Value="200"></Variable>
+          <Variable Name="Fog height (top)" Value="0"></Variable>
+          <Variable Name="Fog density (bottom)" Value="1"></Variable>
+          <Variable Name="Fog density (top)" Value="0.1"></Variable>
+        </TimeOfDay>"#).unwrap();
+        assert!(reversed.height_fog(12.0).is_none());
+    }
+
     #[test]
     fn fog_schema_is_bounded_and_missing_data_is_not_invented() {
         let source =
