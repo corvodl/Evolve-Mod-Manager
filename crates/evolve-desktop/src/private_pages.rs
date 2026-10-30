@@ -160,7 +160,40 @@ fn legacy_section_label(label: &'static str, legacy: bool) -> Element<'static, M
     }
 }
 
-fn tile(name: &'static str, page: Page) -> Element<'static, Message> {
+/// Keep Home actions readable without painting opaque rectangles over the
+/// optional Evolve artwork. Other pages retain the ordinary theme buttons.
+fn home_button_style(
+    theme: &iced::Theme,
+    status: button::Status,
+    wallpaper: bool,
+    primary: bool,
+) -> button::Style {
+    let mut style = if primary {
+        design::primary(theme, status)
+    } else {
+        design::secondary(theme, status)
+    };
+    if wallpaper {
+        let mut tint = if primary {
+            theme.palette().primary
+        } else {
+            design::field(theme)
+        };
+        tint.a = match status {
+            button::Status::Hovered => 0.42,
+            button::Status::Pressed => 0.54,
+            button::Status::Disabled => 0.09,
+            button::Status::Active => 0.18,
+        };
+        style.background = Some(Background::Color(tint));
+        if primary {
+            style.text_color = iced::Color::WHITE;
+        }
+    }
+    style
+}
+
+fn tile(name: &'static str, page: Page, wallpaper: bool) -> Element<'static, Message> {
     design::button(
         row![
             svg(page.icon()).style(design::icon).width(24).height(24),
@@ -190,6 +223,20 @@ fn tile(name: &'static str, page: Page) -> Element<'static, Message> {
                 width: 1.0,
                 radius: 12.0.into(),
             };
+        }
+        if wallpaper {
+            let mut backdrop = match status {
+                button::Status::Hovered => design::field(theme),
+                button::Status::Pressed => design::selection(theme),
+                _ => design::surface(theme),
+            };
+            backdrop.a = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                0.42
+            } else {
+                0.16
+            };
+            style.background = Some(Background::Color(backdrop));
+            style.text_color = theme.palette().text;
         }
         style
     })
@@ -256,12 +303,12 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
         text("Announcements").size(19),
         design::button("More in What's New")
             .on_press(Message::Navigate(Page::WhatsNew))
-            .style(design::secondary),
+            .style(move |theme, status| home_button_style(theme, status, wallpaper, false)),
     ]
     .spacing(12)
     .align_y(iced::Center);
 
-    let mut details = column![].spacing(6).width(Fill);
+    let mut details = column![].spacing(6).width(Length::FillPortion(4));
     let mut preview: Option<Element<'_, Message>> = None;
     if let Some(post) = news.cache.announcements.first() {
         if !post.title.is_empty() {
@@ -284,14 +331,20 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
             .find(|url| crate::whats_new::allowed_image_url(url))
         {
             if let Some(handle) = news.image_handles.get(url) {
+                // A 340px "Contain" frame reduced ultrawide screenshots to
+                // tiny strips. Use a larger filled preview; clicking it opens
+                // the complete original attachment without cropping.
                 preview = Some(
-                    container(
+                    button(
                         image(handle.clone())
-                            .width(Length::Fixed(340.0))
-                            .height(Length::Fixed(125.0))
-                            .content_fit(iced::ContentFit::Contain),
+                            .width(Fill)
+                            .height(Length::Fixed(190.0))
+                            .content_fit(iced::ContentFit::Cover),
                     )
-                    .width(Length::Fixed(340.0))
+                    .width(Length::FillPortion(3))
+                    .padding(0)
+                    .style(design::text_button)
+                    .on_press(Message::OpenNewsLink(url.clone()))
                     .into(),
                 );
             } else if news.image_failures.contains(url) {
@@ -500,9 +553,10 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                     row![
                         design::button("Continue Editing")
                             .on_press_maybe((!state.busy).then_some(Message::HomeContinueEditing))
-                            .style(design::primary),
+                            .style(move |theme, status| home_button_style(theme, status, wallpaper, true)),
                         design::button("Open Project")
-                            .on_press_maybe((!state.busy).then_some(Message::HomeOpenProject)),
+                            .on_press_maybe((!state.busy).then_some(Message::HomeOpenProject))
+                            .style(move |theme, status| home_button_style(theme, status, wallpaper, false)),
                     ]
                     .spacing(9),
                 ]
@@ -520,16 +574,20 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         let primary_action = if paths_selected {
             design::button("Open Asset Library")
                 .on_press(Message::Navigate(Page::AssetLibrary))
-                .style(design::primary)
+                .style(move |theme, status| home_button_style(theme, status, wallpaper, true))
         } else {
             design::button("Getting Started")
                 .on_press(Message::Navigate(Page::Docs))
-                .style(design::primary)
+                .style(move |theme, status| home_button_style(theme, status, wallpaper, true))
         };
         let secondary_action = if paths_selected {
-            design::button("Getting Started").on_press(Message::Navigate(Page::Docs))
+            design::button("Getting Started")
+                .on_press(Message::Navigate(Page::Docs))
+                .style(move |theme, status| home_button_style(theme, status, wallpaper, false))
         } else {
-            design::button("Open Asset Library").on_press(Message::Navigate(Page::AssetLibrary))
+            design::button("Open Asset Library")
+                .on_press(Message::Navigate(Page::AssetLibrary))
+                .style(move |theme, status| home_button_style(theme, status, wallpaper, false))
         };
         home_surface(
             row![
@@ -553,7 +611,8 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                     } else {
                         Element::from(
                             design::button("Set up paths")
-                                .on_press(Message::Navigate(Page::Settings)),
+                                .on_press(Message::Navigate(Page::Settings))
+                                .style(move |theme, status| home_button_style(theme, status, wallpaper, false)),
                         )
                     },
                     row![primary_action, secondary_action].spacing(8),
@@ -591,11 +650,11 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             })
             .on_press(Message::PlayWithMods)
             .padding([10, 17])
-            .style(design::primary),
+            .style(move |theme, status| home_button_style(theme, status, wallpaper, true)),
             design::button("Play without Mods")
                 .on_press(Message::PlayWithoutMods)
                 .padding([10, 15])
-                .style(design::secondary),
+                .style(move |theme, status| home_button_style(theme, status, wallpaper, false)),
         ]
         .spacing(8),
         text(format!(
@@ -618,14 +677,14 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     let entries = column![
         text("Your workspace").size(19),
         row![
-            tile("Modding", Page::Files),
-            tile("Asset Library", Page::AssetLibrary),
+            tile("Modding", Page::Files, wallpaper),
+            tile("Asset Library", Page::AssetLibrary, wallpaper),
         ]
         .spacing(10),
-        row![tile("Docs", Page::Docs), tile("Settings", Page::Settings),].spacing(10),
+        row![tile("Docs", Page::Docs, wallpaper), tile("Settings", Page::Settings, wallpaper),].spacing(10),
         row![
-            tile("What's New", Page::WhatsNew),
-            tile("Credits", Page::Credits),
+            tile("What's New", Page::WhatsNew, wallpaper),
+            tile("Credits", Page::Credits, wallpaper),
         ]
         .spacing(10),
     ]
