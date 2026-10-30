@@ -4,6 +4,7 @@
 use crate::archive::safe_member_name;
 use crate::inventory::{AssetEntry, Inventory, classify_path};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -361,6 +362,52 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
     })
 }
 
+/// Read a manifest for *read-only* scene discovery without performing two
+/// filesystem calls on every unrelated member. Callers MUST verify the exact
+/// referenced file's byte length and canonical path before opening it. Never
+/// use this function to authorize project editing, PAK swaps or modifications.
+pub fn imported_archive_preview_inventory(archive: &ImportedPak) -> Result<Inventory, LibraryError> {
+    let base = PathBuf::from(&archive.directory);
+    if !fs::symlink_metadata(&base)?.file_type().is_dir() {
+        return Err(LibraryError::UnsafeArchive);
+    }
+    let manifest: Manifest =
+        serde_json::from_slice(&read_bounded(&base.join("asset-library.json"), MAX_MANIFEST_BYTES)?)?;
+    if manifest.version != 1
+        || manifest.name != archive.name
+        || manifest.entries.len() > MAX_MEMBERS
+    {
+        return Err(LibraryError::UnsafeArchive);
+    }
+    let file_root = base.join("files");
+    if !fs::symlink_metadata(&file_root)?.file_type().is_dir() {
+        return Err(LibraryError::UnsafeArchive);
+    }
+    let canonical = fs::canonicalize(&file_root)?;
+    let mut entries = Vec::with_capacity(manifest.entries.len());
+    let mut unique = HashSet::new();
+    let mut total = 0u64;
+    for item in manifest.entries {
+        let name = safe_member_name(&item.path).map_err(|_| LibraryError::UnsafeArchive)?;
+        if !unique.insert(name.to_ascii_lowercase()) {
+            return Err(LibraryError::UnsafeArchive);
+        }
+        total = total.saturating_add(item.bytes);
+        entries.push(AssetEntry {
+            kind: classify_path(Path::new(&name)),
+            relative_path: name,
+            byte_size: item.bytes,
+        });
+    }
+    Ok(Inventory {
+        schema: 1,
+        root: canonical.to_string_lossy().into_owned(),
+        entries,
+        total_bytes: total,
+        skipped_symlinks: 0,
+    })
+}
+
 /// Validate every listed asset's location and original byte count before
 /// exposing an imported PAK through the read-only editor window.
 pub fn imported_archive_files(archive: &ImportedPak) -> Result<Inventory, LibraryError> {
@@ -432,6 +479,170 @@ pub enum LibraryReferenceStatus {
     Ambiguous(Vec<LibraryReference>),
 }
 
+/// One operation's immutable exact-path table, built once for the selected
+/// build. Only referenced files are verified on lookup; unrelated extracted
+/// entries are not re-stat'ed while constructing a 3D scene.
+struct IndexedMember {
+    archive_id: String,
+    archive_name: String,
+    relative_path: String,
+    file_root: PathBuf,
+    expected_size: u64,
+}
+
+struct LookupSession {
+    root: PathBuf,
+    build: String,
+    members: HashMap<String, Vec<IndexedMember>>,
+}
+
+thread_local! {
+    static LOOKUP_SESSION: RefCell<Option<LookupSession>> = const { RefCell::new(None) };
+}
+
+/// Restore any previous session on scope exit, including a failed level load.
+pub struct ImportedLookupGuard {
+    previous: Option<LookupSession>,
+}
+
+impl Drop for ImportedLookupGuard {
+    fn drop(&mut self) {
+        LOOKUP_SESSION.with(|scope| {
+            *scope.borrow_mut() = self.previous.take();
+        });
+    }
+}
+
+/// Build one exact-build dependency index per level-loading operation rather
+/// than re-reading hundreds of PAK manifests for every DDS/MTL lookup.
+/// Project edits and normal PAK opens continue using strict full validation.
+pub fn begin_imported_lookup_session(
+    root: &Path,
+    build_label: &str,
+) -> Result<ImportedLookupGuard, LibraryError> {
+    if build_label.trim().is_empty() {
+        return Err(LibraryError::UnsafeArchive);
+    }
+    let library = imported_library(root)?;
+    let mut members = HashMap::<String, Vec<IndexedMember>>::new();
+    let mut total = 0usize;
+    for archive in library
+        .archives
+        .iter()
+        .filter(|archive| archive.builds.iter().any(|label| label == build_label))
+    {
+        let folder = Path::new(&archive.directory);
+        let manifest: Manifest = serde_json::from_slice(&read_bounded(
+            &folder.join("asset-library.json"),
+            MAX_MANIFEST_BYTES,
+        )?)?;
+        if manifest.version != 1
+            || manifest.name != archive.name
+            || manifest.entries.len() > MAX_MEMBERS
+        {
+            return Err(LibraryError::UnsafeArchive);
+        }
+        // This is a manifest index, not blanket trust in extracted paths.
+        // Validate each actual match before returning its absolute filename.
+        let file_root = folder.join("files");
+        if !fs::symlink_metadata(&file_root)?.file_type().is_dir() {
+            return Err(LibraryError::UnsafeArchive);
+        }
+        let file_root = fs::canonicalize(&file_root)?;
+        let mut seen = HashSet::new();
+        for entry in manifest.entries {
+            let path = safe_member_name(&entry.path).map_err(|_| LibraryError::UnsafeArchive)?;
+            let key = path.to_ascii_lowercase();
+            if !seen.insert(key.clone()) {
+                return Err(LibraryError::UnsafeArchive);
+            }
+            total += 1;
+            if total > 2_000_000 {
+                return Err(LibraryError::Limit);
+            }
+            members.entry(key).or_default().push(IndexedMember {
+                archive_id: archive.id.clone(),
+                archive_name: archive.name.clone(),
+                relative_path: path,
+                file_root: file_root.clone(),
+                expected_size: entry.bytes,
+            });
+        }
+    }
+    let session = LookupSession {
+        root: root.to_path_buf(),
+        build: build_label.to_owned(),
+        members,
+    };
+    let previous = LOOKUP_SESSION.with(|scope| scope.replace(Some(session)));
+    Ok(ImportedLookupGuard { previous })
+}
+
+fn indexed_reference(
+    root: &Path,
+    authored_path: &str,
+    build_label: Option<&str>,
+    archive_name: Option<&str>,
+) -> Option<Result<LibraryReferenceStatus, LibraryError>> {
+    LOOKUP_SESSION.with(|scope| {
+        let scope = scope.borrow();
+        let session = scope.as_ref()?;
+        if session.root != root || build_label != Some(session.build.as_str()) {
+            return None;
+        }
+        let source = match safe_member_name(&authored_path.replace('\\', "/")) {
+            Ok(source) => source.to_ascii_lowercase(),
+            Err(error) => return Some(Err(error.into())),
+        };
+        let candidates = if source.ends_with(".dds.0") {
+            vec![source]
+        } else if source.ends_with(".dds") || source.ends_with(".tif") {
+            let base = &source[..source.len() - 4];
+            vec![format!("{base}.dds.0"), format!("{base}.dds")]
+        } else {
+            vec![source]
+        };
+        for candidate in candidates {
+            let mut hits = Vec::new();
+            if let Some(entries) = session.members.get(&candidate) {
+                for member in entries {
+                    if archive_name.is_some_and(|name| !member.archive_name.eq_ignore_ascii_case(name)) {
+                        continue;
+                    }
+                    let path = member.file_root.join(&member.relative_path);
+                    let Ok(meta) = fs::symlink_metadata(&path) else {
+                        continue;
+                    };
+                    if !meta.file_type().is_file() || meta.len() != member.expected_size {
+                        continue;
+                    }
+                    let Ok(real) = fs::canonicalize(&path) else {
+                        continue;
+                    };
+                    if !real.starts_with(&member.file_root) {
+                        continue;
+                    }
+                    hits.push(LibraryReference {
+                        archive_id: member.archive_id.clone(),
+                        archive_name: member.archive_name.clone(),
+                        relative_path: member.relative_path.clone(),
+                        absolute_path: real.to_string_lossy().into_owned(),
+                    });
+                }
+            }
+            if !hits.is_empty() {
+                hits.sort_by(|a, b| a.archive_id.cmp(&b.archive_id));
+                return Some(Ok(if hits.len() == 1 {
+                    LibraryReferenceStatus::Found(hits.remove(0))
+                } else {
+                    LibraryReferenceStatus::Ambiguous(hits)
+                }));
+            }
+        }
+        Some(Ok(LibraryReferenceStatus::Missing))
+    })
+}
+
 /// Read imported manifests on demand in a background job and check every
 /// matching candidate against the read-only file location and byte length.
 /// Without an explicit build label, multiple archives remain ambiguous.
@@ -465,6 +676,9 @@ fn resolve_imported_reference_scoped(
     build_label: Option<&str>,
     archive_name: Option<&str>,
 ) -> Result<LibraryReferenceStatus, LibraryError> {
+    if let Some(hit) = indexed_reference(root, authored_path, build_label, archive_name) {
+        return hit;
+    }
     let source = safe_member_name(&authored_path.replace('\\', "/"))
         .map_err(|_| LibraryError::UnsafeArchive)?;
     let source = source.to_ascii_lowercase();
