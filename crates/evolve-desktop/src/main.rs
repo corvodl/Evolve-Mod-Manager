@@ -1143,7 +1143,8 @@ impl Operation {
                 Ok(Completed::DbaConverted(report, dest, temp))
             }
             Self::ResolveMaterial(source, root, imported_root, build_label) => {
-                let _lookup = model_preview_lookup(imported_root.as_deref(), build_label.as_deref())?;
+                let _lookup =
+                    model_preview_lookup(imported_root.as_deref(), build_label.as_deref())?;
                 let authored = read_material(&source).map_err(|e| e.to_string())?;
                 let library = scan_directory(&root).map_err(|e| e.to_string())?;
                 let mut report = resolve_materials(&library, &authored);
@@ -1489,7 +1490,13 @@ impl Operation {
                 progress.store(5, Ordering::Relaxed);
                 let lookup_started = Instant::now();
                 let _lookup = model_preview_lookup(imported.as_deref(), build.as_deref())?;
-                crash_diagnostics::record("cdf_dependency_index", &format!("Exact-build lookup ready in {} ms", lookup_started.elapsed().as_millis()));
+                crash_diagnostics::record(
+                    "cdf_dependency_index",
+                    &format!(
+                        "Exact-build lookup ready in {} ms",
+                        lookup_started.elapsed().as_millis()
+                    ),
+                );
                 crash_diagnostics::record("cdf_worker_begin", "reading authored CDF attachments");
                 let (mesh, report) = evolve_core::read_static_cdf_assembly_with_kala_state(
                     &source,
