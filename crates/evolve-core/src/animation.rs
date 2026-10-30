@@ -362,12 +362,16 @@ fn floats(
 /// private manager's shortest-arc quaternion sampling rather than nlerp.
 fn gltf_slerp(first: &[f32], second: &[f32], fraction: f32) -> Result<Vec<f32>, AnimationError> {
     if first.len() != 4 || second.len() != 4 || !fraction.is_finite() {
-        return Err(AnimationError::Invalid("invalid GLB quaternion channel".into()));
+        return Err(AnimationError::Invalid(
+            "invalid GLB quaternion channel".into(),
+        ));
     }
     let normalized = |values: &[f32]| -> Result<[f32; 4], AnimationError> {
         let norm = values.iter().map(|v| v * v).sum::<f32>().sqrt();
         if !norm.is_finite() || norm < 1e-6 {
-            return Err(AnimationError::Invalid("invalid GLB joint quaternion".into()));
+            return Err(AnimationError::Invalid(
+                "invalid GLB joint quaternion".into(),
+            ));
         }
         Ok(std::array::from_fn(|i| values[i] / norm))
     };
