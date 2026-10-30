@@ -473,9 +473,9 @@ impl RiggedGlbPreview {
         if positions.is_empty() || indices.is_empty() {
             return Err("No supported skinned triangle mesh".into());
         }
-        let source_z_up = nodes_raw.iter().any(|node| {
-            node["name"].as_str() == Some("Source CryEngine Z-up to Blender Y-up")
-        });
+        let source_z_up = nodes_raw
+            .iter()
+            .any(|node| node["name"].as_str() == Some("Source CryEngine Z-up to Blender Y-up"));
         let preview = Self {
             nodes,
             parents,
