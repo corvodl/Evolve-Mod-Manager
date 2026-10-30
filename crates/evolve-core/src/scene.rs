@@ -351,7 +351,9 @@ pub struct ReadOnlySceneRecovery {
     pub conflicting_guids: usize,
 }
 
-pub fn parse_level_scene_read_only(layers: &[(&str, &[u8])]) -> Result<ReadOnlySceneRecovery, SceneError> {
+pub fn parse_level_scene_read_only(
+    layers: &[(&str, &[u8])],
+) -> Result<ReadOnlySceneRecovery, SceneError> {
     if layers.is_empty() || layers.len() > 1024 {
         return Err(SceneError::Limits);
     }
@@ -1087,13 +1089,20 @@ mod tests {
     fn read_only_duplicate_layer_recovery_keeps_cross_layer_parents() {
         let root = br#"<Objects><Object Id="root" Name="Root" Pos="5,0,0" Geometry="Objects/root.cgf"/></Objects>"#;
         let repeated = br#"<Objects><Object Id="root" Name="Root" Pos="5,0,0" Geometry="Objects/root.cgf"/><Object Id="child" Parent="root" Pos="1,0,0" Geometry="Objects/child.cgf"/></Objects>"#;
-        assert!(matches!(parse_level_scene(&[("a.lyr", root), ("b.lyr", repeated)]),
-            Err(SceneError::DuplicateGuid(_))));
+        assert!(matches!(
+            parse_level_scene(&[("a.lyr", root), ("b.lyr", repeated)]),
+            Err(SceneError::DuplicateGuid(_))
+        ));
         let result = parse_level_scene_read_only(&[("a.lyr", root), ("b.lyr", repeated)]).unwrap();
         assert_eq!(result.duplicate_declarations, 1);
         assert_eq!(result.conflicting_guids, 0);
         assert_eq!(result.scene.objects.len(), 2);
-        let child = result.scene.objects.iter().find(|obj| obj.id == "child").unwrap();
+        let child = result
+            .scene
+            .objects
+            .iter()
+            .find(|obj| obj.id == "child")
+            .unwrap();
         assert_eq!(child.world.position, [6.0, 0.0, 0.0]);
         assert_eq!(child.parent, "root");
     }
@@ -1105,7 +1114,12 @@ mod tests {
         let result = parse_level_scene_read_only(&[("a.lyr", root), ("b.lyr", conflict)]).unwrap();
         assert_eq!(result.conflicting_guids, 1);
         assert_eq!(result.duplicate_declarations, 1);
-        let child = result.scene.objects.iter().find(|obj| obj.id == "child").unwrap();
+        let child = result
+            .scene
+            .objects
+            .iter()
+            .find(|obj| obj.id == "child")
+            .unwrap();
         assert_eq!(child.world.position, [1.0, 0.0, 0.0]);
         assert_eq!(child.status, "unresolved parent GUID");
         assert_eq!(result.scene.objects.len(), 2);
