@@ -400,7 +400,7 @@ impl RiggedGlbPreview {
                             weight[lane + 4] = extra_weights[i][lane];
                         }
                     }
-                    if id.iter().zip(weight).any(|(&joint, w)| *w > 0. && joint >= joints.len()) {
+                    if id.iter().zip(weight).any(|(&joint, w)| w > 0. && joint >= joints.len()) {
                         return Err("Joint index exceeds skin".into());
                     }
                     let total: f32 = weight.iter().sum();
