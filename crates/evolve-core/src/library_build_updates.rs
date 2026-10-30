@@ -184,7 +184,10 @@ fn bootstrap_from_library(
     let mut found: BTreeMap<String, (u64, BuildMember)> = BTreeMap::new();
     for archive in catalog.archives {
         let source = PathBuf::from(&archive.source);
-        let Ok(relative) = source.strip_prefix(root) else {
+        let Ok(resolved) = fs::canonicalize(&source) else {
+            continue;
+        };
+        let Ok(relative) = resolved.strip_prefix(root) else {
             continue;
         };
         let Ok(rel) = relative_name(root, &root.join(relative)) else {
@@ -484,7 +487,7 @@ pub fn apply_library_build_updates(
     let snapshot = BuildSnapshot {
         version: 1,
         build_id: plan.build_id.clone(),
-        source_root: root.to_string_lossy().into_owned(),
+        source_root: ordinary_path(&root.to_string_lossy()),
         members,
         owned_extractions,
     };
@@ -596,7 +599,7 @@ fn build_snapshots(library: &Path) -> Result<BTreeMap<String, Vec<BuildSnapshot>
             record.source_root = ordinary_path(root);
             if records
                 .first()
-                .is_some_and(|old: &BuildSnapshot| old.source_root != record.source_root)
+                .is_some_and(|old: &(String, BuildSnapshot)| source_path_key(&old.1.source_root) != source_path_key(&record.source_root))
             {
                 return Err("Conflicting build roots within one snapshot history".into());
             }
