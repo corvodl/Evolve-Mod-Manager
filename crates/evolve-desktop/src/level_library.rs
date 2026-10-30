@@ -674,7 +674,7 @@ mod tests {
                 "version": 1,
                 "builds": {
                     "stage-two": {"label": "Stage 2",
-                        "members": {map_id: {}, tex_id: {}}}
+                        "members": {"11111111111111111111": {}, "22222222222222222222": {}}}
                 }
             })).unwrap(),
         ).unwrap();
