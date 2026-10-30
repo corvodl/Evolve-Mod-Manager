@@ -328,6 +328,8 @@ struct State {
     converted_dba_cache: Option<Arc<tempfile::TempDir>>,
     glb_motion: Option<Arc<AnimatedGlb>>,
     selected_motion_clip: usize,
+    selected_glb_overlay: Option<usize>,
+    glb_overlay_weight: f32,
     native_caf: Option<Arc<NativeCafMotion>>,
     caf_layer: Option<Arc<NativeCafMotion>>,
     caf_layer_label: String,
@@ -2214,6 +2216,9 @@ enum Message {
     ConverterPathChanged(String),
     OpenConvertedGlb(usize),
     SelectMotionClip(usize),
+    SelectGlbOverlay(usize),
+    ClearGlbOverlay,
+    GlbOverlayWeight(f32),
     MotionScrub(f32),
     ToggleMotion,
     Tick,
@@ -2375,7 +2380,17 @@ fn apply_current_skin_frame(state: &mut State) {
     } else if let Some(converted) = &state.glb_motion
         && converted.has_skinned_preview()
     {
-        match converted.mesh_at(state.selected_motion_clip, state.motion_time) {
+        let result = if let Some(layer) = state.selected_glb_overlay {
+            converted.mesh_at_layered(
+                state.selected_motion_clip,
+                layer,
+                state.motion_time,
+                state.glb_overlay_weight,
+            )
+        } else {
+            converted.mesh_at(state.selected_motion_clip, state.motion_time)
+        };
+        match result {
             Ok(mesh) => state.model = Some(Arc::new(mesh)),
             Err(error) => {
                 state.playing = false;
@@ -2943,6 +2958,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.caf_layer = None;
     state.caf_layer_label.clear();
     state.glb_motion = None;
+    state.selected_glb_overlay = None;
     state.converted_glbs.clear();
     state.converted_dba_cache = None;
     state.auto_clips.clear();
@@ -10470,11 +10486,41 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::BlenderChanged(value) => state.blender_path = value,
         Message::ConverterPathChanged(value) => state.converter_path = value,
         Message::SelectMotionClip(index) => {
+            if state
+                .glb_motion
+                .as_ref()
+                .is_some_and(|motion| motion.is_layered_clip(index))
+            {
+                state.status = "A layered clip needs an independent base animation; use Add layer rather than playing it standalone.".into();
+                return Task::none();
+            }
             state.selected_motion_clip = index;
             state.motion_time = 0.0;
             state.playing = false;
             state.motion_tick = None;
             apply_current_skin_frame(state);
+        }
+        Message::SelectGlbOverlay(index) => {
+            if state
+                .glb_motion
+                .as_ref()
+                .is_some_and(|motion| motion.has_skinned_preview() && motion.is_layered_clip(index))
+                && index != state.selected_motion_clip
+            {
+                state.selected_glb_overlay = Some(index);
+                state.glb_overlay_weight = 0.65;
+                apply_current_skin_frame(state);
+            }
+        }
+        Message::ClearGlbOverlay => {
+            state.selected_glb_overlay = None;
+            apply_current_skin_frame(state);
+        }
+        Message::GlbOverlayWeight(value) => {
+            if value.is_finite() {
+                state.glb_overlay_weight = value.clamp(0., 1.);
+                apply_current_skin_frame(state);
+            }
         }
         Message::OpenConvertedGlb(index) => {
             if let Some(path) = state.converted_glbs.get(index).cloned() {
@@ -11556,6 +11602,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.motion_tick = None;
                     state.playing = false;
                     state.selected_motion_clip = 0;
+                    state.selected_glb_overlay = None;
+                    state.glb_overlay_weight = 0.65;
                     state.caf_layer = None;
                     state.caf_layer_label.clear();
                     state.native_caf = None;
