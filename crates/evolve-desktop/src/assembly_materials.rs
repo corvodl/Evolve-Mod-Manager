@@ -512,9 +512,18 @@ fn authored_texture(
     Err(format!(
         "Missing exact cooked DDS for {reference} in material {owner}; checked {} source-qualified paths{} (build: {}). Confirm the original texture PAK for this build was imported. First candidates: {}",
         candidates.len(),
-        if imported.is_some() { " in the selected archive and imported library" } else { " in the selected archive" },
+        if imported.is_some() {
+            " in the selected archive and imported library"
+        } else {
+            " in the selected archive"
+        },
         build.unwrap_or("unselected"),
-        candidates.iter().take(3).cloned().collect::<Vec<_>>().join(", "),
+        candidates
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
     ))
 }
 
@@ -1303,7 +1312,7 @@ pub fn load_with_progress(
             surface.specular = specular;
             surface.gloss = gloss;
             surface.foliage_cutout = source_vegetation_cutout(leaf) && surface.diffuse.is_some();
-    surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
+            surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
             surface.opacity = if surface.foliage_cutout {
                 None
             } else {
