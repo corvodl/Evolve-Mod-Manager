@@ -562,6 +562,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             } else {
                 text("").size(12)
             },
+            if state.update_worker_failure.is_some() {
+                design::button("Retry update")
+                    .on_press_maybe((!state.busy).then_some(Message::RetryUpdate))
+                    .style(design::primary)
+            } else {
+                design::button("Retry update")
+                    .style(design::secondary)
+            },
             super::download_action(state),
             text("Updates are downloaded, SHA-256 verified and installed when you select Update and restart. Portable downloads remain portable; your game files and preferences are preserved.").size(12).style(design::muted),
         ].spacing(8)),
