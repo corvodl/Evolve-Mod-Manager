@@ -17,6 +17,8 @@ pub struct Preferences {
     pub light_strength: f32,
     pub viewer_show_inspector: bool,
     pub viewer_wireframe: bool,
+    /// Persistent Model Viewer texture quality. Full keeps original mips where GPU permits.
+    pub viewer_full_textures: bool,
     pub animation_speed: f32,
     pub animation_loop: bool,
     pub saved_yaw: f32,
@@ -106,6 +108,7 @@ impl Default for Preferences {
             light_strength: 1.6,
             viewer_show_inspector: false,
             viewer_wireframe: false,
+            viewer_full_textures: true,
             animation_speed: 1.0,
             animation_loop: false,
             saved_yaw: 0.0,
@@ -434,6 +437,18 @@ pub fn save_to(path: &Path, prefs: &Preferences) -> Result<(), SettingsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewer_texture_quality_defaults_full_and_survives_settings_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("settings.json");
+        fs::write(&file, r#"{"viewer_wireframe":false}"#).unwrap();
+        let mut previous = load_from(&file).unwrap();
+        assert!(previous.viewer_full_textures);
+        previous.viewer_full_textures = false;
+        save_to(&file, &previous).unwrap();
+        assert!(!load_from(&file).unwrap().viewer_full_textures);
+    }
 
     #[test]
     fn nine_existing_hotkeys_migrate_without_losing_bindings() {

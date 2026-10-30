@@ -13,14 +13,23 @@ use std::sync::Arc;
 // A large CDF can reuse the same original DDS in dozens of material ranges.
 // Allocate each source/role only once per scene and bound unique GPU copies.
 pub(crate) const MAX_GPU_PREVIEW_TEXTURE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_GPU_FULL_PREVIEW_TEXTURE_BYTES: usize = 1024 * 1024 * 1024;
+
+fn preview_budget(full: bool) -> usize {
+    if full {
+        MAX_GPU_FULL_PREVIEW_TEXTURE_BYTES
+    } else {
+        MAX_GPU_PREVIEW_TEXTURE_BYTES
+    }
+}
 
 fn texture_cache_key(image: Option<&Arc<image::RgbaImage>>, role: usize) -> (usize, usize) {
     (image.map_or(0, |pixels| Arc::as_ptr(pixels) as usize), role)
 }
 
-fn gpu_budget_allows(used: usize, additional: usize) -> bool {
+fn gpu_budget_allows(used: usize, additional: usize, budget: usize) -> bool {
     used.checked_add(additional)
-        .is_some_and(|total| total <= MAX_GPU_PREVIEW_TEXTURE_BYTES)
+        .is_some_and(|total| total <= budget)
 }
 
 /// Preserve the original source image whenever possible. When a character
@@ -52,8 +61,8 @@ fn fitted_source_dimensions(
 /// budget among remaining unique diffuse images. Without this, the first
 /// few 4K textures can use the entire scene budget, leaving the final
 /// character head/armor pieces untextured despite valid source DDS files.
-fn diffuse_budget_share(used: usize, remaining_unique: usize) -> usize {
-    MAX_GPU_PREVIEW_TEXTURE_BYTES.saturating_sub(used) / remaining_unique.max(1)
+fn diffuse_budget_share(used: usize, remaining_unique: usize, budget: usize) -> usize {
+    budget.saturating_sub(used) / remaining_unique.max(1)
 }
 
 /// Reserve GPU space for ALL source diffuse maps before accepting optional
@@ -65,12 +74,13 @@ fn allows_cdf_role(
     remaining_diffuse: usize,
     role: usize,
     can_fit_all_diffuse: bool,
+    budget: usize,
 ) -> bool {
     if role != 0 && !can_fit_all_diffuse {
         return false;
     }
     let reserve = if role == 0 { 0 } else { remaining_diffuse };
-    gpu_budget_allows(used.saturating_add(reserve), additional)
+    gpu_budget_allows(used.saturating_add(reserve), additional, budget)
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +138,7 @@ pub struct Scene {
     pub world: Option<Arc<super::world_instances::World>>,
     pub level_hour: f32,
     pub level_full_textures: bool,
+    pub viewer_full_textures: bool,
 }
 
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -197,6 +208,7 @@ pub struct Primitive {
     world: Option<Arc<super::world_instances::World>>,
     level_hour: f32,
     level_full_textures: bool,
+    viewer_full_textures: bool,
     camera: Option<super::level_camera::Camera>,
     yaw: f32,
     pitch: f32,
@@ -359,6 +371,7 @@ impl shader::Program<super::Message> for Scene {
             world: self.world.clone(),
             level_hour: self.level_hour,
             level_full_textures: self.level_full_textures,
+            viewer_full_textures: self.viewer_full_textures,
             camera: self.level_camera,
             yaw: self.yaw,
             pitch: self.pitch,
@@ -422,6 +435,7 @@ pub struct Pipeline {
     last_specular_identity: usize,
     last_gloss_identity: usize,
     last_surfaces_identity: usize,
+    last_viewer_full_textures: bool,
     last_emissive_gain: f32,
     last_emissive_time: f32,
     gpu_surfaces: Vec<GpuSurface>,
@@ -1143,6 +1157,7 @@ impl Pipeline {
             last_specular_identity: usize::MAX,
             last_gloss_identity: usize::MAX,
             last_surfaces_identity: usize::MAX,
+            last_viewer_full_textures: false,
             last_emissive_gain: f32::NAN,
             last_emissive_time: f32::NAN,
             gpu_surfaces: Vec::new(),
@@ -1176,12 +1191,15 @@ impl Pipeline {
         queue: &wgpu::Queue,
         surfaces: Option<&Arc<Vec<Surface>>>,
         index_count: usize,
+        full_textures: bool,
     ) {
         let identity = surfaces.map_or(0, |parts| Arc::as_ptr(parts) as usize);
-        if identity == self.last_surfaces_identity {
+        if identity == self.last_surfaces_identity && full_textures == self.last_viewer_full_textures {
             return;
         }
         self.last_surfaces_identity = identity;
+        self.last_viewer_full_textures = full_textures;
+        let budget = preview_budget(full_textures);
         // New bind groups require fresh gain uploads even if the slider did
         // not move. Reuse the already-decoded images on subsequent slider drags.
         self.last_emissive_gain = f32::NAN;
@@ -1235,7 +1253,7 @@ impl Pipeline {
                 remaining_diffuse = remaining_diffuse.saturating_add(diffuse.as_raw().len());
             }
         }
-        let can_fit_all_diffuse = remaining_diffuse <= MAX_GPU_PREVIEW_TEXTURE_BYTES;
+        let can_fit_all_diffuse = remaining_diffuse <= budget;
         let mut remaining_unique_diffuse = unique_diffuse.len();
         for part in surfaces.iter() {
             if !part.visible {
@@ -1298,9 +1316,9 @@ impl Pipeline {
                 // maps must not crowd out the head/body colors of a CDF.
                 let reserve = if role == 0 { 0 } else { remaining_diffuse };
                 let available = if role == 0 && !can_fit_all_diffuse {
-                    diffuse_budget_share(used_bytes, remaining_unique_diffuse)
+                    diffuse_budget_share(used_bytes, remaining_unique_diffuse, budget)
                 } else {
-                    MAX_GPU_PREVIEW_TEXTURE_BYTES.saturating_sub(used_bytes.saturating_add(reserve))
+                    budget.saturating_sub(used_bytes.saturating_add(reserve))
                 };
                 let can_use_role = role == 0 || can_fit_all_diffuse;
                 let full_size = allows_cdf_role(
@@ -1309,6 +1327,7 @@ impl Pipeline {
                     remaining_diffuse,
                     role,
                     can_fit_all_diffuse,
+                    budget,
                 );
                 let desired = if already_uploaded {
                     None
@@ -1471,6 +1490,7 @@ impl Pipeline {
             queue,
             primitive.surfaces.as_ref(),
             primitive.indices.len(),
+            primitive.viewer_full_textures,
         );
         if self.last_emissive_time.to_bits() != primitive.emissive_time.to_bits() {
             self.last_emissive_time = primitive.emissive_time;
@@ -1758,19 +1778,31 @@ mod tests {
 
     #[test]
     fn preview_upload_budget_rejects_oversized_unique_texture_without_overflow() {
-        assert!(super::gpu_budget_allows(0, 256 * 1024 * 1024));
-        assert!(!super::gpu_budget_allows(256 * 1024 * 1024, 4));
-        assert!(!super::gpu_budget_allows(usize::MAX, 64));
+        assert!(super::gpu_budget_allows(0, 256 * 1024 * 1024, super::preview_budget(false)));
+        assert!(!super::gpu_budget_allows(256 * 1024 * 1024, 4, super::preview_budget(false)));
+        assert!(!super::gpu_budget_allows(usize::MAX, 64, super::preview_budget(false)));
         // With 180 MiB still owed to later original diffuse textures,
         // a new 90 MiB optional specular must NOT crowd them out.
         let mib = 1024 * 1024;
-        assert!(!super::allows_cdf_role(0, 90 * mib, 180 * mib, 3, true));
-        assert!(super::allows_cdf_role(0, 90 * mib, 180 * mib, 0, true));
+        assert!(!super::allows_cdf_role(0, 90 * mib, 180 * mib, 3, true, super::preview_budget(false)));
+        assert!(super::allows_cdf_role(0, 90 * mib, 180 * mib, 0, true, super::preview_budget(false)));
         // If all diffuse assets exceed the fixed budget, omit optional
         // maps first while still allowing each original diffuse to compete
         // for the remaining protected budget.
-        assert!(!super::allows_cdf_role(0, 4 * mib, 300 * mib, 2, false));
-        assert!(super::allows_cdf_role(0, 4 * mib, 300 * mib, 0, false));
+        assert!(!super::allows_cdf_role(0, 4 * mib, 300 * mib, 2, false, super::preview_budget(false)));
+        assert!(super::allows_cdf_role(0, 4 * mib, 300 * mib, 0, false, super::preview_budget(false)));
+    }
+
+    #[test]
+    fn full_quality_raises_source_budget_to_level_editor_equivalent() {
+        assert_eq!(super::preview_budget(false), 256 * 1024 * 1024);
+        assert_eq!(super::preview_budget(true), 1024 * 1024 * 1024);
+        assert!(super::allows_cdf_role(
+            0, 400 * 1024 * 1024, 400 * 1024 * 1024, 0, true, super::preview_budget(true)
+        ));
+        assert!(!super::allows_cdf_role(
+            0, 400 * 1024 * 1024, 400 * 1024 * 1024, 0, false, super::preview_budget(false)
+        ));
     }
 
     #[test]
@@ -1789,12 +1821,12 @@ mod tests {
             Some((2048, 2048))
         );
         assert_eq!(fitted_source_dimensions(4096, 4096, 0, 8192), None);
-        assert_eq!(super::diffuse_budget_share(0, 8), 32 * 1024 * 1024);
+        assert_eq!(super::diffuse_budget_share(0, 8, super::preview_budget(false)), 32 * 1024 * 1024);
         assert_eq!(
-            super::diffuse_budget_share(128 * 1024 * 1024, 4),
+            super::diffuse_budget_share(128 * 1024 * 1024, 4, super::preview_budget(false)),
             32 * 1024 * 1024
         );
-        assert_eq!(super::diffuse_budget_share(256 * 1024 * 1024, 4), 0);
+        assert_eq!(super::diffuse_budget_share(256 * 1024 * 1024, 4, super::preview_budget(false)), 0);
         let mut source = image::RgbaImage::from_pixel(32, 32, image::Rgba([10, 15, 200, 0]));
         source.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
         let limited = fitted_source_dimensions(32, 32, 16 * 16 * 4, 32).unwrap();

@@ -561,6 +561,7 @@ struct State {
     playback_speed: f32,
     playback_loop: bool,
     viewer_wireframe: bool,
+    viewer_full_textures: bool,
     light_strength: f32,
     level_filter: String,
     level_selected: Option<usize>,
@@ -2156,6 +2157,7 @@ enum Message {
     PlaybackSpeedChanged(f32),
     PlaybackLoopChanged,
     ViewerToggleWireframe,
+    ViewerFullTexturesToggled,
     LightStrengthChanged(f32),
     LevelSelect(usize),
     LevelFilterChanged(String),
@@ -7307,6 +7309,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PlaybackSpeedChanged(value) => state.playback_speed = value.clamp(0.1, 3.0),
         Message::PlaybackLoopChanged => state.playback_loop = !state.playback_loop,
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
+        Message::ViewerFullTexturesToggled => {
+            state.viewer_full_textures = !state.viewer_full_textures;
+            state.preferences.viewer_full_textures = state.viewer_full_textures;
+            persist_preferences(state);
+            state.status = if state.viewer_full_textures {
+                "Model Viewer: Full-quality source textures enabled (subject to GPU memory and adapter limits).".into()
+            } else {
+                "Model Viewer: Balanced texture quality enabled.".into()
+            };
+        }
         Message::LightStrengthChanged(value) => state.light_strength = value.clamp(0.2, 4.0),
         Message::LevelSelect(index) => {
             if let Some(scene) = &state.level_scene
@@ -7546,6 +7558,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.viewer_explorer_visible = state.viewer_explorer_visible;
             state.preferences.viewer_show_inspector = state.viewer_show_inspector;
             state.preferences.viewer_wireframe = state.viewer_wireframe;
+            state.preferences.viewer_full_textures = state.viewer_full_textures;
             state.preferences.light_strength = state.light_strength;
             state.preferences.animation_speed = state.playback_speed;
             state.preferences.animation_loop = state.playback_loop;
@@ -13618,6 +13631,7 @@ fn initial_state() -> State {
         level_zoom: 1.0,
         level_time_of_day: 12.0,
         level_full_textures: true,
+        viewer_full_textures: true,
         light_strength: 1.6,
         emissive_strength: 1.0,
         viewer_explorer_visible: true,
@@ -13632,6 +13646,7 @@ fn initial_state() -> State {
                 result.viewer_explorer_visible = saved.viewer_explorer_visible;
                 result.viewer_show_inspector = saved.viewer_show_inspector;
                 result.viewer_wireframe = saved.viewer_wireframe;
+                result.viewer_full_textures = saved.viewer_full_textures;
                 result.light_strength = saved.light_strength;
                 result.playback_speed = saved.animation_speed;
                 result.playback_loop = saved.animation_loop;
