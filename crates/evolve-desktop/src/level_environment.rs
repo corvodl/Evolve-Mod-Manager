@@ -376,7 +376,7 @@ impl HeightFog {
         let slope = ((self.top_density.max(0.000001) / self.bottom_density.max(0.000001)).ln()
             / (self.top_height - self.bottom_height))
             .clamp(-0.01, 0.01);
-        let origin_density = self.bottom_density
+        let origin_density = self.bottom_density.max(0.000001)
             * (slope * (camera_z - self.bottom_height))
                 .clamp(-12.0, 12.0)
                 .exp();

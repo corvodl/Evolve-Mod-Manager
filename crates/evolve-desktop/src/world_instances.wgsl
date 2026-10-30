@@ -157,7 +157,7 @@ fn height_fog_depth(input:Output, distance:f32)->f32 {
   let bottom_density=max(h.z,0.000001);
   let top_density=max(h.w,0.000001);
   let falloff=clamp(log(top_density/bottom_density)/max(h.y-h.x,0.01),-0.01,0.01);
-  let at_camera=h.z*exp(clamp(falloff*(camera.origin.z-h.x),-12.0,12.0));
+  let at_camera=bottom_density*exp(clamp(falloff*(camera.origin.z-h.x),-12.0,12.0));
   let delta=falloff*(input.world.z-camera.origin.z);
   var integral_ratio=1.0+0.5*delta+delta*delta/6.0;
   if (abs(delta)>=0.001) {
