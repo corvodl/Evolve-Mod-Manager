@@ -4,7 +4,7 @@
 use crate::{level_camera, textured::Surface};
 use evolve_core::{RenderMesh, Transform};
 use iced::wgpu;
-use iced::wgpu::util::{DeviceExt, TextureDataOrder};
+use iced::wgpu::util::DeviceExt;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
