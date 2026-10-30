@@ -140,13 +140,24 @@ fn imported_map_terrain(
     let Some(game) = source_game_root(selected) else { return Ok(None) };
     let Some(library_root) = Path::new(&selected.directory).parent() else { return Ok(None) };
     let library = imported_library(library_root).map_err(|error| error.to_string())?;
-    let selected_build = (selected.builds.len() == 1).then(|| selected.builds[0].as_str());
+    if selected.builds.len() > 1 {
+        return Err("Selected map belongs to multiple imported builds; choose a specific build before resolving terrain".into());
+    }
+    let selected_build = selected.builds.first().map(String::as_str);
     let mut found = Vec::new();
     let mut matching_pak_details = Vec::new();
+    let mut matching_pak_members = Vec::new();
     for archive in &library.archives {
+        // Unlabeled archives imported from the exact same Game directory
+        // are admissible. A *known different* build is never admissible.
+        // This handles independently imported Tutorial level/terrain PAKs.
+        let same_build = match selected_build {
+            Some(label) => archive.builds.is_empty()
+                || archive.builds.iter().any(|build| build == label),
+            None => archive.builds.is_empty(),
+        };
         if archive.id == selected.id
-            || (selected_build.is_none()
-                || !archive.builds.iter().any(|build| Some(build.as_str()) == selected_build))
+            || !same_build
             || source_game_root(archive).as_deref() != Some(game.as_path())
             || !source_map_parent(archive, &game, folder)
         {
@@ -177,6 +188,9 @@ fn imported_map_terrain(
                 archive.name, inventory.entries.len()
             ));
             for entry in &inventory.entries {
+                if matching_pak_members.len() < 24 {
+                    matching_pak_members.push(entry.relative_path.clone());
+                }
                 if entry.byte_size < 24 || entry.byte_size > 2 * 1024 * 1024 * 1024 {
                     continue;
                 }
@@ -193,8 +207,9 @@ fn imported_map_terrain(
     found.dedup();
     match found.len() {
         0 if !matching_pak_details.is_empty() => Err(format!(
-            "Imported {} for {folder}, but none of its extracted members has a valid CRY baked-terrain tile header. It is indexed as a ZIP/signed archive rather than a raw baked-terrain stream; inspect its original member paths before implementing that variant.",
-            matching_pak_details.join(", ")
+            "Imported {} for {folder}, but none of its extracted members has a valid CRY baked-terrain tile header. The imported ZIP/signed archive's member layout must be decoded explicitly rather than feeding the outer PAK to the raw tile decoder. Imported files: {}",
+            matching_pak_details.join(", "),
+            matching_pak_members.join(", ")
         )),
         0 => Ok(None),
         1 => Ok(found.pop()),
@@ -898,7 +913,6 @@ mod tests {
                 "builds": {
                     "stage-two": {"label":"Stage 2", "members":{
                         "11111111111111111111":{},
-                        "22222222222222222222":{},
                         "33333333333333333333":{},
                         "44444444444444444444":{}
                     }}
