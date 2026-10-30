@@ -135,3 +135,21 @@ The Scene Settings panel and import diagnostics disclose the count.
 This improves coverage of original environment XML, **not** engine spline
 interpolation parity. Real CryEngine tangent handling and rendering of fog,
 HDR, atmosphere, shadows and particles remain separate acceptance work.
+
+## Original instanced world material maps (PR #156)
+
+The dedicated GPU-instanced world preview now reads the same **exact-build** MTL
+surface maps resolved for the Model Viewer: diffuse, separately authored
+opacity, **linear BC5 normal**, **sRGB specular reflectance**, **linear gloss**,
+and **sRGB emissive color**. Original normal maps use derivative-recovered
+UV tangent frames. Instances transform source vertex normals by the
+inverse-transpose of their nonuniform/mirrored world transforms; absent or
+singular normal streams fall back to geometry derivatives. Shared source
+images upload once per role under the existing per-texture/scene VRAM budgets,
+using neutral maps if a source is absent or exceeds the GPU budget. This is
+preview shading, **not** original CryEngine shader execution, HDR, bloom,
+shadow cascades or light-probe parity.
+
+Actual Stage 2 maps need screenshot comparison for BC5 channel orientation,
+specular levels, emissive tuning, mirrored buildings/vegetation and the
+reported originally missing DDS files. The source game files remain unchanged.

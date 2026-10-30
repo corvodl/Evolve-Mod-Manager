@@ -196,6 +196,59 @@ fn upload_rgba_mips(
     (texture, view)
 }
 
+/// Bounded, source-verified auxiliary MTL maps (normal/specular/gloss/emissive).
+/// Original decoded Arc texture data is shared between world meshes. When a
+/// GPU limit is reached the exact neutral fallback is used, never an unrelated
+/// texture from a different game build.
+#[allow(clippy::too_many_arguments)]
+fn auxiliary_map(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    source: Option<&Arc<image::RgbaImage>>,
+    role: u8,
+    fallback: [u8; 4],
+    format: wgpu::TextureFormat,
+    label: &'static str,
+    full_textures: bool,
+    device_limit: u32,
+    cache: &mut TextureCache,
+    used_bytes: &mut u64,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let key = (source.map_or(0, |img| Arc::as_ptr(img) as usize), role, false);
+    if let Some((texture, view)) = cache.get(&key) {
+        return (texture.clone(), view.clone());
+    }
+    let remaining = (if full_textures {
+        MAX_SCENE_FULL_TEXTURE_BYTES
+    } else {
+        MAX_SCENE_BALANCED_TEXTURE_BYTES
+    })
+    .saturating_sub(*used_bytes);
+    let selected = source.and_then(|img| {
+        gpu_diffuse_quality(
+            img,
+            false,
+            device_limit,
+            full_textures,
+            remaining.saturating_mul(3) / 4,
+        )
+    });
+    let (w, h) = selected.as_ref().map_or((1, 1), |img| img.dimensions());
+    let (texture, view) = upload_rgba_mips(
+        device,
+        queue,
+        selected.as_deref(),
+        fallback,
+        format,
+        label,
+    );
+    if selected.is_some() {
+        *used_bytes = used_bytes.saturating_add(mip_chain_bytes(w, h));
+    }
+    cache.insert(key, (texture.clone(), view.clone()));
+    (texture, view)
+}
+
 fn is_ground(group: &ModelGroup) -> bool {
     group.instances.len() == 1 && group.instances[0].object_index == usize::MAX
 }
@@ -468,6 +521,10 @@ struct GpuSurface {
     bind: wgpu::BindGroup,
     _image: wgpu::Texture,
     _opacity_image: wgpu::Texture,
+    _normal_image: wgpu::Texture,
+    _specular_image: wgpu::Texture,
+    _gloss_image: wgpu::Texture,
+    _emissive_image: wgpu::Texture,
     _alpha_uniform: wgpu::Buffer,
 }
 struct GpuGroup {
@@ -496,7 +553,7 @@ pub(super) struct Renderer {
 impl Renderer {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Original level model diffuse bindings"),
+            label: Some("Original level full source material bindings"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -551,6 +608,49 @@ impl Renderer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Source normal, specular, gloss and emissive textures.
+                // Keep all four in linear space where encoded data demands it;
+                // colors use sRGB decoding when uploaded in the GPU helper.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
                     count: None,
                 },
@@ -690,13 +790,16 @@ impl Renderer {
                     .and_then(|s| s.get(i))
                     .copied()
                     .unwrap_or([0.0; 2]),
+                // Zero explicitly requests geometric face-normal recovery in
+                // WGSL when a compiled mesh contains no usable normal stream.
                 normal: model
                     .mesh
                     .normals
                     .as_ref()
                     .and_then(|s| s.get(i))
                     .copied()
-                    .unwrap_or([0.0, 0.0, 1.0]),
+                    .filter(|n| n.iter().all(|component| component.is_finite()))
+                    .unwrap_or([0.0; 3]),
             })
             .collect();
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -811,9 +914,66 @@ impl Renderer {
                 cache.insert(mask_key, (opacity_tex.clone(), view.clone()));
                 (opacity_tex, view)
             };
+            let (normal_tex, normal_view) = auxiliary_map(
+                device,
+                queue,
+                surf.normal.as_ref(),
+                2,
+                [128, 128, 255, 255],
+                wgpu::TextureFormat::Rgba8Unorm,
+                "Original linear BC5 normal",
+                full_textures,
+                limit_2d,
+                cache,
+                used_bytes,
+            );
+            let (specular_tex, specular_view) = auxiliary_map(
+                device,
+                queue,
+                surf.specular.as_ref(),
+                3,
+                [0, 0, 0, 255],
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                "Original specular reflectance",
+                full_textures,
+                limit_2d,
+                cache,
+                used_bytes,
+            );
+            let (gloss_tex, gloss_view) = auxiliary_map(
+                device,
+                queue,
+                surf.gloss.as_ref(),
+                4,
+                [128, 128, 128, 255],
+                wgpu::TextureFormat::Rgba8Unorm,
+                "Original gloss smoothness",
+                full_textures,
+                limit_2d,
+                cache,
+                used_bytes,
+            );
+            let (emissive_tex, emissive_view) = auxiliary_map(
+                device,
+                queue,
+                surf.emissive.as_ref(),
+                5,
+                [0, 0, 0, 255],
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                "Original emissive color",
+                full_textures,
+                limit_2d,
+                cache,
+                used_bytes,
+            );
             let alpha_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Authored per-material Vegetation AlphaTest"),
-                contents: bytemuck::cast_slice(&[surf.alpha_cutoff.clamp(0.0, 1.0), 0.0, 0.0, 0.0]),
+                contents: bytemuck::cast_slice(&[
+                    surf.alpha_cutoff.clamp(0.0, 1.0),
+                    surf.emission_strength.clamp(0.0, 30.0),
+                    if surf.normal.is_some() { 1.0 } else { 0.0 },
+                    0.0,
+                ]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
             let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -848,6 +1008,22 @@ impl Renderer {
                         binding: 5,
                         resource: self.lighting_uniform.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&normal_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(&specular_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(&gloss_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: wgpu::BindingResource::TextureView(&emissive_view),
+                    },
                 ],
             });
             surfaces.push(GpuSurface {
@@ -858,6 +1034,10 @@ impl Renderer {
                 bind,
                 _image: tex,
                 _opacity_image: opacity_tex,
+                _normal_image: normal_tex,
+                _specular_image: specular_tex,
+                _gloss_image: gloss_tex,
+                _emissive_image: emissive_tex,
                 _alpha_uniform: alpha_uniform,
             });
         }
@@ -1019,6 +1199,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn world_material_shader_uses_original_bump_specular_gloss_and_emittance() {
+        let shader = include_str!("world_instances.wgsl");
+        for source in ["normal_map", "specular_map", "gloss_map", "emissive_map"] {
+            assert!(shader.contains(source));
+        }
+        assert!(shader.contains("cross(b, c)"));
+        assert!(shader.contains("let face_normal = cross(dpdx(input.world), dpdy(input.world));"));
+        let rust = include_str!("world_instances.rs");
+        for field in ["surf.normal.as_ref()", "surf.specular.as_ref()", "surf.gloss.as_ref()", "surf.emissive.as_ref()"] {
+            assert!(rust.contains(field));
+        }
+        naga::front::wgsl::parse_str(shader).expect("full-source world material WGSL");
+    }
     #[test]
     fn baked_terrain_atlas_is_not_silently_replaced_by_32mb_world_cap() {
         assert_eq!(MAX_TERRAIN_ATLAS_BYTES, 64 * 1024 * 1024);
