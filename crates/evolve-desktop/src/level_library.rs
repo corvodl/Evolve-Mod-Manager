@@ -448,8 +448,14 @@ fn open_selected(
                     pak.display()
                 )),
             },
-            _ => diagnostics.push(
-                "Original baked ground color unavailable: exact map-owned TerrainTexture.xml and terraintexture.pak are not both present in the selected imported build.".into()
+            (Some(_), None) => diagnostics.push(
+                "Original baked ground color unavailable: map-owned terraintexture.pak missing from the selected imported build. Import the matching map terrain PAK; another map's atlas must not be substituted.".into()
+            ),
+            (None, Some(_)) => diagnostics.push(
+                "Original baked ground color unavailable: map-owned TerrainTexture.xml missing from the selected imported build. Import the matching map terrain metadata.".into()
+            ),
+            (None, None) => diagnostics.push(
+                "Original baked ground color unavailable: both map-owned TerrainTexture.xml and terraintexture.pak are missing from the selected imported build. The terrain layer-ID bitmap does not include baked ground color.".into()
             ),
         }
         match read_terrain(&exact, 129) {
