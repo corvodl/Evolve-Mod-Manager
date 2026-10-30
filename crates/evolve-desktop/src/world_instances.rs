@@ -5,6 +5,7 @@ use crate::{level_camera, textured::Surface};
 use evolve_core::{RenderMesh, Transform};
 use iced::wgpu;
 use iced::wgpu::util::{DeviceExt, TextureDataOrder};
+use std::borrow::Cow;
 use std::sync::Arc;
 
 // Ordinary world-model diffuse textures are limited to 32 MiB so one map
@@ -13,6 +14,43 @@ use std::sync::Arc;
 // 4096×4096 RGBA8 (64 MiB), which must NOT silently fall back to gray.
 const MAX_WORLD_DIFFUSE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TERRAIN_ATLAS_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Choose a size within the device and the per-material upload budget.
+/// Non-terrain 4K DDS assets must retain their colors and alpha mask; a
+/// bounded downscale is safer than substituting an opaque 1×1 fallback.
+fn upload_dimensions(width: u32, height: u32, ground: bool, gpu_max: u32) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 || gpu_max == 0 {
+        return None;
+    }
+    let cap = if ground { MAX_TERRAIN_ATLAS_BYTES } else { MAX_WORLD_DIFFUSE_BYTES };
+    let (mut w, mut h) = (width, height);
+    while w > gpu_max || h > gpu_max || u64::from(w) * u64::from(h) * 4 > cap {
+        if w == 1 && h == 1 {
+            return None;
+        }
+        w = w.div_ceil(2);
+        h = h.div_ceil(2);
+    }
+    Some((w, h))
+}
+
+fn gpu_diffuse<'a>(
+    img: &'a image::RgbaImage,
+    ground: bool,
+    gpu_max: u32,
+) -> Option<Cow<'a, image::RgbaImage>> {
+    let dims = upload_dimensions(img.width(), img.height(), ground, gpu_max)?;
+    if dims == img.dimensions() {
+        Some(Cow::Borrowed(img))
+    } else {
+        Some(Cow::Owned(image::imageops::resize(
+            img,
+            dims.0,
+            dims.1,
+            image::imageops::FilterType::Triangle,
+        )))
+    }
+}
 
 fn is_ground(group: &ModelGroup) -> bool {
     group.instances.len() == 1 && group.instances[0].object_index == usize::MAX
@@ -318,6 +356,7 @@ pub(super) struct Renderer {
     layout: wgpu::BindGroupLayout,
     camera_uniform: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    terrain_sampler: wgpu::Sampler,
     world_identity: usize,
     groups: Vec<GpuGroup>,
     last_camera: Option<CameraGpu>,
@@ -384,6 +423,15 @@ impl Renderer {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        // Baked terrain UVs are normalized across the entire map: an edge
+        // at exactly 1.0 must not repeat the opposite side of the atlas.
+        let terrain_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
@@ -461,6 +509,7 @@ impl Renderer {
             layout,
             camera_uniform,
             sampler,
+            terrain_sampler,
             world_identity: 0,
             groups: Vec::new(),
             last_camera: None,
@@ -521,8 +570,9 @@ impl Renderer {
             let source = surf
                 .diffuse
                 .as_ref()
-                .filter(|img| valid_diffuse_image(img, terrain, limit_2d));
+                .and_then(|img| gpu_diffuse(img, terrain, limit_2d));
             let (w, h, bytes) = source
+                .as_ref()
                 .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
                 .unwrap_or((1, 1, &fallback[..]));
             let tex = device.create_texture_with_data(
@@ -591,7 +641,11 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        resource: wgpu::BindingResource::Sampler(if terrain {
+                            &self.terrain_sampler
+                        } else {
+                            &self.sampler
+                        }),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -748,6 +802,19 @@ mod tests {
         let smaller = image::RgbaImage::new(2048, 2048);
         assert!(valid_diffuse_image(&smaller, true, 4096));
         assert!(valid_diffuse_image(&smaller, false, 4096));
+    }
+
+    #[test]
+    fn oversized_valid_model_texture_is_downscaled_not_discarded() {
+        assert_eq!(upload_dimensions(4096, 4096, false, 4096), Some((2048, 2048)));
+        assert_eq!(upload_dimensions(4096, 4096, true, 4096), Some((4096, 4096)));
+        assert_eq!(upload_dimensions(2048, 2048, true, 1024), Some((1024, 1024)));
+        let mut card = image::RgbaImage::from_pixel(64, 64, image::Rgba([3, 9, 15, 0]));
+        card.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let decoded = gpu_diffuse(&card, false, 32).unwrap();
+        assert_eq!(decoded.dimensions(), (32, 32));
+        assert!(decoded.pixels().any(|px| px[3] < 255));
+        assert!(decoded.pixels().any(|px| px[3] > 0));
     }
 
     #[test]
