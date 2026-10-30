@@ -220,12 +220,13 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                         text(format!("{} · {:.2}s", clip.name, clip.duration))
                             .size(12)
                             .width(Fill),
-                        design::button(if layered { "Add layer" } else { "Play base" })
-                            .on_press(if layered {
+                        design::button(if layered { "Add layer" } else { "Play base" }).on_press(
+                            if layered {
                                 Message::SelectGlbOverlay(index)
                             } else {
                                 Message::SelectMotionClip(index)
-                            }),
+                            }
+                        ),
                     ]
                     .spacing(8)
                     .align_y(iced::Center),
@@ -246,10 +247,8 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                             Message::GlbOverlayWeight,
                         )
                         .width(160),
-                        text(format!("{:.0}%", state.glb_overlay_weight * 100.0))
-                            .size(12),
-                        design::button("Remove layer")
-                            .on_press(Message::ClearGlbOverlay),
+                        text(format!("{:.0}%", state.glb_overlay_weight * 100.0)).size(12),
+                        design::button("Remove layer").on_press(Message::ClearGlbOverlay),
                     ]
                     .spacing(8)
                     .align_y(iced::Center),
