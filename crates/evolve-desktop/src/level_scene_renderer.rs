@@ -5,11 +5,14 @@
 //! game build. All loads run in the existing blocking Operation worker.
 use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface, world_instances};
 use evolve_core::{
-    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform, imported_archive_files,
+    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform,
+    begin_imported_lookup_session, imported_archive_files, imported_archive_preview_inventory,
     imported_library, read_world_model_parts,
 };
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 const MAX_ARCHIVES: usize = 1_024;
 const MAX_MODELS: usize = 1_024;
@@ -218,8 +221,14 @@ impl Index {
                 "Cross-PAK index capped at 1024 archives; some assets may be unavailable.".into(),
             );
         }
-        // Every manifest-listed asset is checked by the existing read-only
-        // inventory validator before it can be indexed.
+        // The selected archive is fully validated. Other archives supply
+        // read-only manifest names; only exact scene dependencies are stat'ed
+        // and checked for original byte length, canonical containment and
+        // symlinks. Validating *all* extracted files across 700+ unrelated
+        // archives made level opening filesystem-bound for many minutes.
+        let started = Instant::now();
+        let mut checked = 0usize;
+        let mut accepted = 0usize;
         for pak in archives {
             let inventory = if pak.id == selected.id {
                 if let Some(project) = project_inventory {
@@ -228,10 +237,10 @@ impl Index {
                     imported_archive_files(&pak).map_err(|e| e.to_string())?
                 }
             } else {
-                match imported_archive_files(&pak) {
+                match imported_archive_preview_inventory(&pak) {
                     Ok(found) => found,
                     Err(error) => {
-                        report.note(format!("Skipped unavailable {}: {error}", pak.name));
+                        report.note(format!("Skipped unreadable {}: {error}", pak.name));
                         continue;
                     }
                 }
@@ -243,20 +252,40 @@ impl Index {
                     continue;
                 };
                 if wanted.contains(&key) && relevant_asset(&key) {
+                    checked += 1;
+                    let path = root.join(&asset.relative_path);
+                    // Only requested assets are authorized to be read. Never
+                    // trust unchecked manifest paths as safe extracted files.
+                    let Ok(meta) = fs::symlink_metadata(&path) else {
+                        continue;
+                    };
+                    if !meta.file_type().is_file() || meta.len() != asset.byte_size {
+                        continue;
+                    }
+                    let Ok(canonical) = fs::canonicalize(&path) else {
+                        continue;
+                    };
+                    if !canonical.starts_with(&root) {
+                        continue;
+                    }
+                    accepted += 1;
                     matched = true;
                     index.files.entry(key).or_default().push(AssetLocation {
                         archive: pak.id.clone(),
-                        path: root.join(&asset.relative_path),
+                        path: canonical,
                     });
                 }
             }
-            // Retain inventories only for PAKs that actually contain a
-            // requested source. Keeping every imported archive inventory
-            // alive would exhaust memory on large Stage 2 installations.
+            // Retain only inventories that contain exact, safe dependencies.
+            // Material lookup validates the actual file again before reading.
             if matched || pak.id == selected.id {
                 index.inventories.insert(pak.id.clone(), inventory);
             }
         }
+        report.note(format!(
+            "Exact-build scene lookup: {accepted}/{checked} requested file references verified in {} ms.",
+            started.elapsed().as_millis()
+        ));
         if !index.inventories.contains_key(&selected.id) {
             return Err("Selected imported map archive could not be verified".into());
         }
@@ -487,6 +516,22 @@ pub(super) fn assemble(
             }
         }
         let sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
+        // This scope caches all matching-build manifest paths for the duration
+        // of assembly. Every material/texture hit still rechecks its actual
+        // file size and canonical containment, but no dependency triggers a
+        // fresh enumeration of the entire Asset Library.
+        let lookup_started = Instant::now();
+        let _scoped_lookup = sources
+            .library_root
+            .as_deref()
+            .zip(sources.build.as_deref())
+            .map(|(root, build)| begin_imported_lookup_session(root, build))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        report.note(format!(
+            "Exact-build material lookup index initialized in {} ms.",
+            lookup_started.elapsed().as_millis()
+        ));
         // Geometry is decoded once per exact model/material pair; each authored
         // actor transform creates a distinct visible scene instance.
         let mut resolved = HashMap::<(String, String), Vec<usize>>::new();
