@@ -47,6 +47,9 @@ pub struct Surface {
     /// Explicit CryEngine NoDraw subset. Preserve its index span, but do not render it.
     pub visible: bool,
     pub transparent: bool,
+    /// Vegetation shader diffuse alpha is an alpha-tested cutout with depth writes.
+    /// The separate authored Opacity texture is foliage transmittance, not coverage.
+    pub foliage_cutout: bool,
     pub diffuse: Option<Arc<image::RgbaImage>>,
     pub normal: Option<Arc<image::RgbaImage>>,
     pub emissive: Option<Arc<image::RgbaImage>>,
