@@ -1,12 +1,15 @@
 //! CryEngine CAF/DBA references and verified converter-backed GLB timelines.
 //! Raw CAF/DBA controller decoding is not guessed from chunk headers.
+use crate::animated_glb_preview::RiggedGlbPreview;
 use crate::archive::safe_member_name;
+use crate::model::RenderMesh;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Turn a measured UI tick interval into playback time. A missing prior tick
@@ -275,6 +278,10 @@ struct Clip {
 pub struct AnimatedGlb {
     clips: Vec<Clip>,
     pub node_names: Vec<String>,
+    /// Only a rig and mesh contained together in this converted GLB can
+    /// animate without proving compatibility with another source skeleton.
+    rigged_preview: Option<Arc<RiggedGlbPreview>>,
+    pub rigged_preview_error: Option<String>,
 }
 fn json_u(v: &serde_json::Value, key: &str) -> Result<usize, AnimationError> {
     v[key]
@@ -464,11 +471,37 @@ impl AnimatedGlb {
                 });
             }
         }
+        let (rigged_preview, rigged_preview_error) =
+            match RiggedGlbPreview::from_doc(&doc, &binary) {
+                Ok(preview) => (Some(Arc::new(preview)), None),
+                Err(reason) => (None, Some(reason)),
+            };
         Ok(Self {
             clips,
             node_names: names,
+            rigged_preview,
+            rigged_preview_error,
         })
     }
+    /// True only if this exact GLB contains a verified mesh, joint table,
+    /// inverse binds and weights that can be deformed by its own clips.
+    pub fn has_skinned_preview(&self) -> bool {
+        self.rigged_preview.is_some()
+    }
+
+    pub fn mesh_at(&self, clip_index: usize, seconds: f32) -> Result<RenderMesh, AnimationError> {
+        let preview = self
+            .rigged_preview
+            .as_ref()
+            .ok_or_else(|| AnimationError::Invalid(
+                self.rigged_preview_error
+                    .clone()
+                    .unwrap_or_else(|| "No matching skinned GLB mesh".into()),
+            ))?;
+        let samples = self.sample(clip_index, seconds)?;
+        preview.mesh_at(&samples).map_err(AnimationError::Invalid)
+    }
+
     pub fn list_clips(&self) -> Vec<MotionClip> {
         self.clips
             .iter()
