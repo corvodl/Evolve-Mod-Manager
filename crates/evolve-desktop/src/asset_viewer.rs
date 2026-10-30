@@ -1490,6 +1490,8 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 shift: state.keyboard_modifiers.shift(),
                 level_camera: None,
                 world: None,
+                level_hour: 12.0,
+                level_full_textures: true,
             })
             .width(Fill)
             .height(Fill)
