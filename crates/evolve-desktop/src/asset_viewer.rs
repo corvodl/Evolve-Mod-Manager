@@ -205,6 +205,57 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                 .spacing(8),
             );
         }
+        if let Some(motion) = &state.glb_motion
+            && motion.has_skinned_preview()
+        {
+            clips = clips.push(
+                text("CONVERTED GLB — SAME-RIG PLAYBACK")
+                    .size(12)
+                    .style(design::muted),
+            );
+            for (index, clip) in motion.list_clips().iter().enumerate().take(64) {
+                let layered = motion.is_layered_clip(index);
+                clips = clips.push(
+                    row![
+                        text(format!("{} · {:.2}s", clip.name, clip.duration))
+                            .size(12)
+                            .width(Fill),
+                        design::button(if layered { "Add layer" } else { "Play base" })
+                            .on_press(if layered {
+                                Message::SelectGlbOverlay(index)
+                            } else {
+                                Message::SelectMotionClip(index)
+                            }),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center),
+                );
+            }
+            if let Some(index) = state.selected_glb_overlay {
+                let label = motion
+                    .list_clips()
+                    .get(index)
+                    .map(|clip| clip.name.clone())
+                    .unwrap_or_else(|| "Layer".into());
+                clips = clips.push(
+                    row![
+                        text(format!("GLB layer: {label}")).size(12),
+                        slider(
+                            0.0..=1.0,
+                            state.glb_overlay_weight,
+                            Message::GlbOverlayWeight,
+                        )
+                        .width(160),
+                        text(format!("{:.0}%", state.glb_overlay_weight * 100.0))
+                            .size(12),
+                        design::button("Remove layer")
+                            .on_press(Message::ClearGlbOverlay),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center),
+                );
+            }
+        }
         if !state.converted_glbs.is_empty() {
             clips = clips.push(
                 text(if state.converted_dba_cache.is_some() {
