@@ -11546,7 +11546,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             "Loaded {} glTF track clip(s) on {} nodes (inspection only): {}.",
                             clips.len(),
                             motion.node_names.len(),
-                            motion.rigged_preview_error.as_deref().unwrap_or("no skinned mesh")
+                            motion
+                                .rigged_preview_error
+                                .as_deref()
+                                .unwrap_or("no skinned mesh")
                         )
                     };
                     state.motion_time = 0.0;
@@ -11728,7 +11731,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     {
                         let part_count = assembly.part_count();
                         let bones = assembly.original_bones();
-                                                state.skin_preview = None;
+                        state.skin_preview = None;
                         state.cdf_caf_preview = Some(Arc::new(*assembly));
                         state.motion_time = 0.0;
                         apply_current_skin_frame(state);
@@ -11754,7 +11757,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     {
                         let count = skin.original_vertices();
                         let bones = skin.original_bones();
-                                                state.cdf_caf_preview = None;
+                        state.cdf_caf_preview = None;
                         state.skin_preview = Some(Arc::new(*skin));
                         state.motion_time = 0.0;
                         apply_current_skin_frame(state);
