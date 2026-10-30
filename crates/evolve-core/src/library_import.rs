@@ -4,6 +4,7 @@
 use crate::archive::{extract_legacy_pak, inspect_legacy_pak, safe_member_name};
 use crate::cryxml::xml_bytes;
 use crate::library_catalog::{imported_archive_files, imported_library};
+use crate::library_paths::{ordinary_path, source_path_key};
 use crate::signed_pak::extract_signed_pak;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -62,10 +63,7 @@ fn archive_id(name: &str, source_sha: &str) -> String {
 /// installation's imported source path to be reused for the other. Preserve
 /// legacy name+hash IDs when that exact source was already indexed.
 fn source_scoped_id(name: &str, sha: &str, source: &Path) -> String {
-    let path = source
-        .to_string_lossy()
-        .replace('\\', "/")
-        .to_ascii_lowercase();
+    let path = source_path_key(&source.to_string_lossy());
     let fingerprint = format!("{}|{sha}|{path}", name.to_ascii_lowercase());
     format!("{:x}", Sha256::digest(fingerprint.as_bytes()))[..20].to_owned()
 }
@@ -221,26 +219,43 @@ fn import_library_pak(
         let manifest: serde_json::Value =
             serde_json::from_reader(File::open(doc_path).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
-        if manifest["source"].as_str() == source.to_str() {
+        if manifest["source"].as_str()
+            .is_some_and(|old| source_path_key(old) == source_path_key(&source.to_string_lossy()))
+        {
             use_legacy_id = true;
             break;
         }
     }
-    let id = if use_legacy_id {
-        legacy_id
-    } else {
-        source_scoped_id(basename, &before, &source)
-    };
+    // An old import may already exist under a source-scoped ID hashed
+    // from the verbatim \\?\ spelling. Reuse only the same source, name and
+    // recorded original SHA, with the full extracted-file verification below.
+    let catalog = imported_library(&root).map_err(|e| e.to_string())?;
+    let matching = catalog.archives.iter().find(|item| {
+        if !item.name.eq_ignore_ascii_case(basename) ||
+            source_path_key(&item.source) != source_path_key(&source.to_string_lossy()) {
+            return false;
+        }
+        let path = Path::new(&item.directory).join("asset-library.json");
+        fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_file() && meta.len() <= 32 * 1024 * 1024)
+            && File::open(path).ok()
+                .and_then(|file| serde_json::from_reader::<_, serde_json::Value>(file).ok())
+                .is_some_and(|manifest| manifest["source_sha256"].as_str() == Some(before.as_str()))
+    });
+    let id = matching.map(|item| item.id.clone()).unwrap_or_else(|| {
+        if use_legacy_id { legacy_id } else { source_scoped_id(basename, &before, &source) }
+    });
     let name = archive_directory(basename, &id);
     let target = root.join(&name);
     let legacy = root.join(&id);
-    let existing = if fs::symlink_metadata(&legacy).is_ok() {
-        Some(legacy)
-    } else if fs::symlink_metadata(&target).is_ok() {
-        Some(target.clone())
-    } else {
-        None
-    };
+    let existing = matching.map(|item| PathBuf::from(&item.directory)).or_else(|| {
+        if fs::symlink_metadata(&legacy).is_ok() {
+            Some(legacy)
+        } else if fs::symlink_metadata(&target).is_ok() {
+            Some(target.clone())
+        } else {
+            None
+        }
+    });
     if let Some(existing) = existing {
         let catalog = imported_library(&root).map_err(|e| e.to_string())?;
         let item = catalog
@@ -383,7 +398,7 @@ fn import_library_pak(
     let key_hash = public_key.as_deref().map(sha_file).transpose()?;
     let manifest = serde_json::json!({
         "version": 1, "name": basename, "signed_name": signed_name,
-        "source": source.to_string_lossy(),
+        "source": ordinary_path(&source.to_string_lossy()),
         "source_sha256": before, "source_size": source_meta.len(),
         "source_mtime_ns": source_mtime_ns,
         "public_key_sha256": key_hash,
