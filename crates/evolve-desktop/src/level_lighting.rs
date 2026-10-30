@@ -17,7 +17,9 @@ impl Lighting {
         };
         let cycle = hour / 24.0 * std::f32::consts::TAU;
         let elevation = ((hour - 6.0) / 12.0 * std::f32::consts::PI).sin();
-        let lit = elevation.max(0.0).powf(0.65);
+        // Scattered twilight remains visible when the sun is at the horizon,
+        // so Dawn and Dusk previews are not identical to midnight.
+        let lit = ((elevation + 0.10) / 1.10).clamp(0.0, 1.0).powf(0.65);
         let horizon = (1.0 - elevation.abs()).clamp(0.0, 1.0).powf(5.0) * lit.sqrt();
         let horizontal = (1.0 - elevation * elevation).max(0.0).sqrt();
         let dir = [
@@ -65,6 +67,8 @@ mod tests {
         let night = Lighting::at(0.0);
         assert!(noon.sun[3] > 1.0);
         assert_eq!(night.sun[3], 0.0);
+        assert!(Lighting::at(6.0).sun[3] > night.sun[3]);
+        assert!(Lighting::at(18.0).sun[3] > night.sun[3]);
         assert!(noon.ambient[0] > night.ambient[0]);
         assert!(Lighting::at(6.5).sun_color[2] < noon.sun_color[2]);
     }
