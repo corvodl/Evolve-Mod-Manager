@@ -358,6 +358,40 @@ fn floats(
     }
     Ok(result)
 }
+/// Converter GLB rotation channels use spherical interpolation, matching the
+/// private manager's shortest-arc quaternion sampling rather than nlerp.
+fn gltf_slerp(first: &[f32], second: &[f32], fraction: f32) -> Result<Vec<f32>, AnimationError> {
+    if first.len() != 4 || second.len() != 4 || !fraction.is_finite() {
+        return Err(AnimationError::Invalid("invalid GLB quaternion channel".into()));
+    }
+    let normalized = |values: &[f32]| -> Result<[f32; 4], AnimationError> {
+        let norm = values.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if !norm.is_finite() || norm < 1e-6 {
+            return Err(AnimationError::Invalid("invalid GLB joint quaternion".into()));
+        }
+        Ok(std::array::from_fn(|i| values[i] / norm))
+    };
+    let first = normalized(first)?;
+    let mut second = normalized(second)?;
+    let mut dot = first.iter().zip(second).map(|(a, b)| a * b).sum::<f32>();
+    if dot < 0. {
+        second = second.map(|v| -v);
+        dot = -dot;
+    }
+    let alpha = fraction.clamp(0., 1.);
+    let (a, b) = if dot > 0.9995 {
+        (1. - alpha, alpha)
+    } else {
+        let theta = dot.clamp(-1., 1.).acos();
+        let denominator = theta.sin();
+        (
+            ((1. - alpha) * theta).sin() / denominator,
+            (alpha * theta).sin() / denominator,
+        )
+    };
+    let mixed: [f32; 4] = std::array::from_fn(|i| first[i] * a + second[i] * b);
+    Ok(normalized(&mixed)?.to_vec())
+}
 impl AnimatedGlb {
     pub fn read(path: &Path) -> Result<Self, AnimationError> {
         let meta = fs::symlink_metadata(path)?;
@@ -541,20 +575,7 @@ impl AnimatedGlb {
                 .map(|(a, b)| a * (1. - alpha) + b * alpha)
                 .collect::<Vec<_>>();
             if track.path == "rotation" {
-                let first = &track.values[start];
-                let other = &track.values[end];
-                let dot = first.iter().zip(other).map(|(x, y)| x * y).sum::<f32>();
-                let sign = if dot < 0. { -1. } else { 1. };
-                for (i, value) in vector.iter_mut().enumerate() {
-                    *value = first[i] * (1. - alpha) + other[i] * alpha * sign;
-                }
-                let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
-                if norm < 1e-6 {
-                    return Err(AnimationError::Invalid("invalid joint quaternion".into()));
-                }
-                for v in &mut vector {
-                    *v /= norm;
-                }
+                vector = gltf_slerp(&track.values[start], &track.values[end], alpha)?;
             }
             result.push(PoseSample {
                 node: track.target,
@@ -568,6 +589,18 @@ impl AnimatedGlb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn converter_glb_slerp_uses_shortest_arc_and_unit_norm() {
+        let identity = [0., 0., 0., 1.];
+        let turn = [0., 0., 1., 0.];
+        let halfway = gltf_slerp(&identity, &turn, 0.5).unwrap();
+        assert!((halfway[2] - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.0001);
+        assert!((halfway[3] - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.0001);
+        let opposite = gltf_slerp(&identity, &[0., 0., 0., -1.], 0.6).unwrap();
+        assert!((opposite[3] - 1.).abs() < 0.0001);
+        assert!(gltf_slerp(&identity, &[0., 0., 0., 0.], 0.5).is_err());
+    }
+
     #[test]
     fn playback_uses_measured_intervals_without_focus_jump() {
         assert_eq!(playback_step(None, 1.0), 0.0);
