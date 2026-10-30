@@ -985,7 +985,10 @@ mod tests {
         let pipeline_source = include_str!("world_instances.rs");
         // Search only production code; searching this entire file would let
         // the assertion's own string literal create a false positive.
-        let production = pipeline_source.split("\n#[cfg(test)]\nmod tests {").next().unwrap();
+        let production = pipeline_source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap();
         assert!(production.contains("entry_point: Some(if cutout {"));
         assert!(production.contains("\"fs_foliage\""));
         assert!(production.contains("foliage_cutout: make(false, true)"));
