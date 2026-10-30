@@ -617,6 +617,57 @@ fn build_snapshots(library: &Path) -> Result<BTreeMap<String, Vec<BuildSnapshot>
     }).collect())
 }
 
+const LEGACY_COLLECTION_SOURCE: &str = "Legacy collection (installation path not recorded)";
+
+fn legacy_collection_document(library: &Path) -> Result<Option<serde_json::Value>, String> {
+    let path = library.join("build-collections.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() || meta.len() > MAX_LEDGER_BYTES {
+        return Err("Legacy collection registry is unsafe".into());
+    }
+    let data: serde_json::Value = serde_json::from_reader(
+        File::open(&path).map_err(|e| e.to_string())?
+    ).map_err(|e| e.to_string())?;
+    if data["version"].as_u64() != Some(1) || !data["builds"].is_object() ||
+        data["builds"].as_object().is_some_and(|map| map.len() > 128) {
+        return Err("Unsupported legacy collection registry".into());
+    }
+    Ok(Some(data))
+}
+
+fn edit_legacy_collection(
+    library: &Path, id: &str, expected: &str, rename: Option<&str>,
+) -> Result<(), String> {
+    if expected != LEGACY_COLLECTION_SOURCE {
+        return Err("Legacy collection changed; refresh build manager".into());
+    }
+    let mut data = legacy_collection_document(library)?
+        .ok_or("Legacy collections are no longer available")?;
+    let builds = data["builds"].as_object_mut().ok_or("Malformed legacy collections")?;
+    if id == "unassigned" {
+        return Err("Cannot manage unassigned manual archive imports".into());
+    }
+    if let Some(name) = rename {
+        let group = builds.get_mut(id).ok_or("Legacy build was removed")?;
+        if !group.is_object() {
+            return Err("Legacy build record is malformed".into());
+        }
+        group["label"] = serde_json::Value::String(name.into());
+    } else if builds.remove(id).is_none() {
+        return Err("Legacy build was removed".into());
+    }
+    let mut temp = tempfile::Builder::new().prefix(".build-collections-")
+        .tempfile_in(library).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(temp.as_file_mut(), &data).map_err(|e| e.to_string())?;
+    temp.as_file_mut().write_all(b"\n").map_err(|e| e.to_string())?;
+    temp.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+    temp.persist(library.join("build-collections.json")).map_err(|e| e.error.to_string())?;
+    Ok(())
+}
+
 /// Versioned registry is a non-destructive migration index. Existing
 /// snapshot histories and extracted data remain byte-for-byte untouched.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -747,6 +798,10 @@ pub fn rename_managed_library_build(
         return Err("Build name must be 1-80 characters without slashes or controls".into());
     }
     let library = real_directory(library)?;
+    if let Some(legacy) = id.strip_prefix("legacy:") {
+        edit_legacy_collection(&library, legacy, expected_source_root, Some(label))?;
+        return managed_library_builds(&library);
+    }
     let all = build_snapshots(&library)?;
     let latest = all.get(id).and_then(|rows| rows.last())
         .ok_or("Selected managed build no longer exists")?;
@@ -890,6 +945,29 @@ pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>
     let registrations = migrate_registry(&library, &all)?;
     let catalog = imported_library(&library).map_err(|e| e.to_string())?;
     let mut builds = Vec::new();
+    if let Some(legacy) = legacy_collection_document(&library)? {
+        if let Some(groups) = legacy["builds"].as_object() {
+            for (id, group) in groups {
+                if id == "unassigned" {
+                    continue;
+                }
+                let Some(members) = group["members"].as_object() else { continue; };
+                let ids = members.keys().collect::<BTreeSet<_>>();
+                let size = catalog.archives.iter().filter(|a| ids.contains(&a.id))
+                    .fold(0u64, |sum, a| sum.saturating_add(a.extracted_bytes));
+                builds.push(ManagedLibraryBuild {
+                    id: format!("legacy:{id}"),
+                    source_root: LEGACY_COLLECTION_SOURCE.into(),
+                    display_name: group["label"].as_str().unwrap_or(id).to_owned(),
+                    aliases: 0,
+                    pak_count: members.len(),
+                    extracted_bytes: size,
+                    reclaimable_paks: 0,
+                    reclaimable_bytes: 0,
+                });
+            }
+        }
+    }
     for (id, snapshots) in &all {
         let latest = snapshots.last().ok_or("Empty build history")?;
         let mut other = all.clone();
@@ -930,6 +1008,17 @@ pub fn remove_managed_library_build(
     expected_source_root: &str,
 ) -> Result<LibraryBuildRemovalReport, String> {
     let library = real_directory(library)?;
+    if let Some(legacy) = id.strip_prefix("legacy:") {
+        edit_legacy_collection(&library, legacy, expected_source_root, None)?;
+        return Ok(LibraryBuildRemovalReport {
+            source_root: expected_source_root.into(),
+            deleted_snapshots: 0,
+            removed_archives: 0,
+            reclaimed_bytes: 0,
+            retained_shared: 0,
+            failed_cleanup: Vec::new(),
+        });
+    }
     if id.len() != 24 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Invalid selected game build".into());
     }
