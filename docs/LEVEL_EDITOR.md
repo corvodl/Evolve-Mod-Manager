@@ -62,3 +62,37 @@ Objects map to author-defined \`FileName\` .cgf paths in the same XML, then ente
 ## Performance and shader limitations remain
 
 The world viewport still uses the existing CPU-projected, textured wgpu pipeline and a bounded combined mesh. The new triangle picker and in-memory transform updates do **not** constitute a dedicated scalable GPU-instanced or streamed scene renderer. A real world renderer must retain one GPU mesh per unique source model and use per-instance GPU transforms, camera frustum culling, spatial indexing/BVH, geometry/texture LOD and streaming; frame-time and memory tests on real multi-PAK Stage 2 maps are required. Lighting, terrain splats, physics and CryEngine vegetation wind/material shaders also remain unsupported.
+
+## Terrain atlas GPU upload and duplicate-layer recovery (PR #156)
+
+The original Tutorial baked atlas is 2048×2048 (16 MiB RGBA8); Ice_Crashsite
+is 4096×4096 (64 MiB RGBA8). Previously the Level Editor reported that both
+were decoded and assigned to an original terrain material, **but** the world
+GPU uploader silently rejected any diffuse larger than its general 32 MiB
+model-material budget. Ice_Crashsite therefore sampled a one-pixel fallback.
+
+The terrain world's nonselectable ground group now uses an independent
+64 MiB source-atlas budget, subject to the GPU device's maximum supported
+2D texture dimension. Other original model textures retain their 32 MiB
+budget. If they are bigger, they are **downscaled with their RGBA mask**
+instead of being replaced by a solid fallback. Normalized terrain UVs use
+clamp-to-edge sampling while prop materials retain repeat sampling.
+No source file is changed and no texture is borrowed from another build.
+
+CryEngine layers sometimes repeat identical object GUIDs. A new read-only
+combined scene-recovery parser retains one source-ordered declaration,
+records conflicts, and resolves parent transforms across the entire
+validated set of layers. Conflicting GUIDs may not serve as parents, so
+an ambiguous placement is not used to move children to an arbitrary
+coordinate. The strict editable scene parser still rejects all duplicate
+GUIDs. If combined recovery cannot validate the sources, the previous
+per-layer fallback remains available.
+
+**Remaining source-data limitations.** The screenshot logs also identify
+58 (Tutorial) / 122 (Ice_Crashsite) model-material pairs with no verified
+diffuse and explicit missing original vehicle DDS candidates. These files
+are *not* made available by changing GPU upload limits; the exact selected
+build still must supply the correct cooked DDS. Missing textures must remain
+explicitly diagnosed, rather than substituted with similarly named images.
+An interactive Windows screenshot comparison of the actual maps is still
+required to confirm terrain orientation and the visual outcome.
