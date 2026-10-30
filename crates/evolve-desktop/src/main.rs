@@ -95,7 +95,8 @@ use evolve_core::{
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsFormat, DdsInfo, DependencyGraph,
     EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
     KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryBuildUpdatePlan,
-    LibraryBuildUpdateReport, LibraryImportPlan, LibraryReferenceStatus, MaterialReport,
+    LibraryBuildUpdateReport, LibraryBuildRemovalReport, LibraryImportPlan, LibraryReferenceStatus,
+    ManagedLibraryBuild, MaterialReport,
     ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog,
     ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
     VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_library_build_updates,
@@ -104,6 +105,7 @@ use evolve_core::{
     export_dds_png, export_level_scene_glb, export_rigged_character_fbx_textured_animated,
     export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
     import_library_plan_with_keys, import_stage_pak, imported_archive_files, imported_library,
+    managed_library_builds, remove_managed_library_build,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
     inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
     plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
@@ -539,6 +541,9 @@ struct State {
     library_root: String,
     library_import_plan: Option<LibraryImportPlan>,
     library_update_plan: Option<LibraryBuildUpdatePlan>,
+    library_manage_builds_open: bool,
+    library_managed_builds: Vec<ManagedLibraryBuild>,
+    library_delete_build_confirm: Option<String>,
     library_import_scanning: bool,
     library_import_cancel: Option<Arc<AtomicBool>>,
     library_import_progress: Option<Arc<AtomicUsize>>,
@@ -686,6 +691,7 @@ enum Operation {
         Arc<AtomicBool>,
         Arc<AtomicUsize>,
     ),
+    RemoveManagedLibraryBuild(PathBuf, String, String),
     OpenImportedPak(ImportedPak),
     CreateProjectFromLibrary(ImportedPak, PathBuf, PathBuf, Arc<ProjectCopyProgress>),
     RefreshGamePakBaseline(PathBuf, PathBuf, PathBuf, bool),
@@ -859,6 +865,11 @@ enum Completed {
     ImportedLibrary(ImportedLibrary),
     ImportedSignedLibrary(LibraryBatchImportReport, ImportedLibrary),
     ImportedBuildUpdated(LibraryBuildUpdateReport, ImportedLibrary),
+    ManagedLibraryBuildRemoved(
+        LibraryBuildRemovalReport,
+        ImportedLibrary,
+        Vec<ManagedLibraryBuild>,
+    ),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
     Comparison(AssetComparison),
@@ -1009,11 +1020,21 @@ impl Operation {
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
             Self::ApplyLibraryBuildUpdates(root, plan, stage, cancelled, progress) => {
-                let keys = modding_keys::archive_verification_keys(&stage)?;
+                let keys = if plan.changed.iter().any(|part| part.reuse_archive_id.is_none()) {
+                    modding_keys::archive_verification_keys(&stage)?.paths
+                } else {
+                    Vec::new()
+                };
                 let report =
-                    apply_library_build_updates(&root, &plan, &keys.paths, &cancelled, &progress)?;
+                    apply_library_build_updates(&root, &plan, &keys, &cancelled, &progress)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedBuildUpdated(report, catalog))
+            }
+            Self::RemoveManagedLibraryBuild(root, id, source_root) => {
+                let report = remove_managed_library_build(&root, &id, &source_root)?;
+                let catalog = imported_library(&root).map_err(|e| e.to_string())?;
+                let builds = managed_library_builds(&root)?;
+                Ok(Completed::ManagedLibraryBuildRemoved(report, catalog, builds))
             }
             Self::ImportSignedLibraryPlan(root, plan, stage, cancelled, progress) => {
                 // Keep the original signed-archive authentication path.
@@ -1929,6 +1950,11 @@ enum Message {
     LibraryUpdateFolderPicked(Result<Option<Vec<PathBuf>>, String>),
     LibraryUpdateScanned(Result<LibraryBuildUpdatePlan, String>),
     LibraryUpdateStart,
+    LibraryManageBuildsToggle,
+    LibraryManagedBuildsLoaded(Result<Vec<ManagedLibraryBuild>, String>),
+    LibraryDeleteBuildConfirm(String),
+    LibraryDeleteBuildCancel,
+    LibraryDeleteBuildNow(String),
     LibrarySourcesPicked(Result<Option<Vec<PathBuf>>, String>),
     LibraryImportScanned(Result<LibraryImportPlan, String>),
     LibraryImportStart,
@@ -2752,6 +2778,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::LoadImportedLibrary(..) => "Opening Asset Library",
         Operation::ImportSignedLibraryPlan(..) => "Importing signed game PAKs",
         Operation::ApplyLibraryBuildUpdates(..) => "Updating Asset Library PAKs",
+        Operation::RemoveManagedLibraryBuild(..) => "Removing imported game build",
         Operation::OpenImportedPak(..) | Operation::InspectPak(..) => "Inspecting game PAK",
         Operation::CreateProjectFromLibrary(..) => "Creating editable mod project",
         Operation::RefreshGamePakBaseline(..) => "Verifying original game PAKs",
@@ -4274,6 +4301,64 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
+        Message::LibraryManageBuildsToggle => {
+            state.library_manage_builds_open = !state.library_manage_builds_open;
+            state.library_delete_build_confirm = None;
+            if !state.library_manage_builds_open {
+                return Task::none();
+            }
+            let root = PathBuf::from(&state.library_root);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || managed_library_builds(&root))
+                        .await
+                        .map_err(|e| format!("Build manager worker failed: {e}"))?
+                },
+                Message::LibraryManagedBuildsLoaded,
+            );
+        }
+        Message::LibraryManagedBuildsLoaded(result) => match result {
+            Ok(builds) => {
+                state.status = format!("Found {} managed Asset Library build(s).", builds.len());
+                state.library_managed_builds = builds;
+            }
+            Err(error) => {
+                state.library_managed_builds.clear();
+                state.status = format!("Cannot inspect managed builds: {error}");
+            }
+        },
+        Message::LibraryDeleteBuildConfirm(id) => {
+            if !state.busy && state.library_managed_builds.iter().any(|build| build.id == id) {
+                state.library_delete_build_confirm = Some(id);
+            }
+        }
+        Message::LibraryDeleteBuildCancel => {
+            state.library_delete_build_confirm = None;
+        }
+        Message::LibraryDeleteBuildNow(id) => {
+            if state.busy || state.library_import_scanning
+                || state.library_delete_build_confirm.as_deref() != Some(id.as_str())
+            {
+                return Task::none();
+            }
+            let Some(build) = state.library_managed_builds.iter()
+                .find(|build| build.id == id)
+                .cloned()
+            else {
+                state.status = "Refresh managed builds before deletion.".into();
+                return Task::none();
+            };
+            state.library_delete_build_confirm = None;
+            state.library_update_plan = None;
+            return launch(
+                state,
+                Operation::RemoveManagedLibraryBuild(
+                    PathBuf::from(&state.library_root),
+                    build.id,
+                    build.source_root,
+                ),
+            );
+        }
         Message::LibraryUpdatePickFolder => {
             if state.busy || state.library_import_scanning {
                 return Task::none();
@@ -4321,11 +4406,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match result {
                 Ok(plan) => {
                     state.status = format!(
-                        "Build scan complete: {} new, {} updated, {} unchanged, {} removed source PAKs. Review the plan before importing.",
+                        "Build scan: {} new, {} changed, {} unchanged, {} removed; {} PAKs can reuse existing extractions without copying. Review before applying.",
                         plan.new_count,
                         plan.changed_count,
                         plan.unchanged,
-                        plan.removed.len()
+                        plan.removed.len(),
+                        plan.reused_count
                     );
                     state.library_update_plan = Some(plan);
                 }
@@ -11559,6 +11645,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         return begin_scan(state, path.join("files"));
                     }
                 }
+                Ok(Completed::ManagedLibraryBuildRemoved(report, catalog, builds)) => {
+                    state.status = format!(
+                        "Removed imported build at {}: {} history snapshots, {} unshared PAK extractions ({:.2} GiB), {} shared/foreign entries retained, {} cleanup failures. Installed games and Mod Projects untouched.",
+                        report.source_root,
+                        report.deleted_snapshots,
+                        report.removed_archives,
+                        report.reclaimed_bytes as f64 / 1_073_741_824.0,
+                        report.retained_shared,
+                        report.failed_cleanup.len()
+                    );
+                    state.library_managed_builds = builds;
+                    state.library_delete_build_confirm = None;
+                    state.library_catalog = Some(catalog);
+                    state.library_selection.clear();
+                    state.library_selected = None;
+                    state.library_page = 0;
+                    state.library_by_build = false;
+                    refresh_library_matches(state);
+                    guided_modding::refresh_imports(state);
+                }
                 Ok(Completed::ImportedBuildUpdated(report, catalog)) => {
                     let failures = report.batch.failed.len();
                     let error_detail = report
@@ -11570,12 +11676,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .collect::<Vec<_>>()
                         .join("; ");
                     state.status = format!(
-                        "Build {} refreshed: {} new, {} changed, {} unchanged, {} removed from current inventory; {} failed. Old imports and projects preserved.{}",
+                        "Build {} refreshed: {} new, {} changed, {} unchanged, {} removed; {} PAK extractions reused, {} failed. Originals and projects preserved.{}",
                         &report.build_id[..8],
                         report.added,
                         report.updated,
                         report.unchanged,
                         report.removed,
+                        report.reused,
                         failures,
                         if error_detail.is_empty() {
                             String::new()

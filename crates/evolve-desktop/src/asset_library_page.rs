@@ -130,6 +130,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ),
         Some("Tools") => Some(
             column![
+                design::button("Manage Game Builds").on_press(Message::MenuCommand(Box::new(
+                    Message::LibraryManageBuildsToggle
+                ))),
                 design::button("Open in Level Editor")
                     .on_press_maybe(state.library_selected.map(Message::LibraryOpenMap)),
                 design::button("Preview selected PAK")
@@ -160,12 +163,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             design::button("Import PAKs")
                 .style(design::primary)
                 .on_press(Message::LibraryToggleConfiguration),
-            design::button("Update Imported Build…")
+            design::button("Update Game Build…")
                 .style(design::secondary)
                 .on_press_maybe(
                     (!state.busy && !state.library_import_scanning)
                         .then_some(Message::LibraryUpdatePickFolder)
                 ),
+            design::button(if state.library_manage_builds_open {
+                "Close Build Manager"
+            } else {
+                "Manage Game Builds"
+            })
+                .style(design::secondary)
+                .on_press_maybe((!state.busy && !state.library_import_scanning)
+                    .then_some(Message::LibraryManageBuildsToggle)),
             design::button("Storage Settings")
                 .style(design::secondary)
                 .on_press(Message::OpenLibrarySettings),
@@ -181,9 +192,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         for change in plan.changed.iter().take(8) {
             changed_paths = changed_paths.push(
                 text(format!(
-                    "{} · {}",
+                    "{} · {}{}",
                     if change.was_present { "Updated" } else { "New" },
-                    change.relative
+                    change.relative,
+                    if change.reuse_archive_id.is_some() { " (already imported — reuse)" } else { "" }
                 ))
                 .size(11)
                 .style(design::muted),
@@ -213,11 +225,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             ].spacing(8),
             text(format!("Source installation: {}", plan.source_root.display())).size(12),
             text(format!(
-                "{} new  •  {} updated  •  {} unchanged  •  {} removed  •  {:.2} GiB to import",
+                "{} new  •  {} changed  •  {} unchanged  •  {} removed  •  {} reused  •  {:.2} GiB to import",
                 plan.new_count, plan.changed_count, plan.unchanged, plan.removed.len(),
-                plan.import_bytes as f64 / 1_073_741_824.0
+                plan.reused_count, plan.import_bytes as f64 / 1_073_741_824.0
             )).size(13),
-            text("This is a read-only SHA-256 comparison. Only new/changed PAKs are re-imported after confirmation; unchanged PAKs are skipped. A changed encrypted PAK may require full re-extraction. Previous library snapshots, mod projects, and originals are preserved.")
+            text("SHA-256 scan only: matching archives across other installations reuse the same imported extraction, so only genuinely new/changed PAK bytes are copied. A changed encrypted PAK still needs verification and re-extraction. Installed games and mod projects stay untouched.")
                 .size(11).style(design::muted),
             changed_paths,
             row![
@@ -251,6 +263,52 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .size(12)
                 .style(design::muted),
         );
+    }
+
+
+    if state.library_manage_builds_open {
+        let mut builds = column![
+            text("MANAGE IMPORTED GAME BUILDS").size(15),
+            text("Remove historical build snapshots and unused, unshared extracted PAKs. Shared PAKs, installed game directories, signed staging, and editable mod projects are preserved.")
+                .size(11).style(design::muted),
+            design::button("Refresh managed builds").on_press(Message::LibraryManageBuildsToggle),
+        ].spacing(7);
+        if state.library_managed_builds.is_empty() {
+            builds = builds.push(
+                text("No incremental build snapshots listed. Legacy build collections and standalone PAK imports are not removed from this panel.")
+                    .size(12).style(design::muted),
+            );
+        }
+        for build in &state.library_managed_builds {
+            builds = builds.push(
+                column![
+                    text(format!("{} [{}]", build.source_root, &build.id[..8])).size(12),
+                    text(format!(
+                        "{} current PAKs · {:.2} GiB indexed · {} unshared extractions, {:.2} GiB potentially reclaimable",
+                        build.pak_count,
+                        build.extracted_bytes as f64 / 1_073_741_824.0,
+                        build.reclaimable_paks,
+                        build.reclaimable_bytes as f64 / 1_073_741_824.0
+                    )).size(11).style(design::muted),
+                    if state.library_delete_build_confirm.as_deref() == Some(build.id.as_str()) {
+                        row![
+                            text("Confirm removing this imported build and its unshared extractions?").size(11),
+                            design::button("Confirm Delete")
+                                .on_press_maybe((!state.busy && !state.library_import_scanning)
+                                    .then_some(Message::LibraryDeleteBuildNow(build.id.clone()))),
+                            design::button("Cancel").on_press(Message::LibraryDeleteBuildCancel),
+                        ].spacing(8).align_y(iced::Alignment::Center)
+                    } else {
+                        row![
+                            design::button("Delete Imported Build")
+                                .on_press_maybe((!state.busy && !state.library_import_scanning)
+                                    .then_some(Message::LibraryDeleteBuildConfirm(build.id.clone()))),
+                        ].spacing(8)
+                    },
+                ].spacing(5)
+            );
+        }
+        layout = layout.push(panel(container(builds).padding(12)));
     }
 
     if state.library_show_configuration {
