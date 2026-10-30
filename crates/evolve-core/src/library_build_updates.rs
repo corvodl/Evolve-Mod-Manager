@@ -2,6 +2,7 @@
 //! Scan never writes; import publishes only verified changed/new PAKs and a
 //! new append-only build snapshot. Originals and prior snapshots are immutable.
 use crate::library_catalog::imported_library;
+use crate::library_paths::{ordinary_path, source_path_key};
 use crate::library_import::{
     LibraryBatchImportReport, LibraryImportFailure, LibraryImportPlan, MAX_LIBRARY_COLLECTION_PAKS,
     import_signed_library_pak_with_keys, scan_library_import_sources,
@@ -99,12 +100,16 @@ fn real_directory(root: &Path) -> Result<PathBuf, String> {
     fs::canonicalize(root).map_err(|e| e.to_string())
 }
 
+// Preserve the historical raw-path hash only to authenticate old snapshot
+// folders. New identities must ignore Windows verbatim transport prefixes.
+fn legacy_build_identity(root: &Path) -> String {
+    let text = root.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    format!("{:x}", Sha256::digest(text.as_bytes()))[..24].to_owned()
+}
+
 fn build_identity(root: &Path) -> String {
-    let text = root
-        .to_string_lossy()
-        .replace('\\', "/")
-        .to_ascii_lowercase();
-    format!("{:x}", Sha256::digest(text.as_bytes()))[..24].to_string()
+    let key = source_path_key(&root.to_string_lossy());
+    format!("{:x}", Sha256::digest(key.as_bytes()))[..24].to_owned()
 }
 
 fn relative_name(root: &Path, file: &Path) -> Result<String, String> {
@@ -163,27 +168,12 @@ fn read_snapshot(path: &Path, id: &str, root: &Path) -> Result<BuildSnapshot, St
 }
 
 fn latest_snapshot(library: &Path, id: &str, root: &Path) -> Result<Option<BuildSnapshot>, String> {
-    let folder = snapshot_dir(library, id);
-    if !folder.exists() {
-        return Ok(None);
+    // Read across legacy snapshot directories with alternative spellings of
+    // the same Windows path. The newest recorded snapshot remains authoritative.
+    if build_identity(root) != id {
+        return Err("Selected game build identity changed".into());
     }
-    let folder = real_directory(&folder)?;
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(&folder).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.ends_with(".json") && name.starts_with("snapshot-") {
-            entries.push(entry.path());
-        }
-        if entries.len() > MAX_HISTORY_FILES {
-            return Err("Build snapshot history exceeds safe limit".into());
-        }
-    }
-    entries.sort_unstable();
-    entries
-        .last()
-        .map(|file| read_snapshot(file, id, root))
-        .transpose()
+    Ok(build_snapshots(library)?.get(id).and_then(|entries| entries.last().cloned()))
 }
 
 fn bootstrap_from_library(
@@ -527,6 +517,8 @@ pub fn apply_library_build_updates(
 pub struct ManagedLibraryBuild {
     pub id: String,
     pub source_root: String,
+    pub display_name: String,
+    pub aliases: usize,
     pub pak_count: usize,
     pub extracted_bytes: u64,
     /// Only extraction folders solely referenced by this group are eligible.
@@ -550,10 +542,12 @@ fn build_snapshots(library: &Path) -> Result<BTreeMap<String, Vec<BuildSnapshot>
         return Ok(BTreeMap::new());
     }
     let history = real_directory(&history)?;
-    let mut builds = BTreeMap::new();
+    let mut builds = BTreeMap::<String, Vec<(String, BuildSnapshot)>>::new();
+    let mut folders_seen = 0usize;
     for entry in fs::read_dir(&history).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
-        if builds.len() >= 128 {
+        folders_seen += 1;
+        if folders_seen > 128 {
             return Err("Too many managed game builds".into());
         }
         if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
@@ -592,23 +586,32 @@ fn build_snapshots(library: &Path) -> Result<BTreeMap<String, Vec<BuildSnapshot>
             let root = doc["source_root"]
                 .as_str()
                 .ok_or("Missing build source root")?;
-            if build_identity(Path::new(root)) != id {
+            if legacy_build_identity(Path::new(root)) != id
+                && build_identity(Path::new(root)) != id
+            {
                 return Err("Build snapshot source identity differs from folder".into());
             }
-            let record = read_snapshot(&file, &id, Path::new(root))?;
+            let mut record = read_snapshot(&file, &id, Path::new(root))?;
+            record.build_id = build_identity(Path::new(root));
+            record.source_root = ordinary_path(root);
             if records
                 .first()
                 .is_some_and(|old: &BuildSnapshot| old.source_root != record.source_root)
             {
                 return Err("Conflicting build roots within one snapshot history".into());
             }
-            records.push(record);
+            records.push((file.file_name().and_then(|v| v.to_str()).unwrap_or_default().to_owned(), record));
         }
-        if !records.is_empty() {
-            builds.insert(id, records);
+        for (stamp, record) in records {
+            builds.entry(record.build_id.clone()).or_default().push((stamp, record));
         }
     }
-    Ok(builds)
+    Ok(builds.into_iter().map(|(id, mut entries)| {
+        // Snapshot files use zero-padded nanosecond timestamps, so sorting
+        // across old and new identity folders preserves update chronology.
+        entries.sort_by(|a,b| a.0.cmp(&b.0));
+        (id, entries.into_iter().map(|(_, record)| record).collect())
+    }).collect())
 }
 
 fn legacy_references(library: &Path) -> Result<BTreeSet<String>, String> {
