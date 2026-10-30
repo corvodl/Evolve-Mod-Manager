@@ -652,9 +652,10 @@ fn open_selected(
             Ok(bytes) => match level_environment::TimeOfDay::parse(&bytes) {
                 Ok(profile) => {
                     diagnostics.push(format!(
-                        "Imported original TimeOfDay.xml: {} variables, {} keyframed curves.",
+                        "Imported original TimeOfDay.xml: {} variables, {} keyframed curves; skipped {} out-of-day editor spline keys.",
                         profile.count(),
-                        profile.keyed_variables
+                        profile.keyed_variables,
+                        profile.ignored_out_of_range_keys
                     ));
                     Some(profile)
                 }

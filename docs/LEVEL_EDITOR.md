@@ -120,3 +120,18 @@ environment composition remain separate implementation and acceptance
 work. Different-game and unrelated-build fallback assets are not borrowed.
 
 CI and screenshot acceptance on actual Stage 2 maps remain necessary.
+
+## CryEngine 3.5.8 SDK spline compatibility (October 30)
+
+The user-supplied CryEngine FreeSDK 3.5.8 Forest example contains authentic
+`TimeOfDay.xml` curves with otherwise valid 0–1 normalized clock keys alongside
+out-of-day editor artifacts (including very large exponent-form times and keys
+slightly above 1). The source importer now **ignores and counts those specific
+out-of-day keys**, retaining legitimate curve endpoints rather than clamping
+outliers to 24:00 and changing map lighting. Malformed/non-finite times and
+outlier-only splines still fail closed, and the source XML is not rewritten.
+The Scene Settings panel and import diagnostics disclose the count.
+
+This improves coverage of original environment XML, **not** engine spline
+interpolation parity. Real CryEngine tangent handling and rendering of fog,
+HDR, atmosphere, shadows and particles remain separate acceptance work.

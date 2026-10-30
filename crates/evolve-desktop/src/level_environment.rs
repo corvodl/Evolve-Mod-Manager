@@ -38,6 +38,8 @@ pub(super) struct TimeOfDay {
     pub initial_hour: f32,
     curves: BTreeMap<String, Curve>,
     pub keyed_variables: usize,
+    /// Out-of-day keys in the source XML skipped without modifying original data.
+    pub ignored_out_of_range_keys: usize,
 }
 fn attribute(e: &BytesStart<'_>, key: &[u8]) -> Result<Option<String>, String> {
     for a in e.attributes() {
@@ -69,10 +71,13 @@ fn value(source: &str) -> Option<([f32; 3], bool)> {
     }
     Some((rgb, parts.len() == 3))
 }
-fn keys(source: &str) -> Result<Vec<Key>, String> {
+fn keys(source: &str) -> Result<(Vec<Key>, usize), String> {
     let mut parsed = Vec::new();
-    for raw in source.split(',').filter(|entry| !entry.trim().is_empty()) {
-        if parsed.len() >= 512 {
+    let mut ignored_out_of_range = 0;
+    for (index, raw) in source.split(',').filter(|entry| !entry.trim().is_empty()).enumerate() {
+        // Count source entries, not only accepted entries: invalid keys cannot
+        // evade the per-spline memory and parsing budget.
+        if index >= 512 {
             return Err("Too many original spline keys".into());
         }
         let (time, remaining) = raw
@@ -82,8 +87,17 @@ fn keys(source: &str) -> Result<Vec<Key>, String> {
             .trim()
             .parse::<f32>()
             .map_err(|_| "Invalid spline time")?;
-        if !time.is_finite() || !(-0.01..=1.01).contains(&time) {
-            return Err("Spline time outside original day interval".into());
+        if !time.is_finite() {
+            return Err("Non-finite original spline time".into());
+        }
+        // CryEngine 3.5.8 Forest TimeOfDay.xml contains a small number of
+        // serialized editor outliers (e.g. 1.78957e+008 and 1.7895). They
+        // are not valid normalized clock positions. Dropping only those
+        // entries preserves the source daytime curve; clamping them to 1.0
+        // would incorrectly overwrite legitimate midnight keyframes.
+        if !(0.0..=1.0).contains(&time) {
+            ignored_out_of_range += 1;
+            continue;
         }
         let sample = if let Some(tuple) = remaining.strip_prefix('(') {
             let (tuple, _) = tuple.split_once(')').ok_or("Unterminated color spline")?;
@@ -94,7 +108,7 @@ fn keys(source: &str) -> Result<Vec<Key>, String> {
                 .0
         };
         parsed.push(Key {
-            time: time.clamp(0.0, 1.0),
+            time,
             value: sample,
         });
     }
@@ -103,7 +117,7 @@ fn keys(source: &str) -> Result<Vec<Key>, String> {
     if parsed.is_empty() {
         return Err("Empty original spline".into());
     }
-    Ok(parsed)
+    Ok((parsed, ignored_out_of_range))
 }
 impl TimeOfDay {
     pub fn parse(source: &[u8]) -> Result<Self, String> {
@@ -114,6 +128,7 @@ impl TimeOfDay {
         let mut curves = BTreeMap::new();
         let mut pending: Option<(String, Curve)> = None;
         let mut initial_hour = 12.0;
+        let mut ignored_out_of_range_keys = 0;
         let mut valid_root = false;
         loop {
             match reader.read_event().map_err(|e| e.to_string())? {
@@ -161,7 +176,9 @@ impl TimeOfDay {
                     if let Some((_, c)) = &mut pending
                         && let Some(raw) = attribute(&e, b"Keys")?
                     {
-                        c.keys = keys(&raw)?;
+                        let (parsed, ignored) = keys(&raw)?;
+                        ignored_out_of_range_keys += ignored;
+                        c.keys = parsed;
                     }
                 }
                 Event::End(e) if e.name().as_ref().eq_ignore_ascii_case(b"Variable") => {
@@ -186,6 +203,7 @@ impl TimeOfDay {
             initial_hour,
             curves,
             keyed_variables,
+            ignored_out_of_range_keys,
         })
     }
     pub fn color(&self, name: &str, hour: f32) -> Option<[f32; 3]> {
@@ -265,6 +283,23 @@ mod tests {
         assert_eq!(parsed.keyed_variables, 2);
         assert_eq!(parsed.scalar("Sun intensity", 12.0), Some(120000.0));
         assert!((parsed.color("Sun color", 6.0).unwrap()[0] - 0.6).abs() < 0.001);
+    }
+    #[test]
+    fn sdk_forest_style_outliers_do_not_discard_valid_curves() {
+        // Derived from the key serialization pattern, not redistributed SDK assets.
+        let xml = br#"<TimeOfDay Time="9.75"><Variable Name="Sun color multiplier" Value="5"><Spline Keys="0:0.1:36,0.5:9.3:0,1:0.04:65536,1.78957e+008:0.1:0,"/></Variable><Variable Name="Sky color" Color="0.2,0.3,0.4"><Spline Keys="-1:(1:1:1):0,0:(0.1:0.2:0.3):36,0.5:(0.8:0.6:0.4):0,1:(0.2:0.3:0.4):0,1.7895:(0.9:0.9:0.9):0,"/></Variable></TimeOfDay>"#;
+        let parsed = TimeOfDay::parse(xml).unwrap();
+        assert_eq!(parsed.ignored_out_of_range_keys, 3);
+        assert_eq!(parsed.keyed_variables, 2);
+        assert_eq!(parsed.scalar("Sun color multiplier", 24.0), Some(0.04));
+        assert_eq!(parsed.color("Sky color", 24.0), Some([0.2, 0.3, 0.4]));
+        assert_eq!(parsed.scalar("Sun color multiplier", 12.0), Some(9.3));
+    }
+    #[test]
+    fn outlier_only_or_unbounded_splines_fail_closed() {
+        assert!(keys("1.7895:5:0,").is_err());
+        assert!(keys("NaN:5:0,").is_err());
+        assert!(keys(&"0:1:0,".repeat(513)).is_err());
     }
     #[test]
     fn invalid_sources_never_become_fake_lighting() {
