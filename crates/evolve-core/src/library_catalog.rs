@@ -298,7 +298,7 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
     }
     let root = fs::canonicalize(root)?;
     let owners = manifests_by_build(&root)?;
-    let mut archives = Vec::new();
+    let mut archives: Vec<ImportedPak> = Vec::new();
     let mut ignored = 0usize;
     let mut total_bytes = 0u64;
     let mut identical_sources = HashMap::<(String, String, String), usize>::new();
