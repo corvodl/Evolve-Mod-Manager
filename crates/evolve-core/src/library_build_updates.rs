@@ -234,20 +234,28 @@ fn imported_content_index(library: &Path) -> Result<BTreeMap<(String, String), S
     let mut index = BTreeMap::new();
     for archive in catalog.archives {
         let manifest = Path::new(&archive.directory).join("asset-library.json");
-        let Ok(meta) = fs::symlink_metadata(&manifest) else { continue };
+        let Ok(meta) = fs::symlink_metadata(&manifest) else {
+            continue;
+        };
         if !meta.file_type().is_file() || meta.len() > MAX_LEDGER_BYTES {
             continue;
         }
         let Ok(doc) = serde_json::from_reader::<_, serde_json::Value>(
-            File::open(&manifest).map_err(|e| e.to_string())?
-        ) else { continue };
-        let Some(sha) = doc["source_sha256"].as_str() else { continue };
-        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit())
+            File::open(&manifest).map_err(|e| e.to_string())?,
+        ) else {
+            continue;
+        };
+        let Some(sha) = doc["source_sha256"].as_str() else {
+            continue;
+        };
+        if sha.len() != 64
+            || !sha.bytes().all(|b| b.is_ascii_hexdigit())
             || doc["name"].as_str() != Some(archive.name.as_str())
         {
             continue;
         }
-        index.entry((archive.name.to_ascii_lowercase(), sha.to_ascii_lowercase()))
+        index
+            .entry((archive.name.to_ascii_lowercase(), sha.to_ascii_lowercase()))
             .or_insert(archive.id);
     }
     Ok(index)
@@ -304,11 +312,13 @@ pub fn scan_library_build_updates(
             continue;
         }
         let bytes = fs::metadata(&file).map_err(|e| e.to_string())?.len();
-        let basename = file.file_name().and_then(|value| value.to_str())
+        let basename = file
+            .file_name()
+            .and_then(|value| value.to_str())
             .ok_or("Non-Unicode archive filename")?;
-        let reuse_archive_id = content_index.get(&(
-            basename.to_ascii_lowercase(), sha.to_ascii_lowercase()
-        )).cloned();
+        let reuse_archive_id = content_index
+            .get(&(basename.to_ascii_lowercase(), sha.to_ascii_lowercase()))
+            .cloned();
         if reuse_archive_id.is_some() {
             reused_count += 1;
         } else {
@@ -407,9 +417,13 @@ pub fn apply_library_build_updates(
             // manifest/content identity immediately before reuse; never trust
             // an outdated UI plan or copy the same game twice.
             if let Some(id) = &entry.reuse_archive_id {
-                let name = entry.path.file_name().and_then(|name| name.to_str())
+                let name = entry
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
                     .ok_or("Invalid archive filename")?;
-                if content_index.get(&(name.to_ascii_lowercase(), entry.sha256.to_ascii_lowercase()))
+                if content_index
+                    .get(&(name.to_ascii_lowercase(), entry.sha256.to_ascii_lowercase()))
                     != Some(id)
                 {
                     return Err("Previously imported PAK changed or was removed; rescan".into());
@@ -560,12 +574,17 @@ fn build_snapshots(library: &Path) -> Result<BTreeMap<String, Vec<BuildSnapshot>
             let doc: serde_json::Value =
                 serde_json::from_reader(File::open(&file).map_err(|e| e.to_string())?)
                     .map_err(|e| format!("Cannot read build snapshot: {e}"))?;
-            let root = doc["source_root"].as_str().ok_or("Missing build source root")?;
+            let root = doc["source_root"]
+                .as_str()
+                .ok_or("Missing build source root")?;
             if build_identity(Path::new(root)) != id {
                 return Err("Build snapshot source identity differs from folder".into());
             }
             let record = read_snapshot(&file, &id, Path::new(root))?;
-            if records.first().is_some_and(|old: &BuildSnapshot| old.source_root != record.source_root) {
+            if records
+                .first()
+                .is_some_and(|old: &BuildSnapshot| old.source_root != record.source_root)
+            {
                 return Err("Conflicting build roots within one snapshot history".into());
             }
             records.push(record);
@@ -586,13 +605,17 @@ fn legacy_references(library: &Path) -> Result<BTreeSet<String>, String> {
     if !meta.file_type().is_file() || meta.len() > MAX_LEDGER_BYTES {
         return Err("Legacy build collection file is unsafe".into());
     }
-    let doc: serde_json::Value = serde_json::from_reader(
-        File::open(&file).map_err(|e| e.to_string())?
-    ).map_err(|e| format!("Cannot parse existing build collections: {e}"))?;
-    let builds = doc["builds"].as_object().ok_or("Legacy build collections are malformed")?;
+    let doc: serde_json::Value =
+        serde_json::from_reader(File::open(&file).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("Cannot parse existing build collections: {e}"))?;
+    let builds = doc["builds"]
+        .as_object()
+        .ok_or("Legacy build collections are malformed")?;
     let mut result = BTreeSet::new();
     for build in builds.values() {
-        let members = build["members"].as_object().ok_or("Legacy collection members are malformed")?;
+        let members = build["members"]
+            .as_object()
+            .ok_or("Legacy collection members are malformed")?;
         result.extend(members.keys().cloned());
     }
     Ok(result)
@@ -606,10 +629,17 @@ fn only_owned_extractions(
     let mut referenced = legacy_references(library)?;
     for history in others.values() {
         for snapshot in history {
-            referenced.extend(snapshot.members.values().map(|item| item.archive_id.clone()));
+            referenced.extend(
+                snapshot
+                    .members
+                    .values()
+                    .map(|item| item.archive_id.clone()),
+            );
         }
     }
-    let owned = target.iter().flat_map(|snapshot| snapshot.members.values())
+    let owned = target
+        .iter()
+        .flat_map(|snapshot| snapshot.members.values())
         .map(|item| item.archive_id.clone())
         .collect::<BTreeSet<_>>();
     let mut retained_shared = 0usize;
@@ -632,9 +662,10 @@ fn only_owned_extractions(
         }
         let folder = Path::new(&archive.directory);
         if folder.parent() != Some(library)
-            || !folder.file_name().and_then(|s| s.to_str()).is_some_and(|name| {
-                name == id || name.ends_with(&format!("__{id}"))
-            })
+            || !folder
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|name| name == id || name.ends_with(&format!("__{id}")))
         {
             retained_shared += 1;
             continue;
@@ -652,7 +683,9 @@ fn only_owned_extractions(
         for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let name = entry.file_name();
-            if name == "asset-library.json" && entry.file_type().map_err(|e| e.to_string())?.is_file() {
+            if name == "asset-library.json"
+                && entry.file_type().map_err(|e| e.to_string())?.is_file()
+            {
                 has_manifest = true;
             } else if name == "files" && entry.file_type().map_err(|e| e.to_string())?.is_dir() {
                 has_files = true;
@@ -681,9 +714,14 @@ pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>
         let mut other = all.clone();
         other.remove(id);
         let (reclaim, _) = only_owned_extractions(&library, snapshots, &other)?;
-        let member_ids = latest.members.values().map(|v| &v.archive_id)
+        let member_ids = latest
+            .members
+            .values()
+            .map(|v| &v.archive_id)
             .collect::<BTreeSet<_>>();
-        let extracted_bytes = catalog.archives.iter()
+        let extracted_bytes = catalog
+            .archives
+            .iter()
             .filter(|a| member_ids.contains(&a.id))
             .fold(0u64, |sum, a| sum.saturating_add(a.extracted_bytes));
         builds.push(ManagedLibraryBuild {
@@ -692,7 +730,8 @@ pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>
             pak_count: latest.members.len(),
             extracted_bytes,
             reclaimable_paks: reclaim.len(),
-            reclaimable_bytes: reclaim.iter()
+            reclaimable_bytes: reclaim
+                .iter()
                 .fold(0u64, |sum, (_, bytes)| sum.saturating_add(*bytes)),
         });
     }
@@ -712,7 +751,9 @@ pub fn remove_managed_library_build(
         return Err("Invalid selected game build".into());
     }
     let mut all = build_snapshots(&library)?;
-    let snapshots = all.remove(id).ok_or("Managed build is no longer available")?;
+    let snapshots = all
+        .remove(id)
+        .ok_or("Managed build is no longer available")?;
     let latest = snapshots.last().ok_or("Selected build has no snapshots")?;
     if latest.source_root != expected_source_root {
         return Err("Selected build changed; refresh build management".into());
@@ -720,7 +761,10 @@ pub fn remove_managed_library_build(
     let (unused, retained_shared) = only_owned_extractions(&library, &snapshots, &all)?;
     let history = snapshot_dir(&library, id);
     if history.parent() != Some(library.join("build-update-history").as_path())
-        || !fs::symlink_metadata(&history).map_err(|e| e.to_string())?.file_type().is_dir()
+        || !fs::symlink_metadata(&history)
+            .map_err(|e| e.to_string())?
+            .file_type()
+            .is_dir()
     {
         return Err("Unsafe build history path".into());
     }
@@ -848,7 +892,6 @@ mod tests {
         assert_eq!(imported_library(&library).unwrap().archives.len(), 1);
     }
 
-
     #[test]
     fn copied_game_reuses_matching_paks_and_only_extracts_new_one() {
         let dir = tempfile::tempdir().unwrap();
@@ -869,18 +912,31 @@ mod tests {
         write_pak(&old_game.join("B.pak"), b"same other contents");
         let initial = scan_library_build_updates(&library, &old_game).unwrap();
         apply_library_build_updates(
-            &library, &initial, &[], &AtomicBool::new(false), &AtomicUsize::new(0)
-        ).unwrap();
+            &library,
+            &initial,
+            &[],
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        )
+        .unwrap();
         fs::copy(old_game.join("A.pak"), new_game.join("A.pak")).unwrap();
         fs::copy(old_game.join("B.pak"), new_game.join("B.pak")).unwrap();
         write_pak(&new_game.join("C.pak"), b"new content");
         let update = scan_library_build_updates(&library, &new_game).unwrap();
         assert_eq!(update.new_count, 3);
         assert_eq!(update.reused_count, 2);
-        assert_eq!(update.import_bytes, fs::metadata(new_game.join("C.pak")).unwrap().len());
+        assert_eq!(
+            update.import_bytes,
+            fs::metadata(new_game.join("C.pak")).unwrap().len()
+        );
         let applied = apply_library_build_updates(
-            &library, &update, &[], &AtomicBool::new(false), &AtomicUsize::new(0)
-        ).unwrap();
+            &library,
+            &update,
+            &[],
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        )
+        .unwrap();
         assert_eq!(applied.reused, 2);
         assert_eq!(applied.batch.imported.len(), 1);
         assert_eq!(imported_library(&library).unwrap().archives.len(), 3);
@@ -896,27 +952,49 @@ mod tests {
         let library = directory.path().join("library");
         let old = directory.path().join("EvolveOld");
         let new = directory.path().join("EvolveNew");
-        for dir in [&library, &old, &new] { fs::create_dir_all(dir).unwrap(); }
+        for dir in [&library, &old, &new] {
+            fs::create_dir_all(dir).unwrap();
+        }
         fn zip(path: &Path, data: &[u8]) {
             let mut archive = zip::ZipWriter::new(File::create(path).unwrap());
-            archive.start_file("asset.bin", zip::write::SimpleFileOptions::default()).unwrap();
+            archive
+                .start_file("asset.bin", zip::write::SimpleFileOptions::default())
+                .unwrap();
             archive.write_all(data).unwrap();
             archive.finish().unwrap();
         }
         zip(&old.join("shared.pak"), b"same");
         zip(&old.join("retired.pak"), b"retired");
         let initial = scan_library_build_updates(&library, &old).unwrap();
-        apply_library_build_updates(&library, &initial, &[], &AtomicBool::new(false), &AtomicUsize::new(0)).unwrap();
+        apply_library_build_updates(
+            &library,
+            &initial,
+            &[],
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        )
+        .unwrap();
         fs::copy(old.join("shared.pak"), new.join("shared.pak")).unwrap();
         let updated = scan_library_build_updates(&library, &new).unwrap();
         assert_eq!(updated.reused_count, 1);
-        apply_library_build_updates(&library, &updated, &[], &AtomicBool::new(false), &AtomicUsize::new(0)).unwrap();
+        apply_library_build_updates(
+            &library,
+            &updated,
+            &[],
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        )
+        .unwrap();
         let snapshot = managed_library_builds(&library).unwrap();
         assert_eq!(snapshot.len(), 2);
-        let old_build = snapshot.iter().find(|entry| entry.source_root == old.to_string_lossy()).unwrap();
+        let old_build = snapshot
+            .iter()
+            .find(|entry| entry.source_root == old.to_string_lossy())
+            .unwrap();
         assert_eq!(old_build.reclaimable_paks, 1);
         assert!(remove_managed_library_build(&library, &old_build.id, "wrong").is_err());
-        let removed = remove_managed_library_build(&library, &old_build.id, &old_build.source_root).unwrap();
+        let removed =
+            remove_managed_library_build(&library, &old_build.id, &old_build.source_root).unwrap();
         assert_eq!(removed.removed_archives, 1);
         assert_eq!(removed.retained_shared, 1);
         assert!(old.join("retired.pak").exists());
