@@ -181,7 +181,9 @@ fn upload_rgba_mips(
                 depth_or_array_layers: 1,
             },
         );
-        if level + 1 < mip_count && let Some(img) = current.as_ref() {
+        if level + 1 < mip_count
+            && let Some(img) = current.as_ref()
+        {
             current = Some(Cow::Owned(image::imageops::resize(
                 img.as_ref(),
                 (w / 2).max(1),
