@@ -1,13 +1,13 @@
 # CryEngine 3.5.8 FreeSDK compatibility and implementation roadmap
 
-This reference documents the **user-supplied, intact six-volume** `CRYENGINE_Build_PC_v3_5_8_2310_freesdk` development SDK. The archive is a general CryEngine SDK, **not** the modified Evolve Stage 2 development kit. None of its proprietary binaries, original data, or engine source should be committed, shipped, silently downloaded, or used as interchangeable Stage 2 runtime DLLs.
+This developer-only reference documents the **user-supplied, intact six-volume** `CRYENGINE_Build_PC_v3_5_8_2310_freesdk` development SDK. The archive is a general CryEngine SDK, **not** the modified Evolve Stage 2 development kit. The SDK is private and ordinary manager users **will not have access to it**. None of its proprietary binaries, original data, or engine source should be committed, shipped, silently downloaded, imported by users, or used as interchangeable Stage 2 runtime DLLs. The manager must be self-contained, using original Rust implementations and appropriately licensed components included in the public distribution. SDK executables are developer-side format reference and validation only.
 
 ## Verified SDK inventory (not hypothetical)
 
 | SDK evidence | Manager integration | Completion boundary |
 |---|---|---|
-| `Bin64/rc/rc.exe`, `rc.ini`, `ResourceCompilerFBX.dll`, `ResourceCompilerPC.dll` | Optional external static FBX-to-CGF conversion and model validation | Actual Windows FBX→CGF→Evolve model load not verified |
-| `ResourceCompilerImage.dll`, `ResourceCompilerXML.dll`, `CryXML.dll`, `cudart64_42_9.dll` | DDS presets/mips, original XML conversion, prerequisite detection | Correct outputs and game compatibility unverified |
+| `Bin64/rc/rc.exe`, `rc.ini`, `ResourceCompilerFBX.dll`, `ResourceCompilerPC.dll` | Private development reference for a new **built-in Rust** FBX-to-CGF compiler | Native FBX→CGF creation and Evolve Stage 2 load not yet implemented/verified |
+| `ResourceCompilerImage.dll`, `ResourceCompilerXML.dll`, `CryXML.dll`, `cudart64_42_9.dll` | Reference for integrated PC DDS texture presets and CryXML conversion | Independent Rust DDS and CryXML paths exist; proprietary plugin outputs still require parity validation |
 | `CryCommon/CGFContent.h`, `IChunkFile.h`, `ICryAnimation.h` | Model chunks, vertex/normals/material subsets, skeleton/controller structures | Header contracts are not complete engine implementations |
 | `GameSDK/Animations.pak` (CAF/DBA), `CryAction/IAnimatedCharacter.h` | Native animation regression fixtures, exact-rig playback, additive/layered clips and FBX export | Character attachments, 2012 variants and private-manager 1:1 playback unverified |
 | `GameSDK/Levels/Singleplayer/Forest` | Heightmap, VegetationMap, layers, terrain texture PAK, TimeOfDay.xml, original effect references | Scene rendering, original GPU shaders, source camera and engine-grade physics unverified |
@@ -28,7 +28,8 @@ This reference documents the **user-supplied, intact six-volume** `CRYENGINE_Bui
 
 ### 2. Models, materials and texture tools
 - Inspect original CGF/CHR/SKIN chunk versions, optional geometry companions, MTL subsets, DDS normals/spec/gloss/emissive/alpha and texture presets; preserve exact selected-build provenance.
-- Optional *user-configured* native RC process: run with explicit consent on a temporary copy, working-directory confinement, output/version/size checks, timeouts, logs and dependencies. Never run unknown SDK executables as part of merely opening the manager.
+- **No user SDK setup, no external compiler import and no private SDK downloads.** Implement supported conversion formats in the manager's Rust code. Initial built-in standalone PNG→PC DDS compiler now supports BC1/DXT1, BC3/DXT5 and BC5/ATI2 with complete mipchains, output validation and no overwrite. Existing manifest-checked PNG→DDS replacements and binary CryXmlB edit/encode remain supported.
+- Native FBX→CGF, CHR/SKIN/CAF compilation and full RC texture preset parity are **not** implemented yet. Validate each independently against SDK-produced references privately, then Evolve Stage 2 test-game assets.
 - Validate converted CGF in the Rust viewer first, then verify Stage 2 test-game load before offering an import/build action.
 
 ### 3. Level viewer/editor
@@ -47,5 +48,6 @@ This reference documents the **user-supplied, intact six-volume** `CRYENGINE_Bui
 
 - **Implemented on this PR**: source-backed time-of-day partial preview; FX/shader inventory; bounded terrain/material recovery; tolerant outlier handling with diagnostics.
 - **Elsewhere in existing manager**: basic native CAF and converted GLB skinned playback, additive/layered preview, partial Level Editor, GFX and audio integrations.
-- **Not implemented or validated**: complete CDF/DBA character parity, high-performance full-world renderer, engine-equivalent particle/shader execution, native external RC integration, full GFX authoring/export parity, Evolve-specific engine runtime ABI.
+- **Not implemented or validated**: complete CDF/DBA character parity, high-performance full-world renderer, engine-equivalent particle/shader execution, full native equivalent of RC model/animation compilers, full GFX authoring/export parity, Evolve-specific engine runtime ABI.
+- Public release policy: no user needs, downloads, installs, or is asked to locate this private CryEngine SDK. The native feature set ships in the manager itself. The separately maintained GPLv2 Cryengine-Converter remains a distinct optional tool subject to its own license and is **not** the private CryEngine SDK.
 - CI: format, core/desktop tests, Clippy, Windows compilation and credential safeguards. Real Stage 2 and original SDK asset tests on Windows are mandatory before publishing claims of parity. Keep proprietary SDK files external and the PR draft until acceptance.

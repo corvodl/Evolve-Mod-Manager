@@ -92,7 +92,7 @@ mod world_instances;
 use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
-    CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
+    CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsFormat, DdsInfo, DependencyGraph,
     EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
     KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryBuildUpdatePlan,
     LibraryBuildUpdateReport, LibraryImportPlan, LibraryReferenceStatus, MaterialReport,
@@ -839,6 +839,7 @@ enum Operation {
     ExtractPak(PathBuf, PathBuf),
     RebuildPak(PathBuf, PathBuf, PathBuf),
     ExportPng(PathBuf, PathBuf),
+    CompileDds(PathBuf, PathBuf, DdsFormat),
 }
 
 #[derive(Debug, Clone)]
@@ -943,6 +944,7 @@ enum Completed {
     Extracted(usize, PathBuf),
     Rebuilt(usize, PathBuf),
     ExportedPng(DdsInfo, PathBuf),
+    CompiledDds(DdsInfo, PathBuf),
 }
 
 /// Reuse the level editor's exact-build indexed Asset Library lookup inside
@@ -1904,6 +1906,9 @@ impl Operation {
             Self::ExportPng(source, dest) => export_dds_png(&source, &dest)
                 .map(|info| Completed::ExportedPng(info, dest))
                 .map_err(|e| e.to_string()),
+            Self::CompileDds(source, dest, format) =>
+                modding_projects::compile_standalone_dds(&source, &dest, format)
+                    .map(|info| Completed::CompiledDds(info, dest)),
         }
     }
 }
@@ -2391,6 +2396,7 @@ enum Message {
     StartExtract,
     StartRebuild,
     StartPngExport,
+    StartDdsCompile(DdsFormat),
     Finished(Result<Completed, String>),
 }
 
@@ -2812,6 +2818,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::RecoverProfile(..) => "Recovering mod profile",
         Operation::StatusProfile(..) => "Checking active mod profile",
         Operation::ExportPng(..) => "Exporting full-resolution PNG",
+        Operation::CompileDds(..) => "Compiling native PC DDS texture",
     }
 }
 
@@ -11235,6 +11242,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let output = PathBuf::from(&state.output);
             return launch(state, Operation::ExportPng(source, output));
         }
+        Message::StartDdsCompile(format) => {
+            if state.output.trim().is_empty() {
+                state.status = "Choose a NEW .dds output file first.".into();
+                return Task::none();
+            }
+            return launch(
+                state,
+                Operation::CompileDds(
+                    PathBuf::from(&state.input),
+                    PathBuf::from(&state.output),
+                    format,
+                ),
+            );
+        }
         Message::Finished(result) => {
             let launch_notice = state.active_play.take().map(|kind| {
                 match &result {
@@ -12998,6 +13019,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         target.display()
                     );
                 }
+                Ok(Completed::CompiledDds(info, target)) => {
+                    state.status = format!(
+                        "Compiled standalone {} × {} {:?} DDS with {} mip(s) to {} (native Rust; no external SDK)",
+                        info.width,
+                        info.height,
+                        info.format,
+                        info.mipmaps,
+                        target.display()
+                    );
+                }
                 Err(e) => {
                     if state.cdf_damage_preparing {
                         state.cdf_damage_preparing = false;
@@ -13221,6 +13252,13 @@ fn view(state: &State) -> Element<'_, Message> {
                 .width(Fill),
             design::button("Extract PAK").on_press(Message::StartExtract),
             design::button("Export DDS → PNG").on_press(Message::StartPngExport),
+        ]
+        .spacing(8),
+        row![
+            text("Built-in PNG → DDS (new asset, no CryEngine SDK)").size(12),
+            design::button("BC1 / DXT1").on_press(Message::StartDdsCompile(DdsFormat::Bc1)),
+            design::button("BC3 / DXT5").on_press(Message::StartDdsCompile(DdsFormat::Bc3)),
+            design::button("BC5 / ATI2").on_press(Message::StartDdsCompile(DdsFormat::Bc5)),
         ]
         .spacing(8),
         row![

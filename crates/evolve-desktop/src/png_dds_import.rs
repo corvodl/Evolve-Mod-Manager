@@ -4,6 +4,7 @@
 use evolve_core::{DdsFormat, inspect_dds};
 use image::{RgbaImage, imageops::FilterType};
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 fn read_u32(data: &[u8], at: usize) -> Result<u32, String> {
@@ -303,9 +304,170 @@ pub(super) fn convert(png: &Path, target_dds: &Path, output: &Path) -> Result<()
     Ok(())
 }
 
+/// Original Rust-only texture compilation for user-created mod assets. No
+/// Crytek SDK executable, DLL, license or file is required at runtime.
+/// Produces a conventional PC DDS (BC1, BC3 or BC5), never writes game sources.
+pub(super) fn compile_standalone(
+    png: &Path,
+    output: &Path,
+    format: DdsFormat,
+) -> Result<evolve_core::DdsInfo, String> {
+    let (fourcc, bytes_per_block): (&[u8; 4], usize) = match format {
+        DdsFormat::Bc1 => (b"DXT1", 8),
+        DdsFormat::Bc3 => (b"DXT5", 16),
+        DdsFormat::Bc5 => (b"ATI2", 16),
+        _ => return Err("Standalone compiler supports BC1, BC3 and BC5 only".into()),
+    };
+    if !png.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+        || !output
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("dds"))
+    {
+        return Err("Choose a source PNG and a NEW .dds output filename".into());
+    }
+    if fs::symlink_metadata(output).is_ok() {
+        return Err("Output already exists; refusing to overwrite it".into());
+    }
+    let parent = output.parent().ok_or("Output path has no parent directory")?;
+    if !fs::symlink_metadata(parent)
+        .map_err(|e| format!("Output directory unavailable: {e}"))?
+        .file_type()
+        .is_dir()
+    {
+        return Err("Output parent must be an existing regular directory".into());
+    }
+    let stat = fs::symlink_metadata(png).map_err(|e| e.to_string())?;
+    if !stat.file_type().is_file() || stat.len() > 256 * 1024 * 1024 {
+        return Err("Source must be a regular PNG no larger than 256 MiB".into());
+    }
+    let reader = image::ImageReader::open(png)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    if reader.format() != Some(image::ImageFormat::Png) {
+        return Err("File content is not PNG".into());
+    }
+    let (width, height) = reader.into_dimensions().map_err(|e| e.to_string())?;
+    if width == 0
+        || height == 0
+        || width.max(height) > 8192
+        || u64::from(width) * u64::from(height) > 40_000_000
+    {
+        return Err("PNG dimensions exceed the bounded native DDS compiler".into());
+    }
+    let rgba = image::open(png)
+        .map_err(|e| format!("Cannot read source image: {e}"))?
+        .to_rgba8();
+    let mipmaps = u32::BITS - width.max(height).leading_zeros();
+    let mut header = [0u8; 128];
+    header[..4].copy_from_slice(b"DDS ");
+    header[4..8].copy_from_slice(&124u32.to_le_bytes());
+    let flags = 0x0008_1007u32 | if mipmaps > 1 { 0x0002_0000 } else { 0 };
+    header[8..12].copy_from_slice(&flags.to_le_bytes());
+    header[12..16].copy_from_slice(&height.to_le_bytes());
+    header[16..20].copy_from_slice(&width.to_le_bytes());
+    let top_bytes = usize::try_from(width.div_ceil(4))
+        .unwrap()
+        .checked_mul(usize::try_from(height.div_ceil(4)).unwrap())
+        .and_then(|size| size.checked_mul(bytes_per_block))
+        .ok_or("Texture byte size overflow")?;
+    header[20..24].copy_from_slice(
+        &u32::try_from(top_bytes)
+            .map_err(|_| "Texture byte size overflow")?
+            .to_le_bytes(),
+    );
+    header[28..32].copy_from_slice(&mipmaps.to_le_bytes());
+    header[76..80].copy_from_slice(&32u32.to_le_bytes());
+    header[80..84].copy_from_slice(&4u32.to_le_bytes());
+    header[84..88].copy_from_slice(fourcc);
+    header[108..112].copy_from_slice(
+        &(if mipmaps > 1 { 0x0040_1008u32 } else { 0x1000u32 }).to_le_bytes(),
+    );
+    let mut bytes = header.to_vec();
+    for mip in 0..mipmaps {
+        let mip_w = (width >> mip).max(1);
+        let mip_h = (height >> mip).max(1);
+        let level = if mip == 0 {
+            rgba.clone()
+        } else {
+            image::imageops::resize(&rgba, mip_w, mip_h, FilterType::Triangle)
+        };
+        bytes.extend_from_slice(&encode_mip(&level, format, &header)?);
+        if bytes.len() > 512 * 1024 * 1024 {
+            return Err("Native DDS output exceeds 512 MiB".into());
+        }
+    }
+    // create_new prevents overwriting even when a concurrent actor creates
+    // an output after our explicit existence check.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .map_err(|e| format!("Cannot create new DDS: {e}"))?;
+    if let Err(e) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(output);
+        return Err(format!("Cannot write compiled DDS: {e}"));
+    }
+    drop(file);
+    let result = match inspect_dds(output) {
+        Ok(info)
+            if info.width == width
+                && info.height == height
+                && info.mipmaps == mipmaps
+                && info.format == format
+                && info.streaming_parts == 1 =>
+        {
+            info
+        }
+        _ => {
+            let _ = fs::remove_file(output);
+            return Err("Native DDS output failed its format and mip validation".into());
+        }
+    };
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_standalone_bc_texture_compiler_requires_no_sdk() {
+        for (format, fourcc) in [
+            (DdsFormat::Bc1, b"DXT1"),
+            (DdsFormat::Bc3, b"DXT5"),
+            (DdsFormat::Bc5, b"ATI2"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let png = dir.path().join("source.png");
+            let dds = dir.path().join("created.dds");
+            let mut pixels = image::RgbaImage::new(8, 4);
+            for (x, y, pixel) in pixels.enumerate_pixels_mut() {
+                *pixel = image::Rgba([x as u8 * 20, y as u8 * 40, 170, 255]);
+            }
+            pixels.save(&png).unwrap();
+            let info = compile_standalone(&png, &dds, format).unwrap();
+            assert_eq!(info.format, format);
+            assert_eq!((info.width, info.height, info.mipmaps), (8, 4, 4));
+            assert_eq!(&fs::read(&dds).unwrap()[84..88], fourcc);
+            let before = fs::read(&dds).unwrap();
+            assert!(compile_standalone(&png, &dds, format)
+                .unwrap_err()
+                .contains("exists"));
+            assert_eq!(fs::read(&dds).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn native_compiler_rejects_mislabelled_images_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("fake.png");
+        let output = dir.path().join("target.dds");
+        fs::write(&input, b"not a PNG").unwrap();
+        assert!(compile_standalone(&input, &output, DdsFormat::Bc3).is_err());
+        assert!(!output.exists());
+    }
+
     #[test]
     fn bc1_and_bc3_encode_valid_blocks() {
         let opaque = [[255, 0, 0, 255]; 16];
