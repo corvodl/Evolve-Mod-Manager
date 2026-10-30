@@ -3258,7 +3258,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.preferences.reduce_motion {
                 state.sidebar_reveal = if hovered { 1.0 } else { 0.0 };
             }
-            Task::none()
+            return Task::none();
         }
         Message::SidebarAnimationTick => {
             let target: f32 = if state.sidebar_hovered { 1.0 } else { 0.0 };
@@ -3269,7 +3269,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 (state.sidebar_reveal + delta.signum() * 0.12).clamp(0.0, 1.0)
             };
-            Task::none()
+            return Task::none();
         }
         Message::HomeContinueEditing | Message::HomeOpenProject => {
             if state.busy {
