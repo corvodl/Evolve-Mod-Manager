@@ -542,6 +542,7 @@ pub(super) struct Renderer {
     camera_uniform: wgpu::Buffer,
     lighting_uniform: wgpu::Buffer,
     fog_uniform: wgpu::Buffer,
+    height_fog_uniform: wgpu::Buffer,
     last_lighting_hour: f32,
     sampler: wgpu::Sampler,
     terrain_sampler: wgpu::Sampler,
@@ -667,6 +668,17 @@ impl Renderer {
                     },
                     count: None,
                 },
+                // Original TimeOfDay top/bottom fog density/height, if present.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let camera_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -682,6 +694,11 @@ impl Renderer {
         });
         let fog_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Original map distance fog - non-native preview"),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 2]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let height_fog_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Source TimeOfDay analytical height fog preview"),
             contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 2]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -777,6 +794,7 @@ impl Renderer {
             camera_uniform,
             lighting_uniform,
             fog_uniform,
+            height_fog_uniform,
             last_lighting_hour: f32::NAN,
             sampler,
             terrain_sampler,
@@ -1047,6 +1065,10 @@ impl Renderer {
                         binding: 10,
                         resource: self.fog_uniform.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: self.height_fog_uniform.as_entire_binding(),
+                    },
                 ],
             });
             surfaces.push(GpuSurface {
@@ -1127,6 +1149,15 @@ impl Renderer {
                 profile.preview_uniform(world.time_of_day.as_deref(), hour)
             });
             queue.write_buffer(&self.fog_uniform, 0, bytemuck::cast_slice(&fog));
+            let mut height = [[0.0_f32; 4]; 2];
+            if fog[1][0] > 0.5
+                && let Some(profile) = world.time_of_day.as_ref()
+                && let Some(source) = profile.height_fog(hour)
+            {
+                height[0] = source.gpu_uniform();
+                height[1][0] = 1.0;
+            }
+            queue.write_buffer(&self.height_fog_uniform, 0, bytemuck::cast_slice(&height));
             self.last_lighting_hour = hour;
         }
         let Some(camera) = camera else {
@@ -1235,6 +1266,7 @@ mod tests {
         assert!(production.contains("foliage_cutout: surf.foliage_cutout && diffuse_uploaded"));
         assert!(shader.contains("@group(0) @binding(5) var<uniform> light"));
         assert!(shader.contains("@group(0) @binding(10) var<uniform> fog"));
+        assert!(shader.contains("@group(0) @binding(11) var<uniform> height_fog"));
         let module = naga::front::wgsl::parse_str(shader)
             .expect("time-of-day world shader must parse as WGSL");
         assert!(
@@ -1249,6 +1281,14 @@ mod tests {
                 .iter()
                 .any(|entry| entry.name == "fs_foliage")
         );
+    }
+
+    #[test]
+    fn height_fog_uniform_stays_world_only_and_shader_parses() {
+        let shader = include_str!("world_instances.wgsl");
+        assert!(shader.contains("fn height_fog_depth"));
+        assert!(shader.contains("if (height_fog.control.x > 0.5)"));
+        naga::front::wgsl::parse_str(shader).expect("source-backed height fog WGSL");
     }
 
     #[test]
