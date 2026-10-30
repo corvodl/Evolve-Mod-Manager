@@ -715,6 +715,7 @@ fn physical_history_ids(library: &Path, logical_id: &str) -> Result<BTreeSet<Str
 /// prior imported data. Called by explicit build-management operations.
 fn migrate_registry(library: &Path, all: &BTreeMap<String, Vec<BuildSnapshot>>) -> Result<BuildRegistry, String> {
     let mut registry = read_registry(library)?;
+    let before = registry.clone();
     let mut next = BTreeMap::new();
     for (id, records) in all {
         let latest = records.last().ok_or("Empty managed build")?;
@@ -726,7 +727,7 @@ fn migrate_registry(library: &Path, all: &BTreeMap<String, Vec<BuildSnapshot>>) 
         });
     }
     let updated = BuildRegistry {version: 1, builds: next};
-    if registry != updated {
+    if before != updated {
         write_registry(library, &updated)?;
     }
     Ok(updated)
@@ -757,6 +758,12 @@ pub fn rename_managed_library_build(
     record.display_name = label.to_owned();
     write_registry(&library, &registry)?;
     managed_library_builds(&library)
+}
+
+fn all_without_build(all: &BTreeMap<String, Vec<BuildSnapshot>>, id: &str) -> BTreeMap<String, Vec<BuildSnapshot>> {
+    let mut next = all.clone();
+    next.remove(id);
+    next
 }
 
 fn legacy_references(library: &Path) -> Result<BTreeSet<String>, String> {
@@ -873,6 +880,7 @@ fn only_owned_extractions(
 pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>, String> {
     let library = real_directory(library)?;
     let all = build_snapshots(&library)?;
+    let registrations = migrate_registry(&library, &all)?;
     let catalog = imported_library(&library).map_err(|e| e.to_string())?;
     let mut builds = Vec::new();
     for (id, snapshots) in &all {
@@ -892,7 +900,9 @@ pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>
             .fold(0u64, |sum, a| sum.saturating_add(a.extracted_bytes));
         builds.push(ManagedLibraryBuild {
             id: id.clone(),
-            source_root: latest.source_root.clone(),
+            source_root: ordinary_path(&latest.source_root),
+            display_name: registrations.builds.get(id).map_or(String::new(), |r| r.display_name.clone()),
+            aliases: registrations.builds.get(id).map_or(0, |r| r.history_ids.len()),
             pak_count: latest.members.len(),
             extracted_bytes,
             reclaimable_paks: reclaim.len(),
@@ -921,20 +931,26 @@ pub fn remove_managed_library_build(
         .remove(id)
         .ok_or("Managed build is no longer available")?;
     let latest = snapshots.last().ok_or("Selected build has no snapshots")?;
-    if latest.source_root != expected_source_root {
+    if source_path_key(&latest.source_root) != source_path_key(expected_source_root) {
         return Err("Selected build changed; refresh build management".into());
     }
     let (unused, retained_shared) = only_owned_extractions(&library, &snapshots, &all)?;
-    let history = snapshot_dir(&library, id);
-    if history.parent() != Some(library.join("build-update-history").as_path())
-        || !fs::symlink_metadata(&history)
-            .map_err(|e| e.to_string())?
-            .file_type()
-            .is_dir()
-    {
-        return Err("Unsafe build history path".into());
+    let aliases = physical_history_ids(&library, id)?;
+    if aliases.is_empty() {
+        return Err("No source snapshot history for selected build".into());
     }
-    fs::remove_dir_all(&history).map_err(|e| format!("Cannot remove build snapshot: {e}"))?;
+    // Every physical alias has already been validated by build_snapshots and
+    // physical_history_ids. Remove history only, never original game folders.
+    for alias in aliases {
+        let history = snapshot_dir(&library, &alias);
+        if history.parent() != Some(library.join("build-update-history").as_path())
+            || !fs::symlink_metadata(&history).map_err(|e| e.to_string())?.file_type().is_dir()
+        {
+            return Err("Unsafe build history path".into());
+        }
+        fs::remove_dir_all(&history).map_err(|e| format!("Cannot remove build snapshot: {e}"))?;
+    }
+    migrate_registry(&library, &all_without_build(&all, id))?;
     let mut removed_archives = 0;
     let mut reclaimed_bytes = 0u64;
     let mut failed_cleanup = Vec::new();
