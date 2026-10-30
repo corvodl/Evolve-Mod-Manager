@@ -1007,7 +1007,7 @@ mod tests {
         assert_eq!(snapshot.len(), 2);
         let old_build = snapshot
             .iter()
-            .find(|entry| entry.source_root == old.to_string_lossy())
+            .find(|entry| entry.source_root == real_directory(&old).unwrap().to_string_lossy())
             .unwrap();
         assert_eq!(old_build.reclaimable_paks, 1);
         assert!(remove_managed_library_build(&library, &old_build.id, "wrong").is_err());
