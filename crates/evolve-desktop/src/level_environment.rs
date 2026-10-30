@@ -131,8 +131,8 @@ impl TimeOfDay {
         // Original level environments can be authored XML or compiled
         // CryXmlB. Reuse the bounded core decoder before touching attributes;
         // never guess the header or mutate an imported source file.
-        let decoded = evolve_core::cryxml::xml_bytes(source, MAX_XML)
-            .map_err(|error| error.to_string())?;
+        let decoded =
+            evolve_core::cryxml::xml_bytes(source, MAX_XML).map_err(|error| error.to_string())?;
         let mut reader = Reader::from_reader(decoded.as_ref());
         let mut curves = BTreeMap::new();
         let mut pending: Option<(String, Curve)> = None;
