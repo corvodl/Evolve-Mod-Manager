@@ -494,7 +494,7 @@ mod tests {
         assert_eq!(fog.ldr_density_multiplier, 3.0);
         assert_eq!(fog.preview_uniform(None, 12.0), [[0.0; 4]; 2]);
         let tod = TimeOfDay::parse(
-            br#"<TimeOfDay><Variable Name="Fog color" Color="0.3,0.5,0.7"/></TimeOfDay>"#,
+            br#"<TimeOfDay><Variable Name="Fog color" Color="0.3,0.5,0.7"></Variable></TimeOfDay>"#,
         )
         .unwrap();
         let uniform = fog.preview_uniform(Some(&tod), 12.0);
