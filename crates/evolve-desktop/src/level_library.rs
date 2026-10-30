@@ -952,6 +952,36 @@ mod tests {
     }
 
     #[test]
+    fn imported_grid_autodetection_supports_tutorial_and_ice_crashsite() {
+        for side in [2usize, 4usize] {
+            let dir = tempfile::tempdir().unwrap();
+            let files = dir.path().join("files");
+            std::fs::create_dir_all(&files).unwrap();
+            for y in 0..side {
+                for x in 0..side {
+                    let filename = files.join(format!("tile{x}_{y}.raw"));
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&4u32.to_le_bytes());
+                    bytes.extend_from_slice(&4u32.to_le_bytes());
+                    for _ in 0..16 { bytes.extend_from_slice(&[x as u8 * 50, y as u8 * 50, 128]); }
+                    std::fs::write(&filename, bytes).unwrap();
+                }
+            }
+            let inventory = scan_directory(dir.path()).unwrap();
+            let (paths, resolved_side) = imported_rgb24_tile_grid(&inventory).unwrap().unwrap();
+            assert_eq!(resolved_side, side);
+            assert_eq!(paths.len(), side * side);
+            let atlas = read_terrain_rgb24_tiles(&paths, resolved_side).unwrap();
+            assert_eq!(atlas.image.dimensions(), ((4 * side) as u32, (4 * side) as u32));
+            assert_eq!(atlas.image.get_pixel((4*side - 1) as u32, (4*side - 1) as u32).0,
+                [((side - 1)*50) as u8, ((side - 1)*50) as u8, 128, 255]);
+            std::fs::remove_file(files.join(format!("tile{}_{}.raw", side - 1, side - 1))).unwrap();
+            let missing = scan_directory(dir.path()).unwrap();
+            assert!(imported_rgb24_tile_grid(&missing).is_err());
+        }
+    }
+
+    #[test]
     fn map_groups_resolve_parent_map_not_layers_subfolder() {
         assert_eq!(map_group("Levels/Distillery/Layers/A.lyr").1, "Distillery");
         assert_eq!(map_group("Levels/Distillery/Heightmap.dat").1, "Distillery");
