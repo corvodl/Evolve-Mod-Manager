@@ -113,7 +113,9 @@ fn validate_plan(plan: &PreparedUpdate) -> Result<(), UpdateError> {
         InstallationKind::Portable => format!("EvolveModManager-Portable-{}.zip", plan.version),
     };
     if plan.manager_pid == 0 || plan.manager_started_at == 0 {
-        return Err(UpdateError::Invalid("missing original manager process identity".into()));
+        return Err(UpdateError::Invalid(
+            "missing original manager process identity".into(),
+        ));
     }
     if !is_manager_binary(&plan.executable)
         || plan.asset.name != expected_name
@@ -420,8 +422,9 @@ fn blocked_install_file(plan: &PreparedUpdate) -> Result<Option<PathBuf>, Update
         }
         match OpenOptions::new().write(true).open(&path) {
             Ok(_) => {}
-            Err(error) if matches!(error.raw_os_error(), Some(32 | 33))
-                || error.kind() == io::ErrorKind::PermissionDenied =>
+            Err(error)
+                if matches!(error.raw_os_error(), Some(32 | 33))
+                    || error.kind() == io::ErrorKind::PermissionDenied =>
             {
                 return Ok(Some(path));
             }
