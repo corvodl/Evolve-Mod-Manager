@@ -442,14 +442,16 @@ fn authored_fx_catalog(
     inventory: &Inventory,
     scene: Option<&LevelScene>,
 ) -> level_environment::ResourceSummary {
-    let mut data = level_environment::ResourceSummary::default();
-    data.emitters = scene.map_or(0, |scene| {
-        scene
-            .objects
-            .iter()
-            .filter(|obj| obj.kind.to_ascii_lowercase().contains("particle"))
-            .count()
-    });
+    let mut data = level_environment::ResourceSummary {
+        emitters: scene.map_or(0, |scene| {
+            scene
+                .objects
+                .iter()
+                .filter(|obj| obj.kind.to_ascii_lowercase().contains("particle"))
+                .count()
+        }),
+        ..Default::default()
+    };
     let mut inspected_fx = 0;
     let mut inspected_mtl = 0;
     for entry in &inventory.entries {

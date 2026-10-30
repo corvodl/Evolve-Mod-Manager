@@ -158,10 +158,10 @@ impl TimeOfDay {
                 Event::Start(e) | Event::Empty(e)
                     if e.name().as_ref().eq_ignore_ascii_case(b"Spline") =>
                 {
-                    if let Some((_, c)) = &mut pending {
-                        if let Some(raw) = attribute(&e, b"Keys")? {
-                            c.keys = keys(&raw)?;
-                        }
+                    if let Some((_, c)) = &mut pending
+                        && let Some(raw) = attribute(&e, b"Keys")?
+                    {
+                        c.keys = keys(&raw)?;
                     }
                 }
                 Event::End(e) if e.name().as_ref().eq_ignore_ascii_case(b"Variable") => {
@@ -237,10 +237,12 @@ pub(super) fn named_items(source: &[u8], tag: &[u8], key: &[u8]) -> Vec<String> 
             Ok(Event::Start(e) | Event::Empty(e))
                 if e.name().as_ref().eq_ignore_ascii_case(tag) =>
             {
-                if let Ok(Some(item)) = attribute(&e, key) {
-                    if item.len() <= 160 && !item.is_empty() && !result.contains(&item) {
-                        result.push(item);
-                    }
+                if let Ok(Some(item)) = attribute(&e, key)
+                    && item.len() <= 160
+                    && !item.is_empty()
+                    && !result.contains(&item)
+                {
+                    result.push(item);
                 }
                 if result.len() >= 512 {
                     break;
