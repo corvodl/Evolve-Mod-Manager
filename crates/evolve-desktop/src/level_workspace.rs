@@ -1,10 +1,11 @@
 //! Placement overview and hierarchy inspector for verified CryEngine level
 //! scenes. Renders source locations only; does not invent geometry or changes.
 use super::{Message, State};
+use crate::design;
 use evolve_core::{LevelScene, Transform};
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::{
-    button, canvas as canvas_widget, column, container, row, scrollable, text, text_input,
+    button, canvas as canvas_widget, column, container, row, scrollable, space, text,
 };
 use iced::{Color, Element, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
 use std::sync::Arc;
@@ -237,12 +238,21 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let Some(scene) = &state.level_scene else {
-        return column![
-            text("SCENE VIEWPORT").size(15),
-            world_viewport(state),
-            text("This map has no readable object placement layer; available terrain is still displayed.")
-                .size(12).color(MUTED),
-        ].spacing(8).into();
+        return container(
+            column![
+                text("Perspective  /  Lit").size(13),
+                world_viewport(state),
+                text("No object placement layer · Available terrain remains visible")
+                    .size(12)
+                    .color(MUTED),
+            ]
+            .spacing(8),
+        )
+        .padding(10)
+        .width(Fill)
+        .height(Fill)
+        .style(design::panel)
+        .into();
     };
     let mut outliner = column![].spacing(2);
     let query = state.level_filter.to_ascii_lowercase();
@@ -259,11 +269,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             outliner = outliner.push(
                 button(text(format!("{}  /  {}", obj.layer, obj.name)).size(12))
                     .width(Fill)
-                    .padding(4)
+                    .padding([7, 9])
                     .style(if state.level_selection.indices.contains(&index) {
-                        button::primary
+                        design::primary
                     } else {
-                        button::text
+                        design::text_button
                     })
                     .on_press(Message::LevelSelect(index)),
             );
@@ -275,7 +285,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .and_then(|index| scene.objects.get(index))
     {
         column![
-            text(format!("Selected: {} ({})", object.name, object.kind)).size(13),
+            text(object.name.as_str()).size(16),
+            text(object.kind.as_str()).size(12).style(design::muted),
             text(format!("Position: {:?}", object.world.position)).size(12),
             text(format!("Rotation (wxyz): {:?}", object.world.quaternion)).size(12),
             text(format!("Scale: {:?}", object.world.scale)).size(12),
@@ -284,21 +295,24 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .size(12)
                 .color(MUTED),
             text(if state.level_read_only {
-                "Imported source transforms · read-only"
+                "Source transform · read-only"
             } else {
-                "Edit local transform (position XYZ, rotation WXYZ, scale XYZ)"
+                "Local transform"
             })
-            .size(12),
-            text_input("Position: x, y, z", &state.level_edit_position)
+            .size(12)
+            .style(design::muted),
+            design::text_input("Position: x, y, z", &state.level_edit_position)
                 .on_input(Message::LevelEditPositionChanged),
-            text_input("Rotation: w, x, y, z", &state.level_edit_rotation)
+            design::text_input("Rotation: w, x, y, z", &state.level_edit_rotation)
                 .on_input(Message::LevelEditRotationChanged),
-            text_input("Scale: x, y, z", &state.level_edit_scale)
+            design::text_input("Scale: x, y, z", &state.level_edit_scale)
                 .on_input(Message::LevelEditScaleChanged),
-            button("Apply to preview").on_press_maybe(
-                (!state.level_read_only && !object.kind.eq_ignore_ascii_case("Vegetation"))
-                    .then_some(Message::LevelApplyTransform)
-            ),
+            design::button("Apply to Preview")
+                .style(design::primary)
+                .on_press_maybe(
+                    (!state.level_read_only && !object.kind.eq_ignore_ascii_case("Vegetation"))
+                        .then_some(Message::LevelApplyTransform)
+                ),
         ]
         .spacing(6)
         .into()
@@ -308,108 +322,165 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .color(MUTED)
             .into()
     };
-    row![
+    let viewport = container(
         column![
-            container(row![
-                text("⌖  PERSPECTIVE").size(12),
-                text("  ·  ORIGINAL STAGE 2 SCENE").size(11).color(MUTED),
-            ].spacing(5)).padding(5),
+            row![
+                text("Perspective  /  Lit").size(13),
+                space().width(Fill),
+                text(if state.level_read_only {
+                    "SOURCE SCENE"
+                } else {
+                    "PROJECT PREVIEW"
+                })
+                .size(11)
+                .style(design::muted),
+            ]
+            .align_y(iced::Center),
             world_viewport(state),
             row![
-                button("Perspective").on_press(Message::ViewerCameraPreset("Isometric")),
-                button("Top").on_press(Message::ViewerCameraPreset("Top")),
-                button("Front").on_press(Message::ViewerCameraPreset("Front")),
-                button(if state.level_show_overview { "Hide 2D Overview" } else { "Show 2D Overview" })
-                    .on_press(Message::LevelToggleOverview),
-            ].spacing(8),
-            row![
-                text("RMB-drag: look · WASD: fly · Q/E: down/up · F: focus").size(12),
-                text(format!("Speed {:.0} units/s", state.level_camera.map_or(0.0, |c| c.speed))).size(12),
-                iced::widget::slider(1.0..=2500.0, state.level_camera.map_or(120.0, |c| c.speed), Message::LevelCameraSpeedChanged).width(Fill),
-            ].spacing(8),
+                text("Camera speed").size(12),
+                iced::widget::slider(
+                    1.0..=2500.0,
+                    state.level_camera.map_or(120.0, |c| c.speed),
+                    Message::LevelCameraSpeedChanged
+                )
+                .width(Length::Fixed(160.0)),
+                text(format!(
+                    "{:.0} units/s",
+                    state.level_camera.map_or(0.0, |c| c.speed)
+                ))
+                .size(12)
+                .style(design::muted),
+                space().width(Fill),
+                text("RMB Look · WASD Fly · Q/E Elevate · F Focus")
+                    .size(11)
+                    .style(design::muted),
+            ]
+            .spacing(10)
+            .align_y(iced::Center),
             row![
                 text("Yaw").size(12),
                 iced::widget::slider(-180.0..=180.0, state.yaw, Message::YawChanged).width(Fill),
                 text("Pitch").size(12),
                 iced::widget::slider(-85.0..=85.0, state.pitch, Message::PitchChanged).width(Fill),
                 text(format!("Zoom {:.1}×", state.zoom)).size(12),
-                iced::widget::slider(0.2..=80.0, state.zoom.clamp(0.2, 80.0), Message::ZoomChanged).width(Fill),
-                button("Reset Camera").on_press(Message::LevelCameraReset),
-                button("Focus selected (F)").on_press(Message::LevelCameraFocus),
-            ].spacing(8),
+                iced::widget::slider(
+                    0.2..=80.0,
+                    state.zoom.clamp(0.2, 80.0),
+                    Message::ZoomChanged
+                )
+                .width(Fill),
+            ]
+            .spacing(8),
             if state.level_show_overview {
-                Element::from(column![
-                    row![
-                        text("PLACEMENT OVERVIEW").size(12),
-                        text(format!("{} authored objects", scene.objects.len())).size(12),
-                    ].spacing(10),
-                    canvas_widget(SceneOverview {
-                        scene: scene.clone(),
-                        selected_indices: state.level_selection.indices.clone(),
-                        zoom: state.level_zoom.max(0.3),
-                    }).width(Fill).height(Length::Fixed(175.0)),
-                    row![
-                        text("Overview zoom").size(12),
-                        iced::widget::slider(
-                            0.3..=3.0,
-                            state.level_zoom.max(0.3),
-                            Message::LevelZoomChanged
-                        ).width(Length::Fixed(170.0)),
-                        text("Click a point to inspect its placement").size(12).color(MUTED),
-                    ].spacing(10),
-                ].spacing(7))
+                Element::from(
+                    column![
+                        row![
+                            text("2D Placement Overview").size(13),
+                            text(format!("{} authored objects", scene.objects.len())).size(12),
+                        ]
+                        .spacing(10),
+                        canvas_widget(SceneOverview {
+                            scene: scene.clone(),
+                            selected_indices: state.level_selection.indices.clone(),
+                            zoom: state.level_zoom.max(0.3),
+                        })
+                        .width(Fill)
+                        .height(Length::Fixed(175.0)),
+                        row![
+                            text("Overview zoom").size(12),
+                            iced::widget::slider(
+                                0.3..=3.0,
+                                state.level_zoom.max(0.3),
+                                Message::LevelZoomChanged
+                            )
+                            .width(Length::Fixed(170.0)),
+                            text("Click a point to inspect its placement")
+                                .size(12)
+                                .color(MUTED),
+                        ]
+                        .spacing(10),
+                    ]
+                    .spacing(7),
+                )
             } else {
-                Element::from(text("Select objects in the Scene Outliner. Orbit, pan and zoom in the 3D viewport.").size(12).color(MUTED))
+                Element::from(space().height(Length::Fixed(0.0)))
             },
-        ].spacing(6).width(Length::FillPortion(4)).height(Fill),
+        ]
+        .spacing(10),
+    )
+    .padding(12)
+    .width(Length::FillPortion(4))
+    .height(Fill)
+    .style(design::panel);
+    let outliner_panel = container(
         column![
-            text("▤  OUTLINER").size(13),
-            text_input("Filter layer, object or model...", &state.level_filter)
+            text("Scene Outliner").size(15),
+            design::text_input("Search scene objects", &state.level_filter)
                 .on_input(Message::LevelFilterChanged),
-            scrollable(outliner).height(Length::FillPortion(3)),
+            scrollable(outliner).height(Fill),
             text(format!(
-                "{visible} matching placements · {} selected · Shift range / Ctrl toggle",
+                "{visible} objects · {} selected · Shift/Ctrl to multi-select",
                 state.level_selection.indices.len()
             ))
-            .size(12)
-            .color(MUTED),
-            text("☷  DETAILS  /  TRANSFORM").size(13),
-            scrollable(details).height(Length::FillPortion(2)),
+            .size(11)
+            .style(design::muted),
+        ]
+        .spacing(8),
+    )
+    .padding(12)
+    .width(Fill)
+    .height(Length::FillPortion(3))
+    .style(design::panel);
+    let details_panel =
+        container(column![text("Details").size(15), scrollable(details).height(Fill),].spacing(8))
+            .padding(12)
+            .width(Fill)
+            .height(Length::FillPortion(3))
+            .style(design::panel);
+    let changes_panel = container(
+        column![
+            text("Changes").size(15),
             row![
-                button("Undo").on_press_maybe(
-                    (!state.level_read_only && !state.level_undo.is_empty()).then_some(Message::LevelUndoTransform)
+                design::button("Undo").on_press_maybe(
+                    (!state.level_read_only && !state.level_undo.is_empty())
+                        .then_some(Message::LevelUndoTransform)
                 ),
-                button("Redo").on_press_maybe(
-                    (!state.level_read_only && !state.level_redo.is_empty()).then_some(Message::LevelRedoTransform)
+                design::button("Redo").on_press_maybe(
+                    (!state.level_read_only && !state.level_redo.is_empty())
+                        .then_some(Message::LevelRedoTransform)
                 ),
                 text(format!("{} undo steps", state.level_undo.len()))
                     .size(12)
                     .color(MUTED),
             ]
             .spacing(8),
-            text(format!(
-                "Save {} changed placement(s) as a new level layer",
-                state.level_dirty_count
-            ))
-            .size(12),
-            text_input(
+            text(format!("{} unsaved placements", state.level_dirty_count)).size(12),
+            design::text_input(
                 "New absolute .lyr or .xml output path",
                 &state.level_edit_output
             )
             .on_input(Message::LevelEditOutputChanged),
-            button("Export edited level copy")
-                .on_press_maybe((!state.level_read_only && state.level_dirty_count > 0).then_some(Message::LevelExportEdits)),
-            text("Original level is read-only. Child world positions update in the preview.")
-                .size(12)
-                .color(MUTED),
+            design::button("Export Edited Level Copy")
+                .style(design::primary)
+                .on_press_maybe(
+                    (!state.level_read_only && state.level_dirty_count > 0)
+                        .then_some(Message::LevelExportEdits)
+                ),
+            text("Original PAK is never changed.")
+                .size(11)
+                .style(design::muted),
         ]
-        .spacing(7)
-        .width(Length::Fixed(380.0))
-        .height(Fill),
-    ]
-    .spacing(9)
-    .height(Fill)
-    .into()
+        .spacing(7),
+    )
+    .padding(12)
+    .width(Fill)
+    .style(design::panel);
+    let inspector = column![outliner_panel, details_panel, changes_panel]
+        .spacing(8)
+        .width(Length::Fixed(350.0))
+        .height(Fill);
+    row![viewport, inspector].spacing(8).height(Fill).into()
 }
 
 #[cfg(test)]

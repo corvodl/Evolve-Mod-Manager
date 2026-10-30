@@ -149,25 +149,31 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
 
     let mut layout = column![
         text("Asset Library").size(24),
-        text("Select a Levels PAK to open its maps automatically in the read-only Level Editor. File → Open as Modding Project creates an editable copy.")
-            .size(12).style(design::muted),
-        container(menu).padding([4, 8]).width(Fill).style(|theme| container::Style {
-            background: Some(Background::Color(design::field(theme))),
-            ..container::Style::default()
-        }),
+        container(menu)
+            .padding([4, 8])
+            .width(Fill)
+            .style(|theme| container::Style {
+                background: Some(Background::Color(design::field(theme))),
+                ..container::Style::default()
+            }),
         row![
-            design::button("Import PAKs").style(design::primary)
+            design::button("Import PAKs")
+                .style(design::primary)
                 .on_press(Message::LibraryToggleConfiguration),
-            design::button("Update Imported Build…").style(design::secondary)
-                .on_press_maybe((!state.busy && !state.library_import_scanning)
-                    .then_some(Message::LibraryUpdatePickFolder)),
-            design::button("Library Settings").style(design::secondary)
+            design::button("Update Imported Build…")
+                .style(design::secondary)
+                .on_press_maybe(
+                    (!state.busy && !state.library_import_scanning)
+                        .then_some(Message::LibraryUpdatePickFolder)
+                ),
+            design::button("Storage Settings")
+                .style(design::secondary)
                 .on_press(Message::OpenLibrarySettings),
-            design::button("Refresh").on_press(Message::LibraryRefresh),
-            space().width(Fill),
-            text("◈").size(18).style(design::muted),
-        ].spacing(9),
-    ].spacing(10);
+        ]
+        .spacing(9)
+        .align_y(iced::Center),
+    ]
+    .spacing(14);
 
     if let Some(plan) = &state.library_update_plan {
         let importing = state.library_import_cancel.is_some() && state.busy;
@@ -386,15 +392,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .spacing(12);
     layout = layout.push(tabs);
     layout = layout.push(
-        text(if by_build {
-            "Imported archives associated with the selected build snapshot"
-        } else {
-            "All imported archives across snapshots"
-        })
-        .size(12)
-        .style(design::muted),
-    );
-    layout = layout.push(
         row![
             design::text_input(
                 "Search imported PAKs, names, folders...",
@@ -481,8 +478,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     ].spacing(10).align_y(iced::Center));
     layout = layout.push(row![
         text(format!("{} selected", state.library_selection.indices.len())).size(12).style(design::muted),
-        design::button("Preview Files").on_press_maybe(selected.map(|_| Message::LibraryPreview)),
+        design::button("Preview Files").style(design::secondary).on_press_maybe(selected.map(|_| Message::LibraryPreview)),
         design::button("Edit / Add to Mod Project")
+            .style(design::primary)
             .on_press_maybe(selected.map(|_| Message::LibraryMakeModProject)),
         text(if selected.is_some() {
             "Shift: range (including across pages) • Ctrl: toggle. Editing creates a separate staged copy when required; imported originals stay read-only."

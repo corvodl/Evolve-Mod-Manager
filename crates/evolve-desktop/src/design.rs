@@ -4,7 +4,7 @@ use iced::theme::{
     Base, Palette,
     palette::{Extended, Pair},
 };
-use iced::widget::{button as buttons, text};
+use iced::widget::{button as buttons, container, text};
 
 pub fn button<'a>(
     content: impl Into<iced::Element<'a, crate::Message>>,
@@ -197,6 +197,18 @@ pub fn sidebar(theme: &Theme) -> Color {
 pub fn selection(theme: &Theme) -> Color {
     theme.extended_palette().primary.weak.color
 }
+/// Shared opaque workspace panel; wallpaper-specific translucency stays on Home.
+pub fn panel(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(surface(theme))),
+        border: Border {
+            color: border(theme),
+            width: 1.0,
+            radius: if is_legacy(theme) { 1.0 } else { 10.0 }.into(),
+        },
+        ..container::Style::default()
+    }
+}
 pub fn muted(theme: &Theme) -> text::Style {
     text::Style {
         color: Some(theme.extended_palette().background.strongest.text),
@@ -213,12 +225,12 @@ pub fn rail(theme: &Theme, status: buttons::Status, active: bool) -> buttons::St
     style.text_color = theme.palette().text;
     style.border = Border {
         radius: if is_legacy(theme) { 1.0 } else { 9.0 }.into(),
-        color: if is_legacy(theme) && active {
+        color: if active {
             theme.palette().primary
         } else {
             Color::TRANSPARENT
         },
-        width: if is_legacy(theme) && active { 1.0 } else { 0.0 },
+        width: if active { 1.0 } else { 0.0 },
     };
     if is_legacy(theme) && matches!(status, buttons::Status::Hovered | buttons::Status::Pressed) {
         style.background = Some(Background::Color(Color::WHITE));

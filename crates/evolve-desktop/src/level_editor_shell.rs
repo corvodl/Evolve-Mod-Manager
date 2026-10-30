@@ -101,7 +101,7 @@ fn menu_content(state: &State) -> Option<Element<'_, Message>> {
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let menus = container(
         row![
-            text("EVOLVE  /  LEVEL EDITOR").size(12),
+            text("LEVEL EDITOR").size(13),
             space().width(Length::Fixed(16.0)),
             menu_button("File", "LevelFile"),
             menu_button("Edit", "LevelEdit"),
@@ -129,15 +129,30 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
 
     let toolbar = container(
         row![
-            button(text("◉  Select").size(12)).on_press(Message::LevelToggleOverview),
-            button(text("⊕  Focus").size(12)).on_press(Message::LevelCameraFocus),
-            button(text("⌖  Reset view").size(12)).on_press(Message::LevelCameraReset),
+            text("VIEWPORT").size(11).style(design::accent),
+            button("Perspective")
+                .style(design::secondary)
+                .on_press(Message::ViewerCameraPreset("Isometric")),
+            button("Top")
+                .style(design::secondary)
+                .on_press(Message::ViewerCameraPreset("Top")),
+            button("Front")
+                .style(design::secondary)
+                .on_press(Message::ViewerCameraPreset("Front")),
             text("│").size(15).style(design::muted),
-            button(text("Perspective").size(12)).on_press(Message::ViewerCameraPreset("Isometric")),
-            button(text("Top").size(12)).on_press(Message::ViewerCameraPreset("Top")),
-            button(text("Front").size(12)).on_press(Message::ViewerCameraPreset("Front")),
-            text("│").size(15).style(design::muted),
-            text("Imported Scene / Desert Canyon").size(13),
+            design::button(if state.level_show_overview {
+                "Hide Overview"
+            } else {
+                "2D Overview"
+            })
+            .style(design::secondary)
+            .on_press(Message::LevelToggleOverview),
+            design::button("Focus Selection")
+                .style(design::secondary)
+                .on_press(Message::LevelCameraFocus),
+            design::button("Reset View")
+                .style(design::secondary)
+                .on_press(Message::LevelCameraReset),
             space().width(Fill),
             text(if state.level_read_only {
                 "SOURCE: READ ONLY"
@@ -163,7 +178,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     });
 
     let status = row![
-        text("◉  LEVEL EDITOR").size(11).style(design::muted),
+        text("Scene").size(11).style(design::muted),
         text(format!(
             "{} scene objects",
             state.level_scene.as_ref().map_or(0, |s| s.objects.len())
@@ -172,7 +187,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         text(format!("{} selected", state.level_selection.indices.len())).size(11),
         text(format!("{} diagnostics", state.level_diagnostics.len())).size(11),
         space().width(Fill),
-        text("Original PAKs preserved  |  RMB Look · WASD Fly · Q/E Up/Down · F Focus")
+        text("Original PAKs preserved")
             .size(11)
             .style(design::muted),
     ]
@@ -183,7 +198,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         menus,
         toolbar,
         container(level_workspace::view(state))
-            .padding([7, 10])
+            .padding(8)
             .width(Fill)
             .height(Fill),
         container(status)

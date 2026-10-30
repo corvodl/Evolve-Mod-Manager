@@ -111,7 +111,7 @@ use evolve_core::{
     scan_library_import_sources, stage_status,
 };
 use iced::widget::{
-    canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
+    canvas, column, container, image, row, scrollable, shader, slider, space, svg, text,
 };
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
 use launcher_bridge::{
@@ -12721,23 +12721,25 @@ fn download_action(state: &State) -> Element<'_, Message> {
 
 fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
-    // Preserve the private manager's compact rail and exact navigation order.
-    // Hover reveals one tooltip, never the whole expanded sidebar.
+    // Keep the familiar rail and ordering, but give every destination a visible name.
     let navigation = Page::ALL
         .into_iter()
         .fold(column![].spacing(7), |items, item| {
             let active = page == item;
-            let nav = design::button(svg(item.icon()).style(design::icon).width(23).height(23))
-                .width(51)
-                .height(43)
-                .padding(10)
-                .style(move |theme, status| design::rail(theme, status, active))
-                .on_press(Message::Navigate(item));
-            items.push(tooltip(
-                nav,
-                text(item.title()).size(11),
-                tooltip::Position::Right,
-            ))
+            let nav = design::button(
+                row![
+                    svg(item.icon()).style(design::icon).width(20).height(20),
+                    text(item.title()).size(13),
+                ]
+                .spacing(12)
+                .align_y(iced::Center),
+            )
+            .width(Fill)
+            .height(40)
+            .padding([8, 11])
+            .style(move |theme, status| design::rail(theme, status, active))
+            .on_press(Message::Navigate(item));
+            items.push(nav)
         });
     let play_mods_icon = svg(svg::Handle::from_memory(
         include_bytes!("../../../assets/nav/play-mods.svg").to_vec(),
@@ -12750,52 +12752,54 @@ fn view(state: &State) -> Element<'_, Message> {
     .width(20)
     .height(20);
     let lower = column![
-        tooltip(
-            design::button(play_mods_icon)
-                .width(46)
-                .height(40)
-                .on_press(Message::PlayWithMods),
-            text("Play with Mods").size(11),
-            tooltip::Position::Right
-        ),
-        tooltip(
-            design::button(play_clean_icon)
-                .width(46)
-                .height(40)
-                .on_press(Message::PlayWithoutMods),
-            text("Play without Mods").size(11),
-            tooltip::Position::Right
-        ),
-        tooltip(
-            design::button(svg(Page::Settings.icon()).width(20).height(20))
-                .width(46)
-                .height(43)
-                .padding(10)
-                .style(if page == Page::Settings {
-                    design::secondary
-                } else {
-                    design::text_button
-                })
-                .on_press(Message::Navigate(Page::Settings)),
-            text("Settings").size(11),
-            tooltip::Position::Right
-        ),
+        design::button(
+            row![play_mods_icon, text("Play with Mods").size(12)]
+                .spacing(11)
+                .align_y(iced::Center)
+        )
+        .width(Fill)
+        .height(40)
+        .on_press(Message::PlayWithMods),
+        design::button(
+            row![play_clean_icon, text("Play clean").size(12)]
+                .spacing(11)
+                .align_y(iced::Center)
+        )
+        .width(Fill)
+        .height(40)
+        .on_press(Message::PlayWithoutMods),
+        design::button(
+            row![
+                svg(Page::Settings.icon())
+                    .style(design::icon)
+                    .width(20)
+                    .height(20),
+                text("Settings").size(13)
+            ]
+            .spacing(11)
+            .align_y(iced::Center)
+        )
+        .width(Fill)
+        .height(43)
+        .padding(10)
+        .style(move |theme, status| design::rail(theme, status, page == Page::Settings))
+        .on_press(Message::Navigate(Page::Settings)),
     ]
     .spacing(5);
     let sidebar = container(
         column![navigation, space().height(Fill), lower,]
             .spacing(8)
             .height(Fill)
-            .padding([12, 7]),
+            .padding([12, 9]),
     )
-    .width(66)
+    .width(174)
     .height(Fill)
     .style(|theme| container::Style {
         background: Some(iced::Background::Color(design::sidebar(theme))),
         border: iced::Border {
             color: design::border(theme),
             width: 1.0,
-            radius: if design::is_legacy(theme) { 1.0 } else { 12.0 }.into(),
+            radius: 0.0.into(),
         },
         ..container::Style::default()
     });
@@ -12807,7 +12811,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 ))
                 .width(34)
                 .height(34),
-                text("EVOLVE  /  MOD MANAGER").size(18),
+                text("EVOLVE").size(18),
             ]
             .spacing(10)
             .align_y(iced::Center)
@@ -12822,13 +12826,13 @@ fn view(state: &State) -> Element<'_, Message> {
                     ))
                     .width(23)
                     .height(23),
-                    text(format!("  /  {}", page.title())).size(12)
+                    text(page.title()).size(20)
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
             )
         } else {
-            Element::<Message>::from(text(format!("  /  {}", page.title())).size(12))
+            Element::<Message>::from(text(page.title()).size(20))
         },
         space().width(Fill),
         design::button("Help")
@@ -13141,11 +13145,18 @@ fn view(state: &State) -> Element<'_, Message> {
                 ].spacing(10),
             ].spacing(14).into()
         }
-        Page::Levels => column![
-            text("Level Editor opened in a separate window.").size(18),
-            design::button("Open Level Editor Window").on_press(Message::OpenLevelEditorWindow),
-        ]
-        .spacing(12)
+        Page::Levels => container(
+            column![
+                text("Level Editor").size(22),
+                design::button("Open Level Editor")
+                    .style(design::primary)
+                    .on_press(Message::OpenLevelEditorWindow),
+            ]
+            .spacing(18),
+        )
+        .padding(24)
+        .width(Fill)
+        .style(design::panel)
         .into(),
         Page::Settings => settings_page::view(state),
     };
@@ -13194,13 +13205,15 @@ fn view(state: &State) -> Element<'_, Message> {
         row![
             text(state.status.as_str()).size(12).width(Fill),
             footer_progress,
-            text(format!("v{}  •  Rust preview", env!("CARGO_PKG_VERSION"))).size(12),
+            text(format!("v{}", env!("CARGO_PKG_VERSION")))
+                .size(12)
+                .style(design::muted),
         ]
         .spacing(12)
         .align_y(iced::Alignment::Center),
     ]
     .spacing(11)
-    .padding([10, 28])
+    .padding([16, 22])
     .width(Fill)
     .height(Fill);
     // Activity is detached so it never steals space from the working page.
