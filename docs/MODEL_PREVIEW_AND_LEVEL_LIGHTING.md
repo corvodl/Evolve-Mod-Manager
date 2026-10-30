@@ -99,3 +99,35 @@ do not apply packed diffuse alpha to opaque character body materials.
 
 Windows acceptance remains necessary to confirm the source texture archives
 are present and the rendered foliage matches Evolve at close-up zoom.
+
+
+## Nested Tutorial archive ownership (source import screenshot)
+
+A separate `terraintexture.pak` is visibly imported from the **Stage 2**
+`Game/levels/Tutorial` folder with four extracted members, as is
+`level.pak`. The earlier resolver only searched for the path
+`Levels/Tutorial/terraintexture.pak` *inside* the imported PAKs; a
+container's own name is not a member path. That assumption explains the
+misleading "missing PAK" message.
+
+The map-specific resolver now matches imported archives by:
+- Exactly the selected map's original `Game` installation root and
+  `levels/Tutorial` source directory, never the other `Legacy` root;
+- A compatible build label, or an unlabeled independently imported sibling
+  from that same original Game root;
+- The precise `level.pak` and `terraintexture.pak` archive names, not
+  an unrelated basename search.
+
+It looks for `LevelData/TerrainTexture.xml` within the imported
+`level.pak` and for a validated `CRY\0` baked surface stream *among
+the extracted members* of the already imported `terraintexture.pak`.
+Each selected extracted member is still manifest-bound by byte length,
+ordinary-file status and canonical containment. A synthetic 4-member
+Tutorial import and unrelated Legacy sibling are covered by regression test.
+
+If the four imported files contain an alternative tile/sector representation
+rather than a `CRY\0` raw surface stream, that format remains to be decoded
+from real member names, and the activity window now explicitly lists those
+names instead of falsely claiming the PAK itself is missing. **Importing a
+PAK is not evidence its member format matches the existing raw-quadtree
+parser.** No original PAK is modified or recompressed.
