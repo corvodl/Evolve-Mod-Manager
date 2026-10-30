@@ -10038,7 +10038,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PreferenceWorkspace(value) => state.preferences.current_workspace = value,
         Message::SavePreferences => persist_preferences(state),
         Message::RetryUpdate => {
-            if state.busy { return Task::none(); }
+            if state.busy {
+                return Task::none();
+            }
             state.retry_update_after_check = true;
             return update(state, Message::CheckUpdates);
         }
@@ -10112,12 +10114,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::UpdateChecked(result) => match result {
-            Ok(Some(update)) => {
+            Ok(Some(release)) => {
                 state.update_status = format!(
                     "Update {} ({:?}) is available. Portable: {}. Release: {}",
-                    update.version, update.channel, update.portable.name, update.release_url
+                    release.version, release.channel, release.portable.name, release.release_url
                 );
-                state.available_update = Some(update);
+                state.available_update = Some(release);
                 if state.retry_update_after_check {
                     state.retry_update_after_check = false;
                     return update(state, Message::ApplyUpdate);
@@ -10175,13 +10177,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                     Err(error) => {
                         state.update_worker_failure = Some(error.to_string());
-                        state.update_status =
-                            format!("Update was verified but could not start: {error}. Select Retry update.");
+                        state.update_status = format!(
+                            "Update was verified but could not start: {error}. Select Retry update."
+                        );
                     }
                 },
                 Err(error) => {
                     state.update_worker_failure = Some(error.clone());
-                    state.update_status = format!("Could not install update: {error}. Select Retry update.");
+                    state.update_status =
+                        format!("Could not install update: {error}. Select Retry update.");
                 }
             }
         }
