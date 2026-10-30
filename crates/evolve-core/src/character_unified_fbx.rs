@@ -1987,6 +1987,7 @@ mod tests {
             shader: "Illum".into(),
             maps: vec![],
             opacity: Some(1.0),
+            alpha_test: None,
             glow_amount: None,
             alpha_glow: false,
             diffuse_tint: None,
