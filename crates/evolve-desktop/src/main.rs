@@ -13375,6 +13375,8 @@ fn view(state: &State) -> Element<'_, Message> {
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                             level_camera: None,
                             world: None,
+                            level_hour: 12.0,
+                            level_full_textures: true,
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
                         canvas(MeshViewport{
