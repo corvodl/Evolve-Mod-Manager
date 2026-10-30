@@ -268,6 +268,7 @@ pub(super) struct World {
     pub groups: Vec<ModelGroup>,
     pub instance_count: usize,
     pub time_of_day: Option<Arc<super::level_environment::TimeOfDay>>,
+    pub fog_profile: Option<super::level_environment::FogProfile>,
     pub source_resources: super::level_environment::ResourceSummary,
 }
 impl std::fmt::Debug for World {
@@ -540,6 +541,7 @@ pub(super) struct Renderer {
     layout: wgpu::BindGroupLayout,
     camera_uniform: wgpu::Buffer,
     lighting_uniform: wgpu::Buffer,
+    fog_uniform: wgpu::Buffer,
     last_lighting_hour: f32,
     sampler: wgpu::Sampler,
     terrain_sampler: wgpu::Sampler,
@@ -652,6 +654,17 @@ impl Renderer {
                     },
                     count: None,
                 },
+                // Distance-only Environment.xml fog preview. Kept world-only.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let camera_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -663,6 +676,11 @@ impl Renderer {
         let lighting_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Level time-of-day lighting preview"),
             contents: bytemuck::cast_slice(&super::level_lighting::Lighting::at(12.0).uniforms()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let fog_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Original map distance fog - non-native preview"),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 2]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -756,6 +774,7 @@ impl Renderer {
             layout,
             camera_uniform,
             lighting_uniform,
+            fog_uniform,
             last_lighting_hour: f32::NAN,
             sampler,
             terrain_sampler,
@@ -1022,6 +1041,10 @@ impl Renderer {
                         binding: 9,
                         resource: wgpu::BindingResource::TextureView(&emissive_view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: self.fog_uniform.as_entire_binding(),
+                    },
                 ],
             });
             surfaces.push(GpuSurface {
@@ -1098,6 +1121,10 @@ impl Renderer {
             );
             let values = lighting.uniforms();
             queue.write_buffer(&self.lighting_uniform, 0, bytemuck::cast_slice(&values));
+            let fog = world.fog_profile.map_or([[0.0_f32; 4]; 2], |profile| {
+                profile.preview_uniform(world.time_of_day.as_deref(), hour)
+            });
+            queue.write_buffer(&self.fog_uniform, 0, bytemuck::cast_slice(&fog));
             self.last_lighting_hour = hour;
         }
         let Some(camera) = camera else {
@@ -1159,14 +1186,14 @@ mod tests {
         // Native window alpha must be opaque for every solid placed mesh,
         // including source DDS textures with packed spec/gloss alpha.
         assert!(shader.contains("fn fs_opaque(input:Output)"));
-        assert!(shader.contains("return vec4<f32>(color.rgb,1.0);"));
+        assert!(shader.contains("return vec4<f32>(fogged.rgb,1.0);"));
         assert!(shader.contains("fn fs_foliage(input:Output)"));
         assert!(shader.contains("let leaf_alpha=textureSample(albedo,tex_sampler,input.uv).a;"));
         assert!(shader.contains("leaf_alpha < authored_cutoff.x"));
         assert!(shader.contains("let color=shade(input,false);"));
         // Explicitly transparent materials still use authored coverage.
         assert!(shader.contains("fn fs_main(input:Output)"));
-        assert!(shader.contains("return vec4<f32>(color.rgb,color.a*alpha);"));
+        assert!(shader.contains("return vec4<f32>(fogged.rgb,color.a*alpha);"));
         let pipeline_source = include_str!("world_instances.rs");
         // Search only production code; searching this entire file would let
         // the assertion's own string literal create a false positive.
@@ -1181,6 +1208,7 @@ mod tests {
         assert!(production.contains("depth_write_enabled: !blend"));
         assert!(production.contains("foliage_cutout: surf.foliage_cutout && diffuse_uploaded"));
         assert!(shader.contains("@group(0) @binding(5) var<uniform> light"));
+        assert!(shader.contains("@group(0) @binding(10) var<uniform> fog"));
         let module = naga::front::wgsl::parse_str(shader)
             .expect("time-of-day world shader must parse as WGSL");
         assert!(
@@ -1195,6 +1223,15 @@ mod tests {
                 .iter()
                 .any(|entry| entry.name == "fs_foliage")
         );
+    }
+
+    #[test]
+    fn world_only_distance_fog_preview_is_disabled_without_verified_sources() {
+        let shader = include_str!("world_instances.wgsl");
+        assert!(shader.contains("if (fog.params.x < 0.5) { return color; }"));
+        assert!(shader.contains("let distance=length(camera.origin.xyz-input.world);"));
+        assert!(shader.contains("fn distance_fog(input:Output, color:vec4<f32>)"));
+        naga::front::wgsl::parse_str(shader).expect("distance fog preview shader is valid");
     }
 
     #[test]

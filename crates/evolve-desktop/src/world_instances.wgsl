@@ -25,6 +25,14 @@ struct TimeOfDayLight {
 @group(0) @binding(7) var specular_map: texture_2d<f32>;
 @group(0) @binding(8) var gloss_map: texture_2d<f32>;
 @group(0) @binding(9) var emissive_map: texture_2d<f32>;
+// A non-native distance-only preview from the exact map's Environment.xml and
+// original TimeOfDay.xml Fog color. The renderer zeros params when either is
+// unavailable. This deliberately omits CryEngine height/volumetric fog.
+struct FogPreview {
+  color: vec4<f32>,
+  params: vec4<f32>, // enabled, inverse ViewDistance, scaled LDR density, reserved
+}
+@group(0) @binding(10) var<uniform> fog: FogPreview;
 struct Output {
   @builtin(position) clip: vec4<f32>,
   @location(0) uv: vec2<f32>,
@@ -131,6 +139,15 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   return vec4<f32>(base.rgb*(light.ambient.rgb+sun)+specular+preview_glow,base.a);
 }
 
+// A visually bounded preview heuristic, not an Evolve fog equation. Applying
+// this in the WORLD shader only leaves the separate Model Viewer unchanged.
+fn distance_fog(input:Output, color:vec4<f32>)->vec4<f32> {
+  if (fog.params.x < 0.5) { return color; }
+  let distance=length(camera.origin.xyz-input.world);
+  let amount=clamp(1.0-exp(-distance*fog.params.y*fog.params.z),0.0,0.92);
+  return vec4<f32>(mix(color.rgb,fog.color.rgb,amount),color.a);
+}
+
 @fragment
 fn fs_opaque(input:Output)->@location(0) vec4<f32> {
   // World geometry renders directly into the native Iced window surface.
@@ -138,7 +155,8 @@ fn fs_opaque(input:Output)->@location(0) vec4<f32> {
   // alpha can punch a transparent hole in the editor window and reveal the
   // desktop or Activity window behind it, even over the opaque backdrop.
   let color=shade(input,true);
-  return vec4<f32>(color.rgb,1.0);
+  let fogged=distance_fog(input,color);
+  return vec4<f32>(fogged.rgb,1.0);
 }
 
 @fragment
@@ -150,7 +168,8 @@ fn fs_foliage(input:Output)->@location(0) vec4<f32> {
   let leaf_alpha=textureSample(albedo,tex_sampler,input.uv).a;
   if (leaf_alpha < authored_cutoff.x) { discard; }
   let color=shade(input,false);
-  return vec4<f32>(color.rgb,1.0);
+  let fogged=distance_fog(input,color);
+  return vec4<f32>(fogged.rgb,1.0);
 }
 
 @fragment
@@ -159,6 +178,7 @@ fn fs_main(input:Output)->@location(0) vec4<f32> {
   // A 20% source opacity must stay visible as 20% blended glass instead of
   // being discarded by the solid-surface 50% mask threshold.
   let color=shade(input,false);
+  let fogged=distance_fog(input,color);
   let alpha=textureSample(authored_opacity,tex_sampler,input.uv).r;
-  return vec4<f32>(color.rgb,color.a*alpha);
+  return vec4<f32>(fogged.rgb,color.a*alpha);
 }
