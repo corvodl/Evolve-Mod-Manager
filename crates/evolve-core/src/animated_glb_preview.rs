@@ -31,6 +31,10 @@ pub(crate) struct RiggedGlbPreview {
     uv0: Vec<[f32; 2]>,
     joint_ids: Vec<[usize; 8]>,
     weights: Vec<[f32; 8]>,
+    /// Verified Evolve native exporters store original Z-up vertex bytes and
+    /// put the Y-up conversion only on the glTF scene parent. The skin's
+    /// inverse mesh transform cancels that parent, so don't rotate twice.
+    source_z_up: bool,
 }
 
 fn n(value: &Value, key: &str) -> Result<usize, String> {
@@ -469,6 +473,9 @@ impl RiggedGlbPreview {
         if positions.is_empty() || indices.is_empty() {
             return Err("No supported skinned triangle mesh".into());
         }
+        let source_z_up = nodes_raw.iter().any(|node| {
+            node["name"].as_str() == Some("Source CryEngine Z-up to Blender Y-up")
+        });
         let preview = Self {
             nodes,
             parents,
@@ -480,6 +487,7 @@ impl RiggedGlbPreview {
             uv0,
             joint_ids,
             weights,
+            source_z_up,
         };
         // A converted mesh must be internally coherent at bind pose before any
         // animation is considered. Invalid converter skinning fails closed.
@@ -593,8 +601,13 @@ impl RiggedGlbPreview {
             if p.iter().any(|v| !v.is_finite() || v.abs() > 1e8) {
                 return Err("Non-finite deformed GLB vertex".into());
             }
-            // Match the private viewer's glTF Y-up -> CryEngine Z-up basis.
-            out.push([p[0], -p[2], p[1]]);
+            // Converted GLB meshes are Y-up. Original CryEngine exports
+            // retain Z-up vertices beneath an explicit conversion parent.
+            out.push(if self.source_z_up {
+                p
+            } else {
+                [p[0], -p[2], p[1]]
+            });
         }
         Ok(RenderMesh {
             info: ModelInfo {
