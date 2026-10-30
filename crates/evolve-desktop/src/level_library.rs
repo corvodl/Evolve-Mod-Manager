@@ -410,13 +410,18 @@ fn verified_source(root: &Path, relative: &Path, max_bytes: u64) -> Result<PathB
 }
 
 // Exact, authored map owner + selected build only; no filename guessing.
-fn authored_time_of_day(archive: &ImportedPak, map: &MapCandidate, inventory: &Inventory)
-    -> Result<Option<PathBuf>, String> {
+fn authored_time_of_day(
+    archive: &ImportedPak,
+    map: &MapCandidate,
+    inventory: &Inventory,
+) -> Result<Option<PathBuf>, String> {
     let folder = map_virtual_folder(map).ok_or("Unknown original map folder")?;
     let build = (archive.builds.len() == 1).then(|| archive.builds[0].as_str());
     let library = build.and_then(|_| Path::new(&archive.directory).parent());
-    for name in [format!("{folder}/LevelData/TimeOfDay.xml"),
-        format!("{folder}/TimeOfDay.xml")] {
+    for name in [
+        format!("{folder}/LevelData/TimeOfDay.xml"),
+        format!("{folder}/TimeOfDay.xml"),
+    ] {
         if let Some(path) = auto_resources::exact(inventory, &name, library, build)? {
             return Ok(Some(path));
         }
@@ -432,35 +437,61 @@ fn authored_time_of_day(archive: &ImportedPak, map: &MapCandidate, inventory: &I
     Ok(None)
 }
 
-fn authored_fx_catalog(root: &Path, inventory: &Inventory, scene: Option<&LevelScene>)
-    -> level_environment::ResourceSummary {
+fn authored_fx_catalog(
+    root: &Path,
+    inventory: &Inventory,
+    scene: Option<&LevelScene>,
+) -> level_environment::ResourceSummary {
     let mut data = level_environment::ResourceSummary::default();
-    data.emitters = scene.map_or(0, |scene| scene.objects.iter()
-        .filter(|obj| obj.kind.to_ascii_lowercase().contains("particle")).count());
+    data.emitters = scene.map_or(0, |scene| {
+        scene
+            .objects
+            .iter()
+            .filter(|obj| obj.kind.to_ascii_lowercase().contains("particle"))
+            .count()
+    });
     let mut inspected_fx = 0;
     let mut inspected_mtl = 0;
     for entry in &inventory.entries {
         let lower = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
-        let is_fx = (lower.starts_with("libs/particles/") ||
-            lower.contains("/libs/particles/")) && lower.ends_with(".xml");
-        if is_fx { data.particle_libraries += 1; }
-        if lower.ends_with(".mtl") { data.material_files += 1; }
-        if lower.ends_with(".cfx") { data.shader_sources += 1; }
+        let is_fx = (lower.starts_with("libs/particles/") || lower.contains("/libs/particles/"))
+            && lower.ends_with(".xml");
+        if is_fx {
+            data.particle_libraries += 1;
+        }
+        if lower.ends_with(".mtl") {
+            data.material_files += 1;
+        }
+        if lower.ends_with(".cfx") {
+            data.shader_sources += 1;
+        }
         let (tag, field) = if is_fx && inspected_fx < 32 {
             inspected_fx += 1;
             (b"Item".as_slice(), b"Name".as_slice())
         } else if lower.ends_with(".mtl") && inspected_mtl < 64 {
             inspected_mtl += 1;
             (b"Material".as_slice(), b"Shader".as_slice())
-        } else { continue; };
-        if entry.byte_size > 512 * 1024 { continue; }
-        let Ok(file) = verified_source(root, Path::new(&entry.relative_path), 512 * 1024)
-            else { continue; };
-        let Ok(source) = fs::read(file) else { continue; };
-        let dest = if is_fx { &mut data.particle_effects }
-            else { &mut data.authored_shaders };
+        } else {
+            continue;
+        };
+        if entry.byte_size > 512 * 1024 {
+            continue;
+        }
+        let Ok(file) = verified_source(root, Path::new(&entry.relative_path), 512 * 1024) else {
+            continue;
+        };
+        let Ok(source) = fs::read(file) else {
+            continue;
+        };
+        let dest = if is_fx {
+            &mut data.particle_effects
+        } else {
+            &mut data.authored_shaders
+        };
         for item in level_environment::named_items(&source, tag, field) {
-            if dest.len() < 256 && !dest.contains(&item) { dest.push(item); }
+            if dest.len() < 256 && !dest.contains(&item) {
+                dest.push(item);
+            }
         }
     }
     data
@@ -610,18 +641,25 @@ fn open_selected(
     let index = index.min(maps.len().saturating_sub(1));
     let chosen = &maps[index];
     let mut diagnostics = Vec::new();
-    let inventory = project_inventory.clone().map(Ok)
+    let inventory = project_inventory
+        .clone()
+        .map(Ok)
         .unwrap_or_else(|| imported_archive_files(&archive).map_err(|e| e.to_string()))?;
     let original_time = match authored_time_of_day(&archive, chosen, &inventory) {
         Ok(Some(file)) => match fs::read(file) {
             Ok(bytes) => match level_environment::TimeOfDay::parse(&bytes) {
                 Ok(profile) => {
-                    diagnostics.push(format!("Imported original TimeOfDay.xml: {} variables, {} keyframed curves.",
-                        profile.count(), profile.keyed_variables));
+                    diagnostics.push(format!(
+                        "Imported original TimeOfDay.xml: {} variables, {} keyframed curves.",
+                        profile.count(),
+                        profile.keyed_variables
+                    ));
                     Some(profile)
                 }
                 Err(reason) => {
-                    diagnostics.push(format!("Original TimeOfDay.xml unsupported: {reason}; fallback preview."));
+                    diagnostics.push(format!(
+                        "Original TimeOfDay.xml unsupported: {reason}; fallback preview."
+                    ));
                     None
                 }
             },
@@ -632,7 +670,9 @@ fn open_selected(
         },
         Ok(None) => None,
         Err(reason) => {
-            diagnostics.push(format!("Could not resolve original TimeOfDay.xml: {reason}"));
+            diagnostics.push(format!(
+                "Could not resolve original TimeOfDay.xml: {reason}"
+            ));
             None
         }
     };

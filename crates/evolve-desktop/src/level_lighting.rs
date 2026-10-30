@@ -56,7 +56,11 @@ impl Lighting {
             lit.sun_color = [rgb[0].max(0.0), rgb[1].max(0.0), rgb[2].max(0.0), 0.0];
         }
         if let Some(intensity) = source.scalar("Sun intensity", hour) {
-            let scaled = if intensity > 1000.0 { intensity / 100_000.0 } else { intensity };
+            let scaled = if intensity > 1000.0 {
+                intensity / 100_000.0
+            } else {
+                intensity
+            };
             lit.sun[3] = scaled.clamp(0.0, 4.0);
         }
         if let Some(multiplier) = source.scalar("Sun color multiplier", hour) {
