@@ -239,7 +239,11 @@ fn imported_map_terrain(
             Some(label) => {
                 archive.builds.is_empty() || archive.builds.iter().any(|build| build == label)
             }
-            None => archive.builds.is_empty(),
+            // An unlabelled selected map may have individually imported
+            // same-source siblings with one known label. The original Game
+            // root and exact map directory still have to match, and duplicate
+            // candidate archives fail closed below.
+            None => archive.builds.len() <= 1,
         };
         if archive.id == selected.id
             || !same_build
@@ -776,8 +780,10 @@ fn open_selected(
                     assembled.world = std::sync::Arc::new(world);
                 }
                 diagnostics.push(format!(
-                    "Original baked terrain: decoded {} tiles (format {}) into {}×{} ground-color atlas. {}",
-                    atlas.decoded_tiles, atlas.color_format,
+                    "Original baked terrain: decoded {} tiles ({}) into {}×{} ground-color atlas. {}",
+                    atlas.decoded_tiles,
+                    if atlas.color_format == 3 { "RGB24".to_owned() }
+                    else { format!("CRY format {}", atlas.color_format) },
                     atlas.image.width(), atlas.image.height(),
                     if applied { "Applied to terrain GPU material." }
                     else { "No verified terrain material span to receive the color atlas." }
