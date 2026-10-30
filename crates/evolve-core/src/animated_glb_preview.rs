@@ -615,11 +615,11 @@ impl RiggedGlbPreview {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
-    fn preview_doc() -> (Value, Vec<u8>) {
+    pub(crate) fn preview_doc() -> (Value, Vec<u8>) {
         let mut bytes = Vec::new();
         let mut views = Vec::new();
         let mut add = |data: Vec<u8>| {
