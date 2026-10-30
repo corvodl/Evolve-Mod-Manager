@@ -5,7 +5,7 @@ use super::{Message, State};
 use crate::design;
 use evolve_core::mod_safety::{ModKind, classify};
 use iced::widget::{column, container, row, scrollable, space, svg, text};
-use iced::{Background, Border, Element, Fill, Length};
+use iced::{Background, Element, Fill, Length};
 
 pub(super) const PAGE: usize = 90;
 
@@ -37,16 +37,8 @@ pub(super) fn page_range(count: usize, page: usize) -> std::ops::Range<usize> {
 fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(content)
         .width(Fill)
-        .padding(10)
-        .style(|theme| container::Style {
-            background: Some(Background::Color(design::surface(theme))),
-            border: Border {
-                color: design::border(theme),
-                width: 1.0,
-                radius: 12.0.into(),
-            },
-            ..container::Style::default()
-        })
+        .padding(14)
+        .style(design::panel)
 }
 
 fn menu(_state: &State) -> Element<'_, Message> {
@@ -64,7 +56,6 @@ fn menu(_state: &State) -> Element<'_, Message> {
             .style(design::text_button)
             .on_press(Message::ModdingMenu("Tools")),
         space().width(Fill),
-        text("Workspace actions").size(12).style(design::muted)
     ]
     .spacing(15)
     .align_y(iced::Center)
@@ -321,7 +312,7 @@ fn projects(state: &State) -> Element<'_, Message> {
         };
     panel(
         column![
-            scrollable(rows).height(Length::FillPortion(3)),
+            scrollable(rows).height(Length::Fixed(220.0)),
             row![
                 empty,
                 space().width(Fill),
@@ -333,10 +324,8 @@ fn projects(state: &State) -> Element<'_, Message> {
             .spacing(8)
             .align_y(iced::Center)
         ]
-        .spacing(8)
-        .height(Fill),
+        .spacing(8),
     )
-    .height(Length::FillPortion(3))
     .into()
 }
 
@@ -430,9 +419,7 @@ fn modifications(state: &State) -> Element<'_, Message> {
                 .style(design::muted),
         );
     }
-    panel(scrollable(rows).height(Fill))
-        .height(Length::FillPortion(2))
-        .into()
+    panel(scrollable(rows).height(Length::Fixed(180.0))).into()
 }
 
 fn archive_browser(state: &State) -> Element<'_, Message> {
@@ -550,17 +537,24 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
         .library_selected
         .and_then(|i| state.library_catalog.as_ref()?.archives.get(i))
         .is_some();
+    if matching == 0 && state.library_catalog.is_some() {
+        rows = rows.push(
+            text("No imported PAKs match the current search.")
+                .size(12)
+                .style(design::muted),
+        );
+    }
     let description = if state.library_startup_loading {
         "Loading saved PAK manifests; you do not need to reimport."
-    } else if state.library_catalog.is_some() {
-        "Previously imported PAKs are available for editing. Select one to create a staged copy; source files stay unchanged."
-    } else {
+    } else if state.library_catalog.is_none() {
         "No saved Asset Library loaded. Reload existing manifests, or use Browse staged PAKs to edit your prepared stage directly."
+    } else {
+        "Select a PAK to create an editable copy; originals stay unchanged."
     };
     panel(
         column![
             row![
-                text("AVAILABLE IMPORTED PAKS").size(13),
+                text("IMPORTED PAKS").size(13),
                 space().width(Fill),
                 text(format!("{matching} match(es)"))
                     .size(11)
@@ -576,7 +570,7 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
             text(description).size(11).style(design::muted),
             scrollable(rows).height(Length::Fixed(120.0)),
             row![
-                design::button("Edit selected PAK / Add to Project")
+                design::button("Create Editable Project")
                     .style(design::primary)
                     .on_press_maybe(selected.then_some(Message::LibraryMakeModProject)),
                 design::button("Browse staged PAKs")
@@ -595,12 +589,14 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
 fn signed_paks(state: &State) -> Element<'_, Message> {
     let mut entries = column![].spacing(6);
     if let Some(ui) = &state.signed_ui {
+        let mut count = 0;
         for profile in &ui.catalog.profiles {
             if profile.mods.is_empty() {
                 continue;
             }
             entries = entries.push(text(profile.name.as_str()).size(13));
             for item in &profile.mods {
+                count += 1;
                 let choice = crate::mod_play::SignedChoice {
                     profile_id: profile.id.clone(),
                     mod_id: item.id.clone(),
@@ -632,6 +628,13 @@ fn signed_paks(state: &State) -> Element<'_, Message> {
                 );
             }
         }
+        if count == 0 {
+            entries = entries.push(
+                text("No registered signed PAKs yet.")
+                    .size(12)
+                    .style(design::muted),
+            );
+        }
     } else {
         entries = entries.push(
             text("Refresh Mods to load registered signed PAKs.")
@@ -642,17 +645,27 @@ fn signed_paks(state: &State) -> Element<'_, Message> {
     panel(
         column![
             row![
-                text("REGISTERED SIGNED PAKS").size(13),
+                text("SIGNED PAKS FOR PLAY").size(13),
                 space().width(Fill),
-                design::button("Refresh").style(design::secondary)
+                design::button("Refresh")
+                    .style(design::secondary)
                     .on_press(Message::SignedProfilesReload),
-            ].spacing(8).align_y(iced::Center),
-            text("Enable existing signed archives directly. They are verified and staged on Play with Mods without reimporting or rebuilding. Only selected archives are used.")
-                .size(11).style(design::muted),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+            text(
+                "Selected archives are verified and staged when you play; originals stay untouched."
+            )
+            .size(11)
+            .style(design::muted),
             scrollable(entries).height(Length::Fixed(165.0)),
-            text(state.signed_status.as_str()).size(11).style(design::muted),
-        ].spacing(7)
-    ).into()
+            text(state.signed_status.as_str())
+                .size(11)
+                .style(design::muted),
+        ]
+        .spacing(7),
+    )
+    .into()
 }
 
 fn profiles(state: &State) -> Element<'_, Message> {
@@ -739,10 +752,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .as_ref()
             .and_then(|list| list.get(index))
     });
-    let mut actions = row![
-        design::button("Refresh Mods")
-            .style(design::secondary)
-            .on_press(Message::ModdingRefresh),
+    if state.guided_editor.open {
+        return column![text("Modding").size(22), crate::guided_modding::view(state)]
+            .spacing(10)
+            .into();
+    }
+
+    let selected_actions = row![
         design::button("Continue Editing")
             .style(design::secondary)
             .on_press(Message::ModdingOpenProject),
@@ -756,64 +772,22 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(7)
     .align_y(iced::Center);
-    if state.modding_advanced {
-        actions = actions
-            .push(
-                design::button("Advanced Profiles…")
-                    .style(design::secondary)
-                    .on_press(Message::ModdingToggleProfiles),
-            )
-            .push(
-                design::button("Build Selected Mod")
-                    .style(design::secondary)
-                    .on_press(Message::ModdingBuild),
-            )
-            .push(
-                design::button("Prepare Selected Mod for Test")
-                    .style(design::secondary)
-                    .on_press(Message::ModdingBuildForOfflineTest),
-            );
-    }
-    let mut main = column![
-        text("Modding").size(22),
-        text("Name your mods, switch them On or Off, then choose Play with Mods. Enabled mods are built and loaded automatically for offline play.")
-            .size(12)
-            .style(design::muted),
-        menu(state),
+    let mut selected_content = column![
         row![
-            design::text_input(
-                "Find workspace, target PAK or build…",
-                &state.modding_filter
-            )
-            .on_input(Message::ModdingFilterChanged)
-            .width(Fill),
+            text("SELECTED PROJECT").size(13),
+            space().width(Fill),
             text(
                 chosen
                     .map(|p| p.target.as_str())
-                    .unwrap_or("Select a project")
+                    .unwrap_or("Select a project above")
             )
             .size(12)
             .style(design::muted),
         ]
-        .spacing(10)
+        .spacing(8)
         .align_y(iced::Center),
         row![
-            design::button("All mods").on_press(Message::ModdingKind(None)),
-            design::button("Cosmetic candidates").on_press(Message::ModdingKind(Some(ModKind::CosmeticCandidate))),
-            design::button("Gameplay").on_press(Message::ModdingKind(Some(ModKind::Gameplay))),
-            design::button("Needs review").on_press(Message::ModdingKind(Some(ModKind::NeedsReview))),
-        ].spacing(6),
-        text("Cosmetic candidates need content verification before online use. Gameplay, mixed and unverified mods stay offline. Current mod launching is offline only.").size(12).style(design::muted),
-        row![
-            design::button("Gameplay values…").on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(false))),
-            design::button("Models…").on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(true))),
-        ].spacing(6),
-        imported_paks(state),
-        signed_paks(state),
-        projects(state),
-        row![
-            text("Mod name").size(12),
-            design::text_input("Select a mod to name it…", &state.modding_name_input)
+            design::text_input("Mod name…", &state.modding_name_input)
                 .on_input(Message::ModdingNameChanged)
                 .width(Length::FillPortion(4)),
             design::button("Save Name")
@@ -822,15 +796,108 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8)
         .align_y(iced::Center),
-        modifications(state),
-        actions,
+        selected_actions,
+    ]
+    .spacing(10);
+    if state.modding_advanced {
+        selected_content = selected_content.push(
+            row![
+                design::button("Advanced Profiles…")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingToggleProfiles),
+                design::button("Build Selected Mod")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingBuild),
+                design::button("Prepare Selected Mod for Test")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingBuildForOfflineTest),
+            ]
+            .spacing(8),
+        );
+    }
+    let selected_project = panel(selected_content);
+    let mut main = column![
+        text("Modding").size(24),
+        menu(state),
         row![
-            design::button("Restore original game files")
-                .style(design::secondary)
-                .on_press(Message::StartOfflineLauncherRestore),
-            design::button("Restore staged profile")
-                .style(design::secondary)
-                .on_press(Message::StartProfileRecover),
+            panel(column![
+                text("CREATE A MOD").size(13),
+                row![
+                    design::button("Gameplay values…")
+                        .style(design::secondary)
+                        .on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(false))),
+                    design::button("Models…")
+                        .style(design::secondary)
+                        .on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(true))),
+                ]
+                .spacing(8),
+            ]
+            .spacing(10))
+            .width(Length::FillPortion(1)),
+            panel(column![
+                text("PLAY WITH MODS").size(13),
+                row![
+                    design::button("Play with Mods")
+                        .style(design::primary)
+                        .on_press(Message::PlayWithMods),
+                    design::button("Refresh Mods")
+                        .style(design::secondary)
+                        .on_press(Message::ModdingRefresh),
+                ]
+                .spacing(8),
+                text("Offline only · enabled projects and selected signed PAKs")
+                    .size(11)
+                    .style(design::muted),
+            ]
+            .spacing(10))
+            .width(Length::FillPortion(1)),
+        ]
+        .spacing(12),
+        text("YOUR PROJECTS").size(15),
+        design::text_input("Find project, target PAK or imported source…", &state.modding_filter)
+            .on_input(Message::ModdingFilterChanged)
+            .width(Fill),
+        row![
+            design::button("All mods")
+                .style(if state.modding_kind.is_none() { design::primary } else { design::secondary })
+                .on_press(Message::ModdingKind(None)),
+            design::button("Cosmetic candidates")
+                .style(if state.modding_kind == Some(ModKind::CosmeticCandidate) { design::primary } else { design::secondary })
+                .on_press(Message::ModdingKind(Some(ModKind::CosmeticCandidate))),
+            design::button("Gameplay")
+                .style(if state.modding_kind == Some(ModKind::Gameplay) { design::primary } else { design::secondary })
+                .on_press(Message::ModdingKind(Some(ModKind::Gameplay))),
+            design::button("Needs review")
+                .style(if state.modding_kind == Some(ModKind::NeedsReview) { design::primary } else { design::secondary })
+                .on_press(Message::ModdingKind(Some(ModKind::NeedsReview))),
+        ]
+        .spacing(6),
+        projects(state),
+        selected_project,
+        modifications(state),
+        text("Cosmetic candidates require content verification before online use. Gameplay, mixed and unverified mods stay offline.")
+            .size(11)
+            .style(design::muted),
+        text("OTHER MOD SOURCES").size(15),
+        row![
+            imported_paks(state),
+            signed_paks(state),
+        ]
+        .spacing(12),
+        panel(column![
+            text("RECOVERY").size(13),
+            row![
+                design::button("Restore original game files")
+                    .style(design::secondary)
+                    .on_press(Message::StartOfflineLauncherRestore),
+                design::button("Restore staged profile")
+                    .style(design::secondary)
+                    .on_press(Message::StartProfileRecover),
+            ]
+            .spacing(8),
+        ]
+        .spacing(9)),
+        row![
             design::button(if state.modding_advanced {
                 "Hide Advanced Archive Tools"
             } else {
@@ -841,13 +908,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8),
     ]
-    .spacing(9)
-    .height(Fill);
-    if state.guided_editor.open {
-        return column![text("Modding").size(22), crate::guided_modding::view(state)]
-            .spacing(10)
-            .into();
-    }
+    .spacing(12);
     if state.modding_advanced {
         main = main.push(archive_browser(state));
     }

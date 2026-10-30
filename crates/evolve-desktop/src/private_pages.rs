@@ -160,15 +160,11 @@ fn legacy_section_label(label: &'static str, legacy: bool) -> Element<'static, M
     }
 }
 
-fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'static, Message> {
+fn tile(name: &'static str, page: Page) -> Element<'static, Message> {
     design::button(
         row![
             svg(page.icon()).style(design::icon).width(24).height(24),
-            column![
-                text(name).size(16),
-                text(description).size(12).style(design::muted),
-            ]
-            .spacing(5),
+            text(name).size(15),
         ]
         .spacing(14)
         .align_y(iced::Center),
@@ -198,8 +194,8 @@ fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'s
         style
     })
     .width(Fill)
-    .height(Length::Fixed(106.0))
-    .padding(15)
+    .height(Length::Fixed(64.0))
+    .padding(12)
     .on_press(Message::Navigate(page))
     .into()
 }
@@ -548,13 +544,18 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                         "Ready to make your first mod?"
                     })
                     .size(18),
-                    text(if paths_selected {
-                        "Import a PAK into the Asset Library to begin editing."
+                    if paths_selected {
+                        Element::from(
+                            text("Import a PAK to get started.")
+                                .size(12)
+                                .style(design::muted),
+                        )
                     } else {
-                        "Configure your paths in Settings, then import a PAK to begin."
-                    })
-                    .size(12)
-                    .style(design::muted),
+                        Element::from(
+                            design::button("Set up paths")
+                                .on_press(Message::Navigate(Page::Settings)),
+                        )
+                    },
                     row![primary_action, secondary_action].spacing(8),
                 ]
                 .spacing(7)
@@ -573,71 +574,58 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         ]
         .spacing(12)
         .align_y(iced::Center),
-        text(if state.developer_unlocked && state.developer_online_mods {
-            "Developer online testing is armed. All enabled mods are eligible, including gameplay changes. Actual server acceptance is not guaranteed."
+        if state.developer_unlocked && state.developer_online_mods {
+            Element::from(
+                text("Developer online testing is armed. Server acceptance is not guaranteed.")
+                    .size(12)
+                    .style(design::muted),
+            )
         } else {
-            "Choose an offline modded session or launch with original game files."
-        })
-            .size(12)
-            .style(design::muted),
+            Element::from(text(""))
+        },
         row![
-            design::button(if state.developer_unlocked && state.developer_online_mods { "Play with Mods Online · Dev Test" } else { "Play with Mods" })
-                .on_press(Message::PlayWithMods)
-                .padding([10, 17])
-                .style(design::primary),
+            design::button(if state.developer_unlocked && state.developer_online_mods {
+                "Play with Mods Online · Dev Test"
+            } else {
+                "Play with Mods"
+            })
+            .on_press(Message::PlayWithMods)
+            .padding([10, 17])
+            .style(design::primary),
             design::button("Play without Mods")
                 .on_press(Message::PlayWithoutMods)
                 .padding([10, 15])
                 .style(design::secondary),
         ]
         .spacing(8),
-        text(format!("Launch method: {} (change in Settings). Client Launch uses the original relay, profiles and friends overlay. Direct Launch is experimental and does not yet reproduce the full client session.", state.preferences.game_launch_mode))
-            .size(12)
-            .style(design::muted),
+        text(format!(
+            "Launch method: {} · Change in Settings",
+            state.preferences.game_launch_mode
+        ))
+        .size(12)
+        .style(design::muted),
+        if state.preferences.game_launch_mode.contains("Direct") {
+            Element::from(
+                text("Direct Launch is experimental and does not provide the full client session.")
+                    .size(12)
+                    .style(design::muted),
+            )
+        } else {
+            Element::from(text(""))
+        },
     ]
     .spacing(8);
     let entries = column![
         text("Your workspace").size(19),
-        text("Everything in the manager, one click away.")
-            .size(12)
-            .style(design::muted),
         row![
-            tile(
-                "Modding",
-                "Open a project, edit assets and sign a PAK.",
-                Page::Files
-            ),
-            tile(
-                "Asset Library",
-                "Browse textures, models, animation and GFX.",
-                Page::AssetLibrary
-            ),
+            tile("Modding", Page::Files),
+            tile("Asset Library", Page::AssetLibrary),
         ]
         .spacing(10),
+        row![tile("Docs", Page::Docs), tile("Settings", Page::Settings),].spacing(10),
         row![
-            tile(
-                "Docs",
-                "Getting started guides and step-by-step How To topics.",
-                Page::Docs
-            ),
-            tile(
-                "Settings",
-                "Appearance, paths, updates and maintenance.",
-                Page::Settings
-            ),
-        ]
-        .spacing(10),
-        row![
-            tile(
-                "What's New",
-                "Changes included in the latest release.",
-                Page::WhatsNew
-            ),
-            tile(
-                "Credits",
-                "Project information and acknowledgments.",
-                Page::Credits
-            ),
+            tile("What's New", Page::WhatsNew),
+            tile("Credits", Page::Credits),
         ]
         .spacing(10),
     ]
@@ -645,9 +633,6 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     .width(Length::FillPortion(5));
     let status = column![
         text("At a glance").size(19),
-        text("Installed game and client status; launch actions are separate.")
-            .size(12)
-            .style(design::muted),
         status_card(
             "Game installation",
             if state.preferences.game_installation.is_empty() {
@@ -1192,20 +1177,20 @@ fn docs_section(section: DocsSection, expanded: bool) -> Element<'static, Messag
 pub(super) fn docs(state: &State) -> Element<'_, Message> {
     let mut sections = column![
         text("Docs").size(24),
-        text("Easy guides for getting started and finding your way around Evolve Mod Manager.")
-            .size(13).style(design::muted),
         row![
             design::button("Expand all").on_press(Message::DocsExpandAll(true)),
             design::button("Collapse all").on_press(Message::DocsExpandAll(false)),
             design::button("Go to Settings").on_press(Message::Navigate(Page::Settings)),
-        ].spacing(8),
+        ]
+        .spacing(8),
         text("Getting Started").size(19),
-        docs_section(DocsSection::GettingStarted,
-            state.docs_expanded.contains(&DocsSection::GettingStarted)),
+        docs_section(
+            DocsSection::GettingStarted,
+            state.docs_expanded.contains(&DocsSection::GettingStarted)
+        ),
         text("How To").size(19),
-        text("Choose a topic to open its step-by-step guide. You can keep several topics open at once.")
-            .size(12).style(design::muted),
-    ].spacing(11);
+    ]
+    .spacing(11);
     for section in DocsSection::ALL.into_iter().skip(1) {
         sections = sections.push(docs_section(
             section,
@@ -1220,9 +1205,6 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
     let mut cards = column![
         text("What's New").size(24),
         row![
-            text("Latest published version and community announcements")
-                .size(12)
-                .style(design::muted),
             design::button(if news.loading {
                 "Refreshing..."
             } else {
@@ -2061,9 +2043,6 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
     if state.developer_unlocked {
         let mut content = column![
             text("Developer").size(24),
-            text("Open a section to access its tools and settings.")
-                .size(12)
-                .style(design::muted),
             row![
                 design::button("Expand all").on_press(Message::DeveloperExpandAll(true)),
                 design::button("Collapse all").on_press(Message::DeveloperExpandAll(false)),
@@ -2083,9 +2062,6 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
             surface(
                 column![
                     text("Password protected").size(17),
-                    text("Developer features are not available without authorized credentials.")
-                        .size(13)
-                        .style(design::muted),
                     design::text_input("Developer password", &state.developer_password)
                         .secure(true)
                         .on_input(Message::DeveloperPasswordChanged)

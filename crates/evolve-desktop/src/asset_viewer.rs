@@ -2158,13 +2158,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         "Modding preview"
     };
     let heading = row![
-        text("Asset / Model Viewer").size(16),
+        text("Asset Viewer").size(20),
         text(readonly).size(12).style(design::muted),
-        text(format!(
-            " • {} selected",
-            state.file_selection.indices.len()
-        ))
-        .size(12),
+        text(format!("{} selected", state.file_selection.indices.len())).size(12),
         iced::widget::space().width(Fill),
         text(if state.gfx_active {
             "GFX: controls in right-hand GFX Tools tab"
@@ -2174,7 +2170,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .size(11)
         .style(design::muted),
     ]
-    .spacing(10)
+    .spacing(14)
     .align_y(iced::Center);
     let ratio = state.viewer_split.clamp(0.25, 0.85);
     let view_weight = (ratio * 100.0).round() as u16;
@@ -2221,8 +2217,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
 
     let base = container(
         column![strip(state), heading, panes, footer]
-            .spacing(7)
-            .padding(7)
+            .spacing(10)
+            .padding(12)
             .height(Fill),
     )
     .height(Fill)

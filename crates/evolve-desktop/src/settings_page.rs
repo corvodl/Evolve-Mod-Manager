@@ -20,12 +20,8 @@ fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<
         })
 }
 
-fn heading<'a>(name: &'a str, description: &'a str) -> iced::widget::Column<'a, Message> {
-    column![
-        text(name).size(17),
-        text(description).size(12).style(design::muted)
-    ]
-    .spacing(7)
+fn heading(name: &str) -> iced::widget::Text<'_> {
+    text(name).size(17)
 }
 
 fn health_entry<'a>(title: &'static str, value: &str) -> Element<'a, Message> {
@@ -102,10 +98,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
     .is_ok();
     panel(
         column![
-            heading(
-                "SET UP MANAGER / INSTALLED GAME",
-                "Client Launch uses the real client for relay, profiles and friends overlay. Direct Launch is for experimental startup testing."
-            ),
+            heading("Game & Client"),
             text("GAME LAUNCH METHOD").size(12),
             row![
                 design::button("Client Launch")
@@ -199,10 +192,7 @@ fn test_environment_setup(state: &State) -> Element<'_, Message> {
     .is_ok();
     panel(
         column![
-            heading(
-                "EVOLVE TEST ENVIRONMENT",
-                "A separate Test Client and Test Game build for mod testing. Production files and recovery settings are kept separate."
-            ),
+            heading("Test Environment"),
             row![
                 design::button(if enabled { "Test Client: ON" } else { "Test Client: OFF" })
                     .on_press(Message::PreferenceUseTestClient(!enabled))
@@ -309,7 +299,6 @@ fn storage(state: &State) -> Element<'_, Message> {
     }
     panel(column![
         text("GAME STORAGE").size(15),
-        text("One location for future setups, with storage breakdown and advanced paths.").size(12).style(design::muted),
         row![
             text("Mod Data Location").size(12),
             container(text(root).size(12)).width(Fill).padding(9).style(|theme| container::Style {
@@ -413,16 +402,48 @@ fn library(state: &State) -> Element<'_, Message> {
     let reference_counts = state.library_catalog.as_ref().map(|catalog| {
         required_reference_counts(catalog.archives.iter().map(|archive| archive.name.clone()))
     });
-    panel(column![
-        text("EXTRACTED PAK LIBRARY").size(15),
-        text("Reference PAKs for characters, textures, animations and levels. The location is detected automatically from the saved manager profile.").size(12).style(design::muted),
-        text(format!("{} imported archives • {} stored", archive_count, if state.library_catalog.is_some() { mib(total) } else { "Not indexed yet".into() })).size(12),
-        text(reference_counts.map_or("Shared references: —  •  Animation references: —".to_string(), |(shared, animations)| format!("Shared references: {shared}/6  •  Animation references: {animations}/3"))).size(12),
-        text(if state.library_root.is_empty() { "Default Asset Library location could not be detected" } else { state.library_root.as_str() }).size(11).style(design::muted),
-        design::text_input("Existing extracted AssetLibrary folder...", &state.preferences.asset_library_root).on_input(Message::PreferenceAssets),
-        design::button("Load Library").on_press_maybe((!state.busy).then_some(Message::LibraryRefresh)),
-        design::button("Manage Asset Library / Add PAKs…").on_press(Message::Navigate(Page::AssetLibrary)).width(Fill).style(design::secondary),
-    ].spacing(10)).into()
+    panel(
+        column![
+            text("EXTRACTED PAK LIBRARY").size(15),
+            text(format!(
+                "{} imported archives • {} stored",
+                archive_count,
+                if state.library_catalog.is_some() {
+                    mib(total)
+                } else {
+                    "Not indexed yet".into()
+                }
+            ))
+            .size(12),
+            text(reference_counts.map_or(
+                "Shared references: —  •  Animation references: —".to_string(),
+                |(shared, animations)| format!(
+                    "Shared references: {shared}/6  •  Animation references: {animations}/3"
+                )
+            ))
+            .size(12),
+            text(if state.library_root.is_empty() {
+                "Default Asset Library location could not be detected"
+            } else {
+                state.library_root.as_str()
+            })
+            .size(11)
+            .style(design::muted),
+            design::text_input(
+                "Existing extracted AssetLibrary folder...",
+                &state.preferences.asset_library_root
+            )
+            .on_input(Message::PreferenceAssets),
+            design::button("Load Library")
+                .on_press_maybe((!state.busy).then_some(Message::LibraryRefresh)),
+            design::button("Manage Asset Library / Add PAKs…")
+                .on_press(Message::Navigate(Page::AssetLibrary))
+                .width(Fill)
+                .style(design::secondary),
+        ]
+        .spacing(10),
+    )
+    .into()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -471,7 +492,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     });
     let content: Element<'_, Message> = match state.settings_tab {
         Tab::Appearance => column![
-        heading("GENERAL & APPEARANCE", "Optional Legacy Evolve visuals with the familiar Modern interface preserved."),
+        heading("Appearance"),
         panel(column![
             text("INTERFACE THEME").size(12),
             row![
@@ -524,7 +545,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ].spacing(8)),
         ].spacing(12).into(),
         Tab::Updates => column![
-        heading("UPDATES", "Select Stable, Beta or Nightly. Nightly builds are prerelease versions."),
+        heading("Updates"),
         panel(column![
             text(format!("Installed version: {}", env!("CARGO_PKG_VERSION"))).size(12),
             row![
@@ -532,6 +553,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 design::button(text(format!("Channel: {}", if state.preferences.nightly_updates { "Nightly" } else if state.preferences.experimental_updates { "Beta" } else { "Stable" }))).on_press(Message::PreferenceUpdateChannel).style(design::secondary),
                 design::button(text(format!("Auto-check: {}", if state.preferences.automatic_update_checks { "On" } else { "Off" }))).on_press(Message::PreferenceAutoUpdates).style(design::secondary)
             ].spacing(8),
+            text("Beta and Nightly builds are prereleases.").size(11).style(design::muted),
             text(state.update_status.as_str()).size(12).style(design::muted),
             if let Some(error) = &state.update_worker_failure {
                 text(format!(
@@ -549,7 +571,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             let ruffle = crate::gfx_bundled_tools::valid_ruffle(&state.preferences.ruffle_executable);
             let ruffle_web = crate::gfx_bundled_tools::valid_ruffle_web(&state.preferences.ruffle_web_runtime);
             column![
-                heading("INTEGRATIONS", "Configure Discord activity and external editing tools."),
+                heading("Integrations"),
                 panel(column![
                     text("DISCORD RICH PRESENCE · LOCAL ONLY").size(15),
                     text("No account linking, OAuth, bot, or token. Uses the desktop Discord app through local IPC. Discord's own Activity Privacy settings also control visibility.")
@@ -753,16 +775,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             ].spacing(12).into()
         },
         Tab::SystemHealth => column![
-            heading(
-                "SYSTEM HEALTH",
-                "Read-only, on-demand diagnostics for your local Evolve installation.",
-            ),
+            heading("System Health"),
             panel(health_panel(state)),
         ]
         .spacing(12)
         .into(),
         Tab::Advanced => column![
-        heading("BACKUPS & RECOVERY", "Recovery copies are needed only for modified PAKs being swapped."),
+        heading("Backups & Recovery"),
+        text("Recovery copies are needed only for modified PAKs being swapped.").size(12).style(design::muted),
         panel(column![
             design::button(text(format!("Keep full-game snapshots (extra disk use): {}", if state.preferences.keep_original_snapshots { "On" } else { "Off" }))).on_press(Message::PreferenceSnapshots).style(design::secondary),
             design::button(text(format!("Show activity during tasks: {}", if state.preferences.show_activity_on_tasks { "On" } else { "Off" }))).on_press(Message::PreferenceActivity).style(design::secondary),
@@ -783,9 +803,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         Tab::Storage => column![
         game_client_setup(state),
         test_environment_setup(state),
-        heading("GAME STORAGE", "Review disk usage and configure future setups without changing active recovery files."),
         storage(state),
-        heading("ASSET LIBRARY", "Keep extracted reference PAKs available across Modding, models and levels."),
         library(state),
         ].spacing(12).into(),
     };
