@@ -403,11 +403,7 @@ impl FogProfile {
     /// Deliberately non-native distance-only fog preview, never the original
     /// CryEngine height/volumetric fog or scattering equation. Zeroed when the
     /// map has no verified TimeOfDay Fog color curve.
-    pub fn preview_uniform(
-        self,
-        tod: Option<&TimeOfDay>,
-        hour: f32,
-    ) -> [[f32; 4]; 2] {
+    pub fn preview_uniform(self, tod: Option<&TimeOfDay>, hour: f32) -> [[f32; 4]; 2] {
         let disabled = [[0.0; 4]; 2];
         let Some(rgb) = tod.and_then(|profile| profile.color("Fog color", hour)) else {
             return disabled;
@@ -491,16 +487,20 @@ mod tests {
     use super::*;
     #[test]
     fn fog_schema_is_bounded_and_missing_data_is_not_invented() {
-        let source = br#"<Environment><Fog ViewDistance="4500" LDRGlobalDensMult="3"/></Environment>"#;
+        let source =
+            br#"<Environment><Fog ViewDistance="4500" LDRGlobalDensMult="3"/></Environment>"#;
         let fog = FogProfile::parse(source).unwrap();
         assert_eq!(fog.view_distance, 4500.0);
         assert_eq!(fog.ldr_density_multiplier, 3.0);
         assert_eq!(fog.preview_uniform(None, 12.0), [[0.0; 4]; 2]);
-        let tod = TimeOfDay::parse(br#"<TimeOfDay><Variable Name="Fog color" Color="0.3,0.5,0.7"/></TimeOfDay>"#).unwrap();
+        let tod = TimeOfDay::parse(
+            br#"<TimeOfDay><Variable Name="Fog color" Color="0.3,0.5,0.7"/></TimeOfDay>"#,
+        )
+        .unwrap();
         let uniform = fog.preview_uniform(Some(&tod), 12.0);
         assert_eq!(uniform[0], [0.3, 0.5, 0.7, 0.0]);
         assert_eq!(uniform[1][0], 1.0);
-        assert!((uniform[1][1] - 1.0/4500.0).abs() < 1e-8);
+        assert!((uniform[1][1] - 1.0 / 4500.0).abs() < 1e-8);
         for bad in [
             b"<Environment/>".as_slice(),
             b"<Environment><Fog ViewDistance=\"NaN\" LDRGlobalDensMult=\"3\"/></Environment>",
@@ -514,9 +514,13 @@ mod tests {
 
     #[test]
     fn binary_cryxmlb_environment_fog_matches_plain_xml() {
-        let original = br#"<Environment><Fog ViewDistance="2400" LDRGlobalDensMult="1"/></Environment>"#;
+        let original =
+            br#"<Environment><Fog ViewDistance="2400" LDRGlobalDensMult="1"/></Environment>"#;
         let compiled = evolve_core::cryxml::encode_xml(original, MAX_XML).unwrap();
-        assert_eq!(FogProfile::parse(&compiled).unwrap(), FogProfile::parse(original).unwrap());
+        assert_eq!(
+            FogProfile::parse(&compiled).unwrap(),
+            FogProfile::parse(original).unwrap()
+        );
     }
 
     #[test]

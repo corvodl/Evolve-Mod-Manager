@@ -709,35 +709,43 @@ fn open_selected(
         }
     };
     let original_fog = match authored_environment(&archive, chosen, &inventory) {
-        Ok(Some(file)) => match fs::symlink_metadata(&file) {
-            Ok(meta) if meta.file_type().is_file() && meta.len() <= 4 * 1024 * 1024 => {
-                match fs::read(&file).map_err(|reason| reason.to_string())
-                    .and_then(|bytes| level_environment::FogProfile::parse(&bytes))
-                {
-                    Ok(fog) => {
-                        diagnostics.push(format!(
+        Ok(Some(file)) => {
+            match fs::symlink_metadata(&file) {
+                Ok(meta) if meta.file_type().is_file() && meta.len() <= 4 * 1024 * 1024 => {
+                    match fs::read(&file)
+                        .map_err(|reason| reason.to_string())
+                        .and_then(|bytes| level_environment::FogProfile::parse(&bytes))
+                    {
+                        Ok(fog) => {
+                            diagnostics.push(format!(
                             "Original Environment.xml: Fog ViewDistance={:.1}, LDRGlobalDensMult={:.2}. Distance-only fog preview, NOT CryEngine-native.",
                             fog.view_distance, fog.ldr_density_multiplier
                         ));
-                        Some(fog)
-                    }
-                    Err(reason) => {
-                        diagnostics.push(format!("Original Environment.xml Fog unsupported: {reason}; fog preview disabled."));
-                        None
+                            Some(fog)
+                        }
+                        Err(reason) => {
+                            diagnostics.push(format!("Original Environment.xml Fog unsupported: {reason}; fog preview disabled."));
+                            None
+                        }
                     }
                 }
+                _ => {
+                    diagnostics.push("Original Environment.xml missing, linked, or oversized; fog preview disabled.".into());
+                    None
+                }
             }
-            _ => {
-                diagnostics.push("Original Environment.xml missing, linked, or oversized; fog preview disabled.".into());
-                None
-            }
-        },
+        }
         Ok(None) => {
-            diagnostics.push("No exact original Environment.xml for the selected map; fog preview disabled.".into());
+            diagnostics.push(
+                "No exact original Environment.xml for the selected map; fog preview disabled."
+                    .into(),
+            );
             None
         }
         Err(reason) => {
-            diagnostics.push(format!("Could not resolve exact Environment.xml: {reason}; fog preview disabled."));
+            diagnostics.push(format!(
+                "Could not resolve exact Environment.xml: {reason}; fog preview disabled."
+            ));
             None
         }
     };
