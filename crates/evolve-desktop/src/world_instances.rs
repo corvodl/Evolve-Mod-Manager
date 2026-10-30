@@ -1508,7 +1508,7 @@ mod tests {
     }
 
     #[test]
-    fn full_quality_retains_original_4096_model_textures_and_bounds_scene_budget() {
+    fn full_quality_retains_original_4096_model_textures_without_manager_budget() {
         assert_eq!(
             full_quality_dimensions(4096, 4096, false, 8192, true, 256 * 1024 * 1024),
             Some((4096, 4096))
@@ -1519,13 +1519,16 @@ mod tests {
         );
         assert_eq!(
             full_quality_dimensions(4096, 4096, false, 8192, true, 4 * 1024 * 1024),
-            Some((1024, 1024))
+            Some((4096, 4096))
         );
         assert_eq!(
             full_quality_dimensions(4096, 4096, false, 2048, true, 256 * 1024 * 1024),
             Some((2048, 2048))
         );
-        assert!(full_quality_dimensions(4096, 4096, false, 8192, true, 0).is_none());
+        assert_eq!(
+            full_quality_dimensions(4096, 4096, false, 8192, true, 0),
+            Some((4096, 4096))
+        );
     }
 
     #[test]
