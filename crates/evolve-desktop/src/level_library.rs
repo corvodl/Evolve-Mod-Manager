@@ -86,6 +86,21 @@ fn map_virtual_folder(map: &MapCandidate) -> Option<String> {
         .find(|folder| !folder.is_empty())
 }
 
+/// The original exported CryEngine map layout places metadata in
+/// LevelData but the baked terrain package at the map root. An older
+/// flattened import can contain a root-level XML; only try that legacy
+/// exact map-owned path after the primary source path is absent.
+fn terrain_virtual_candidates(folder: &str, member: &str) -> Result<Vec<String>, String> {
+    match member.to_ascii_lowercase().as_str() {
+        "terraintexture.xml" => Ok(vec![
+            format!("{folder}/LevelData/TerrainTexture.xml"),
+            format!("{folder}/TerrainTexture.xml"),
+        ]),
+        "terraintexture.pak" => Ok(vec![format!("{folder}/terraintexture.pak")]),
+        _ => Err(format!("Unsupported map-owned terrain member: {member}")),
+    }
+}
+
 fn terrain_resource(
     source_root: &Path,
     selected: &ImportedPak,
@@ -99,7 +114,6 @@ fn terrain_resource(
     }
     let folder = map_virtual_folder(map)
         .ok_or_else(|| "Cannot determine the original map's virtual folder".to_owned())?;
-    let requested = format!("{folder}/{member_name}");
     let loaded_inventory = if inventory.is_none() {
         Some(imported_archive_files(selected).map_err(|e| e.to_string())?)
     } else {
@@ -110,7 +124,20 @@ fn terrain_resource(
         .ok_or_else(|| "No verified imported map inventory".to_owned())?;
     let library_root = Path::new(&selected.directory).parent();
     let build = (selected.builds.len() == 1).then(|| selected.builds[0].as_str());
-    auto_resources::exact(selected_inventory, &requested, library_root, build)
+    for requested in terrain_virtual_candidates(&folder, member_name)? {
+        // Preserve the original exact virtual map owner and selected build.
+        // A conflicting or unsafe match is an error, not permission to try
+        // a similarly named resource from a different level.
+        if let Some(path) = auto_resources::exact(
+            selected_inventory,
+            &requested,
+            library_root,
+            build,
+        )? {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
 }
 
 fn verified_source(root: &Path, relative: &Path, max_bytes: u64) -> Result<PathBuf, String> {
@@ -578,6 +605,26 @@ mod tests {
             map_virtual_folder(&map).as_deref(),
             Some("levels/desert_canyon")
         );
+    }
+
+    #[test]
+    fn terrain_resources_follow_original_leveldata_export_layout() {
+        assert_eq!(
+            terrain_virtual_candidates("levels/tutorial", "TerrainTexture.xml").unwrap(),
+            vec![
+                "levels/tutorial/LevelData/TerrainTexture.xml",
+                "levels/tutorial/TerrainTexture.xml",
+            ]
+        );
+        assert_eq!(
+            terrain_virtual_candidates("levels/tutorial", "terraintexture.pak").unwrap(),
+            vec!["levels/tutorial/terraintexture.pak"]
+        );
+        assert!(terrain_virtual_candidates("levels/tutorial", "../terraintexture.pak").is_err());
+        assert!(!terrain_virtual_candidates("levels/tutorial", "TerrainTexture.xml")
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.contains("levels/desert_canyon")));
     }
 
     #[test]
