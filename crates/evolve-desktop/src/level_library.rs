@@ -777,6 +777,7 @@ fn open_selected(
         };
         match decoded.map_err(|err| err.to_string()) {
             Ok(atlas) => {
+                let dimensions = atlas.image.dimensions();
                 let mut applied = false;
                 if let (Some(assembled), Some((terrain_mesh, _))) =
                     (full_scene.as_mut(), terrain.as_ref())
@@ -807,7 +808,7 @@ fn open_selected(
                     atlas.decoded_tiles,
                     if atlas.color_format == 3 { "RGB24".to_owned() }
                     else { format!("CRY format {}", atlas.color_format) },
-                    atlas.image.width(), atlas.image.height(),
+                    dimensions.0, dimensions.1,
                     if applied { "Applied to terrain GPU material." }
                     else { "No verified terrain material span to receive the color atlas." }
                 ));
