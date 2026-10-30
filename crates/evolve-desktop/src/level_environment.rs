@@ -1,5 +1,6 @@
-//! Verified, read-only CryEngine time-of-day curves and original FX inventory.
-//! The preview does not execute CryEngine native shaders or particle simulation.
+//! Source-backed, read-only TimeOfDay curve preview and original FX inventory.
+//! The preview approximates the SDK's Bezier spline; the concrete engine TOD
+//! interpolator is not public here. No native shader/particle code is executed.
 use quick_xml::{
     Reader,
     events::{BytesStart, Event},
@@ -10,6 +11,18 @@ const MAX_XML: usize = 4 * 1024 * 1024;
 struct Key {
     time: f32,
     value: [f32; 3],
+    flags: u32,
+}
+// ISplines.h: the low three bits select the incoming tangent; bits 3-5
+// select the outgoing tangent. Higher bits include editor state, not slopes.
+const TANGENT_STEP: u32 = 3;
+const TANGENT_LINEAR: u32 = 4;
+const TANGENT_ZERO: u32 = 2;
+fn incoming(key: &Key) -> u32 {
+    key.flags & 7
+}
+fn outgoing(key: &Key) -> u32 {
+    (key.flags >> 3) & 7
 }
 #[derive(Clone, Debug)]
 struct Curve {
@@ -22,11 +35,61 @@ impl Curve {
         if t <= self.keys[0].time {
             return self.keys[0].value;
         }
-        for pair in self.keys.windows(2) {
-            if t <= pair[1].time {
-                let f = (t - pair[0].time) / (pair[1].time - pair[0].time).max(0.00001);
-                return std::array::from_fn(|i| {
-                    pair[0].value[i] + (pair[1].value[i] - pair[0].value[i]) * f
+        for (index, pair) in self.keys.windows(2).enumerate() {
+            if t < pair[1].time {
+                let [from, to] = pair else { unreachable!() };
+                // BezierSpline in ISplines.h steps *to* on an outgoing step,
+                // or holds *from* on an incoming step. The concrete TOD
+                // interpolator is not exposed by the FreeSDK headers.
+                if outgoing(from) == TANGENT_STEP {
+                    return to.value;
+                }
+                if incoming(to) == TANGENT_STEP {
+                    return from.value;
+                }
+                let u = (t - from.time) / (to.time - from.time);
+                // The serialized TOD keys contain no explicit custom tangent
+                // vectors. Do not invent slopes for unsupported tangent modes.
+                if !matches!(outgoing(from), 0 | TANGENT_ZERO | TANGENT_LINEAR)
+                    || !matches!(incoming(to), 0 | TANGENT_ZERO | TANGENT_LINEAR)
+                {
+                    return std::array::from_fn(|channel| {
+                        from.value[channel] + (to.value[channel] - from.value[channel]) * u
+                    });
+                }
+                let prev = index.checked_sub(1).map(|i| &self.keys[i]);
+                let next = self.keys.get(index + 2);
+                return std::array::from_fn(|channel| {
+                    let a = from.value[channel];
+                    let b = to.value[channel];
+                    let out = match outgoing(from) {
+                        TANGENT_ZERO => 0.0,
+                        TANGENT_LINEAR => (b - a) / 3.0,
+                        _ => match prev {
+                            Some(prev) => {
+                                let span = to.time - prev.time;
+                                (to.value[channel] - prev.value[channel]) * (to.time - from.time)
+                                    / (3.0 * span)
+                            }
+                            None => (b - a) / 3.0,
+                        },
+                    };
+                    let in_slope = match incoming(to) {
+                        TANGENT_ZERO => 0.0,
+                        TANGENT_LINEAR => (b - a) / 3.0,
+                        _ => match next {
+                            Some(next) => {
+                                let span = next.time - from.time;
+                                (next.value[channel] - a) * (to.time - from.time) / (3.0 * span)
+                            }
+                            None => (b - a) / 3.0,
+                        },
+                    };
+                    let one_minus_u = 1.0 - u;
+                    one_minus_u.powi(3) * a
+                        + 3.0 * one_minus_u.powi(2) * u * (a + out)
+                        + 3.0 * one_minus_u * u * u * (b - in_slope)
+                        + u.powi(3) * b
                 });
             }
         }
@@ -103,17 +166,28 @@ fn keys(source: &str) -> Result<(Vec<Key>, usize), String> {
             ignored_out_of_range += 1;
             continue;
         }
-        let sample = if let Some(tuple) = remaining.strip_prefix('(') {
-            let (tuple, _) = tuple.split_once(')').ok_or("Unterminated color spline")?;
-            value(tuple).ok_or("Invalid original color spline")?.0
+        let (sample, flag_text) = if let Some(tuple) = remaining.strip_prefix('(') {
+            let (tuple, tail) = tuple.split_once(')').ok_or("Unterminated color spline")?;
+            (
+                value(tuple).ok_or("Invalid original color spline")?.0,
+                tail.strip_prefix(':').ok_or("Missing spline key flags")?,
+            )
         } else {
-            value(remaining.split(':').next().unwrap_or(""))
-                .ok_or("Invalid original scalar spline")?
-                .0
+            let (sample, flag_text) = remaining
+                .split_once(':')
+                .ok_or("Missing spline key flags")?;
+            (
+                value(sample).ok_or("Invalid original scalar spline")?.0,
+                flag_text,
+            )
         };
+        let flags = flag_text
+            .parse::<u32>()
+            .map_err(|_| "Invalid original spline key flags")?;
         parsed.push(Key {
             time,
             value: sample,
+            flags,
         });
     }
     parsed.sort_by(|a, b| a.time.total_cmp(&b.time));
@@ -173,6 +247,7 @@ impl TimeOfDay {
                                 keys: vec![Key {
                                     time: 0.0,
                                     value: v,
+                                    flags: 0,
                                 }],
                                 color,
                             },
@@ -327,7 +402,35 @@ mod tests {
     fn outlier_only_or_unbounded_splines_fail_closed() {
         assert!(keys("1.7895:5:0,").is_err());
         assert!(keys("NaN:5:0,").is_err());
+        assert!(keys("0:1:garbage,").is_err());
+        assert!(keys("0:(1:2:3):,").is_err());
         assert!(keys(&"0:1:0,".repeat(513)).is_err());
+    }
+    #[test]
+    fn tangent_flags_change_preview_without_interpreting_editor_bits() {
+        fn curve(source: &str) -> Curve {
+            Curve {
+                keys: keys(source).unwrap().0,
+                color: false,
+            }
+        }
+        let linear = curve("0:0:36,0.5:10:36,1:0:36,");
+        assert!((linear.sample(6.0)[0] - 5.0).abs() < 0.0001);
+        let zero = curve("0:0:18,0.5:10:18,1:0:18,");
+        assert!((zero.sample(6.0)[0] - 5.0).abs() < 0.0001);
+        assert!(zero.sample(3.0)[0] < linear.sample(3.0)[0]);
+        assert_eq!(curve("0:0:24,0.5:10:3,").sample(6.0)[0], 10.0);
+        assert_eq!(curve("0:0:0,0.5:10:3,").sample(6.0)[0], 0.0);
+        assert_eq!(curve("0:0:0,0.5:10:3,").sample(12.0)[0], 10.0);
+        assert_eq!(curve("0:0:0,0.5:10:35,1:20:36,").sample(6.0)[0], 0.0);
+        assert_eq!(curve("0:0:28,0.5:10:36,").sample(6.0)[0], 10.0);
+        assert_eq!(curve("0:0:8,0.5:10:1,").sample(6.0)[0], 5.0);
+        let editor = curve("0:0:65572,0.5:10:458752,1:0:36,");
+        assert_eq!(outgoing(&editor.keys[0]), TANGENT_LINEAR);
+        assert_eq!(incoming(&editor.keys[1]), 0);
+        assert!(editor.sample(6.0)[0].is_finite());
+        let smooth = curve("0:0:0,0.25:2:0,0.5:10:0,1:0:0,");
+        assert!((smooth.sample(9.0)[0] - 6.0).abs() > 0.01);
     }
     #[test]
     fn invalid_sources_never_become_fake_lighting() {
