@@ -122,8 +122,11 @@ fn terrain_resource(
     let selected_inventory = inventory
         .or(loaded_inventory.as_ref())
         .ok_or_else(|| "No verified imported map inventory".to_owned())?;
-    let library_root = Path::new(&selected.directory).parent();
     let build = (selected.builds.len() == 1).then(|| selected.builds[0].as_str());
+    // Cross-PAK lookup without a unique build label can silently take a
+    // terrain package from another game version. Local selected-file hits
+    // remain valid even when external dependency lookup is disabled.
+    let library_root = build.and_then(|_| Path::new(&selected.directory).parent());
     for requested in terrain_virtual_candidates(&folder, member_name)? {
         // Preserve the original exact virtual map owner and selected build.
         // A conflicting or unsafe match is an error, not permission to try
