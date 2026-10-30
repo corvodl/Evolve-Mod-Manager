@@ -7,6 +7,18 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
+use std::time::Duration;
+
+/// Turn a measured UI tick interval into playback time. A missing prior tick
+/// (play/resume) and long focus stalls must not jump through an entire clip.
+pub fn playback_step(previous: Option<Duration>, speed: f32) -> f32 {
+    if !speed.is_finite() || speed <= 0.0 {
+        return 0.0;
+    }
+    previous
+        .map(|elapsed| elapsed.as_secs_f32().min(0.1) * speed)
+        .unwrap_or(0.0)
+}
 
 const MAX_CONFIG: usize = 2 * 1024 * 1024;
 const MAX_GLTF: usize = 256 * 1024 * 1024;
@@ -524,6 +536,17 @@ impl AnimatedGlb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn playback_uses_measured_intervals_without_focus_jump() {
+        assert_eq!(playback_step(None, 1.0), 0.0);
+        assert!((playback_step(Some(Duration::from_millis(37)), 1.0) - 0.037).abs() < 0.0001);
+        assert_eq!(playback_step(Some(Duration::from_secs(5)), 1.0), 0.1);
+        assert_eq!(
+            playback_step(Some(Duration::from_millis(40)), f32::NAN),
+            0.0
+        );
+    }
+
     #[test]
     fn rejects_corrupt_caf_metadata() {
         assert!(inspect_caf_bytes(b"CrChF\x07\0\0").is_err());

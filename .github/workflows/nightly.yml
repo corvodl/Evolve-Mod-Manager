@@ -3,6 +3,11 @@ name: Nightly 0.1.0 Windows release
 on:
   # Manual developer trigger remains available in GitHub Actions.
   workflow_dispatch:
+    inputs:
+      include_cryengine_converter:
+        description: 'Opt in to verified GPLv2 Cryengine-Converter and corresponding source'
+        type: boolean
+        default: false
   # Connector-safe explicit trigger: update the request file on main to
   # publish a nightly from that exact main commit. No ordinary merges,
   # source-code pushes, PRs or schedules publish releases.
@@ -68,6 +73,11 @@ jobs:
           # only the verified redistributable runtime components.
           Remove-Item -LiteralPath $folder -Recurse -Force
 
+      - name: Opt-in fetch of independent GPLv2 Cryengine-Converter
+        if: github.event_name == 'workflow_dispatch' && inputs.include_cryengine_converter
+        shell: pwsh
+        run: ./scripts/prepare-cryengine-converter.ps1 -Fetch
+
       - name: Create portable ZIP (both Windows executables)
         shell: pwsh
         run: |
@@ -90,6 +100,9 @@ jobs:
           Copy-Item -LiteralPath "README.md" -Destination "$folder/README.md"
           New-Item -ItemType Directory -Path "$folder/third_party" -Force | Out-Null
           Copy-Item -LiteralPath "dist/third_party/OfficialStage2" -Destination "$folder/third_party/OfficialStage2" -Recurse -Force
+          if (Test-Path -LiteralPath 'dist/third_party/Cryengine-Converter') {
+            Copy-Item -LiteralPath 'dist/third_party/Cryengine-Converter' -Destination "$folder/third_party/Cryengine-Converter" -Recurse -Force
+          }
           Compress-Archive -Path (Join-Path $folder '*') -DestinationPath "dist/EvolveModManager-Portable-$env:VERSION.zip" -CompressionLevel Optimal -Force
 
       - name: Fetch and verify optional GFX editor tools

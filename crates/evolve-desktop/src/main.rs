@@ -337,6 +337,7 @@ struct State {
     cdf_report: Option<Arc<AssemblyReport>>,
     cdf_rest_mesh: Option<Arc<RenderMesh>>,
     motion_time: f32,
+    motion_tick: Option<Instant>,
     /// Continuous shader Decal clock, separate from CAF animation playback.
     decal_time: f32,
     playing: bool,
@@ -859,7 +860,7 @@ enum Completed {
         Vec<String>,
     ),
     ModelSurfaces(PathBuf, Vec<textured::Surface>, Vec<String>),
-    Caf(NativeCafMotion),
+    Caf(PathBuf, NativeCafMotion),
     CafLayer(String, Arc<NativeCafMotion>, String, NativeCafMotion),
     BoundCafPreview(PathBuf, Box<VerifiedCafSkin>),
     BoundCdfCafPreview(PathBuf, Box<VerifiedCafAssembly>),
@@ -880,7 +881,7 @@ enum Completed {
     CharacterDependencies(CdfDependencyReport),
     Model(RenderMesh, PathBuf),
     ModelResources(String, auto_resources::AutoDiscovery),
-    DeclaredClip(usize, String, NativeCafMotion),
+    DeclaredClip(usize, String, PathBuf, NativeCafMotion),
     Level(LevelScene, PathBuf, String),
     ImportedMap(Box<level_library::LoadedMap>),
     ProjectLevelSaved(modding_projects::ProjectRow, bool),
@@ -1072,7 +1073,7 @@ impl Operation {
                 Ok(Completed::CafLayer(source, base, label, layer))
             }
             Self::LoadCaf(source) => read_native_caf(&source)
-                .map(Completed::Caf)
+                .map(|motion| Completed::Caf(source, motion))
                 .map_err(|e| e.to_string()),
             Self::LoadDeclaredDba(virtual_path, inventory, imported_root, build, converter) => {
                 let source = auto_resources::resolve_declared_dba(
@@ -1281,7 +1282,7 @@ impl Operation {
                 )?
                 .ok_or_else(|| format!("Declared CAF is not available: {virtual_path}"))?;
                 let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
-                Ok(Completed::DeclaredClip(index, virtual_path, motion))
+                Ok(Completed::DeclaredClip(index, virtual_path, file, motion))
             }
             Self::InspectModel(source) => {
                 let render_source = preferred_render_source(&source);
@@ -2926,6 +2927,8 @@ fn clear_viewer_asset(state: &mut State) {
     state.specular_map = None;
     state.gloss_map = None;
     state.native_caf = None;
+    // A CAF selected for another model must never silently become an FBX export source.
+    state.caf_path.clear();
     state.skin_preview = None;
     state.caf_layer = None;
     state.caf_layer_label.clear();
@@ -2940,6 +2943,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.diffuse_status.clear();
     state.playing = false;
     state.motion_time = 0.0;
+    state.motion_tick = None;
     state.viewer_context_index = None;
     state.editor_replace_dialog = None;
     state.editor_replace_source.clear();
@@ -7953,6 +7957,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select 1 to 64 source models, CDFs, or DDS textures.".into();
                 return Task::none();
             }
+            if state.export_rigged
+                && state.export_include_animation
+                && state.caf_path.trim().is_empty()
+            {
+                state.status = "Choose a CAF for this model before embedding animation.".into();
+                return Task::none();
+            }
             // Images export as PNG directly. Model/assembly FBX exports
             // auto-discover Blender; only a genuinely missing installation
             // requires the user to select their own blender.exe.
@@ -8008,7 +8019,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .then(|| PathBuf::from(&state.skeleton_path)),
                 diffuse: (!state.diffuse_input.trim().is_empty())
                     .then(|| PathBuf::from(&state.diffuse_input)),
-                caf: (state.export_include_animation && !state.caf_path.trim().is_empty())
+                caf: (state.export_rigged && state.export_include_animation)
                     .then(|| PathBuf::from(&state.caf_path)),
                 rigged: state.export_rigged,
                 embed_textures: state.export_embed_textures,
@@ -10452,6 +10463,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.selected_motion_clip = index;
             state.motion_time = 0.0;
             state.playing = false;
+            state.motion_tick = None;
         }
         Message::OpenConvertedGlb(index) => {
             if let Some(path) = state.converted_glbs.get(index).cloned() {
@@ -10460,9 +10472,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::MotionScrub(value) => {
             state.motion_time = value;
+            state.motion_tick = None;
             apply_current_skin_frame(state);
         }
         Message::ToggleMotion => {
+            state.motion_tick = None;
             if state.native_caf.is_some()
                 && state.skin_preview.is_none()
                 && state.cdf_caf_preview.is_none()
@@ -10477,9 +10491,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         || state.glb_motion.as_ref().is_some_and(|m| {
                             m.list_clips().get(state.selected_motion_clip).is_some()
                         }));
+                if state.glb_motion.is_some()
+                    && state.skin_preview.is_none()
+                    && state.cdf_caf_preview.is_none()
+                {
+                    state.status = "Inspecting converted track keys only; the displayed model has no verified binding to this motion.".into();
+                }
             }
         }
         Message::Tick => {
+            let now = Instant::now();
+            let elapsed = state
+                .motion_tick
+                .map(|last| now.saturating_duration_since(last));
+            state.motion_tick = state.playing.then_some(now);
             for animation in &mut state.mod_toggle_animations {
                 animation.frame = animation.frame.saturating_add(1);
             }
@@ -10502,7 +10527,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     })
                 };
                 if let Some((duration, looping)) = duration {
-                    state.motion_time += 0.04 * state.playback_speed.max(0.1);
+                    state.motion_time += evolve_core::animation::playback_step(
+                        elapsed,
+                        state.playback_speed.max(0.1),
+                    );
                     if duration <= 0.0 {
                         state.playing = false;
                     } else if state.motion_time >= duration {
@@ -10551,6 +10579,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartRigFbx => {
+            if state.export_include_animation && state.caf_path.trim().is_empty() {
+                state.status = "Choose a CAF before embedding animation in the FBX.".into();
+                return Task::none();
+            }
             let blender = match resolved_blender(state) {
                 Ok(path) => path,
                 Err(message) => {
@@ -11537,7 +11569,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         Err(error) => state.status = format!("Cannot bind CAF layer: {error}"),
                     }
                 }
-                Ok(Completed::Caf(motion)) => {
+                Ok(Completed::Caf(source, motion)) => {
+                    state.caf_path = source.to_string_lossy().into_owned();
                     state.status = format!(
                         "Native CAF decoded: {} controllers at {:.1} FPS; {} seconds. Bind-pose matching is required for mesh animation.",
                         motion.controllers.len(),
@@ -11621,12 +11654,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                     }
                 }
-                Ok(Completed::DeclaredClip(index, virtual_path, motion)) => {
+                Ok(Completed::DeclaredClip(index, virtual_path, source, motion)) => {
                     let selected = state.viewer_queued_preview.is_none()
                         && state.auto_clips.get(index).is_some_and(|clip| {
                             clip.virtual_path.eq_ignore_ascii_case(&virtual_path)
                         });
                     if selected && !motion.additive {
+                        state.caf_path = source.to_string_lossy().into_owned();
                         state.skin_preview = None;
                         state.cdf_caf_preview = None;
                         if let Some(rest) = &state.cdf_rest_mesh {

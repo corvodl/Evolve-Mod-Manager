@@ -124,8 +124,14 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
         let mut clips = column![
             row![
                 design::button("Open CAF").on_press(Message::StartCafLoad),
-                design::button(if state.playing { "Pause" } else { "Play" })
-                    .on_press(Message::ToggleMotion),
+                design::button(if state.playing {
+                    "Pause"
+                } else if state.glb_motion.is_some() && state.native_caf.is_none() {
+                    "Inspect track"
+                } else {
+                    "Play model"
+                })
+                .on_press(Message::ToggleMotion),
                 text(format!(
                     "{} character-declared animations",
                     state.auto_clips.len()
@@ -2120,12 +2126,14 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
                     design::button("Select diffuse DDS…").on_press(Message::ExportBrowse("diffuse")),
                 ].spacing(8),
                 design::button(if state.export_include_animation {
-                    "☑ Include verified CAF" } else { "☐ Include verified CAF" })
+                    "☑ Embed selected animation in FBX" } else { "☐ Embed selected animation in FBX" })
                     .on_press(Message::ViewerToggleExportAnimations),
                 row![
-                    text(compact_export_source(&state.caf_path, "CAF: none selected")).width(Fill),
-                    design::button("Select CAF…").on_press(Message::ExportBrowse("caf")),
+                    text(compact_export_source(&state.caf_path, "No CAF loaded for this model")).width(Fill),
+                    design::button("Choose another CAF…").on_press(Message::ExportBrowse("caf")),
                 ].spacing(8),
+                text("Only a CAF whose original skeleton matches this rig can be embedded; converted DBA tracks are not bound to the model.")
+                    .size(11).style(design::muted),
             ].spacing(4))
         } else {
             Element::from(text("Static FBX preserves source mesh geometry and UV0.").size(11))
