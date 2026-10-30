@@ -471,11 +471,11 @@ impl AnimatedGlb {
                 });
             }
         }
-        let (rigged_preview, rigged_preview_error) =
-            match RiggedGlbPreview::from_doc(&doc, &binary) {
-                Ok(preview) => (Some(Arc::new(preview)), None),
-                Err(reason) => (None, Some(reason)),
-            };
+        let (rigged_preview, rigged_preview_error) = match RiggedGlbPreview::from_doc(&doc, &binary)
+        {
+            Ok(preview) => (Some(Arc::new(preview)), None),
+            Err(reason) => (None, Some(reason)),
+        };
         Ok(Self {
             clips,
             node_names: names,
@@ -490,14 +490,13 @@ impl AnimatedGlb {
     }
 
     pub fn mesh_at(&self, clip_index: usize, seconds: f32) -> Result<RenderMesh, AnimationError> {
-        let preview = self
-            .rigged_preview
-            .as_ref()
-            .ok_or_else(|| AnimationError::Invalid(
+        let preview = self.rigged_preview.as_ref().ok_or_else(|| {
+            AnimationError::Invalid(
                 self.rigged_preview_error
                     .clone()
                     .unwrap_or_else(|| "No matching skinned GLB mesh".into()),
-            ))?;
+            )
+        })?;
         let samples = self.sample(clip_index, seconds)?;
         preview.mesh_at(&samples).map_err(AnimationError::Invalid)
     }
