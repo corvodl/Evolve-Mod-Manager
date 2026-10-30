@@ -47,6 +47,11 @@ pub struct Surface {
     /// Explicit CryEngine NoDraw subset. Preserve its index span, but do not render it.
     pub visible: bool,
     pub transparent: bool,
+    /// Vegetation shader diffuse alpha is an alpha-tested cutout with depth writes.
+    /// The separate authored Opacity texture is foliage transmittance, not coverage.
+    pub foliage_cutout: bool,
+    /// Original per-leaf AlphaTest threshold (normalized). Default preview 0.5.
+    pub alpha_cutoff: f32,
     pub diffuse: Option<Arc<image::RgbaImage>>,
     pub normal: Option<Arc<image::RgbaImage>>,
     pub emissive: Option<Arc<image::RgbaImage>>,
@@ -342,11 +347,13 @@ struct GpuSurface {
     range: std::ops::Range<u32>,
     transparent: bool,
     masked: bool,
+    foliage_cutout: bool,
     opacity_map: bool,
     bind_group: wgpu::BindGroup,
     _emission_uniform: wgpu::Buffer,
     _uv_uniform: wgpu::Buffer,
     source_emission_strength: f32,
+    alpha_cutoff: f32,
     kala_emission_state: Option<evolve_core::KalaTubingState>,
     emissive_uv: Option<evolve_core::DecalTexMod>,
 }
@@ -356,6 +363,7 @@ pub struct Pipeline {
     world_renderer: super::world_instances::Renderer,
     render_pipeline: wgpu::RenderPipeline,
     masked_pipeline: wgpu::RenderPipeline,
+    foliage_pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
     opacity_pipeline: wgpu::RenderPipeline,
     ground_pipeline: wgpu::RenderPipeline,
@@ -484,10 +492,14 @@ impl Pipeline {
         queue: &wgpu::Queue,
         strength: f32,
         kala_emission_state: Option<evolve_core::KalaTubingState>,
+        alpha_cutoff: f32,
     ) -> wgpu::Buffer {
         // Retain the original GlowAmount as source multiplier, with the
         // legacy Qt 3 => 100 visualization reference in a separate uniform.
-        let values = emission_uniform_values(strength, 1.0, kala_emission_state);
+        let mut values = emission_uniform_values(strength, 1.0, kala_emission_state);
+        // vec4.w is unused by the emission shader: keep the source
+        // AlphaTest threshold here, avoiding a separate bind group/buffer.
+        values[3] = alpha_cutoff.clamp(0.0, 1.0);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Source material emission amount"),
             size: 16,
@@ -748,6 +760,40 @@ impl Pipeline {
             multiview: None,
             cache: None,
         });
+        let foliage_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Evolve vegetation diffuse-alpha cutout"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &program,
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::descriptor()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &program,
+                entry_point: Some("fs_foliage"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
         let translucent_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Evolve authored transparent material"),
             layout: Some(&pipeline_layout),
@@ -982,7 +1028,7 @@ impl Pipeline {
             wgpu::TextureFormat::Rgba8Unorm,
             "Neutral authored opacity",
         );
-        let emission_uniform = Self::emission_uniform(device, queue, 1.0, None);
+        let emission_uniform = Self::emission_uniform(device, queue, 1.0, None, 0.5);
         let uv_uniform = Self::emissive_uv_uniform(device, queue, None);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
@@ -1020,6 +1066,7 @@ impl Pipeline {
             world_renderer: super::world_instances::Renderer::new(device, format),
             render_pipeline,
             masked_pipeline,
+            foliage_pipeline,
             translucent_pipeline,
             opacity_pipeline,
             ground_pipeline,
@@ -1182,6 +1229,7 @@ impl Pipeline {
             ];
             let mut views = Vec::with_capacity(7);
             let mut opacity_uploaded = false;
+            let mut diffuse_uploaded = false;
             for (role, (image, fallback, format, label)) in inputs.into_iter().enumerate() {
                 // A DDS may be shared by many assembly sections. View/texture
                 // identities are source-arc + GPU role (color-space aware).
@@ -1218,6 +1266,9 @@ impl Pipeline {
                     self._surface_textures.push(texture);
                     views.push(view);
                 }
+                if role == 0 && selected.is_some() {
+                    diffuse_uploaded = true;
+                }
                 if role == 5 && selected.is_some() {
                     opacity_uploaded = true;
                 }
@@ -1227,6 +1278,7 @@ impl Pipeline {
                 queue,
                 part.emission_strength,
                 part.kala_emission_state,
+                part.alpha_cutoff,
             );
             let uv_uniform = Self::emissive_uv_uniform(device, queue, part.emissive_uv);
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1244,12 +1296,14 @@ impl Pipeline {
             self.gpu_surfaces.push(GpuSurface {
                 range: part.first_index..part.first_index + part.index_count,
                 transparent: part.transparent && (part.opacity.is_none() || opacity_uploaded),
-                masked: !part.transparent && opacity_uploaded,
+                masked: !part.transparent && opacity_uploaded && !part.foliage_cutout,
+                foliage_cutout: part.foliage_cutout && diffuse_uploaded,
                 opacity_map: opacity_uploaded,
                 bind_group: group,
                 _emission_uniform: emission_uniform,
                 _uv_uniform: uv_uniform,
                 source_emission_strength: part.emission_strength,
+                alpha_cutoff: part.alpha_cutoff,
                 kala_emission_state: part.kala_emission_state,
                 emissive_uv: part.emissive_uv,
             });
@@ -1324,11 +1378,13 @@ impl Pipeline {
             let default = emission_uniform_values(1.0, primitive.emissive_gain, None);
             queue.write_buffer(&self._emission_uniform, 0, bytemuck::bytes_of(&default));
             for surface in &self.gpu_surfaces {
-                let values = emission_uniform_values(
+                let mut values = emission_uniform_values(
                     surface.source_emission_strength,
                     primitive.emissive_gain,
                     surface.kala_emission_state,
                 );
+                // Gain updates must not reset the foliage material cutoff.
+                values[3] = surface.alpha_cutoff.clamp(0.0, 1.0);
                 queue.write_buffer(&surface._emission_uniform, 0, bytemuck::bytes_of(&values));
             }
         }
@@ -1511,7 +1567,9 @@ impl Pipeline {
                 // Write the depth of every opaque original face before any
                 // transparent section; authoring order is not render order.
                 for surface in self.gpu_surfaces.iter().filter(|part| !part.transparent) {
-                    pass.set_pipeline(if surface.masked {
+                    pass.set_pipeline(if surface.foliage_cutout {
+                        &self.foliage_pipeline
+                    } else if surface.masked {
                         &self.masked_pipeline
                     } else {
                         &self.render_pipeline
@@ -1750,6 +1808,12 @@ mod tests {
                 .entry_points
                 .iter()
                 .any(|entry| entry.name == "fs_masked")
+        );
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_foliage")
         );
         assert!(
             module

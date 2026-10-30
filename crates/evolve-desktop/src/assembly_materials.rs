@@ -490,8 +490,9 @@ fn authored_texture(
     build: Option<&str>,
 ) -> Result<(PathBuf, String), String> {
     let owner = material_virtual_owner(material, binding, inventory, imported);
-    for candidate in scoped_texture_candidates(reference, &owner)? {
-        if let Some(path) = auto_resources::exact(inventory, &candidate, imported, build)? {
+    let candidates = scoped_texture_candidates(reference, &owner)?;
+    for candidate in &candidates {
+        if let Some(path) = auto_resources::exact(inventory, candidate, imported, build)? {
             // The core imported resolver may normalize a .dds request to a
             // preferred .dds.0. Keep the exact cooked fragment identity for
             // subsequent cross-archive high-mip reconstruction.
@@ -503,13 +504,26 @@ fn authored_texture(
                 }) {
                 format!("{candidate}.0")
             } else {
-                candidate
+                candidate.clone()
             };
             return Ok((path, relative));
         }
     }
     Err(format!(
-        "Missing exact cooked DDS for {reference} in material {owner}"
+        "Missing exact cooked DDS for {reference} in material {owner}; checked {} source-qualified paths{} (build: {}). Confirm the original texture PAK for this build was imported. First candidates: {}",
+        candidates.len(),
+        if imported.is_some() {
+            " in the selected archive and imported library"
+        } else {
+            " in the selected archive"
+        },
+        build.unwrap_or("unselected"),
+        candidates
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
     ))
 }
 
@@ -540,6 +554,14 @@ fn unverified_solid_body_opacity(slot: &evolve_core::MaterialSlot) -> bool {
                     .iter()
                     .any(|marker| map.path.to_ascii_lowercase().contains(marker))
         })
+}
+
+/// CryEngine's Vegetation shader uses diffuse DDS alpha for leaf/grass card
+/// coverage. Its separate Opacity map is thickness/backlight transmittance,
+/// not the shape of the leaf. Require the original shader identity; never
+/// interpret the alpha of ordinary Illum/character diffuse maps as coverage.
+fn source_vegetation_cutout(slot: &evolve_core::MaterialSlot) -> bool {
+    slot.shader.eq_ignore_ascii_case("Vegetation") && slot.opacity.unwrap_or(1.0) >= 0.999
 }
 
 /// Per-channel resolved source textures and independent missing-map diagnostics.
@@ -609,6 +631,11 @@ fn authored_maps(
         let Some(index) = legacy_decal_role(slot, &map.role) else {
             continue;
         };
+        if index == 5 && source_vegetation_cutout(slot) {
+            // This image controls foliage transmittance, NOT the alpha-test
+            // silhouette. Deferred lighting can bind it independently later.
+            continue;
+        }
         if index == 5 && unverified_solid_body_opacity(slot) {
             warnings.push(format!(
                 "{}: ignored an unverified opacity cutout on opaque {} body material; base diffuse remains visible",
@@ -786,6 +813,8 @@ pub fn original_single_leaf_surface(
         index_count: 0, // filled from each *verified* mesh's index count
         visible,
         transparent: false,
+        foliage_cutout: false,
+        alpha_cutoff: 0.5,
         diffuse: None,
         normal: None,
         emissive: None,
@@ -820,8 +849,15 @@ pub fn original_single_leaf_surface(
     surface.emissive = emissive;
     surface.specular = specular;
     surface.gloss = gloss;
-    surface.opacity = verified_opacity(leaf, opacity);
-    surface.transparent = needs_alpha_blending(leaf) && surface.opacity.is_some();
+    surface.foliage_cutout = source_vegetation_cutout(leaf) && surface.diffuse.is_some();
+    surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
+    surface.opacity = if surface.foliage_cutout {
+        None
+    } else {
+        verified_opacity(leaf, opacity)
+    };
+    surface.transparent =
+        !surface.foliage_cutout && needs_alpha_blending(leaf) && surface.opacity.is_some();
     Ok((surface, warnings))
 }
 
@@ -854,6 +890,8 @@ pub fn load_model(
             index_count,
             visible: true,
             transparent: false,
+            foliage_cutout: false,
+            alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
             emissive: None,
@@ -913,9 +951,17 @@ pub fn load_model(
                         // Original scalar opacity, when present, is independent
                         // of packed diffuse DDS alpha. Never blend an Illum
                         // body unless there is explicit authored evidence.
-                        surface.opacity = verified_opacity(leaf, opacity);
-                        surface.transparent =
-                            needs_alpha_blending(leaf) && surface.opacity.is_some();
+                        surface.foliage_cutout =
+                            source_vegetation_cutout(leaf) && surface.diffuse.is_some();
+                        surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
+                        surface.opacity = if surface.foliage_cutout {
+                            None
+                        } else {
+                            verified_opacity(leaf, opacity)
+                        };
+                        surface.transparent = !surface.foliage_cutout
+                            && needs_alpha_blending(leaf)
+                            && surface.opacity.is_some();
                     }
                     Err(error) => warnings.push(format!(
                         "Original material slot {} ({}): {}",
@@ -1161,6 +1207,8 @@ pub fn load_with_progress(
             index_count: part.index_count,
             visible: true,
             transparent: false,
+            foliage_cutout: false,
+            alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
             emissive: None,
@@ -1263,8 +1311,15 @@ pub fn load_with_progress(
             .then_some(kala_state);
             surface.specular = specular;
             surface.gloss = gloss;
-            surface.opacity = verified_opacity(leaf, opacity);
-            surface.transparent = needs_alpha_blending(leaf) && surface.opacity.is_some();
+            surface.foliage_cutout = source_vegetation_cutout(leaf) && surface.diffuse.is_some();
+            surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
+            surface.opacity = if surface.foliage_cutout {
+                None
+            } else {
+                verified_opacity(leaf, opacity)
+            };
+            surface.transparent =
+                !surface.foliage_cutout && needs_alpha_blending(leaf) && surface.opacity.is_some();
             Ok(())
         })();
         if let Err(error) = result {
@@ -1338,6 +1393,8 @@ mod tests {
             index_count: 3,
             visible: true,
             transparent: false,
+            foliage_cutout: false,
+            alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&base_pixels)),
             normal: None,
             emissive: None,
@@ -1412,6 +1469,7 @@ mod tests {
             shader: "Illum".into(),
             maps: vec![],
             opacity: None,
+            alpha_test: None,
             glow_amount: Some(3.0),
             alpha_glow: true,
             diffuse_tint: None,
@@ -1580,11 +1638,42 @@ mod tests {
     }
 
     #[test]
+    fn vegetation_shader_diffuse_alpha_is_cutout_not_foliage_transmittance() {
+        let doc = evolve_core::parse_material(
+            br#"<Material Name="Leaves" Shader="Vegetation" Opacity="1">
+                    <Textures>
+                        <Texture Map="Diffuse" File="objects/forest/leaves_diff.tif"/>
+                        <Texture Map="Opacity" File="objects/forest/leaves_sss.tif"/>
+                    </Textures>
+                </Material>"#,
+        )
+        .unwrap();
+        let leaf = &doc.slots[0];
+        assert!(source_vegetation_cutout(leaf));
+        assert!(!needs_alpha_blending(leaf));
+        // CryEngine uses the opacity map for light transmission through
+        // foliage; red/alpha must not drive silhouette rejection.
+        assert!(!unverified_solid_body_opacity(leaf));
+        let ordinary = evolve_core::parse_material(
+            br#"<Material Name="Body" Shader="Illum">
+                    <Textures><Texture Map="Diffuse" File="body.tif"/></Textures>
+                </Material>"#,
+        )
+        .unwrap();
+        assert!(!source_vegetation_cutout(&ordinary.slots[0]));
+        let translucent =
+            evolve_core::parse_material(br#"<Material Shader="Vegetation" Opacity="0.5"/>"#)
+                .unwrap();
+        assert!(!source_vegetation_cutout(&translucent.slots[0]));
+    }
+
+    #[test]
     fn solid_character_opacity_mask_is_depth_opaque_not_alpha_blended() {
         let make = |shader: &str, scalar: Option<f32>, with_mask: bool| evolve_core::MaterialSlot {
             name: "Goliath_Body".into(),
             shader: shader.into(),
             opacity: scalar,
+            alpha_test: None,
             glow_amount: None,
             alpha_glow: false,
             diffuse_tint: None,
@@ -1719,6 +1808,8 @@ mod tests {
             index_count: 3,
             visible: true,
             transparent: false,
+            foliage_cutout: false,
+            alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&image)),
             normal: None,
             emissive: None,
@@ -2120,6 +2211,7 @@ mod tests {
                 path: "characters/armor.dds".into(),
             }],
             opacity: None,
+            alpha_test: None,
             glow_amount: None,
             alpha_glow: false,
             diffuse_tint: None,

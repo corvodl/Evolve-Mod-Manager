@@ -10,6 +10,9 @@ struct Camera {
 @group(0) @binding(1) var tex_sampler: sampler;
 @group(0) @binding(2) var albedo: texture_2d<f32>;
 @group(0) @binding(3) var authored_opacity: texture_2d<f32>;
+// Material-authored AlphaTest normalized to 0..1. The default 0.5 is
+// supplied only if the selected original MTL did not specify a threshold.
+@group(0) @binding(4) var<uniform> authored_cutoff: vec4<f32>;
 struct Output {
   @builtin(position) clip: vec4<f32>,
   @location(0) uv: vec2<f32>,
@@ -43,10 +46,12 @@ fn vs_main(
 // Shared lighting, preserving the original source alpha only for materials
 // explicitly routed through the transparent pipeline. CryEngine can store
 // gloss, masks and other non-opacity data in a diffuse texture's alpha.
-fn shade(input:Output)->vec4<f32> {
+fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   let base=textureSample(albedo,tex_sampler,input.uv);
-  let coverage=textureSample(authored_opacity,tex_sampler,input.uv).r;
-  if (coverage < 0.5) { discard; }
+  if (use_opacity_mask) {
+    let coverage=textureSample(authored_opacity,tex_sampler,input.uv).r;
+    if (coverage < 0.5) { discard; }
+  }
   var n=input.normal;
   if length(n)<0.01 {
     n=normalize(cross(dpdx(input.world),dpdy(input.world)));
@@ -61,12 +66,24 @@ fn fs_opaque(input:Output)->@location(0) vec4<f32> {
   // Without this alpha override, a cliff/terrain/prop using packed diffuse
   // alpha can punch a transparent hole in the editor window and reveal the
   // desktop or Activity window behind it, even over the opaque backdrop.
-  let color=shade(input);
+  let color=shade(input,true);
+  return vec4<f32>(color.rgb,1.0);
+}
+
+@fragment
+fn fs_foliage(input:Output)->@location(0) vec4<f32> {
+  // CryEngine Vegetation: cut the original diffuse alpha at 50% (default
+  // AlphaTest). The separate Opacity map is leaf thickness/transmittance.
+  // Discarded fragments neither write depth nor reveal the desktop; surviving
+  // fragments write opaque window alpha and regular world depth.
+  let leaf_alpha=textureSample(albedo,tex_sampler,input.uv).a;
+  if (leaf_alpha < authored_cutoff.x) { discard; }
+  let color=shade(input,false);
   return vec4<f32>(color.rgb,1.0);
 }
 
 @fragment
 fn fs_main(input:Output)->@location(0) vec4<f32> {
   // Preserve real authored transparency in the separately blended pipeline.
-  return shade(input);
+  return shade(input,true);
 }

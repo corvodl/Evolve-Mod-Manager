@@ -83,6 +83,10 @@ pub struct MaterialSlot {
     /// (CryEngine may use that alpha for gloss, masking or emission).
     #[serde(default)]
     pub opacity: Option<f32>,
+    /// CryEngine authored AlphaTest cutoff normalized to 0..1. Unlike Opacity,
+    /// this clips foliage rather than alpha-blending the whole polygon.
+    #[serde(default)]
+    pub alpha_test: Option<f32>,
     /// Original material GlowAmount (e.g. 3.0 is not "100%" by assumption).
     #[serde(default)]
     pub glow_amount: Option<f32>,
@@ -144,6 +148,29 @@ fn material_opacity(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError>
         ));
     }
     Ok(Some(value))
+}
+
+fn material_alpha_test(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
+    let Some(raw) = attr(node, b"AlphaTest")? else {
+        return Ok(None);
+    };
+    let number = raw
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| MaterialError::Xml("Invalid authored AlphaTest cutoff".into()))?;
+    if !number.is_finite() || !(0.0..=100.0).contains(&number) {
+        return Err(MaterialError::Xml(
+            "AlphaTest cutoff must be finite and in 0..1 or 0..100".into(),
+        ));
+    }
+    // Compiled MTL values are normally normalized (0.5); the Sandbox UI
+    // exposes percentages (50). Preserve both encodings, never infer a cutoff
+    // from DDS alpha contents or a material filename.
+    Ok(Some(if number <= 1.0 {
+        number
+    } else {
+        number / 100.0
+    }))
 }
 
 fn authored_glow_amount(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
@@ -407,6 +434,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         attr(&node, b"Name")?.unwrap_or_else(|| format!("Material{}", slots.len()));
                     let shader = attr(&node, b"Shader")?.unwrap_or_default();
                     let opacity = material_opacity(&node)?;
+                    let alpha_test = material_alpha_test(&node)?;
                     let glow_amount = authored_glow_amount(&node)?;
                     if let Some((_, parent)) = material_indices.last() {
                         nonleaf[*parent] = true;
@@ -416,6 +444,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader,
                         maps: Vec::new(),
                         opacity,
+                        alpha_test,
                         glow_amount,
                         alpha_glow: source_alpha_glow(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
@@ -482,6 +511,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader: attr(&node, b"Shader")?.unwrap_or_default(),
                         maps: Vec::new(),
                         opacity: material_opacity(&node)?,
+                        alpha_test: material_alpha_test(&node)?,
                         glow_amount: authored_glow_amount(&node)?,
                         alpha_glow: source_alpha_glow(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
@@ -700,6 +730,57 @@ pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> 
 mod tests {
     use super::*;
     use crate::inventory::{AssetEntry, AssetKind};
+
+    #[test]
+    fn world_vehicle_texture_lookup_does_not_use_unrelated_basename() {
+        let result = scoped_texture_candidates(
+            "allterraincar01.tif",
+            "objects/man_made/vehicles/allterraincar01/allterraincar01.mtl",
+        )
+        .unwrap();
+        assert_eq!(
+            result[0],
+            "objects/man_made/vehicles/allterraincar01/allterraincar01.dds.0"
+        );
+        assert!(
+            result
+                .iter()
+                .any(|p| p == "objects/man_made/vehicles/allterraincar01/allterraincar01.dds")
+        );
+        assert!(!result.iter().any(|p| p.contains("vehicles/other_car/")));
+        let spec = scoped_texture_candidates(
+            "allterraincar01_spec.tif",
+            "objects/man_made/vehicles/allterraincar01/allterraincar01.mtl",
+        )
+        .unwrap();
+        assert_eq!(
+            spec[0],
+            "objects/man_made/vehicles/allterraincar01/allterraincar01_spec.dds.0"
+        );
+    }
+
+    #[test]
+    fn authored_alpha_test_cutoff_is_per_leaf_and_does_not_change_opacity() {
+        let doc = parse_material(
+            br#"<Material><SubMaterials>
+            <Material Name="Leaves" Shader="Vegetation" Opacity="1" AlphaTest="0.72"/>
+            <Material Name="Fern" Shader="Vegetation" AlphaTest="35"/>
+            <Material Name="Default" Shader="Vegetation"/>
+            <Material Name="Body" Shader="Illum" AlphaTest="0.15"/>
+        </SubMaterials></Material>"#,
+        )
+        .unwrap();
+        assert_eq!(doc.slots[0].alpha_test, Some(0.72));
+        assert_eq!(doc.slots[0].opacity, Some(1.0));
+        assert_eq!(doc.slots[1].alpha_test, Some(0.35));
+        assert_eq!(doc.slots[2].alpha_test, None);
+        assert_eq!(doc.slots[3].alpha_test, Some(0.15));
+        for raw in ["NaN", "-1", "105", "inf", "text"] {
+            assert!(
+                parse_material(format!("<Material AlphaTest=\\\"{raw}\\\"/>").as_bytes()).is_err()
+            );
+        }
+    }
 
     #[test]
     fn glow_amount_is_preserved_per_leaf_without_invented_percent_calibration() {

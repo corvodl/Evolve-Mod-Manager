@@ -1,0 +1,167 @@
+# Model preview indexing and level material/lighting follow-up
+
+## Model loading
+The Model Viewer now shares the Level Editor's operation-scoped, exact-build
+Asset Library manifest index. Instead of repeating full cross-PAK catalog and
+manifest reads for every part/material/texture, the model worker builds one
+lookup table at the start of dependency discovery, compiled model inspection,
+CDF geometry/material assembly, DDS preview, or material/damage material loading.
+The scope is thread-local to the blocking worker, so there is no shared mutable
+cross-thread index and it is released on both success and failure.
+
+The lookup is **not** a material guessing fallback: the same build tag, exact
+authored virtual paths, original source material slots, metadata byte size,
+and canonical-path containment rules still apply. When no unambiguous selected
+build exists, normal fail-closed lookup remains in effect.
+
+### Acceptance on real imported Stage 2 maps and characters
+- Compare first-open and repeated-open latency (CDF characters with many
+  attached parts, ordinary CGF and standalone SKIN/CHR). Record total time,
+  source geometry time, dependency-index time, DDS decode and GPU upload.
+- Verify identical material slots, diffuse/normal/emissive/opacity results,
+  UV0, glow values and subset counts before and after the optimization.
+- Re-run high-mip DDS and missing/ambiguous/cross-build references; do not
+  compensate for absent source files with nearest-basename matches.
+- Confirm model viewer progress stays responsive and preview cache remains
+  bounded. This change does not itself optimize GPU upload, mesh decoding or
+  the renderer's drawing cost.
+
+## Why gray map geometry remains
+The Level Editor's **missing geometry** count is not a texture-success count.
+An imported CGF can decode correctly with no safe authored diffuse texture.
+The scene status now counts unique model/material pairs with no verified
+diffuse separately from unreadable models; repeated instances are not counted
+as separate texture failures.
+
+Original baked terrain color requires the exact map-owned
+`LevelData/TerrainTexture.xml` and `terraintexture.pak` matching the selected
+build. A readable terrain layer-ID bitmap is *not* the baked ground image.
+If these assets are absent from the imported snapshot, report which is missing
+and import the appropriate source PAK; never borrow another map's atlas.
+
+Still needed for full original materials:
+- Inspect each missing model/material pair's original MtlName, mesh subset
+  table and referenced MTL leaf; report missing, ambiguous, source-only
+  and unsupported formats separately.
+- Resolve additional DDS dependencies only from the exact selected build.
+- Add validated multi-part / multi-material subset mapping rather than
+  painting multi-leaf materials into an unknown slot.
+
+## Map lighting feasibility
+CryEngine 3 levels may store authored environmental and time-of-day parameters
+in `LevelData/Environment.xml` and `LevelData/TimeOfDay.xml`, plus local
+light/probe entities in mission or layer XML. These must be discovered by the
+exact map's virtual directory and build, not by matching map names globally.
+
+Planned stages:
+1. Read-only inventory and XML decode; report lighting assets and source
+   light entities with raw position/color/radius/intensity where available.
+2. Reconstruct sun direction, ambient light, fog and exposure through validated
+   time-of-day keyframes; provide original/neutral lighting toggle.
+3. Add local point/spot light transforms with physically plausible falloff
+   and shadow support, then env-probe/cubemap assets.
+4. Check in-game reference screenshots at identical camera/time-of-day
+   settings. Original CryEngine deferred rendering, GI and baked probes
+   cannot be assumed identical to wgpu output.
+
+CryEngine level-file documentation:
+https://www.cryengine.com/docs/static/engines/cryengine-3/categories/1638401/pages/1605643
+
+## Tutorial terrain and vegetation follow-up
+
+The Tutorial map's activity log verifies 271/271 *requested scene asset
+references*, but that number covers geometry/MTL reference verification, not
+all DDS dependencies in those MTLs. In particular the authored source
+`objects/man_made/vehicles/allterraincar01/allterraincar01.mtl` requests
+`allterraincar01.tif` and `allterraincar01_spec.tif`; both must resolve
+to exact owner-qualified cooked `.dds.0` or `.dds` in the same imported build.
+When neither exists, the viewer now reports the first source-qualified
+candidates searched, selected build, and the need to import the original
+matching texture PAKs. The loader does NOT invent the missing textures.
+
+The cross-PAK terrain resolver now checks
+`Levels/<map>/LevelData/TerrainTexture.xml` before the old flattened
+`Levels/<map>/TerrainTexture.xml`. The tile package remains
+`Levels/<map>/terraintexture.pak`. Both are checked against the exact
+map owner and unique build; if a source file truly is absent, the terrain
+must remain neutral instead of borrowing another map's baked colors.
+A synthetic multi-PAK Tutorial fixture verifies map-owned metadata and
+tile-package references.
+
+Vegetation materials preserve the original per-leaf `AlphaTest` threshold
+from MTL, supporting the normalized 0..1 and editor percentage 0..100
+encodings. A missing original value uses the documented 0.5 default.
+The Level Editor sends each threshold to its world shader via a per-surface
+uniform; the Model Viewer uses the previously unused fourth component of its
+emission uniform, including after glow-slider updates. Only source-authored
+Vegetation shader materials at full opacity enable diffuse-alpha cutouts;
+do not apply packed diffuse alpha to opaque character body materials.
+
+Windows acceptance remains necessary to confirm the source texture archives
+are present and the rendered foliage matches Evolve at close-up zoom.
+
+
+## Nested Tutorial archive ownership (source import screenshot)
+
+A separate `terraintexture.pak` is visibly imported from the **Stage 2**
+`Game/levels/Tutorial` folder with four extracted members, as is
+`level.pak`. The earlier resolver only searched for the path
+`Levels/Tutorial/terraintexture.pak` *inside* the imported PAKs; a
+container's own name is not a member path. That assumption explains the
+misleading "missing PAK" message.
+
+The map-specific resolver now matches imported archives by:
+- Exactly the selected map's original `Game` installation root and
+  `levels/Tutorial` source directory, never the other `Legacy` root;
+- A compatible build label, or an unlabeled independently imported sibling
+  from that same original Game root;
+- The precise `level.pak` and `terraintexture.pak` archive names, not
+  an unrelated basename search.
+
+It looks for `LevelData/TerrainTexture.xml` within the imported
+`level.pak` and for a validated `CRY\0` baked surface stream *among
+the extracted members* of the already imported `terraintexture.pak`.
+Each selected extracted member is still manifest-bound by byte length,
+ordinary-file status and canonical containment. A synthetic 4-member
+Tutorial import and unrelated Legacy sibling are covered by regression test.
+
+If the four imported files contain an alternative tile/sector representation
+rather than a `CRY\0` raw surface stream, that format remains to be decoded
+from real member names, and the activity window now explicitly lists those
+names instead of falsely claiming the PAK itself is missing. **Importing a
+PAK is not evidence its member format matches the existing raw-quadtree
+parser.** No original PAK is modified or recompressed.
+
+
+## Ground-color tile layouts verified from user-provided exports
+
+Two map-owned `terraintexture` exports confirm that these archives use
+**the same RGB24 encoding at different grid sizes**, not necessarily separate
+codecs:
+
+| Source | Members | Grid | Per tile | Atlas |
+| --- | ---: | --- | --- | --- |
+| Tutorial | 4 | 2×2 | 1024² RGB24 | 2048² RGBA8 |
+| Ice_Crashsite | 16 | 4×4 | 1024² RGB24 | 4096² RGBA8 |
+
+Each raw tile contains 8 little-endian bytes (`u32 width`, `u32 height`)
+followed by `width * height * 3` RGB bytes. Side-to-side edge comparison
+confirms `tileX_Y` means X across and Y down: the adjoining edges are
+continuous in both provided maps.
+
+The importer now **automatically detects a complete NxN tile set** from the
+map-owned, manifest-verified archive, supporting either `tileX_Y.raw` or
+`files/tileX_Y.raw`. It checks exact source/build ownership, duplicate
+coordinates, all required tiles, regular file sizes, dimensions and bounded
+atlas memory; no Tile files are synthesized or borrowed from adjacent maps.
+It retains the existing CRY quadtree decoder as an independent format route.
+The Level Editor binds the resulting atlas to the terrain world material
+even when separately authored TerrainTexture.xml metadata is absent, and
+reports actual atlas dimensions rather than a hard-coded 2048×2048.
+
+Limits are explicit rather than promising arbitrary unknown binary formats:
+at most eight tiles per axis and 4096 pixels per atlas side. Other encodings,
+texture-compression variants or larger atlases should report an actionable
+unsupported-format error until a source-backed parser is added. Synthetic
+2×2 and 4×4 tests and truncated/missing-member tests cover the new path.
+The original user-supplied game images are not stored in the repository.

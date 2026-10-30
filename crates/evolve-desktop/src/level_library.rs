@@ -7,7 +7,8 @@ use crate::{
 };
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
-    parse_level_scene, read_terrain, read_terrain_paint, read_terrain_texture_atlas,
+    imported_archive_preview_inventory, imported_library, parse_level_scene, read_terrain,
+    read_terrain_paint, read_terrain_rgb24_tiles, read_terrain_texture_atlas,
     read_terrain_texture_header, scan_directory,
 };
 use std::collections::BTreeMap;
@@ -86,6 +87,268 @@ fn map_virtual_folder(map: &MapCandidate) -> Option<String> {
         .find(|folder| !folder.is_empty())
 }
 
+/// The original exported CryEngine map layout places metadata in
+/// LevelData but the baked terrain package at the map root. An older
+/// flattened import can contain a root-level XML; only try that legacy
+/// exact map-owned path after the primary source path is absent.
+fn terrain_virtual_candidates(folder: &str, member: &str) -> Result<Vec<String>, String> {
+    match member.to_ascii_lowercase().as_str() {
+        "terraintexture.xml" => Ok(vec![
+            format!("{folder}/LevelData/TerrainTexture.xml"),
+            format!("{folder}/TerrainTexture.xml"),
+        ]),
+        "terraintexture.pak" => Ok(vec![format!("{folder}/terraintexture.pak")]),
+        _ => Err(format!("Unsupported map-owned terrain member: {member}")),
+    }
+}
+
+/// An archive's *source folder* is part of its CryEngine virtual namespace.
+/// For example, Game/levels/Tutorial/level.pak contains LevelData/TerrainTexture.xml,
+/// while Game/levels/Tutorial/terraintexture.pak is an imported PAK in its own
+/// right. These are not necessarily game-virtual member names in a manifest.
+/// Require the exact map directory and the same original Game installation
+/// as the selected level PAK: similarly named Legacy imports cannot leak in.
+fn source_game_root(pak: &ImportedPak) -> Option<PathBuf> {
+    let source = Path::new(&pak.source);
+    source
+        .ancestors()
+        .find(|parent| {
+            parent
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Game"))
+        })
+        .and_then(|game| fs::canonicalize(game).ok())
+}
+
+fn source_map_parent(pak: &ImportedPak, game: &Path, map_folder: &str) -> bool {
+    let Some(parent) = Path::new(&pak.source).parent() else {
+        return false;
+    };
+    let Ok(canonical) = fs::canonicalize(parent) else {
+        return false;
+    };
+    let Ok(relative) = canonical.strip_prefix(game) else {
+        return false;
+    };
+    relative
+        .to_string_lossy()
+        .replace('\\', "/")
+        .eq_ignore_ascii_case(map_folder)
+}
+
+/// Validate the manifest's extracted member bytes and containment before
+/// treating them as possible terrain inputs. No original on-disk PAK is
+/// modified, scanned as an unrelated ZIP, or interpreted by filename alone.
+fn imported_terrain_member(
+    inventory: &Inventory,
+    relative: &str,
+) -> Result<Option<PathBuf>, String> {
+    auto_resources::exact(inventory, relative, None, None)
+}
+
+#[derive(Clone, Debug)]
+enum TerrainResource {
+    Cry(PathBuf),
+    Rgb24 { paths: Vec<PathBuf>, side: usize },
+}
+
+impl TerrainResource {
+    #[cfg(test)]
+    fn file(&self) -> Option<&Path> {
+        match self {
+            Self::Cry(path) => Some(path),
+            Self::Rgb24 { .. } => None,
+        }
+    }
+}
+
+/// Verify a complete square tile grid within a SINGLE imported PAK.
+/// Accepted members have the original "tileX_Y.raw" spelling, optionally
+/// beneath the import's "files/" prefix. No unrelated filename or missing
+/// coordinate may be substituted. Individual file contents are validated by
+/// the bounded RGB24 decoder after these manifest-backed paths resolve.
+fn imported_rgb24_tile_grid(
+    inventory: &Inventory,
+) -> Result<Option<(Vec<PathBuf>, usize)>, String> {
+    let mut tiles = BTreeMap::<(usize, usize), String>::new();
+    for entry in &inventory.entries {
+        let lower = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
+        let name = lower.strip_prefix("files/").unwrap_or(&lower);
+        if !(name.starts_with("tile") && name.ends_with(".raw")) || name.contains('/') {
+            continue;
+        }
+        let coordinates = &name[4..name.len() - 4];
+        let (x, y) = coordinates.split_once('_').ok_or_else(|| {
+            format!(
+                "Malformed imported RGB24 terrain tile: {}",
+                entry.relative_path
+            )
+        })?;
+        if x.is_empty()
+            || y.is_empty()
+            || !x.bytes().all(|b| b.is_ascii_digit())
+            || !y.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(format!(
+                "Malformed imported RGB24 terrain coordinate: {}",
+                entry.relative_path
+            ));
+        }
+        let x = x.parse::<usize>().map_err(|e| e.to_string())?;
+        let y = y.parse::<usize>().map_err(|e| e.to_string())?;
+        if x >= 8 || y >= 8 {
+            return Err(
+                "Imported RGB24 terrain grid exceeds the bounded eight-tile-per-axis limit".into(),
+            );
+        }
+        if tiles.insert((x, y), entry.relative_path.clone()).is_some() {
+            return Err(format!("Ambiguous duplicate terrain RGB24 tile {x}_{y}"));
+        }
+    }
+    if tiles.is_empty() {
+        return Ok(None);
+    }
+    let side = tiles
+        .keys()
+        .map(|(x, y)| x.max(y))
+        .max()
+        .copied()
+        .unwrap_or(0)
+        + 1;
+    if side.checked_mul(side) != Some(tiles.len()) {
+        return Err(format!(
+            "Incomplete imported terrain RGB24 grid: {} members for expected {side}x{side} tiles",
+            tiles.len()
+        ));
+    }
+    let mut verified = Vec::with_capacity(tiles.len());
+    for y in 0..side {
+        for x in 0..side {
+            let name = tiles
+                .get(&(x, y))
+                .ok_or_else(|| format!("Missing imported terrain RGB24 tile{x}_{y}.raw"))?;
+            verified
+                .push(imported_terrain_member(inventory, name)?.ok_or_else(|| {
+                    format!("Unavailable verified imported terrain tile: {name}")
+                })?);
+        }
+    }
+    Ok(Some((verified, side)))
+}
+
+fn imported_map_terrain(
+    selected: &ImportedPak,
+    folder: &str,
+    member_name: &str,
+) -> Result<Option<TerrainResource>, String> {
+    let Some(game) = source_game_root(selected) else {
+        return Ok(None);
+    };
+    let Some(library_root) = Path::new(&selected.directory).parent() else {
+        return Ok(None);
+    };
+    let library = imported_library(library_root).map_err(|error| error.to_string())?;
+    if selected.builds.len() > 1 {
+        return Err("Selected map belongs to multiple imported builds; choose a specific build before resolving terrain".into());
+    }
+    let selected_build = selected.builds.first().map(String::as_str);
+    let mut found: Vec<TerrainResource> = Vec::new();
+    let mut matching_pak_details = Vec::new();
+    let mut matching_pak_members = Vec::new();
+    for archive in &library.archives {
+        // Unlabeled archives imported from the exact same Game directory
+        // are admissible. A *known different* build is never admissible.
+        // This handles independently imported Tutorial level/terrain PAKs.
+        let same_build = match selected_build {
+            Some(label) => {
+                archive.builds.is_empty() || archive.builds.iter().any(|build| build == label)
+            }
+            // An unlabelled selected map may have individually imported
+            // same-source siblings with one known label. The original Game
+            // root and exact map directory still have to match, and duplicate
+            // candidate archives fail closed below.
+            None => archive.builds.len() <= 1,
+        };
+        if archive.id == selected.id
+            || !same_build
+            || source_game_root(archive).as_deref() != Some(game.as_path())
+            || !source_map_parent(archive, &game, folder)
+        {
+            continue;
+        }
+        let is_terrain_pak = archive.name.eq_ignore_ascii_case("terraintexture.pak");
+        let is_level_pak = archive.name.eq_ignore_ascii_case("level.pak");
+        if !is_terrain_pak && !is_level_pak {
+            continue;
+        }
+        let inventory = imported_archive_preview_inventory(archive).map_err(|e| e.to_string())?;
+        if member_name.eq_ignore_ascii_case("TerrainTexture.xml") {
+            for relative in [
+                "LevelData/TerrainTexture.xml",
+                "TerrainTexture.xml",
+                &format!("{folder}/LevelData/TerrainTexture.xml"),
+                &format!("{folder}/TerrainTexture.xml"),
+            ] {
+                if let Some(path) = imported_terrain_member(&inventory, relative)? {
+                    // Multiple accepted virtual spellings may resolve to one
+                    // exact manifest file. Only separate files are ambiguous.
+                    if !found.iter().any(|existing| {
+                        matches!(existing, TerrainResource::Cry(other) if other == &path)
+                    }) {
+                        found.push(TerrainResource::Cry(path));
+                    }
+                }
+            }
+        } else if member_name.eq_ignore_ascii_case("terraintexture.pak") && is_terrain_pak {
+            // The imported 'terraintexture.pak' ZIP is a container, not an
+            // extracted file named terraintexture.pak. Look inside *that exact
+            // source archive* for a member with a verified CRY terrain header.
+            // Do not pass the outer ZIP archive to the baked-quadtree decoder.
+            matching_pak_details.push(format!(
+                "{} ({} extracted members)",
+                archive.name,
+                inventory.entries.len()
+            ));
+            for entry in &inventory.entries {
+                if matching_pak_members.len() < 24 {
+                    matching_pak_members.push(entry.relative_path.clone());
+                }
+                if entry.byte_size < 24 || entry.byte_size > 2 * 1024 * 1024 * 1024 {
+                    continue;
+                }
+                let Some(path) = imported_terrain_member(&inventory, &entry.relative_path)? else {
+                    continue;
+                };
+                if read_terrain_texture_header(&path).is_ok()
+                    && !found.iter().any(|existing| {
+                        matches!(existing, TerrainResource::Cry(other) if other == &path)
+                    })
+                {
+                    found.push(TerrainResource::Cry(path));
+                }
+            }
+            // Tile RGB24 layouts vary by map (Tutorial 2x2,
+            // Ice_Crashsite 4x4). Detect the complete NxN set from the
+            // original manifest, not a fixed number or a map-name whitelist.
+            if let Some((paths, side)) = imported_rgb24_tile_grid(&inventory)? {
+                found.push(TerrainResource::Rgb24 { paths, side });
+            }
+        }
+    }
+    match found.len() {
+        0 if !matching_pak_details.is_empty() => Err(format!(
+            "Imported {} for {folder}, but none of its extracted members has a valid CRY baked-terrain tile header. The imported ZIP/signed archive's member layout must be decoded explicitly rather than feeding the outer PAK to the raw tile decoder. Imported files: {}",
+            matching_pak_details.join(", "),
+            matching_pak_members.join(", ")
+        )),
+        0 => Ok(None),
+        1 => Ok(found.pop()),
+        _ => Err(format!(
+            "Multiple same-build imported sources have {member_name} for {folder}; refusing an ambiguous terrain selection"
+        )),
+    }
+}
+
 fn terrain_resource(
     source_root: &Path,
     selected: &ImportedPak,
@@ -93,13 +356,13 @@ fn terrain_resource(
     map: &MapCandidate,
     manifest_entry: Option<&PathBuf>,
     member_name: &str,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<TerrainResource>, String> {
     if let Some(relative) = manifest_entry {
-        return verified_source(source_root, relative, 2 * 1024 * 1024 * 1024).map(Some);
+        return verified_source(source_root, relative, 2 * 1024 * 1024 * 1024)
+            .map(|path| Some(TerrainResource::Cry(path)));
     }
     let folder = map_virtual_folder(map)
         .ok_or_else(|| "Cannot determine the original map's virtual folder".to_owned())?;
-    let requested = format!("{folder}/{member_name}");
     let loaded_inventory = if inventory.is_none() {
         Some(imported_archive_files(selected).map_err(|e| e.to_string())?)
     } else {
@@ -108,9 +371,25 @@ fn terrain_resource(
     let selected_inventory = inventory
         .or(loaded_inventory.as_ref())
         .ok_or_else(|| "No verified imported map inventory".to_owned())?;
-    let library_root = Path::new(&selected.directory).parent();
     let build = (selected.builds.len() == 1).then(|| selected.builds[0].as_str());
-    auto_resources::exact(selected_inventory, &requested, library_root, build)
+    // Cross-PAK lookup without a unique build label can silently take a
+    // terrain package from another game version. Local selected-file hits
+    // remain valid even when external dependency lookup is disabled.
+    let library_root = build.and_then(|_| Path::new(&selected.directory).parent());
+    for requested in terrain_virtual_candidates(&folder, member_name)? {
+        // Preserve the original exact virtual map owner and selected build.
+        // A conflicting or unsafe match is an error, not permission to try
+        // a similarly named resource from a different level.
+        if let Some(path) =
+            auto_resources::exact(selected_inventory, &requested, library_root, build)?
+        {
+            return Ok(Some(TerrainResource::Cry(path)));
+        }
+    }
+    // The original source archive's folder may define the virtual prefix.
+    // In the Tutorial import, a separate "level.pak" can contain the map's
+    // LevelData XML, and "terraintexture.pak" is itself a ZIP/imported archive.
+    imported_map_terrain(selected, &folder, member_name)
 }
 
 fn verified_source(root: &Path, relative: &Path, max_bytes: u64) -> Result<PathBuf, String> {
@@ -429,28 +708,35 @@ fn open_selected(
             ),
             Err(error) => diagnostics.push(format!("Terrain paint data unsupported: {error}")),
         }
-        match (&terrain_xml, &terrain_pak) {
-            (Some(xml), Some(pak)) => match read_terrain_texture_header(pak) {
-                Ok(header) => {
-                    diagnostics.push(format!(
-                        "Original map-owned baked terrain v{} found in the imported build ({} texture layers; formats/sizes: {}). TerrainTexture.xml: {}",
-                        header.version, header.layers.len(),
-                        header.layers.iter().map(|layer| format!(
-                            "{}×{} / format {} / {} bytes",
-                            layer.sector_pixels, layer.sector_pixels,
-                            layer.texture_format, layer.sector_bytes
-                        )).collect::<Vec<_>>().join("; "),
-                        xml.display()
-                    ));
-                }
+        match &terrain_pak {
+            Some(TerrainResource::Cry(pak)) => match read_terrain_texture_header(pak) {
+                Ok(header) => diagnostics.push(format!(
+                    "Original map-owned baked CRY terrain v{} found ({} layers, {} sectors).",
+                    header.version,
+                    header.layers.len(),
+                    header.layers.iter().map(|layer| format!(
+                        "{}×{} / format {} / {} bytes",
+                        layer.sector_pixels, layer.sector_pixels,
+                        layer.texture_format, layer.sector_bytes,
+                    )).collect::<Vec<_>>().join("; ")
+                )),
                 Err(error) => diagnostics.push(format!(
                     "Original baked terrain package {} could not be decoded: {error}",
                     pak.display()
                 )),
             },
-            _ => diagnostics.push(
-                "Original baked ground color unavailable: exact map-owned TerrainTexture.xml and terraintexture.pak are not both present in the selected imported build.".into()
+            Some(TerrainResource::Rgb24 { paths, side }) => diagnostics.push(format!(
+                "Original map-owned baked terrain RGB24 tile grid: {side}×{side} ({} verified imported raw members).",
+                paths.len()
+            )),
+            None => diagnostics.push(
+                "Original baked terrain color unavailable: no verified map-owned CRY tile stream or complete RGB24 tile grid in the selected build.".into()
             ),
+        }
+        if terrain_xml.is_none() {
+            diagnostics.push(
+                "Original map TerrainTexture.xml is not available; the baked ground color can still be decoded from a complete RGB24 tile grid.".into()
+            );
         }
         match read_terrain(&exact, 129) {
             Ok(data) => {
@@ -494,11 +780,15 @@ fn open_selected(
         project_inventory.as_ref(),
     )?;
     if terrain.is_some()
-        && terrain_xml.is_some()
         && let Some(package) = &terrain_pak
     {
-        match read_terrain_texture_atlas(package).map_err(|err| err.to_string()) {
+        let decoded = match package {
+            TerrainResource::Cry(path) => read_terrain_texture_atlas(path),
+            TerrainResource::Rgb24 { paths, side } => read_terrain_rgb24_tiles(paths, *side),
+        };
+        match decoded.map_err(|err| err.to_string()) {
             Ok(atlas) => {
+                let dimensions = atlas.image.dimensions();
                 let mut applied = false;
                 if let (Some(assembled), Some((terrain_mesh, _))) =
                     (full_scene.as_mut(), terrain.as_ref())
@@ -525,8 +815,11 @@ fn open_selected(
                     assembled.world = std::sync::Arc::new(world);
                 }
                 diagnostics.push(format!(
-                    "Original baked terrain: decoded {} indexed surface tiles (BC/RGBA format {}) into 2048×2048 ground-color atlas. {}",
-                    atlas.decoded_tiles, atlas.color_format,
+                    "Original baked terrain: decoded {} tiles ({}) into {}×{} ground-color atlas. {}",
+                    atlas.decoded_tiles,
+                    if atlas.color_format == 3 { "RGB24".to_owned() }
+                    else { format!("CRY format {}", atlas.color_format) },
+                    dimensions.0, dimensions.1,
                     if applied { "Applied to terrain GPU material." }
                     else { "No verified terrain material span to receive the color atlas." }
                 ));
@@ -575,10 +868,321 @@ mod tests {
     }
 
     #[test]
+    fn terrain_resources_follow_original_leveldata_export_layout() {
+        assert_eq!(
+            terrain_virtual_candidates("levels/tutorial", "TerrainTexture.xml").unwrap(),
+            vec![
+                "levels/tutorial/LevelData/TerrainTexture.xml",
+                "levels/tutorial/TerrainTexture.xml",
+            ]
+        );
+        assert_eq!(
+            terrain_virtual_candidates("levels/tutorial", "terraintexture.pak").unwrap(),
+            vec!["levels/tutorial/terraintexture.pak"]
+        );
+        assert!(terrain_virtual_candidates("levels/tutorial", "../terraintexture.pak").is_err());
+        assert!(
+            !terrain_virtual_candidates("levels/tutorial", "TerrainTexture.xml")
+                .unwrap()
+                .iter()
+                .any(|candidate| candidate.contains("levels/desert_canyon"))
+        );
+    }
+
+    #[test]
+    fn map_owned_baked_terrain_resolves_across_selected_build_archives() {
+        let root = tempfile::tempdir().unwrap();
+        let map_id = "11111111111111111111";
+        let tex_id = "22222222222222222222";
+        let map_folder = root.path().join(format!("map.pak__{map_id}"));
+        let tex_folder = root.path().join(format!("terrain.pak__{tex_id}"));
+        for folder in [&map_folder, &tex_folder] {
+            std::fs::create_dir_all(folder.join("files")).unwrap();
+        }
+        let map_path = "Levels/Tutorial/LevelData/Heightmap.dat";
+        let xml_path = "Levels/Tutorial/LevelData/TerrainTexture.xml";
+        let pak_path = "Levels/Tutorial/terraintexture.pak";
+        for (folder, virtual_name, bytes) in [
+            (&map_folder, map_path, b"MAP!".as_slice()),
+            (&tex_folder, xml_path, b"XML!".as_slice()),
+            (&tex_folder, pak_path, b"PAK!".as_slice()),
+        ] {
+            let target = folder.join("files").join(virtual_name);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, bytes).unwrap();
+        }
+        for (folder, name, entries) in [
+            (&map_folder, "map.pak", vec![map_path]),
+            (&tex_folder, "terrain.pak", vec![xml_path, pak_path]),
+        ] {
+            std::fs::write(
+                folder.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1,
+                    "name": name,
+                    "source": "/verified",
+                    "entries": entries.iter().map(|path|
+                        serde_json::json!({"path": path, "bytes": 4})
+                    ).collect::<Vec<_>>()
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            root.path().join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "builds": {
+                    "stage-two": {"label": "Stage 2",
+                        "members": {"11111111111111111111": {}, "22222222222222222222": {}}}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let library = evolve_core::imported_library(root.path()).unwrap();
+        let selected = library
+            .archives
+            .iter()
+            .find(|archive| archive.name == "map.pak")
+            .unwrap();
+        let inventory = evolve_core::imported_archive_preview_inventory(selected).unwrap();
+        let map = MapCandidate {
+            name: "Tutorial".into(),
+            layers: Vec::new(),
+            terrain: Some(PathBuf::from(map_path)),
+            vegetation: None,
+            terrain_texture_xml: None,
+            terrain_texture_pak: None,
+        };
+        let source_root = Path::new(&inventory.root);
+        let xml = terrain_resource(
+            source_root,
+            selected,
+            Some(&inventory),
+            &map,
+            None,
+            "TerrainTexture.xml",
+        )
+        .unwrap()
+        .unwrap();
+        let pak = terrain_resource(
+            source_root,
+            selected,
+            Some(&inventory),
+            &map,
+            None,
+            "terraintexture.pak",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(std::fs::read(xml.file().unwrap()).unwrap(), b"XML!");
+        assert_eq!(std::fs::read(pak.file().unwrap()).unwrap(), b"PAK!");
+        assert!(
+            terrain_resource(
+                source_root,
+                selected,
+                Some(&inventory),
+                &map,
+                None,
+                "other.pak"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn imported_grid_autodetection_supports_tutorial_and_ice_crashsite() {
+        for side in [2usize, 4usize] {
+            let dir = tempfile::tempdir().unwrap();
+            let files = dir.path().join("files");
+            std::fs::create_dir_all(&files).unwrap();
+            for y in 0..side {
+                for x in 0..side {
+                    let filename = files.join(format!("tile{x}_{y}.raw"));
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&4u32.to_le_bytes());
+                    bytes.extend_from_slice(&4u32.to_le_bytes());
+                    for _ in 0..16 {
+                        bytes.extend_from_slice(&[x as u8 * 50, y as u8 * 50, 128]);
+                    }
+                    std::fs::write(&filename, bytes).unwrap();
+                }
+            }
+            let inventory = scan_directory(dir.path()).unwrap();
+            let (paths, resolved_side) = imported_rgb24_tile_grid(&inventory).unwrap().unwrap();
+            assert_eq!(resolved_side, side);
+            assert_eq!(paths.len(), side * side);
+            let atlas = read_terrain_rgb24_tiles(&paths, resolved_side).unwrap();
+            assert_eq!(
+                atlas.image.dimensions(),
+                ((4 * side) as u32, (4 * side) as u32)
+            );
+            assert_eq!(
+                atlas
+                    .image
+                    .get_pixel((4 * side - 1) as u32, (4 * side - 1) as u32)
+                    .0,
+                [((side - 1) * 50) as u8, ((side - 1) * 50) as u8, 128, 255]
+            );
+            std::fs::remove_file(files.join(format!("tile{}_{}.raw", side - 1, side - 1))).unwrap();
+            let missing = scan_directory(dir.path()).unwrap();
+            assert!(imported_rgb24_tile_grid(&missing).is_err());
+        }
+    }
+
+    #[test]
     fn map_groups_resolve_parent_map_not_layers_subfolder() {
         assert_eq!(map_group("Levels/Distillery/Layers/A.lyr").1, "Distillery");
         assert_eq!(map_group("Levels/Distillery/Heightmap.dat").1, "Distillery");
         assert_eq!(map_group("MyMap/Layers/A.lyr").1, "MyMap");
+    }
+
+    #[test]
+    fn imported_tutorial_archive_containers_supply_map_relative_terrain() {
+        let dir = tempfile::tempdir().unwrap();
+        let library_root = dir.path().join("AssetLibrary");
+        let game = dir.path().join("Stage2/Game");
+        let map_dir = game.join("levels/Tutorial");
+        let legacy = dir.path().join("Legacy/Game/levels/Tutorial");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&map_dir).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        let mut cry_tiles = Vec::new();
+        cry_tiles.extend_from_slice(b"CRY\0");
+        cry_tiles.extend_from_slice(&[100, 0]);
+        cry_tiles.extend_from_slice(&9u16.to_le_bytes());
+        cry_tiles.extend_from_slice(&1u16.to_le_bytes());
+        cry_tiles.extend_from_slice(&0u16.to_le_bytes());
+        cry_tiles.extend_from_slice(&1.0f32.to_le_bytes());
+        cry_tiles.extend_from_slice(&4u16.to_le_bytes());
+        cry_tiles.extend_from_slice(&0u16.to_le_bytes());
+        cry_tiles.extend_from_slice(&2u32.to_le_bytes());
+        cry_tiles.extend_from_slice(&64u32.to_le_bytes());
+        cry_tiles.extend_from_slice(&5u16.to_le_bytes());
+        for index in [0i16, -1, -1, -1, -1] {
+            cry_tiles.extend_from_slice(&index.to_le_bytes());
+        }
+        for _ in 0..16 {
+            cry_tiles.extend_from_slice(&[48, 96, 144, 255]);
+        }
+
+        let install = |id: &str, name: &str, source: &Path, members: Vec<(&str, Vec<u8>)>| {
+            let directory = library_root.join(format!("{name}__{id}"));
+            let root = directory.join("files");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(source, b"original archive untouched").unwrap();
+            let mut entries = Vec::new();
+            for (relative, data) in members {
+                let target = root.join(relative);
+                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                std::fs::write(&target, &data).unwrap();
+                entries.push(serde_json::json!({"path":relative,"bytes":data.len()}));
+            }
+            std::fs::write(
+                directory.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "name": name,
+                    "source": source.to_string_lossy(), "entries": entries
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        install(
+            "11111111111111111111",
+            "levels_tutorial.pak",
+            &game.join("levels_tutorial.pak"),
+            vec![("Levels/Tutorial/Heightmap.dat", b"MAP!".to_vec())],
+        );
+        install(
+            "22222222222222222222",
+            "level.pak",
+            &map_dir.join("level.pak"),
+            vec![(
+                "LevelData/TerrainTexture.xml",
+                b"<TerrainTexture/>".to_vec(),
+            )],
+        );
+        install(
+            "33333333333333333333",
+            "terraintexture.pak",
+            &map_dir.join("terraintexture.pak"),
+            vec![
+                ("terrain/sector.dat", cry_tiles.clone()),
+                ("other/0.bin", vec![1]),
+                ("other/1.bin", vec![2]),
+                ("other/2.bin", vec![3]),
+            ],
+        );
+        install(
+            "44444444444444444444",
+            "terraintexture.pak",
+            &legacy.join("terraintexture.pak"),
+            vec![("terrain/sector.dat", cry_tiles)],
+        );
+        std::fs::write(
+            library_root.join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "builds": {
+                    "stage-two": {"label":"Stage 2", "members":{
+                        "11111111111111111111":{},
+                        "33333333333333333333":{},
+                        "44444444444444444444":{}
+                    }}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let catalog = imported_library(&library_root).unwrap();
+        let selected = catalog
+            .archives
+            .iter()
+            .find(|pak| pak.name == "levels_tutorial.pak")
+            .unwrap();
+        let inventory = imported_archive_files(selected).unwrap();
+        let map = MapCandidate {
+            name: "Tutorial".into(),
+            layers: Vec::new(),
+            terrain: Some(PathBuf::from("Levels/Tutorial/Heightmap.dat")),
+            vegetation: None,
+            terrain_texture_xml: None,
+            terrain_texture_pak: None,
+        };
+        let root = Path::new(&inventory.root);
+        let xml = terrain_resource(
+            root,
+            selected,
+            Some(&inventory),
+            &map,
+            None,
+            "TerrainTexture.xml",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            std::fs::read(xml.file().unwrap()).unwrap(),
+            b"<TerrainTexture/>"
+        );
+        let pak = terrain_resource(
+            root,
+            selected,
+            Some(&inventory),
+            &map,
+            None,
+            "terraintexture.pak",
+        )
+        .unwrap()
+        .unwrap();
+        let path = pak.file().unwrap();
+        // Windows canonical paths carry a \\?\ device prefix; compare
+        // normalized absolute paths, not a raw tempdir path.
+        assert!(path.starts_with(std::fs::canonicalize(&library_root).unwrap()));
+        assert_eq!(read_terrain_texture_header(path).unwrap().version, 9);
+        assert_eq!(read_terrain_texture_atlas(path).unwrap().decoded_tiles, 1);
     }
 
     #[test]
