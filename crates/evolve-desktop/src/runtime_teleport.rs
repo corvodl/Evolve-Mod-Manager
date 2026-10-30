@@ -916,7 +916,9 @@ mod windows {
                     }
                     if let Err(error) = writer.write(r.entity + 0x4C, &bytes) {
                         yaw_writes_enabled = false;
-                        eprintln!("Fly Mode actor yaw sync disabled; WASD remains camera-relative: {error}");
+                        eprintln!(
+                            "Fly Mode actor yaw sync disabled; WASD remains camera-relative: {error}"
+                        );
                     }
                 }
                 if input.active() {
@@ -1235,15 +1237,25 @@ mod tests {
         })
         .unwrap();
         assert!(actor.x * camera.x + actor.y * camera.y < -0.85);
-        let origin = Position { x: 0.0, y: 0.0, z: 30.0 };
+        let origin = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 30.0,
+        };
         let moved = fly_step(
             origin,
             camera,
-            FlyInput { forward: 1.0, ..FlyInput::default() },
+            FlyInput {
+                forward: 1.0,
+                ..FlyInput::default()
+            },
             10.0,
             0.05,
         );
-        assert!(moved.x < -0.45, "W follows camera, not opposite-facing actor");
+        assert!(
+            moved.x < -0.45,
+            "W follows camera, not opposite-facing actor"
+        );
         assert!((moved.z - origin.z).abs() < 0.001);
     }
 
@@ -1251,8 +1263,11 @@ mod tests {
     fn yaw_lock_preserves_actor_tilt_and_ignores_camera_pitch() {
         let actor = [0.8660254_f32, 0.5, 0.0, 0.0]; // +60 degrees local X pitch
         let camera = camera_forward(Position {
-            x: -0.8, y: 0.6, z: 0.0,
-        }).unwrap();
+            x: -0.8,
+            y: 0.6,
+            z: 0.0,
+        })
+        .unwrap();
         let adjusted = camera_aligned_actor_rotation(actor, camera)
             .unwrap()
             .expect("yaw must change");
@@ -1264,7 +1279,11 @@ mod tests {
         // Multiplication by a world-Z yaw preserves local pitch/roll.
         let tilt = (adjusted[1] * adjusted[1] + adjusted[2] * adjusted[2]).sqrt();
         assert!((tilt - 0.5).abs() < 0.001);
-        assert!(camera_aligned_actor_rotation(adjusted, camera).unwrap().is_none());
+        assert!(
+            camera_aligned_actor_rotation(adjusted, camera)
+                .unwrap()
+                .is_none()
+        );
         assert!(camera_aligned_actor_rotation([0.0; 4], camera).is_err());
     }
 
