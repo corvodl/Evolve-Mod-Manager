@@ -631,6 +631,80 @@ mod tests {
     }
 
     #[test]
+    fn map_owned_baked_terrain_resolves_across_selected_build_archives() {
+        let root = tempfile::tempdir().unwrap();
+        let map_id = "11111111111111111111";
+        let tex_id = "22222222222222222222";
+        let map_folder = root.path().join(format!("map.pak__{map_id}"));
+        let tex_folder = root.path().join(format!("terrain.pak__{tex_id}"));
+        for folder in [&map_folder, &tex_folder] {
+            std::fs::create_dir_all(folder.join("files")).unwrap();
+        }
+        let map_path = "Levels/Tutorial/LevelData/Heightmap.dat";
+        let xml_path = "Levels/Tutorial/LevelData/TerrainTexture.xml";
+        let pak_path = "Levels/Tutorial/terraintexture.pak";
+        for (folder, virtual_name, bytes) in [
+            (&map_folder, map_path, b"MAP!".as_slice()),
+            (&tex_folder, xml_path, b"XML!".as_slice()),
+            (&tex_folder, pak_path, b"PAK!".as_slice()),
+        ] {
+            let target = folder.join("files").join(virtual_name);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, bytes).unwrap();
+        }
+        for (folder, name, entries) in [
+            (&map_folder, "map.pak", vec![map_path]),
+            (&tex_folder, "terrain.pak", vec![xml_path, pak_path]),
+        ] {
+            std::fs::write(
+                folder.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1,
+                    "name": name,
+                    "source": "/verified",
+                    "entries": entries.iter().map(|path|
+                        serde_json::json!({"path": path, "bytes": 4})
+                    ).collect::<Vec<_>>()
+                })).unwrap(),
+            ).unwrap();
+        }
+        std::fs::write(
+            root.path().join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "builds": {
+                    "stage-two": {"label": "Stage 2",
+                        "members": {map_id: {}, tex_id: {}}}
+                }
+            })).unwrap(),
+        ).unwrap();
+        let library = evolve_core::imported_library(root.path()).unwrap();
+        let selected = library.archives.iter()
+            .find(|archive| archive.name == "map.pak").unwrap();
+        let inventory = evolve_core::imported_archive_preview_inventory(selected).unwrap();
+        let map = MapCandidate {
+            name: "Tutorial".into(),
+            layers: Vec::new(),
+            terrain: Some(PathBuf::from(map_path)),
+            vegetation: None,
+            terrain_texture_xml: None,
+            terrain_texture_pak: None,
+        };
+        let source_root = Path::new(&inventory.root);
+        let xml = terrain_resource(
+            source_root, selected, Some(&inventory), &map, None, "TerrainTexture.xml"
+        ).unwrap().unwrap();
+        let pak = terrain_resource(
+            source_root, selected, Some(&inventory), &map, None, "terraintexture.pak"
+        ).unwrap().unwrap();
+        assert_eq!(std::fs::read(xml).unwrap(), b"XML!");
+        assert_eq!(std::fs::read(pak).unwrap(), b"PAK!");
+        assert!(terrain_resource(
+            source_root, selected, Some(&inventory), &map, None, "other.pak"
+        ).is_err());
+    }
+
+    #[test]
     fn map_groups_resolve_parent_map_not_layers_subfolder() {
         assert_eq!(map_group("Levels/Distillery/Layers/A.lyr").1, "Distillery");
         assert_eq!(map_group("Levels/Distillery/Heightmap.dat").1, "Distillery");
