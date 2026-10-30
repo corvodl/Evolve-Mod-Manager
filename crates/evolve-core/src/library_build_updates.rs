@@ -32,6 +32,10 @@ struct BuildSnapshot {
     build_id: String,
     source_root: String,
     members: BTreeMap<String, BuildMember>,
+    /// Only archive extractions created by this managed update process may
+    /// be reclaimed. Historical snapshots default to none (fail closed).
+    #[serde(default)]
+    owned_extractions: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -387,6 +391,8 @@ pub fn apply_library_build_updates(
         return Err("Asset Library changed after preview. Scan this build again.".into());
     }
     let mut members = plan.previous.clone();
+    let mut owned_extractions = latest_snapshot(&library, &plan.build_id, &root)?
+        .map_or_else(BTreeSet::new, |snapshot| snapshot.owned_extractions);
     for name in &plan.removed {
         members.remove(name);
     }
@@ -452,6 +458,9 @@ pub fn apply_library_build_updates(
                     reused += 1;
                 }
                 if let Some(imported) = imported {
+                    if !imported.already_imported {
+                        owned_extractions.insert(imported.id.clone());
+                    }
                     report.imported.push(imported);
                 }
             }
@@ -482,6 +491,7 @@ pub fn apply_library_build_updates(
         build_id: plan.build_id.clone(),
         source_root: root.to_string_lossy().into_owned(),
         members,
+        owned_extractions,
     };
     let mut temp = tempfile::Builder::new()
         .prefix(".build-snapshot-")
@@ -637,10 +647,13 @@ fn only_owned_extractions(
             );
         }
     }
+    // An archive may have existed as a standalone manual import before a
+    // managed snapshot referenced it. Only delete files with explicit
+    // managed-import provenance; old snapshots without this field retain
+    // their extracted bytes rather than guessing ownership.
     let owned = target
         .iter()
-        .flat_map(|snapshot| snapshot.members.values())
-        .map(|item| item.archive_id.clone())
+        .flat_map(|snapshot| snapshot.owned_extractions.iter().cloned())
         .collect::<BTreeSet<_>>();
     let mut retained_shared = 0usize;
     let catalog = imported_library(library).map_err(|e| e.to_string())?;
@@ -1001,6 +1014,36 @@ mod tests {
         assert!(old.join("shared.pak").exists());
         assert_eq!(imported_library(&library).unwrap().archives.len(), 1);
         assert_eq!(managed_library_builds(&library).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn manual_import_that_is_later_linked_to_build_is_not_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let game = temp.path().join("game");
+        fs::create_dir_all(&library).unwrap();
+        fs::create_dir_all(&game).unwrap();
+        let source = game.join("manual.pak");
+        let mut archive = zip::ZipWriter::new(File::create(&source).unwrap());
+        archive.start_file("data.bin", zip::write::SimpleFileOptions::default()).unwrap();
+        archive.write_all(b"existing import").unwrap();
+        archive.finish().unwrap();
+        let manually_imported = import_signed_library_pak_with_keys(&library, &source, &[]).unwrap();
+        let plan = scan_library_build_updates(&library, &game).unwrap();
+        assert_eq!(plan.unchanged, 1);
+        apply_library_build_updates(
+            &library, &plan, &[], &AtomicBool::new(false), &AtomicUsize::new(0)
+        ).unwrap();
+        let builds = managed_library_builds(&library).unwrap();
+        assert_eq!(builds.len(), 1);
+        assert_eq!(builds[0].reclaimable_paks, 0);
+        let removed = remove_managed_library_build(
+            &library, &builds[0].id, &builds[0].source_root
+        ).unwrap();
+        assert_eq!(removed.removed_archives, 0);
+        assert!(source.is_file());
+        assert!(imported_library(&library).unwrap().archives
+            .iter().any(|archive| archive.id == manually_imported.id));
     }
 
     #[test]

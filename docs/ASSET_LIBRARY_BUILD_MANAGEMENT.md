@@ -53,3 +53,13 @@ source PAKs, and a rejected stale confirmation. Windows CI and manual
 full-game acceptance are required before release. SHA-256 scans still need to
 read source PAKs once; the optimization avoids redundant disk **copies and
 decompression**, not initial content verification.
+
+
+### Ownership guard for deletion
+
+Only extraction directories that the managed update actually **created** are
+marked reclaimable. An archive imported manually before a build was registered
+is preserved even if that build later references it. Snapshots created before
+this ownership metadata was available are still removable as build metadata,
+but their unproven extraction directories are deliberately retained. The
+UI reports only safe, provable reclaimable storage.
