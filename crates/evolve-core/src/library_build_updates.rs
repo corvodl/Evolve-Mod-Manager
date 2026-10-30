@@ -1029,25 +1029,37 @@ mod tests {
         fs::create_dir_all(&game).unwrap();
         let source = game.join("manual.pak");
         let mut archive = zip::ZipWriter::new(File::create(&source).unwrap());
-        archive.start_file("data.bin", zip::write::SimpleFileOptions::default()).unwrap();
+        archive
+            .start_file("data.bin", zip::write::SimpleFileOptions::default())
+            .unwrap();
         archive.write_all(b"existing import").unwrap();
         archive.finish().unwrap();
-        let manually_imported = import_signed_library_pak_with_keys(&library, &source, &[]).unwrap();
+        let manually_imported =
+            import_signed_library_pak_with_keys(&library, &source, &[]).unwrap();
         let plan = scan_library_build_updates(&library, &game).unwrap();
         assert_eq!(plan.unchanged, 1);
         apply_library_build_updates(
-            &library, &plan, &[], &AtomicBool::new(false), &AtomicUsize::new(0)
-        ).unwrap();
+            &library,
+            &plan,
+            &[],
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        )
+        .unwrap();
         let builds = managed_library_builds(&library).unwrap();
         assert_eq!(builds.len(), 1);
         assert_eq!(builds[0].reclaimable_paks, 0);
-        let removed = remove_managed_library_build(
-            &library, &builds[0].id, &builds[0].source_root
-        ).unwrap();
+        let removed =
+            remove_managed_library_build(&library, &builds[0].id, &builds[0].source_root).unwrap();
         assert_eq!(removed.removed_archives, 0);
         assert!(source.is_file());
-        assert!(imported_library(&library).unwrap().archives
-            .iter().any(|archive| archive.id == manually_imported.id));
+        assert!(
+            imported_library(&library)
+                .unwrap()
+                .archives
+                .iter()
+                .any(|archive| archive.id == manually_imported.id)
+        );
     }
 
     #[test]
