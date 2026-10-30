@@ -1906,9 +1906,10 @@ impl Operation {
             Self::ExportPng(source, dest) => export_dds_png(&source, &dest)
                 .map(|info| Completed::ExportedPng(info, dest))
                 .map_err(|e| e.to_string()),
-            Self::CompileDds(source, dest, format) =>
+            Self::CompileDds(source, dest, format) => {
                 modding_projects::compile_standalone_dds(&source, &dest, format)
-                    .map(|info| Completed::CompiledDds(info, dest)),
+                    .map(|info| Completed::CompiledDds(info, dest))
+            }
         }
     }
 }

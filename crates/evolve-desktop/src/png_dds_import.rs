@@ -318,7 +318,9 @@ pub(super) fn compile_standalone(
         DdsFormat::Bc5 => (b"ATI2", 16),
         _ => return Err("Standalone compiler supports BC1, BC3 and BC5 only".into()),
     };
-    if !png.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+    if !png
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
         || !output
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("dds"))
@@ -328,7 +330,9 @@ pub(super) fn compile_standalone(
     if fs::symlink_metadata(output).is_ok() {
         return Err("Output already exists; refusing to overwrite it".into());
     }
-    let parent = output.parent().ok_or("Output path has no parent directory")?;
+    let parent = output
+        .parent()
+        .ok_or("Output path has no parent directory")?;
     if !fs::symlink_metadata(parent)
         .map_err(|e| format!("Output directory unavailable: {e}"))?
         .file_type()
@@ -381,7 +385,12 @@ pub(super) fn compile_standalone(
     header[80..84].copy_from_slice(&4u32.to_le_bytes());
     header[84..88].copy_from_slice(fourcc);
     header[108..112].copy_from_slice(
-        &(if mipmaps > 1 { 0x0040_1008u32 } else { 0x1000u32 }).to_le_bytes(),
+        &(if mipmaps > 1 {
+            0x0040_1008u32
+        } else {
+            0x1000u32
+        })
+        .to_le_bytes(),
     );
     let mut bytes = header.to_vec();
     for mip in 0..mipmaps {
@@ -451,9 +460,11 @@ mod tests {
             assert_eq!((info.width, info.height, info.mipmaps), (8, 4, 4));
             assert_eq!(&fs::read(&dds).unwrap()[84..88], fourcc);
             let before = fs::read(&dds).unwrap();
-            assert!(compile_standalone(&png, &dds, format)
-                .unwrap_err()
-                .contains("exists"));
+            assert!(
+                compile_standalone(&png, &dds, format)
+                    .unwrap_err()
+                    .contains("exists")
+            );
             assert_eq!(fs::read(&dds).unwrap(), before);
         }
     }

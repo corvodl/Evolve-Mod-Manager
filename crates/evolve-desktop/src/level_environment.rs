@@ -74,7 +74,11 @@ fn value(source: &str) -> Option<([f32; 3], bool)> {
 fn keys(source: &str) -> Result<(Vec<Key>, usize), String> {
     let mut parsed = Vec::new();
     let mut ignored_out_of_range = 0;
-    for (index, raw) in source.split(',').filter(|entry| !entry.trim().is_empty()).enumerate() {
+    for (index, raw) in source
+        .split(',')
+        .filter(|entry| !entry.trim().is_empty())
+        .enumerate()
+    {
         // Count source entries, not only accepted entries: invalid keys cannot
         // evade the per-spline memory and parsing budget.
         if index >= 512 {
