@@ -252,8 +252,8 @@ fn local(n: &Node, overrides: Option<&HashMap<&str, Vec<f32>>>) -> Result<Mat4, 
         [0., 0., 0., 1.],
     ];
     for row in m.iter_mut().take(3) {
-        for (component, value) in row.iter_mut().take(3).zip(s) {
-            *component *= value;
+        for (component, value) in row.iter_mut().take(3).zip(&s) {
+            *component *= *value;
         }
     }
     if m.iter().flatten().any(|v| !v.is_finite()) {
