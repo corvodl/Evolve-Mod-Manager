@@ -420,12 +420,20 @@ fn blocked_install_file(plan: &PreparedUpdate) -> Result<Option<PathBuf>, Update
             }
             Ok(_) => {}
         }
-        match OpenOptions::new().write(true).open(&path) {
+        // A standard user cannot request write access to a Program Files
+        // executable even when it is completely unlocked. Probe with a
+        // read-only handle that denies sharing instead: on Windows this
+        // detects open files without requiring administrator privileges.
+        let mut probe = OpenOptions::new();
+        probe.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            probe.share_mode(0);
+        }
+        match probe.open(&path) {
             Ok(_) => {}
-            Err(error)
-                if matches!(error.raw_os_error(), Some(32 | 33))
-                    || error.kind() == io::ErrorKind::PermissionDenied =>
-            {
+            Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => {
                 return Ok(Some(path));
             }
             Err(error) => return Err(UpdateError::Io(error)),
@@ -815,6 +823,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("evolve-mod-manager.exe");
         fs::write(&exe, b"unchanged").unwrap();
+        // Simulate an installation whose binaries are readable but not
+        // writable by the non-elevated updater helper.
+        let mut permissions = fs::metadata(&exe).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&exe, permissions).unwrap();
         let mut plan = mock_plan(dir.path());
         plan.kind = InstallationKind::Installed;
         assert!(blocked_install_file(&plan).unwrap().is_none());
