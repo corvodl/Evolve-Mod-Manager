@@ -458,7 +458,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 state.level_time_of_day,
                 Message::LevelTimeOfDayChanged,
             )
-            .step(0.25)
+            .step(0.25_f32)
             .width(Fill),
             row![
                 design::button("Dawn").on_press(Message::LevelTimePreset(6.0)),
