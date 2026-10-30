@@ -345,6 +345,7 @@ struct GpuSurface {
     range: std::ops::Range<u32>,
     transparent: bool,
     masked: bool,
+    foliage_cutout: bool,
     opacity_map: bool,
     bind_group: wgpu::BindGroup,
     _emission_uniform: wgpu::Buffer,
@@ -359,6 +360,7 @@ pub struct Pipeline {
     world_renderer: super::world_instances::Renderer,
     render_pipeline: wgpu::RenderPipeline,
     masked_pipeline: wgpu::RenderPipeline,
+    foliage_pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
     opacity_pipeline: wgpu::RenderPipeline,
     ground_pipeline: wgpu::RenderPipeline,
@@ -751,6 +753,40 @@ impl Pipeline {
             multiview: None,
             cache: None,
         });
+        let foliage_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Evolve vegetation diffuse-alpha cutout"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &program,
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::descriptor()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &program,
+                entry_point: Some("fs_foliage"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
         let translucent_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Evolve authored transparent material"),
             layout: Some(&pipeline_layout),
@@ -1023,6 +1059,7 @@ impl Pipeline {
             world_renderer: super::world_instances::Renderer::new(device, format),
             render_pipeline,
             masked_pipeline,
+            foliage_pipeline,
             translucent_pipeline,
             opacity_pipeline,
             ground_pipeline,
@@ -1185,6 +1222,7 @@ impl Pipeline {
             ];
             let mut views = Vec::with_capacity(7);
             let mut opacity_uploaded = false;
+            let mut diffuse_uploaded = false;
             for (role, (image, fallback, format, label)) in inputs.into_iter().enumerate() {
                 // A DDS may be shared by many assembly sections. View/texture
                 // identities are source-arc + GPU role (color-space aware).
@@ -1221,6 +1259,9 @@ impl Pipeline {
                     self._surface_textures.push(texture);
                     views.push(view);
                 }
+                if role == 0 && selected.is_some() {
+                    diffuse_uploaded = true;
+                }
                 if role == 5 && selected.is_some() {
                     opacity_uploaded = true;
                 }
@@ -1247,7 +1288,8 @@ impl Pipeline {
             self.gpu_surfaces.push(GpuSurface {
                 range: part.first_index..part.first_index + part.index_count,
                 transparent: part.transparent && (part.opacity.is_none() || opacity_uploaded),
-                masked: !part.transparent && opacity_uploaded,
+                masked: !part.transparent && opacity_uploaded && !part.foliage_cutout,
+                foliage_cutout: part.foliage_cutout && diffuse_uploaded,
                 opacity_map: opacity_uploaded,
                 bind_group: group,
                 _emission_uniform: emission_uniform,
@@ -1514,7 +1556,9 @@ impl Pipeline {
                 // Write the depth of every opaque original face before any
                 // transparent section; authoring order is not render order.
                 for surface in self.gpu_surfaces.iter().filter(|part| !part.transparent) {
-                    pass.set_pipeline(if surface.masked {
+                    pass.set_pipeline(if surface.foliage_cutout {
+                        &self.foliage_pipeline
+                    } else if surface.masked {
                         &self.masked_pipeline
                     } else {
                         &self.render_pipeline
@@ -1753,6 +1797,12 @@ mod tests {
                 .entry_points
                 .iter()
                 .any(|entry| entry.name == "fs_masked")
+        );
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_foliage")
         );
         assert!(
             module
