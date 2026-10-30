@@ -643,7 +643,7 @@ fn indexed_reference(
                 }
             }
             if !hits.is_empty() {
-                return Some(Ok(resolve_verified_duplicate_textures(hits)));
+                return Some(Ok(resolve_verified_duplicate_textures(hits, true)));
             }
         }
         Some(Ok(LibraryReferenceStatus::Missing))
@@ -654,7 +654,10 @@ fn indexed_reference(
 /// the same authored cooked DDS may be treated as one asset. The fast cached
 /// lookup and the normal imported resolver use identical conflict semantics.
 /// Missing, oversized, unsafe, or different textures still fail closed.
-fn resolve_verified_duplicate_textures(mut hits: Vec<LibraryReference>) -> LibraryReferenceStatus {
+fn resolve_verified_duplicate_textures(
+    mut hits: Vec<LibraryReference>,
+    selected_build: bool,
+) -> LibraryReferenceStatus {
     hits.sort_by(|a, b| a.archive_id.cmp(&b.archive_id));
     if hits.len() == 1 {
         return LibraryReferenceStatus::Found(hits.remove(0));
@@ -663,7 +666,10 @@ fn resolve_verified_duplicate_textures(mut hits: Vec<LibraryReference>) -> Libra
         return LibraryReferenceStatus::Missing;
     }
     let path = hits[0].relative_path.to_ascii_lowercase();
-    if hits.len() > MAX_IDENTICAL_TEXTURE_COPIES
+    // No build selection means hits may belong to different game versions:
+    // even byte-identical files must remain ambiguous in that case.
+    if !selected_build
+        || hits.len() > MAX_IDENTICAL_TEXTURE_COPIES
         || !(path.ends_with(".dds") || path.ends_with(".dds.0"))
         || !hits
             .iter()
@@ -839,7 +845,7 @@ fn resolve_imported_reference_scoped(
         .into_iter()
         .find(|group| !group.is_empty())
         .unwrap_or_default();
-    Ok(resolve_verified_duplicate_textures(hits))
+    Ok(resolve_verified_duplicate_textures(hits, build_label.is_some()))
 }
 
 #[cfg(test)]
@@ -861,7 +867,7 @@ mod tests {
         };
         let x = make("a", &a);
         let y = make("b", &b);
-        match resolve_verified_duplicate_textures(vec![y.clone(), x.clone()]) {
+        match resolve_verified_duplicate_textures(vec![y.clone(), x.clone()], true) {
             LibraryReferenceStatus::Found(found) => {
                 assert_eq!(found.archive_id, "a");
                 assert_eq!(found.relative_path, virtual_name);
@@ -870,12 +876,12 @@ mod tests {
         }
         fs::write(&b, b"another game texture revision").unwrap();
         assert!(matches!(
-            resolve_verified_duplicate_textures(vec![x.clone(), y.clone()]),
+            resolve_verified_duplicate_textures(vec![x.clone(), y.clone()], true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         fs::remove_file(&b).unwrap();
         assert!(matches!(
-            resolve_verified_duplicate_textures(vec![x, y]),
+            resolve_verified_duplicate_textures(vec![x, y], true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
     }
@@ -897,19 +903,26 @@ mod tests {
             resolve_verified_duplicate_textures(vec![
                 hit("a", "objects/a.dds", &a),
                 hit("b", "objects/b.dds", &b)
-            ]),
+            ], true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         assert!(matches!(
             resolve_verified_duplicate_textures(vec![
                 hit("a", "objects/tree.mtl", &a),
                 hit("b", "objects/tree.mtl", &b)
-            ]),
+            ], true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        assert!(matches!(
+            resolve_verified_duplicate_textures(vec![
+                hit("a", "objects/tree.dds.0", &a),
+                hit("b", "objects/tree.dds.0", &b)
+            ], false),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         let duplicate = hit("a", "objects/tree.dds.0", &a);
         assert!(matches!(
-            resolve_verified_duplicate_textures(vec![duplicate; MAX_IDENTICAL_TEXTURE_COPIES + 1]),
+            resolve_verified_duplicate_textures(vec![duplicate; MAX_IDENTICAL_TEXTURE_COPIES + 1], true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
     }
