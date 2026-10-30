@@ -760,6 +760,13 @@ pub fn rename_managed_library_build(
     managed_library_builds(&library)
 }
 
+/// Optional friendly label used by the Asset Library's build-filter UI.
+pub(crate) fn registered_build_name(library: &Path, id: &str) -> Option<String> {
+    read_registry(library).ok()?.builds.get(id)
+        .map(|row| row.display_name.clone())
+        .filter(|label| !label.is_empty())
+}
+
 fn all_without_build(all: &BTreeMap<String, Vec<BuildSnapshot>>, id: &str) -> BTreeMap<String, Vec<BuildSnapshot>> {
     let mut next = all.clone();
     next.remove(id);
