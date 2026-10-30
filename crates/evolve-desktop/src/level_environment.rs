@@ -128,7 +128,12 @@ impl TimeOfDay {
         if source.len() > MAX_XML {
             return Err("TimeOfDay.xml exceeds 4 MiB".into());
         }
-        let mut reader = Reader::from_reader(source);
+        // Original level environments can be authored XML or compiled
+        // CryXmlB. Reuse the bounded core decoder before touching attributes;
+        // never guess the header or mutate an imported source file.
+        let decoded = evolve_core::cryxml::xml_bytes(source, MAX_XML)
+            .map_err(|error| error.to_string())?;
+        let mut reader = Reader::from_reader(decoded.as_ref());
         let mut curves = BTreeMap::new();
         let mut pending: Option<(String, Curve)> = None;
         let mut initial_hour = 12.0;
@@ -252,7 +257,10 @@ pub(super) fn named_items(source: &[u8], tag: &[u8], key: &[u8]) -> Vec<String> 
     if source.len() > MAX_XML {
         return Vec::new();
     }
-    let mut reader = Reader::from_reader(source);
+    let Ok(decoded) = evolve_core::cryxml::xml_bytes(source, MAX_XML) else {
+        return Vec::new();
+    };
+    let mut reader = Reader::from_reader(decoded.as_ref());
     let mut result = Vec::new();
     loop {
         match reader.read_event() {
@@ -298,6 +306,22 @@ mod tests {
         assert_eq!(parsed.scalar("Sun color multiplier", 24.0), Some(0.04));
         assert_eq!(parsed.color("Sky color", 24.0), Some([0.2, 0.3, 0.4]));
         assert_eq!(parsed.scalar("Sun color multiplier", 12.0), Some(9.3));
+    }
+    #[test]
+    fn binary_cryxmlb_time_of_day_matches_text_source() {
+        let original = br#"<TimeOfDay Time="14"><Variable Name="Sun intensity" Value="123"><Spline Keys="0:0:36,0.5:456:36,1:0:36,"/></Variable></TimeOfDay>"#;
+        let compiled = evolve_core::cryxml::encode_xml(original, MAX_XML).unwrap();
+        let from_binary = TimeOfDay::parse(&compiled).unwrap();
+        let from_text = TimeOfDay::parse(original).unwrap();
+        assert_eq!(from_binary.count(), from_text.count());
+        assert_eq!(from_binary.keyed_variables, from_text.keyed_variables);
+        assert_eq!(from_binary.scalar("Sun intensity", 12.0), Some(456.0));
+        let particle_xml = br#"<Particles><Item Name="dust"/><Item Name="sparks"/></Particles>"#;
+        let compiled_particles = evolve_core::cryxml::encode_xml(particle_xml, MAX_XML).unwrap();
+        assert_eq!(
+            named_items(&compiled_particles, b"Item", b"Name"),
+            named_items(particle_xml, b"Item", b"Name")
+        );
     }
     #[test]
     fn outlier_only_or_unbounded_splines_fail_closed() {
