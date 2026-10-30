@@ -534,6 +534,22 @@ impl RiggedGlbPreview {
             .collect()
     }
 
+    /// Default authored TRS for a converted joint that is not keyed by the
+    /// base clip. A matrix-only joint cannot be blended without a verified
+    /// decomposition, so layered playback refuses it.
+    pub(crate) fn rest_channel(&self, node: usize, path: &str) -> Result<Vec<f32>, String> {
+        let joint = self.nodes.get(node).ok_or("Layer references missing GLB joint")?;
+        if joint.matrix.is_some() {
+            return Err("Matrix-only GLB joints cannot be layered".into());
+        }
+        match path {
+            "translation" => Ok(joint.rest_translation.to_vec()),
+            "rotation" => Ok(joint.rest_rotation.to_vec()),
+            "scale" => Ok(joint.rest_scale.to_vec()),
+            _ => Err("Unsupported layered GLB channel".into()),
+        }
+    }
+
     pub(crate) fn mesh_at(&self, samples: &[PoseSample]) -> Result<RenderMesh, String> {
         let mut changes: HashMap<usize, HashMap<&str, Vec<f32>>> = HashMap::new();
         for sample in samples {
