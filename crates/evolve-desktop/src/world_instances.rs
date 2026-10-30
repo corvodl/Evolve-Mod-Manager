@@ -988,7 +988,12 @@ mod tests {
         assert!(production.contains("foliage_cutout: make(false, true)"));
         assert!(production.contains("blend: if blend {"));
         assert!(production.contains("depth_write_enabled: !blend"));
-        assert!(production.contains("foliage_cutout: surf.foliage_cutout && source.is_some()"));
+        assert!(production.contains("foliage_cutout: surf.foliage_cutout && diffuse_uploaded"));
+        assert!(shader.contains("@group(0) @binding(5) var<uniform> light"));
+        let module = naga::front::wgsl::parse_str(shader)
+            .expect("time-of-day world shader must parse as WGSL");
+        assert!(module.entry_points.iter().any(|entry| entry.name == "fs_opaque"));
+        assert!(module.entry_points.iter().any(|entry| entry.name == "fs_foliage"));
     }
 
     #[test]
