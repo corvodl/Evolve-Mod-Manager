@@ -366,13 +366,17 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
 /// filesystem calls on every unrelated member. Callers MUST verify the exact
 /// referenced file's byte length and canonical path before opening it. Never
 /// use this function to authorize project editing, PAK swaps or modifications.
-pub fn imported_archive_preview_inventory(archive: &ImportedPak) -> Result<Inventory, LibraryError> {
+pub fn imported_archive_preview_inventory(
+    archive: &ImportedPak,
+) -> Result<Inventory, LibraryError> {
     let base = PathBuf::from(&archive.directory);
     if !fs::symlink_metadata(&base)?.file_type().is_dir() {
         return Err(LibraryError::UnsafeArchive);
     }
-    let manifest: Manifest =
-        serde_json::from_slice(&read_bounded(&base.join("asset-library.json"), MAX_MANIFEST_BYTES)?)?;
+    let manifest: Manifest = serde_json::from_slice(&read_bounded(
+        &base.join("asset-library.json"),
+        MAX_MANIFEST_BYTES,
+    )?)?;
     if manifest.version != 1
         || manifest.name != archive.name
         || manifest.entries.len() > MAX_MEMBERS
@@ -606,7 +610,9 @@ fn indexed_reference(
             let mut hits = Vec::new();
             if let Some(entries) = session.members.get(&candidate) {
                 for member in entries {
-                    if archive_name.is_some_and(|name| !member.archive_name.eq_ignore_ascii_case(name)) {
+                    if archive_name
+                        .is_some_and(|name| !member.archive_name.eq_ignore_ascii_case(name))
+                    {
                         continue;
                     }
                     let path = member.file_root.join(&member.relative_path);
@@ -885,12 +891,9 @@ mod tests {
         // source after indexing must invalidate the candidate immediately.
         {
             let _scope = begin_imported_lookup_session(root.path(), "Stage 2").unwrap();
-            let scoped = resolve_imported_reference(
-                root.path(),
-                "textures/body.tif",
-                Some("Stage 2"),
-            )
-            .unwrap();
+            let scoped =
+                resolve_imported_reference(root.path(), "textures/body.tif", Some("Stage 2"))
+                    .unwrap();
             assert!(matches!(scoped, LibraryReferenceStatus::Found(hit)
                 if hit.archive_id == archive_ids[0]));
             assert!(matches!(
@@ -907,7 +910,9 @@ mod tests {
                     .unwrap(),
                 LibraryReferenceStatus::Missing
             ));
-            assert!(resolve_imported_reference(root.path(), "../body.tif", Some("Stage 2")).is_err());
+            assert!(
+                resolve_imported_reference(root.path(), "../body.tif", Some("Stage 2")).is_err()
+            );
         }
         assert!(matches!(
             resolve_imported_reference(root.path(), "textures/body.tif", Some("Legacy")).unwrap(),
@@ -938,7 +943,10 @@ mod tests {
         let archive = &imported_library(root.path()).unwrap().archives[0];
         let preview = imported_archive_preview_inventory(archive).unwrap();
         assert_eq!(preview.entries.len(), 2);
-        assert!(matches!(imported_archive_files(archive), Err(LibraryError::Modified)));
+        assert!(matches!(
+            imported_archive_files(archive),
+            Err(LibraryError::Modified)
+        ));
         assert_eq!(
             fs::read(folder.join("files/models/building.cgf")).unwrap(),
             b"mesh"
