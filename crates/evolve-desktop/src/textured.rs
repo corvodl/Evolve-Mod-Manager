@@ -50,6 +50,8 @@ pub struct Surface {
     /// Vegetation shader diffuse alpha is an alpha-tested cutout with depth writes.
     /// The separate authored Opacity texture is foliage transmittance, not coverage.
     pub foliage_cutout: bool,
+    /// Original per-leaf AlphaTest threshold (normalized). Default preview 0.5.
+    pub alpha_cutoff: f32,
     pub diffuse: Option<Arc<image::RgbaImage>>,
     pub normal: Option<Arc<image::RgbaImage>>,
     pub emissive: Option<Arc<image::RgbaImage>>,
