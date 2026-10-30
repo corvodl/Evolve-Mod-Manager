@@ -45,7 +45,10 @@ fn array<'a>(obj: &'a Value, name: &str) -> Result<&'a [Value], String> {
         .map(Vec::as_slice)
         .ok_or_else(|| format!("Missing {name} array"))
 }
-fn vec_values<const N: usize>(value: Option<&Value>, fallback: [f32; N]) -> Result<[f32; N], String> {
+fn vec_values<const N: usize>(
+    value: Option<&Value>,
+    fallback: [f32; N],
+) -> Result<[f32; N], String> {
     let Some(value) = value else {
         return Ok(fallback);
     };
@@ -108,7 +111,9 @@ fn read_access(
     }
     let view_start = view["byteOffset"].as_u64().unwrap_or(0) as usize;
     let view_length = n(view, "byteLength")?;
-    let view_end = view_start.checked_add(view_length).ok_or("Buffer overflow")?;
+    let view_end = view_start
+        .checked_add(view_length)
+        .ok_or("Buffer overflow")?;
     if view_end > binary.len() {
         return Err("Buffer view outside GLB".into());
     }
@@ -139,12 +144,13 @@ fn read_access(
                 5123 => f32::from(u16::from_le_bytes(
                     binary[offset..offset + 2].try_into().map_err(|_| "u16")?,
                 )),
-                5125 => u32::from_le_bytes(
-                    binary[offset..offset + 4].try_into().map_err(|_| "u32")?,
-                ) as f32,
-                5126 => f32::from_le_bytes(
-                    binary[offset..offset + 4].try_into().map_err(|_| "f32")?,
-                ),
+                5125 => {
+                    u32::from_le_bytes(binary[offset..offset + 4].try_into().map_err(|_| "u32")?)
+                        as f32
+                }
+                5126 => {
+                    f32::from_le_bytes(binary[offset..offset + 4].try_into().map_err(|_| "f32")?)
+                }
                 _ => unreachable!(),
             };
             let value = if normalized {
@@ -343,7 +349,17 @@ impl RiggedGlbPreview {
         let mut uv0 = Vec::new();
         let mut joint_ids = Vec::new();
         let mut weights = Vec::new();
-        let mut reused = HashMap::<(usize, usize, usize, Option<usize>, Option<usize>, Option<usize>), (usize, usize)>::new();
+        let mut reused = HashMap::<
+            (
+                usize,
+                usize,
+                usize,
+                Option<usize>,
+                Option<usize>,
+                Option<usize>,
+            ),
+            (usize, usize),
+        >::new();
         for primitive in array(mesh, "primitives")? {
             if primitive["mode"].as_u64().unwrap_or(4) != 4 {
                 continue;
@@ -366,23 +382,29 @@ impl RiggedGlbPreview {
                 let (pos, pos_type) = read_access(doc, binary, signature.0, 3)?;
                 let (ids, id_type) = read_access(doc, binary, signature.1, 4)?;
                 let (amounts, weight_type) = read_access(doc, binary, signature.2, 4)?;
-                if pos_type != 5126 || !matches!(id_type, 5121 | 5123)
+                if pos_type != 5126
+                    || !matches!(id_type, 5121 | 5123)
                     || !matches!(weight_type, 5121 | 5123 | 5126)
-                    || pos.len() != ids.len() || pos.len() != amounts.len()
+                    || pos.len() != ids.len()
+                    || pos.len() != amounts.len()
                 {
                     return Err("Invalid skinned vertex channels".into());
                 }
-                let extra = signature.4.zip(signature.5).map(|(a, b)| {
-                    let (ids, kind_a) = read_access(doc, binary, a, 4)?;
-                    let (weights, kind_b) = read_access(doc, binary, b, 4)?;
-                    if !matches!(kind_a, 5121 | 5123)
-                        || !matches!(kind_b, 5121 | 5123 | 5126)
-                    {
-                        return Err("Invalid secondary skin channel type".into());
-                    }
-                    Ok::<_, String>((ids, weights))
-                }).transpose()?;
-                let tex = signature.3.map(|accessor| read_access(doc, binary, accessor, 2))
+                let extra = signature
+                    .4
+                    .zip(signature.5)
+                    .map(|(a, b)| {
+                        let (ids, kind_a) = read_access(doc, binary, a, 4)?;
+                        let (weights, kind_b) = read_access(doc, binary, b, 4)?;
+                        if !matches!(kind_a, 5121 | 5123) || !matches!(kind_b, 5121 | 5123 | 5126) {
+                            return Err("Invalid secondary skin channel type".into());
+                        }
+                        Ok::<_, String>((ids, weights))
+                    })
+                    .transpose()?;
+                let tex = signature
+                    .3
+                    .map(|accessor| read_access(doc, binary, accessor, 2))
                     .transpose()?
                     .map(|(values, _)| values);
                 let first = positions.len();
@@ -400,7 +422,11 @@ impl RiggedGlbPreview {
                             weight[lane + 4] = extra_weights[i][lane];
                         }
                     }
-                    if id.iter().zip(weight).any(|(&joint, w)| w > 0. && joint >= joints.len()) {
+                    if id
+                        .iter()
+                        .zip(weight)
+                        .any(|(&joint, w)| w > 0. && joint >= joints.len())
+                    {
                         return Err("Joint index exceeds skin".into());
                     }
                     let total: f32 = weight.iter().sum();
@@ -413,8 +439,12 @@ impl RiggedGlbPreview {
                     positions.push([pos[i][0], pos[i][1], pos[i][2]]);
                     joint_ids.push(id);
                     weights.push(weight);
-                    uv0.push(tex.as_ref().and_then(|v| v.get(i))
-                        .map(|v| [v[0], v[1]]).unwrap_or([0., 0.]));
+                    uv0.push(
+                        tex.as_ref()
+                            .and_then(|v| v.get(i))
+                            .map(|v| [v[0], v[1]])
+                            .unwrap_or([0., 0.]),
+                    );
                 }
                 reused.insert(signature, (first, pos.len()));
                 (first, pos.len())
@@ -439,8 +469,16 @@ impl RiggedGlbPreview {
             return Err("No supported skinned triangle mesh".into());
         }
         let preview = Self {
-            nodes, parents, mesh_node, joints, inverse_bind,
-            positions, indices, uv0, joint_ids, weights,
+            nodes,
+            parents,
+            mesh_node,
+            joints,
+            inverse_bind,
+            positions,
+            indices,
+            uv0,
+            joint_ids,
+            weights,
         };
         // A converted mesh must be internally coherent at bind pose before any
         // animation is considered. Invalid converter skinning fails closed.
@@ -448,11 +486,17 @@ impl RiggedGlbPreview {
         Ok(preview)
     }
 
-    fn world(&self, changes: &HashMap<usize, HashMap<&str, Vec<f32>>>) -> Result<Vec<Mat4>, String> {
+    fn world(
+        &self,
+        changes: &HashMap<usize, HashMap<&str, Vec<f32>>>,
+    ) -> Result<Vec<Mat4>, String> {
         fn visit(
-            id: usize, nodes: &[Node], parents: &[Option<usize>],
+            id: usize,
+            nodes: &[Node],
+            parents: &[Option<usize>],
             overrides: &HashMap<usize, HashMap<&str, Vec<f32>>>,
-            cache: &mut [Option<Mat4>], active: &mut HashSet<usize>,
+            cache: &mut [Option<Mat4>],
+            active: &mut HashSet<usize>,
         ) -> Result<Mat4, String> {
             if let Some(matrix) = cache[id] {
                 return Ok(matrix);
@@ -462,7 +506,10 @@ impl RiggedGlbPreview {
             }
             let local = local(&nodes[id], overrides.get(&id))?;
             let world = if let Some(parent) = parents[id] {
-                multiply(&visit(parent, nodes, parents, overrides, cache, active)?, &local)
+                multiply(
+                    &visit(parent, nodes, parents, overrides, cache, active)?,
+                    &local,
+                )
             } else {
                 local
             };
@@ -472,9 +519,18 @@ impl RiggedGlbPreview {
         }
         let mut cache = vec![None; self.nodes.len()];
         let mut active = HashSet::new();
-        (0..self.nodes.len()).map(|i| {
-            visit(i, &self.nodes, &self.parents, changes, &mut cache, &mut active)
-        }).collect()
+        (0..self.nodes.len())
+            .map(|i| {
+                visit(
+                    i,
+                    &self.nodes,
+                    &self.parents,
+                    changes,
+                    &mut cache,
+                    &mut active,
+                )
+            })
+            .collect()
     }
 
     pub(crate) fn mesh_at(&self, samples: &[PoseSample]) -> Result<RenderMesh, String> {
@@ -486,13 +542,19 @@ impl RiggedGlbPreview {
                 return Err("Invalid converter animation target".into());
             }
             let node = changes.entry(sample.node).or_default();
-            if node.insert(sample.path.as_str(), sample.value.clone()).is_some() {
+            if node
+                .insert(sample.path.as_str(), sample.value.clone())
+                .is_some()
+            {
                 return Err("Duplicate animated node channel".into());
             }
         }
         let world = self.world(&changes)?;
         let inverse_mesh = inverse(&world[self.mesh_node])?;
-        let palette = self.joints.iter().zip(&self.inverse_bind)
+        let palette = self
+            .joints
+            .iter()
+            .zip(&self.inverse_bind)
             .map(|(&node, bind)| multiply(&multiply(&inverse_mesh, &world[node]), bind))
             .collect::<Vec<_>>();
         let mut out = Vec::with_capacity(self.positions.len());
@@ -548,18 +610,26 @@ mod tests {
             index
         };
         let packed_f32 = |values: &[f32]| {
-            values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()
+            values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>()
         };
         let packed_u16 = |values: &[u16]| {
-            values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()
+            values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>()
         };
-        let pos = add(packed_f32(&[0.,0.,0.,1.,0.,0.,0.,1.,0.]));
-        let ids = add(packed_u16(&[0,0,0,0,0,0,0,0,0,0,0,0]));
-        let weights = add(packed_f32(&[1.,0.,0.,0.,1.,0.,0.,0.,1.,0.,0.,0.]));
-        let uv = add(packed_f32(&[0.,0.,1.,0.,0.,1.]));
-        let indices = add(packed_u16(&[0,1,2]));
+        let pos = add(packed_f32(&[0., 0., 0., 1., 0., 0., 0., 1., 0.]));
+        let ids = add(packed_u16(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        let weights = add(packed_f32(&[
+            1., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0., 0.,
+        ]));
+        let uv = add(packed_f32(&[0., 0., 1., 0., 0., 1.]));
+        let indices = add(packed_u16(&[0, 1, 2]));
         let inverse_bind = add(packed_f32(&[
-            1.,0.,0.,0., 0.,1.,0.,0., 0.,0.,1.,0., 0.,0.,0.,1.
+            1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
         ]));
         let doc = json!({
             "nodes":[
@@ -590,11 +660,13 @@ mod tests {
         let (doc, binary) = preview_doc();
         let rig = RiggedGlbPreview::from_doc(&doc, &binary).unwrap();
         let rest = rig.mesh_at(&[]).unwrap();
-        let moved = rig.mesh_at(&[PoseSample {
-            node: 1,
-            path: "translation".into(),
-            value: vec![2., 0., 0.],
-        }]).unwrap();
+        let moved = rig
+            .mesh_at(&[PoseSample {
+                node: 1,
+                path: "translation".into(),
+                value: vec![2., 0., 0.],
+            }])
+            .unwrap();
         assert_eq!(rest.positions.len(), 3);
         assert_eq!(moved.positions[0], [2., 0., 0.]);
         assert_eq!(moved.positions[1], [3., 0., 0.]);
@@ -614,10 +686,13 @@ mod tests {
         assert!(RiggedGlbPreview::from_doc(&doc, &binary).is_err());
         let (doc, binary) = preview_doc();
         let rig = RiggedGlbPreview::from_doc(&doc, &binary).unwrap();
-        assert!(rig.mesh_at(&[PoseSample {
-            node: 9000,
-            path: "rotation".into(),
-            value: vec![0.,0.,0.,1.],
-        }]).is_err());
+        assert!(
+            rig.mesh_at(&[PoseSample {
+                node: 9000,
+                path: "rotation".into(),
+                value: vec![0., 0., 0., 1.],
+            }])
+            .is_err()
+        );
     }
 }
