@@ -48,6 +48,31 @@ impl Lighting {
         }
     }
 
+    /// Original authored light properties mapped onto the existing wgpu
+    /// preview. Native tangent curves, sun position and HDR are not simulated.
+    pub fn from_original(hour: f32, source: &super::level_environment::TimeOfDay) -> Self {
+        let mut lit = Self::at(hour);
+        if let Some(rgb) = source.color("Sun color", hour) {
+            lit.sun_color = [rgb[0].max(0.0), rgb[1].max(0.0), rgb[2].max(0.0), 0.0];
+        }
+        if let Some(intensity) = source.scalar("Sun intensity", hour) {
+            let scaled = if intensity > 1000.0 { intensity / 100_000.0 } else { intensity };
+            lit.sun[3] = scaled.clamp(0.0, 4.0);
+        }
+        if let Some(multiplier) = source.scalar("Sun color multiplier", hour) {
+            for channel in &mut lit.sun_color[..3] {
+                *channel = (*channel * multiplier.clamp(0.0, 10.0)).min(8.0);
+            }
+        }
+        for name in ["Sky light color", "Sky color"] {
+            if let Some(rgb) = source.color(name, hour) {
+                lit.ambient[..3].copy_from_slice(&rgb.map(|v| v.clamp(0.0, 2.0)));
+                break;
+            }
+        }
+        lit
+    }
+
     pub fn label(hour: f32) -> String {
         let minutes = ((hour.clamp(0.0, 24.0) * 60.0).round() as u32) % 1440;
         format!("{:02}:{:02}", minutes / 60, minutes % 60)

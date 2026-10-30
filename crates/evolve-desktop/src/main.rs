@@ -40,6 +40,7 @@ mod level_camera;
 mod level_editor_shell;
 mod level_library;
 mod level_lighting;
+mod level_environment;
 mod level_pick;
 mod level_scene_renderer;
 mod level_workspace;
@@ -12537,6 +12538,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_selection.clear();
                     state.level_selected = None;
                     if let Some(assembled) = loaded.full_scene {
+                        state.level_time_of_day = assembled.world.time_of_day.as_ref()
+                            .map_or(12.0, |profile| profile.initial_hour);
                         state.level_world = Some(assembled.world.clone());
                         state.level_surfaces = Some(Arc::new(assembled.surfaces));
                         state.level_picks = Some(Arc::new(assembled.picks));

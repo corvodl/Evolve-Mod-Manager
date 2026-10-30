@@ -216,6 +216,8 @@ pub(super) struct Instance {
 pub(super) struct World {
     pub groups: Vec<ModelGroup>,
     pub instance_count: usize,
+    pub time_of_day: Option<Arc<super::level_environment::TimeOfDay>>,
+    pub source_resources: super::level_environment::ResourceSummary,
 }
 impl std::fmt::Debug for World {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -904,6 +906,7 @@ impl Renderer {
             self.world_identity = key;
             self.last_full_textures = full_textures;
             self.last_camera = None;
+            self.last_lighting_hour = f32::NAN;
         }
         let hour = if hour.is_finite() {
             hour.clamp(0.0, 24.0)
@@ -911,7 +914,11 @@ impl Renderer {
             12.0
         };
         if self.last_lighting_hour != hour {
-            let values = super::level_lighting::Lighting::at(hour).uniforms();
+            let lighting = world.time_of_day.as_ref().map_or_else(
+                || super::level_lighting::Lighting::at(hour),
+                |profile| super::level_lighting::Lighting::from_original(hour, profile),
+            );
+            let values = lighting.uniforms();
             queue.write_buffer(&self.lighting_uniform, 0, bytemuck::cast_slice(&values));
             self.last_lighting_hour = hour;
         }

@@ -96,3 +96,27 @@ build still must supply the correct cooked DDS. Missing textures must remain
 explicitly diagnosed, rather than substituted with similarly named images.
 An interactive Windows screenshot comparison of the actual maps is still
 required to confirm terrain orientation and the visual outcome.
+
+## Source-authored time of day, particle libraries, and shader discovery (PR #156)
+
+The editor now searches the verified selected map and same-build imports for
+`LevelData/TimeOfDay.xml` by exact authored virtual path. It decodes
+CryEngine `Variable` entries and `Spline Keys` (normalized 0–1 clock)
+and uses the original sun color, sun intensity, sun color multiplier, and
+recognized sky/ambient values while scrubbing Scene Settings. XML remains
+untouched. If unsupported or missing, it reports approximation mode.
+Original source keyframes are **linearly** sampled for this preview:
+CryEngine spline tangents, fog, sky, HDR, GI, probes, light entities,
+shadows, and native shaders are **not** reproduced.
+
+Verified selected-import `Libs/Particles/*.xml` libraries, `.mtl` authored
+shader assignments and `.cfx` source scripts are catalogued with bounded
+name reads, and particle-entity placements are counted. Their presence is
+shown in Scene Settings. This imports **source descriptions**, not live
+particle simulation or engine-equivalent shader code. Source-dependent
+materials continue through the existing wgpu material pipeline. Full
+particle rendering, proprietary shader translation, and accurate
+environment composition remain separate implementation and acceptance
+work. Different-game and unrelated-build fallback assets are not borrowed.
+
+CI and screenshot acceptance on actual Stage 2 maps remain necessary.

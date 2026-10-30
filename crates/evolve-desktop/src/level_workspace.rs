@@ -473,7 +473,19 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 "Textures: Balanced"
             })
             .on_press(Message::LevelFullTexturesToggled),
-            text("Preview lighting (not original CryEngine TimeOfDay.xml).")
+            text(if let Some(source) = state.level_world.as_ref()
+                .and_then(|world| world.time_of_day.as_ref()) {
+                format!("Original TimeOfDay.xml: {} variables, {} animated splines. Preview uses sampled source sun/sky values; CryEngine fog, HDR, GI and spline tangents unavailable.",
+                    source.count(), source.keyed_variables)
+            } else {
+                "No verified original TimeOfDay.xml; using approximate lighting.".to_owned()
+            })
+                .size(11)
+                .style(design::muted),
+            text(state.level_world.as_ref().map_or_else(
+                || "Original effects/shaders unavailable.".to_owned(),
+                |world| world.source_resources.description(),
+            ))
                 .size(11)
                 .style(design::muted),
         ]
