@@ -144,9 +144,9 @@ pub use rig::{
     parse_compiled_skeleton, remap_verified_weights, rigged_glb_bytes,
 };
 pub use scene::{
-    LevelScene, PlacedObject, SceneError, Transform, edit_level_transform, export_edited_layer,
-    export_edited_layers, export_edited_layers_guarded, load_level_scene, parse_level_scene,
-    parse_level_scene_read_only, ReadOnlySceneRecovery,
+    LevelScene, PlacedObject, ReadOnlySceneRecovery, SceneError, Transform, edit_level_transform,
+    export_edited_layer, export_edited_layers, export_edited_layers_guarded, load_level_scene,
+    parse_level_scene, parse_level_scene_read_only,
 };
 pub use signed_pak::{
     SignedEntry, SignedPakError, SignedPakInfo, SignedRebuildReport, extract_signed_pak,
