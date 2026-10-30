@@ -374,7 +374,7 @@ mod tests {
             assert_eq!(sample.0[3], 255);
         }
         std::fs::write(&paths[3], b"short").unwrap();
-        assert!(read_terrain_rgb24_tiles(&paths).is_err());
+        assert!(read_terrain_rgb24_tiles(&paths, 2).is_err());
     }
 
     #[test]
