@@ -538,7 +538,10 @@ impl RiggedGlbPreview {
     /// base clip. A matrix-only joint cannot be blended without a verified
     /// decomposition, so layered playback refuses it.
     pub(crate) fn rest_channel(&self, node: usize, path: &str) -> Result<Vec<f32>, String> {
-        let joint = self.nodes.get(node).ok_or("Layer references missing GLB joint")?;
+        let joint = self
+            .nodes
+            .get(node)
+            .ok_or("Layer references missing GLB joint")?;
         if joint.matrix.is_some() {
             return Err("Matrix-only GLB joints cannot be layered".into());
         }
