@@ -112,6 +112,72 @@ fn gpu_diffuse_quality<'a>(
     }
 }
 
+fn mip_chain_bytes(mut width: u32, mut height: u32) -> u64 {
+    let mut total = 0u64;
+    loop {
+        total = total.saturating_add(u64::from(width) * u64::from(height) * 4);
+        if width == 1 && height == 1 {
+            break;
+        }
+        width = (width / 2).max(1);
+        height = (height / 2).max(1);
+    }
+    total
+}
+
+fn upload_rgba_mips(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    source: Option<&image::RgbaImage>,
+    fallback: [u8; 4],
+    format: wgpu::TextureFormat,
+    label: &'static str,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let (width, height) = source.map_or((1, 1), image::RgbaImage::dimensions);
+    let mip_count = width.max(height).ilog2() + 1;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: mip_count,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let mut current = source.map(Cow::Borrowed);
+    for level in 0..mip_count {
+        let w = (width >> level).max(1);
+        let h = (height >> level).max(1);
+        let pixels = current.as_ref().map_or(fallback.as_slice(), |img| img.as_raw());
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        if level + 1 < mip_count {
+            if let Some(img) = current.as_ref() {
+                current = Some(Cow::Owned(image::imageops::resize(
+                    img.as_ref(), (w / 2).max(1), (h / 2).max(1),
+                    image::imageops::FilterType::Triangle,
+                )));
+            }
+        }
+    }
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
 fn is_ground(group: &ModelGroup) -> bool {
     group.instances.len() == 1 && group.instances[0].object_index == usize::MAX
 }
@@ -486,6 +552,7 @@ impl Renderer {
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         // Baked terrain UVs are normalized across the entire map: an edge
@@ -649,30 +716,15 @@ impl Renderer {
                     MAX_SCENE_BALANCED_TEXTURE_BYTES
                 }).saturating_sub(*used_bytes);
                 let source = surf.diffuse.as_ref().and_then(|img| {
-                    gpu_diffuse_quality(img, terrain, limit_2d, full_textures, remaining)
+                    gpu_diffuse_quality(img, terrain, limit_2d, full_textures, remaining.saturating_mul(3) / 4)
                 });
-                let (w, h, bytes) = source
-                    .as_ref()
-                    .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
-                    .unwrap_or((1, 1, &fallback[..]));
-                let tex = device.create_texture_with_data(
-                    queue,
-                    &wgpu::TextureDescriptor {
-                        label: Some("Exact source diffuse / baked ground atlas"),
-                        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                        view_formats: &[],
-                    },
-                    TextureDataOrder::LayerMajor,
-                    bytes,
+                let (w, h) = source.as_ref().map_or((1, 1), |img| img.dimensions());
+                let (tex, view) = upload_rgba_mips(
+                    device, queue, source.as_deref(), fallback,
+                    wgpu::TextureFormat::Rgba8UnormSrgb, "Original diffuse / baked ground atlas",
                 );
-                let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
                 if source.is_some() {
-                    *used_bytes = used_bytes.saturating_add(u64::from(w) * u64::from(h) * 4);
+                    *used_bytes = used_bytes.saturating_add(mip_chain_bytes(w, h));
                 }
                 cache.insert(key, (tex.clone(), view.clone()));
                 (tex, view, source.is_some())
@@ -691,29 +743,15 @@ impl Renderer {
                     MAX_SCENE_BALANCED_TEXTURE_BYTES
                 }).saturating_sub(*used_bytes);
                 let mask = surf.opacity.as_ref().and_then(|img| {
-                    gpu_diffuse_quality(img, false, limit_2d, full_textures, remaining)
+                    gpu_diffuse_quality(img, false, limit_2d, full_textures, remaining.saturating_mul(3) / 4)
                 });
-                let (mw, mh, mask_bytes) = mask.as_ref()
-                    .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
-                    .unwrap_or((1, 1, &opaque[..]));
-                let opacity_tex = device.create_texture_with_data(
-                    queue,
-                    &wgpu::TextureDescriptor {
-                        label: Some("Exact source authored opacity map"),
-                        size: wgpu::Extent3d { width: mw, height: mh, depth_or_array_layers: 1 },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                        view_formats: &[],
-                    },
-                    TextureDataOrder::LayerMajor,
-                    mask_bytes,
+                let (mw, mh) = mask.as_ref().map_or((1, 1), |img| img.dimensions());
+                let (opacity_tex, view) = upload_rgba_mips(
+                    device, queue, mask.as_deref(), opaque,
+                    wgpu::TextureFormat::Rgba8Unorm, "Original authored opacity mask",
                 );
-                let view = opacity_tex.create_view(&wgpu::TextureViewDescriptor::default());
                 if mask.is_some() {
-                    *used_bytes = used_bytes.saturating_add(u64::from(mw) * u64::from(mh) * 4);
+                    *used_bytes = used_bytes.saturating_add(mip_chain_bytes(mw, mh));
                 }
                 cache.insert(mask_key, (opacity_tex.clone(), view.clone()));
                 (opacity_tex, view)
@@ -937,6 +975,14 @@ mod tests {
         assert_eq!(decoded.dimensions(), (32, 32));
         assert!(decoded.pixels().any(|px| px[3] < 255));
         assert!(decoded.pixels().any(|px| px[3] > 0));
+    }
+
+    #[test]
+    fn mipmaps_are_bounded_and_accounted_for_in_shared_texture_budget() {
+        assert_eq!(mip_chain_bytes(1, 1), 4);
+        assert_eq!(mip_chain_bytes(4, 4), 64 + 16 + 4);
+        assert!(mip_chain_bytes(4096, 4096) < 90 * 1024 * 1024);
+        assert!(mip_chain_bytes(4096, 4096) > 64 * 1024 * 1024);
     }
 
     #[test]
