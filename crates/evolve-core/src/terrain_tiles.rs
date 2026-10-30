@@ -240,6 +240,66 @@ pub fn read_terrain_texture_atlas(path: &Path) -> Result<TerrainTextureAtlas, Te
     })
 }
 
+/// Baked terrain color in the original Tutorial import is stored as four
+/// raw RGB24 tiles rather than a CRY quadtree stream. Each original member
+/// begins with LE u32 width/height, followed by width*height*3 RGB bytes.
+/// The caller must supply manifest-verified members in this order:
+/// tile0_0, tile1_0, tile0_1, tile1_1. The tiles are not ZIPs or DDS files.
+///
+/// Require one unambiguous 2x2 grid of identically-sized power-of-two squares;
+/// refuse truncated, oversized, linked or extra-byte files. Never derive the
+/// sibling file paths here: the Asset Library verifies all four independently.
+pub fn read_terrain_rgb24_tiles(paths: &[std::path::PathBuf; 4]) -> Result<TerrainTextureAtlas, TerrainError> {
+    let mut image: Option<RgbaImage> = None;
+    let mut tile_dim = 0usize;
+    for (tile_index, path) in paths.iter().enumerate() {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_file() || metadata.len() < 8 || metadata.len() > 16 * 1024 * 1024 {
+            return Err(TerrainError::Limits);
+        }
+        let mut file = File::open(path)?;
+        let mut header = [0u8; 8];
+        file.read_exact(&mut header)?;
+        let width = u32::from_le_bytes(header[0..4].try_into().unwrap()) as usize;
+        let height = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        if width != height || !(4..=1024).contains(&width) || !width.is_power_of_two() {
+            return Err(invalid("invalid RGB24 terrain tile dimensions"));
+        }
+        if tile_index == 0 {
+            tile_dim = width;
+            image = Some(RgbaImage::from_pixel((2 * width) as u32, (2 * width) as u32, Rgba([0, 0, 0, 255])));
+        } else if width != tile_dim {
+            return Err(invalid("RGB24 terrain tile dimensions differ"));
+        }
+        let pixels_len = width.checked_mul(height).and_then(|pixels| pixels.checked_mul(3)).ok_or(TerrainError::Limits)?;
+        if metadata.len() != (8 + pixels_len) as u64 {
+            return Err(invalid("RGB24 terrain tile has a truncated or trailing payload"));
+        }
+        let mut pixels = vec![0u8; pixels_len];
+        file.read_exact(&mut pixels)?;
+        let atlas = image.as_mut().ok_or(TerrainError::Limits)?;
+        let atlas_row = 2 * width;
+        let tile_x = tile_index % 2;
+        let tile_y = tile_index / 2;
+        for row in 0..height {
+            for col in 0..width {
+                let from = (row * width + col) * 3;
+                let to = ((tile_y * height + row) * atlas_row + tile_x * width + col) * 4;
+                let destination = &mut atlas.as_mut()[to..to + 4];
+                destination[..3].copy_from_slice(&pixels[from..from + 3]);
+                destination[3] = 255;
+            }
+        }
+    }
+    Ok(TerrainTextureAtlas {
+        image: image.ok_or(TerrainError::Limits)?,
+        nodes: 4,
+        decoded_tiles: 4,
+        color_format: 3, // explicit RGB24, not a CRY/BC compression format
+        incomplete: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +326,33 @@ mod tests {
         }
         out
     }
+    #[test]
+    fn reconstructs_four_raw_rgb24_terrain_tiles_without_a_cry_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let dim = 4u32;
+        let colors = [[10u8, 20, 30], [40, 50, 60], [70, 80, 90], [100, 110, 120]];
+        let paths: [std::path::PathBuf; 4] = std::array::from_fn(|i| {
+            let tile = dir.path().join(format!("tile{}_{}.raw", i % 2, i / 2));
+            let mut data = Vec::new();
+            data.extend_from_slice(&dim.to_le_bytes());
+            data.extend_from_slice(&dim.to_le_bytes());
+            for _ in 0..dim * dim { data.extend_from_slice(&colors[i]); }
+            std::fs::write(&tile, data).unwrap();
+            tile
+        });
+        let atlas = read_terrain_rgb24_tiles(&paths).unwrap();
+        assert_eq!(atlas.image.dimensions(), (8, 8));
+        assert_eq!(atlas.decoded_tiles, 4);
+        assert_eq!(atlas.color_format, 3);
+        for (x, y, index) in [(0, 0, 0), (4, 0, 1), (0, 4, 2), (4, 4, 3)] {
+            let sample = atlas.image.get_pixel(x, y);
+            assert_eq!(&sample.0[..3], &colors[index]);
+            assert_eq!(sample.0[3], 255);
+        }
+        std::fs::write(&paths[3], b"short").unwrap();
+        assert!(read_terrain_rgb24_tiles(&paths).is_err());
+    }
+
     #[test]
     fn reconstructs_baked_parent_and_higher_detail_child() {
         let dir = tempfile::tempdir().unwrap();
