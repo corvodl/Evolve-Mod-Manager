@@ -82,10 +82,13 @@ fn full_quality_dimensions(
         MAX_FULL_TEXTURE_BYTES
     } else {
         MAX_WORLD_DIFFUSE_BYTES
-    }.min(remaining);
+    }
+    .min(remaining);
     let (mut w, mut h) = (width, height);
     while w > gpu_max || h > gpu_max || u64::from(w) * u64::from(h) * 4 > cap {
-        if w == 1 && h == 1 { return None; }
+        if w == 1 && h == 1 {
+            return None;
+        }
         w = w.div_ceil(2);
         h = h.div_ceil(2);
     }
@@ -99,7 +102,8 @@ fn gpu_diffuse_quality<'a>(
     full: bool,
     remaining: u64,
 ) -> Option<Cow<'a, image::RgbaImage>> {
-    let dims = full_quality_dimensions(img.width(), img.height(), ground, gpu_max, full, remaining)?;
+    let dims =
+        full_quality_dimensions(img.width(), img.height(), ground, gpu_max, full, remaining)?;
     if dims == img.dimensions() {
         Some(Cow::Borrowed(img))
     } else {
@@ -137,7 +141,11 @@ fn upload_rgba_mips(
     let mip_count = width.max(height).ilog2() + 1;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: mip_count,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -149,7 +157,9 @@ fn upload_rgba_mips(
     for level in 0..mip_count {
         let w = (width >> level).max(1);
         let h = (height >> level).max(1);
-        let pixels = current.as_ref().map_or(fallback.as_slice(), |img| img.as_raw());
+        let pixels = current
+            .as_ref()
+            .map_or(fallback.as_slice(), |img| img.as_raw());
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -163,12 +173,18 @@ fn upload_rgba_mips(
                 bytes_per_row: Some(w * 4),
                 rows_per_image: Some(h),
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         if level + 1 < mip_count {
             if let Some(img) = current.as_ref() {
                 current = Some(Cow::Owned(image::imageops::resize(
-                    img.as_ref(), (w / 2).max(1), (h / 2).max(1),
+                    img.as_ref(),
+                    (w / 2).max(1),
+                    (h / 2).max(1),
                     image::imageops::FilterType::Triangle,
                 )));
             }
@@ -706,7 +722,13 @@ impl Renderer {
             {
                 continue;
             }
-            let key = (surf.diffuse.as_ref().map_or(0, |img| Arc::as_ptr(img) as usize), 0, terrain);
+            let key = (
+                surf.diffuse
+                    .as_ref()
+                    .map_or(0, |img| Arc::as_ptr(img) as usize),
+                0,
+                terrain,
+            );
             let (tex, view, diffuse_uploaded) = if let Some((tex, view)) = cache.get(&key) {
                 (tex.clone(), view.clone(), key.0 != 0)
             } else {
@@ -714,14 +736,25 @@ impl Renderer {
                     MAX_SCENE_FULL_TEXTURE_BYTES
                 } else {
                     MAX_SCENE_BALANCED_TEXTURE_BYTES
-                }).saturating_sub(*used_bytes);
+                })
+                .saturating_sub(*used_bytes);
                 let source = surf.diffuse.as_ref().and_then(|img| {
-                    gpu_diffuse_quality(img, terrain, limit_2d, full_textures, remaining.saturating_mul(3) / 4)
+                    gpu_diffuse_quality(
+                        img,
+                        terrain,
+                        limit_2d,
+                        full_textures,
+                        remaining.saturating_mul(3) / 4,
+                    )
                 });
                 let (w, h) = source.as_ref().map_or((1, 1), |img| img.dimensions());
                 let (tex, view) = upload_rgba_mips(
-                    device, queue, source.as_deref(), fallback,
-                    wgpu::TextureFormat::Rgba8UnormSrgb, "Original diffuse / baked ground atlas",
+                    device,
+                    queue,
+                    source.as_deref(),
+                    fallback,
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "Original diffuse / baked ground atlas",
                 );
                 if source.is_some() {
                     *used_bytes = used_bytes.saturating_add(mip_chain_bytes(w, h));
@@ -732,7 +765,13 @@ impl Renderer {
             // A distinct authored opacity texture must control foliage
             // cutouts. Never misinterpret a packed diffuse alpha channel
             // (which may be gloss or specular) as vegetation coverage.
-            let mask_key = (surf.opacity.as_ref().map_or(0, |img| Arc::as_ptr(img) as usize), 1, false);
+            let mask_key = (
+                surf.opacity
+                    .as_ref()
+                    .map_or(0, |img| Arc::as_ptr(img) as usize),
+                1,
+                false,
+            );
             let (opacity_tex, opacity_view) = if let Some((tex, view)) = cache.get(&mask_key) {
                 (tex.clone(), view.clone())
             } else {
@@ -741,14 +780,25 @@ impl Renderer {
                     MAX_SCENE_FULL_TEXTURE_BYTES
                 } else {
                     MAX_SCENE_BALANCED_TEXTURE_BYTES
-                }).saturating_sub(*used_bytes);
+                })
+                .saturating_sub(*used_bytes);
                 let mask = surf.opacity.as_ref().and_then(|img| {
-                    gpu_diffuse_quality(img, false, limit_2d, full_textures, remaining.saturating_mul(3) / 4)
+                    gpu_diffuse_quality(
+                        img,
+                        false,
+                        limit_2d,
+                        full_textures,
+                        remaining.saturating_mul(3) / 4,
+                    )
                 });
                 let (mw, mh) = mask.as_ref().map_or((1, 1), |img| img.dimensions());
                 let (opacity_tex, view) = upload_rgba_mips(
-                    device, queue, mask.as_deref(), opaque,
-                    wgpu::TextureFormat::Rgba8Unorm, "Original authored opacity mask",
+                    device,
+                    queue,
+                    mask.as_deref(),
+                    opaque,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    "Original authored opacity mask",
                 );
                 if mask.is_some() {
                     *used_bytes = used_bytes.saturating_add(mip_chain_bytes(mw, mh));
@@ -852,7 +902,11 @@ impl Renderer {
             self.last_full_textures = full_textures;
             self.last_camera = None;
         }
-        let hour = if hour.is_finite() { hour.clamp(0.0, 24.0) } else { 12.0 };
+        let hour = if hour.is_finite() {
+            hour.clamp(0.0, 24.0)
+        } else {
+            12.0
+        };
         if self.last_lighting_hour != hour {
             let values = super::level_lighting::Lighting::at(hour).uniforms();
             queue.write_buffer(&self.lighting_uniform, 0, bytemuck::cast_slice(&values));
@@ -987,10 +1041,22 @@ mod tests {
 
     #[test]
     fn full_quality_retains_original_4096_model_textures_and_bounds_scene_budget() {
-        assert_eq!(full_quality_dimensions(4096, 4096, false, 8192, true, 256*1024*1024), Some((4096, 4096)));
-        assert_eq!(full_quality_dimensions(4096, 4096, false, 8192, false, 256*1024*1024), Some((2048, 2048)));
-        assert_eq!(full_quality_dimensions(4096, 4096, false, 8192, true, 4*1024*1024), Some((1024, 1024)));
-        assert_eq!(full_quality_dimensions(4096, 4096, false, 2048, true, 256*1024*1024), Some((2048, 2048)));
+        assert_eq!(
+            full_quality_dimensions(4096, 4096, false, 8192, true, 256 * 1024 * 1024),
+            Some((4096, 4096))
+        );
+        assert_eq!(
+            full_quality_dimensions(4096, 4096, false, 8192, false, 256 * 1024 * 1024),
+            Some((2048, 2048))
+        );
+        assert_eq!(
+            full_quality_dimensions(4096, 4096, false, 8192, true, 4 * 1024 * 1024),
+            Some((1024, 1024))
+        );
+        assert_eq!(
+            full_quality_dimensions(4096, 4096, false, 2048, true, 256 * 1024 * 1024),
+            Some((2048, 2048))
+        );
         assert!(full_quality_dimensions(4096, 4096, false, 8192, true, 0).is_none());
     }
 
