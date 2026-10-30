@@ -195,16 +195,17 @@ fn inverse(matrix: &Mat4) -> Result<Mat4, String> {
         if !value.is_finite() || value.abs() < 1e-7 {
             return Err("Singular GLB skin matrix".into());
         }
-        for c in 0..8 {
-            rows[axis][c] /= value;
+        for component in &mut rows[axis] {
+            *component /= value;
         }
-        for r in 0..4 {
-            if r == axis {
+        let pivot_row = rows[axis];
+        for (index, row) in rows.iter_mut().enumerate() {
+            if index == axis {
                 continue;
             }
-            let mul = rows[r][axis];
-            for c in 0..8 {
-                rows[r][c] -= rows[axis][c] * mul;
+            let multiplier = row[axis];
+            for (component, pivot_value) in row.iter_mut().zip(pivot_row) {
+                *component -= pivot_value * multiplier;
             }
         }
     }
@@ -250,9 +251,9 @@ fn local(n: &Node, overrides: Option<&HashMap<&str, Vec<f32>>>) -> Result<Mat4, 
         [x * z - y * w, y * z + x * w, 1. - x * x - y * y, t[2]],
         [0., 0., 0., 1.],
     ];
-    for r in 0..3 {
-        for (c, value) in s.iter().enumerate() {
-            m[r][c] *= value;
+    for row in m.iter_mut().take(3) {
+        for (component, value) in row.iter_mut().take(3).zip(s) {
+            *component *= value;
         }
     }
     if m.iter().flatten().any(|v| !v.is_finite()) {
