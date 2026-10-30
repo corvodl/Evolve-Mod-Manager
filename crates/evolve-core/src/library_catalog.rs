@@ -4,6 +4,7 @@
 use crate::archive::safe_member_name;
 use crate::inventory::{AssetEntry, Inventory, classify_path};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -14,6 +15,11 @@ const MAX_ARCHIVES: usize = 4096;
 const MAX_MANIFEST_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_BUILD_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_MEMBERS: usize = 250_000;
+// Multiple PAKs can contain the SAME exact cooked DDS member. Do not turn
+// byte-identical duplicates into missing scene textures, but never pick an
+// arbitrary conflicting copy (or perform unlimited hashing during a scan).
+const MAX_IDENTICAL_TEXTURE_COPIES: usize = 8;
+const MAX_IDENTICAL_TEXTURE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LibraryError {
@@ -637,16 +643,79 @@ fn indexed_reference(
                 }
             }
             if !hits.is_empty() {
-                hits.sort_by(|a, b| a.archive_id.cmp(&b.archive_id));
-                return Some(Ok(if hits.len() == 1 {
-                    LibraryReferenceStatus::Found(hits.remove(0))
-                } else {
-                    LibraryReferenceStatus::Ambiguous(hits)
-                }));
+                return Some(Ok(resolve_verified_duplicate_textures(hits)));
             }
         }
         Some(Ok(LibraryReferenceStatus::Missing))
     })
+}
+
+/// Keep exact selected-build provenance: only byte-identical instances of
+/// the same authored cooked DDS may be treated as one asset. The fast cached
+/// lookup and the normal imported resolver use identical conflict semantics.
+/// Missing, oversized, unsafe, or different textures still fail closed.
+fn resolve_verified_duplicate_textures(
+    mut hits: Vec<LibraryReference>,
+) -> LibraryReferenceStatus {
+    hits.sort_by(|a, b| a.archive_id.cmp(&b.archive_id));
+    if hits.len() == 1 {
+        return LibraryReferenceStatus::Found(hits.remove(0));
+    }
+    if hits.is_empty() {
+        return LibraryReferenceStatus::Missing;
+    }
+    let path = hits[0].relative_path.to_ascii_lowercase();
+    if hits.len() > MAX_IDENTICAL_TEXTURE_COPIES
+        || !(path.ends_with(".dds") || path.ends_with(".dds.0"))
+        || !hits
+            .iter()
+            .all(|hit| hit.relative_path.eq_ignore_ascii_case(&path))
+    {
+        return LibraryReferenceStatus::Ambiguous(hits);
+    }
+    // Read a bounded number of bytes into a streaming SHA-256 digest, never
+    // into an entire decoded RGBA image. The files were already verified to
+    // match their own manifests by the calling resolver.
+    fn digest(path: &str) -> Option<[u8; 32]> {
+        let path = Path::new(path);
+        let meta = fs::symlink_metadata(path).ok()?;
+        if !meta.file_type().is_file() || meta.len() > MAX_IDENTICAL_TEXTURE_BYTES {
+            return None;
+        }
+        let mut file = File::open(path).ok()?;
+        let mut hash = Sha256::new();
+        let mut buf = [0u8; 64 * 1024];
+        let mut count = 0u64;
+        loop {
+            let n = file.read(&mut buf).ok()?;
+            if n == 0 {
+                break;
+            }
+            count = count.checked_add(n as u64)?;
+            if count > MAX_IDENTICAL_TEXTURE_BYTES {
+                return None;
+            }
+            hash.update(&buf[..n]);
+        }
+        if count != meta.len()
+            || fs::symlink_metadata(path).ok()?.len() != count
+        {
+            return None;
+        }
+        Some(hash.finalize().into())
+    }
+    let Some(first) = digest(&hits[0].absolute_path) else {
+        return LibraryReferenceStatus::Ambiguous(hits);
+    };
+    if hits
+        .iter()
+        .skip(1)
+        .all(|hit| digest(&hit.absolute_path) == Some(first))
+    {
+        LibraryReferenceStatus::Found(hits.remove(0))
+    } else {
+        LibraryReferenceStatus::Ambiguous(hits)
+    }
 }
 
 /// Read imported manifests on demand in a background job and check every
@@ -774,17 +843,81 @@ fn resolve_imported_reference_scoped(
         .into_iter()
         .find(|group| !group.is_empty())
         .unwrap_or_default();
-    hits.sort_by(|a, b| a.archive_id.cmp(&b.archive_id));
-    match hits.len() {
-        0 => Ok(LibraryReferenceStatus::Missing),
-        1 => Ok(LibraryReferenceStatus::Found(hits.remove(0))),
-        _ => Ok(LibraryReferenceStatus::Ambiguous(hits)),
-    }
+    Ok(resolve_verified_duplicate_textures(hits))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exact_identical_cooked_dds_from_two_paks_is_not_ambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("one.dds");
+        let b = dir.path().join("two.dds");
+        let virtual_name = "objects/vegetation/tree_diff.dds.0";
+        fs::write(&a, b"identical original source texture").unwrap();
+        fs::write(&b, b"identical original source texture").unwrap();
+        let make = |id: &str, location: &Path| LibraryReference {
+            archive_id: id.into(),
+            archive_name: format!("{id}.pak"),
+            relative_path: virtual_name.into(),
+            absolute_path: location.to_string_lossy().into_owned(),
+        };
+        let x = make("a", &a);
+        let y = make("b", &b);
+        match resolve_verified_duplicate_textures(vec![y.clone(), x.clone()]) {
+            LibraryReferenceStatus::Found(found) => {
+                assert_eq!(found.archive_id, "a");
+                assert_eq!(found.relative_path, virtual_name);
+            }
+            unexpected => panic!("exact same bytes must be reusable: {unexpected:?}"),
+        }
+        fs::write(&b, b"another game texture revision").unwrap();
+        assert!(matches!(
+            resolve_verified_duplicate_textures(vec![x.clone(), y.clone()]),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        fs::remove_file(&b).unwrap();
+        assert!(matches!(
+            resolve_verified_duplicate_textures(vec![x, y]),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+    }
+
+    #[test]
+    fn unrelated_or_unbounded_duplicate_imports_are_never_guessed() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.dds");
+        let b = dir.path().join("b.dds");
+        fs::write(&a, b"identical").unwrap();
+        fs::write(&b, b"identical").unwrap();
+        let hit = |id: &str, name: &str, file: &Path| LibraryReference {
+            archive_id: id.to_owned(),
+            archive_name: format!("{id}.pak"),
+            relative_path: name.to_owned(),
+            absolute_path: file.to_string_lossy().into_owned(),
+        };
+        assert!(matches!(
+            resolve_verified_duplicate_textures(vec![
+                hit("a", "objects/a.dds", &a),
+                hit("b", "objects/b.dds", &b)
+            ]),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        assert!(matches!(
+            resolve_verified_duplicate_textures(vec![
+                hit("a", "objects/tree.mtl", &a),
+                hit("b", "objects/tree.mtl", &b)
+            ]),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        let duplicate = hit("a", "objects/tree.dds.0", &a);
+        assert!(matches!(
+            resolve_verified_duplicate_textures(vec![duplicate; MAX_IDENTICAL_TEXTURE_COPIES + 1]),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+    }
+
     #[test]
     fn archive_labels_are_inferred_from_names() {
         let (group, description) = describe_archive("characters_hunters_merc_emet_ts.pak");
