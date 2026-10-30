@@ -93,6 +93,8 @@ pub struct Scene {
     pub shift: bool,
     pub level_camera: Option<super::level_camera::Camera>,
     pub world: Option<Arc<super::world_instances::World>>,
+    pub level_hour: f32,
+    pub level_full_textures: bool,
 }
 
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -160,6 +162,8 @@ pub struct Primitive {
     emissive_gain: f32,
     emissive_time: f32,
     world: Option<Arc<super::world_instances::World>>,
+    level_hour: f32,
+    level_full_textures: bool,
     camera: Option<super::level_camera::Camera>,
     yaw: f32,
     pitch: f32,
@@ -320,6 +324,8 @@ impl shader::Program<super::Message> for Scene {
             emissive_gain: self.emissive_gain,
             emissive_time: self.emissive_time,
             world: self.world.clone(),
+            level_hour: self.level_hour,
+            level_full_textures: self.level_full_textures,
             camera: self.level_camera,
             yaw: self.yaw,
             pitch: self.pitch,
@@ -1340,6 +1346,8 @@ impl Pipeline {
             primitive.pitch,
             size.0 as f32 / size.1.max(1) as f32,
             primitive.zoom,
+            primitive.level_hour,
+            primitive.level_full_textures,
         );
         let floor_bytes = bytemuck::cast_slice(&primitive.ground);
         self.ground_count = primitive.ground.len() as u32;
