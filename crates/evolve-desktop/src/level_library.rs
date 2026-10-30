@@ -7,9 +7,8 @@ use crate::{
 };
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
-    imported_archive_preview_inventory, imported_library,
-    parse_level_scene, read_terrain, read_terrain_paint, read_terrain_texture_atlas,
-    read_terrain_texture_header, scan_directory,
+    imported_archive_preview_inventory, imported_library, parse_level_scene, read_terrain,
+    read_terrain_paint, read_terrain_texture_atlas, read_terrain_texture_header, scan_directory,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -110,16 +109,30 @@ fn terrain_virtual_candidates(folder: &str, member: &str) -> Result<Vec<String>,
 /// as the selected level PAK: similarly named Legacy imports cannot leak in.
 fn source_game_root(pak: &ImportedPak) -> Option<PathBuf> {
     let source = Path::new(&pak.source);
-    source.ancestors().find(|parent| {
-        parent.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Game"))
-    }).and_then(|game| fs::canonicalize(game).ok())
+    source
+        .ancestors()
+        .find(|parent| {
+            parent
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Game"))
+        })
+        .and_then(|game| fs::canonicalize(game).ok())
 }
 
 fn source_map_parent(pak: &ImportedPak, game: &Path, map_folder: &str) -> bool {
-    let Some(parent) = Path::new(&pak.source).parent() else { return false };
-    let Ok(canonical) = fs::canonicalize(parent) else { return false };
-    let Ok(relative) = canonical.strip_prefix(game) else { return false };
-    relative.to_string_lossy().replace('\\', "/").eq_ignore_ascii_case(map_folder)
+    let Some(parent) = Path::new(&pak.source).parent() else {
+        return false;
+    };
+    let Ok(canonical) = fs::canonicalize(parent) else {
+        return false;
+    };
+    let Ok(relative) = canonical.strip_prefix(game) else {
+        return false;
+    };
+    relative
+        .to_string_lossy()
+        .replace('\\', "/")
+        .eq_ignore_ascii_case(map_folder)
 }
 
 /// Validate the manifest's extracted member bytes and containment before
@@ -165,7 +178,9 @@ fn imported_map_terrain(
         }
         let is_terrain_pak = archive.name.eq_ignore_ascii_case("terraintexture.pak");
         let is_level_pak = archive.name.eq_ignore_ascii_case("level.pak");
-        if !is_terrain_pak && !is_level_pak { continue }
+        if !is_terrain_pak && !is_level_pak {
+            continue;
+        }
         let inventory = imported_archive_preview_inventory(archive).map_err(|e| e.to_string())?;
         if member_name.eq_ignore_ascii_case("TerrainTexture.xml") {
             for relative in [
@@ -249,12 +264,9 @@ fn terrain_resource(
         // Preserve the original exact virtual map owner and selected build.
         // A conflicting or unsafe match is an error, not permission to try
         // a similarly named resource from a different level.
-        if let Some(path) = auto_resources::exact(
-            selected_inventory,
-            &requested,
-            library_root,
-            build,
-        )? {
+        if let Some(path) =
+            auto_resources::exact(selected_inventory, &requested, library_root, build)?
+        {
             return Ok(Some(path));
         }
     }
@@ -745,10 +757,12 @@ mod tests {
             vec!["levels/tutorial/terraintexture.pak"]
         );
         assert!(terrain_virtual_candidates("levels/tutorial", "../terraintexture.pak").is_err());
-        assert!(!terrain_virtual_candidates("levels/tutorial", "TerrainTexture.xml")
-            .unwrap()
-            .iter()
-            .any(|candidate| candidate.contains("levels/desert_canyon")));
+        assert!(
+            !terrain_virtual_candidates("levels/tutorial", "TerrainTexture.xml")
+                .unwrap()
+                .iter()
+                .any(|candidate| candidate.contains("levels/desert_canyon"))
+        );
     }
 
     #[test]
@@ -786,8 +800,10 @@ mod tests {
                     "entries": entries.iter().map(|path|
                         serde_json::json!({"path": path, "bytes": 4})
                     ).collect::<Vec<_>>()
-                })).unwrap(),
-            ).unwrap();
+                }))
+                .unwrap(),
+            )
+            .unwrap();
         }
         std::fs::write(
             root.path().join("build-collections.json"),
@@ -797,11 +813,16 @@ mod tests {
                     "stage-two": {"label": "Stage 2",
                         "members": {"11111111111111111111": {}, "22222222222222222222": {}}}
                 }
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let library = evolve_core::imported_library(root.path()).unwrap();
-        let selected = library.archives.iter()
-            .find(|archive| archive.name == "map.pak").unwrap();
+        let selected = library
+            .archives
+            .iter()
+            .find(|archive| archive.name == "map.pak")
+            .unwrap();
         let inventory = evolve_core::imported_archive_preview_inventory(selected).unwrap();
         let map = MapCandidate {
             name: "Tutorial".into(),
@@ -813,16 +834,38 @@ mod tests {
         };
         let source_root = Path::new(&inventory.root);
         let xml = terrain_resource(
-            source_root, selected, Some(&inventory), &map, None, "TerrainTexture.xml"
-        ).unwrap().unwrap();
+            source_root,
+            selected,
+            Some(&inventory),
+            &map,
+            None,
+            "TerrainTexture.xml",
+        )
+        .unwrap()
+        .unwrap();
         let pak = terrain_resource(
-            source_root, selected, Some(&inventory), &map, None, "terraintexture.pak"
-        ).unwrap().unwrap();
+            source_root,
+            selected,
+            Some(&inventory),
+            &map,
+            None,
+            "terraintexture.pak",
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(std::fs::read(xml).unwrap(), b"XML!");
         assert_eq!(std::fs::read(pak).unwrap(), b"PAK!");
-        assert!(terrain_resource(
-            source_root, selected, Some(&inventory), &map, None, "other.pak"
-        ).is_err());
+        assert!(
+            terrain_resource(
+                source_root,
+                selected,
+                Some(&inventory),
+                &map,
+                None,
+                "other.pak"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -878,21 +921,29 @@ mod tests {
                 serde_json::to_vec(&serde_json::json!({
                     "version": 1, "name": name,
                     "source": source.to_string_lossy(), "entries": entries
-                })).unwrap(),
-            ).unwrap();
+                }))
+                .unwrap(),
+            )
+            .unwrap();
         };
         install(
-            "11111111111111111111", "levels_tutorial.pak",
+            "11111111111111111111",
+            "levels_tutorial.pak",
             &game.join("levels_tutorial.pak"),
             vec![("Levels/Tutorial/Heightmap.dat", b"MAP!".to_vec())],
         );
         install(
-            "22222222222222222222", "level.pak",
+            "22222222222222222222",
+            "level.pak",
             &map_dir.join("level.pak"),
-            vec![("LevelData/TerrainTexture.xml", b"<TerrainTexture/>".to_vec())],
+            vec![(
+                "LevelData/TerrainTexture.xml",
+                b"<TerrainTexture/>".to_vec(),
+            )],
         );
         install(
-            "33333333333333333333", "terraintexture.pak",
+            "33333333333333333333",
+            "terraintexture.pak",
             &map_dir.join("terraintexture.pak"),
             vec![
                 ("terrain/sector.dat", cry_tiles.clone()),
@@ -902,7 +953,8 @@ mod tests {
             ],
         );
         install(
-            "44444444444444444444", "terraintexture.pak",
+            "44444444444444444444",
+            "terraintexture.pak",
             &legacy.join("terraintexture.pak"),
             vec![("terrain/sector.dat", cry_tiles)],
         );
@@ -917,11 +969,16 @@ mod tests {
                         "44444444444444444444":{}
                     }}
                 }
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let catalog = imported_library(&library_root).unwrap();
-        let selected = catalog.archives.iter()
-            .find(|pak| pak.name == "levels_tutorial.pak").unwrap();
+        let selected = catalog
+            .archives
+            .iter()
+            .find(|pak| pak.name == "levels_tutorial.pak")
+            .unwrap();
         let inventory = imported_archive_files(selected).unwrap();
         let map = MapCandidate {
             name: "Tutorial".into(),
@@ -933,12 +990,26 @@ mod tests {
         };
         let root = Path::new(&inventory.root);
         let xml = terrain_resource(
-            root, selected, Some(&inventory), &map, None, "TerrainTexture.xml"
-        ).unwrap().unwrap();
+            root,
+            selected,
+            Some(&inventory),
+            &map,
+            None,
+            "TerrainTexture.xml",
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(std::fs::read(xml).unwrap(), b"<TerrainTexture/>");
         let pak = terrain_resource(
-            root, selected, Some(&inventory), &map, None, "terraintexture.pak"
-        ).unwrap().unwrap();
+            root,
+            selected,
+            Some(&inventory),
+            &map,
+            None,
+            "terraintexture.pak",
+        )
+        .unwrap()
+        .unwrap();
         assert!(pak.starts_with(&library_root));
         assert_eq!(read_terrain_texture_header(&pak).unwrap().version, 9);
         assert_eq!(read_terrain_texture_atlas(&pak).unwrap().decoded_tiles, 1);
