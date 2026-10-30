@@ -1951,6 +1951,7 @@ enum Message {
     LibraryUpdateScanned(Result<LibraryBuildUpdatePlan, String>),
     LibraryUpdateStart,
     LibraryManageBuildsToggle,
+    LibraryManageBuildsRefresh,
     LibraryManagedBuildsLoaded(Result<Vec<ManagedLibraryBuild>, String>),
     LibraryDeleteBuildConfirm(String),
     LibraryDeleteBuildCancel,
@@ -4307,6 +4308,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if !state.library_manage_builds_open {
                 return Task::none();
             }
+            return update(state, Message::LibraryManageBuildsRefresh);
+        }
+        Message::LibraryManageBuildsRefresh => {
+            if state.busy || state.library_import_scanning || !state.library_manage_builds_open {
+                return Task::none();
+            }
+            state.library_delete_build_confirm = None;
             let root = PathBuf::from(&state.library_root);
             return Task::perform(
                 async move {

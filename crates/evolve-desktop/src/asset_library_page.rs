@@ -271,7 +271,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text("MANAGE IMPORTED GAME BUILDS").size(15),
             text("Remove historical build snapshots and unused, unshared extracted PAKs. Shared PAKs, installed game directories, signed staging, and editable mod projects are preserved.")
                 .size(11).style(design::muted),
-            design::button("Refresh managed builds").on_press(Message::LibraryManageBuildsToggle),
+            design::button("Refresh managed builds").on_press(Message::LibraryManageBuildsRefresh),
         ].spacing(7);
         if state.library_managed_builds.is_empty() {
             builds = builds.push(
