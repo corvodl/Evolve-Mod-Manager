@@ -11601,7 +11601,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.motion_time = 0.0;
                     state.motion_tick = None;
                     state.playing = false;
-                    state.selected_motion_clip = 0;
+                    state.selected_motion_clip = clips
+                        .iter()
+                        .enumerate()
+                        .find(|(index, _)| !motion.is_layered_clip(*index))
+                        .map(|(index, _)| index)
+                        .unwrap_or(0);
                     state.selected_glb_overlay = None;
                     state.glb_overlay_weight = 0.65;
                     state.caf_layer = None;
