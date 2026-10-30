@@ -1,8 +1,8 @@
 //! Exact, read-only local and imported-library dependency discovery for the
 //! model viewer. Never infer an animation from a matching filename alone.
 use evolve_core::{
-    AnimationReference, AssetResolution, Inventory, LibraryReferenceStatus, animation_references,
-    resolve_imported_reference, resolve_virtual,
+    AnimationEventDatabase, AssetResolution, Inventory, LibraryReferenceStatus,
+    animation_references, read_animation_events, resolve_imported_reference, resolve_virtual,
 };
 use std::path::{Path, PathBuf};
 
@@ -22,6 +22,8 @@ pub struct AutoDiscovery {
     pub clips: Vec<AutoClip>,
     pub idle: Option<PathBuf>,
     pub config: Option<PathBuf>,
+    /// Exact `$AnimEventDatabase` declaration and bounded read-only event index.
+    pub event_database: Option<(String, AnimationEventDatabase)>,
     pub warnings: Vec<String>,
 }
 
@@ -401,7 +403,41 @@ pub fn discover(
     // Only the best neutral idle is materialized from the imported library by
     // default; clicking a different clip resolves it on demand.
     let mut preferred: Vec<(usize, (bool, bool, bool, String))> = Vec::new();
-    for (i, r) in references.iter().enumerate() {
+    let mut declared_event_databases = 0;
+    for r in &references {
+        if r.kind == "animevents" {
+            declared_event_databases += 1;
+            if declared_event_databases > 1 {
+                if declared_event_databases == 2 {
+                    found.warnings.push(
+                        "Multiple declared animation event databases; events disabled".into(),
+                    );
+                }
+                found.event_database = None;
+                continue;
+            }
+            match exact(inv, &r.path, imported, build) {
+                Ok(Some(path)) => match read_animation_events(path) {
+                    Ok(events) => {
+                        if let Some(diagnostic) = events.diagnostics().first() {
+                            found.warnings.push(format!(
+                                "Authored event warnings ({} total): {diagnostic}",
+                                events.diagnostics().len()
+                            ));
+                        }
+                        found.event_database = Some((r.path.clone(), events));
+                    }
+                    Err(error) => found
+                        .warnings
+                        .push(format!("Declared event database invalid: {error}")),
+                },
+                Ok(None) => found
+                    .warnings
+                    .push(format!("Declared event database unavailable: {}", r.path)),
+                Err(error) => found.warnings.push(error),
+            }
+            continue;
+        }
         let path = if r.kind == "caf" {
             match exact(inv, &r.path, None, None) {
                 Ok(path) => path,
@@ -416,7 +452,7 @@ pub fn discover(
         if r.kind == "caf"
             && let Some(rank) = idle_priority(&r.name)
         {
-            preferred.push((i, rank));
+            preferred.push((found.clips.len(), rank));
         }
         found.clips.push(AutoClip {
             label: r.name.clone(),
@@ -431,8 +467,7 @@ pub fn discover(
             continue;
         } // additive/contextual idles are never auto-picked
         if found.clips[index].source.is_none() {
-            let r: &AnimationReference = &references[index];
-            match exact(inv, &r.path, imported, build) {
+            match exact(inv, &found.clips[index].virtual_path, imported, build) {
                 Ok(path) => found.clips[index].source = path,
                 Err(e) => found.warnings.push(e),
             }
@@ -584,11 +619,13 @@ mod tests {
         std::fs::create_dir_all(&animations).unwrap();
         let catalog = br##"<Params><AnimationList>
             <Animation name="#filepath" path="characters/kala/animations/3p"/>
+            <Animation name="$AnimEventDatabase" path="characters/kala/kala.animevents"/>
             <Animation name="swim_idle" path="swim_idle.caf"/>
             <Animation name="stand_idle_loop" path="stand_idle_loop.caf"/>
             <Animation name="walk_forward" path="walk_forward.caf"/>
         </AnimationList></Params>"##;
         std::fs::write(character.join("kala.chrparams"), catalog).unwrap();
+        std::fs::write(character.join("kala.animevents"), br#"<anim_event_list><animation name="characters/kala/animations/3p/stand_idle_loop.caf"><event name="footstep" time="0.5"/></animation></anim_event_list>"#).unwrap();
         for clip in ["swim_idle.caf", "stand_idle_loop.caf", "walk_forward.caf"] {
             std::fs::write(animations.join(clip), b"fixture").unwrap();
         }
@@ -597,6 +634,16 @@ mod tests {
         assert!(found.config.is_some());
         assert_eq!(found.clips.len(), 3);
         assert_eq!(found.clips[1].label, "stand_idle_loop");
+        let (declared, events) = found.event_database.as_ref().unwrap();
+        assert_eq!(declared, "characters/kala/kala.animevents");
+        assert_eq!(
+            events
+                .timeline("characters/kala/animations/3p/stand_idle_loop.caf")
+                .unwrap()
+                .events
+                .len(),
+            1
+        );
         assert!(found.idle.unwrap().ends_with("stand_idle_loop.caf"));
         assert!(found.warnings.is_empty(), "{:?}", found.warnings);
     }

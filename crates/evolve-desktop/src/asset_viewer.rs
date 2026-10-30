@@ -162,6 +162,60 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                 .spacing(8),
             );
         }
+        if let (Some(events), Some(clip_path), Some(motion)) = (
+            &state.animation_events,
+            &state.current_caf_virtual_path,
+            &state.native_caf,
+        ) {
+            let duration = motion.duration_seconds();
+            let matching = events.timelines_for(clip_path).collect::<Vec<_>>();
+            let count: usize = matching.iter().map(|timeline| timeline.events.len()).sum();
+            clips = clips.push(
+                text(format!(
+                    "AUTHORED EVENT MARKERS · {count} · {} (inspection only)",
+                    state.animation_event_source
+                ))
+                .size(11)
+                .style(design::muted),
+            );
+            for event in matching
+                .iter()
+                .flat_map(|timeline| timeline.events.iter())
+                .take(40)
+            {
+                let at = event.start_seconds(duration);
+                let label = format!(
+                    "{at:.2}s{} · {} {} {}",
+                    if event.is_range() {
+                        format!("–{:.2}s", event.end_seconds(duration))
+                    } else {
+                        String::new()
+                    },
+                    event.name.chars().take(35).collect::<String>(),
+                    event.parameter.chars().take(30).collect::<String>(),
+                    event.bone.chars().take(30).collect::<String>()
+                );
+                clips = clips.push(tooltip(
+                    design::button(text(label).size(11))
+                        .on_press(Message::MotionScrub(at))
+                        .style(design::text_button),
+                    text(format!(
+                        "{} · parameter: {} · bone: {} · model: {} · offset: {:?} · dir: {:?}. Read-only; no effect executes.",
+                        event.name.chars().take(100).collect::<String>(),
+                        event.parameter.chars().take(100).collect::<String>(),
+                        event.bone.chars().take(100).collect::<String>(),
+                        event.model.chars().take(100).collect::<String>(),
+                        event.offset,
+                        event.dir
+                    ))
+                    .size(11),
+                    tooltip::Position::Top,
+                ));
+            }
+            if count > 40 {
+                clips = clips.push(text(format!("{} more authored events", count - 40)).size(11));
+            }
+        }
         clips = clips.push(
             design::text_input("Filter character animations…", &state.auto_clip_filter)
                 .on_input(Message::ViewerAutoClipFilter),

@@ -317,6 +317,9 @@ struct State {
     material_input: String,
     material_report: Option<MaterialReport>,
     auto_clips: Vec<auto_resources::AutoClip>,
+    animation_events: Option<Arc<evolve_core::AnimationEventDatabase>>,
+    animation_event_source: String,
+    current_caf_virtual_path: Option<String>,
     auto_resource_note: String,
     auto_clip_filter: String,
     export_include_animation: bool,
@@ -3105,6 +3108,9 @@ fn clear_viewer_asset(state: &mut State) {
     state.converted_glbs.clear();
     state.converted_dba_cache = None;
     state.auto_clips.clear();
+    state.animation_events = None;
+    state.animation_event_source.clear();
+    state.current_caf_virtual_path = None;
     state.auto_idle_pending = None;
     state.auto_play_native_caf = false;
     state.auto_material_pending = false;
@@ -12043,6 +12049,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Caf(source, motion)) => {
                     state.caf_path = source.to_string_lossy().into_owned();
+                    state.current_caf_virtual_path = state
+                        .auto_clips
+                        .iter()
+                        .find(|clip| clip.kind == "caf" && clip.source.as_ref() == Some(&source))
+                        .map(|clip| clip.virtual_path.clone());
                     state.status = format!(
                         "Native CAF decoded: {} controllers at {:.1} FPS; {} seconds. Bind-pose matching is required for mesh animation.",
                         motion.controllers.len(),
@@ -12077,6 +12088,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.auto_idle_pending = None;
                     } else {
                         state.auto_clips = resources.clips;
+                        if let Some((source, events)) = resources.event_database {
+                            state.animation_event_source = source;
+                            state.animation_events = Some(Arc::new(events));
+                        } else {
+                            state.animation_event_source.clear();
+                            state.animation_events = None;
+                        }
                         state.auto_idle_pending = resources.idle;
                         if let Some(skeleton) = resources.skeleton {
                             state.skeleton_path = skeleton.to_string_lossy().into_owned();
@@ -12133,6 +12151,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         });
                     if selected && !motion.additive {
                         state.caf_path = source.to_string_lossy().into_owned();
+                        state.current_caf_virtual_path = Some(virtual_path.clone());
                         state.skin_preview = None;
                         state.cdf_caf_preview = None;
                         if let Some(rest) = &state.cdf_rest_mesh {

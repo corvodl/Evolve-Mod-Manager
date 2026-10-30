@@ -159,12 +159,13 @@ fn handle_animation(
         return Ok(());
     }
     let database = name.eq_ignore_ascii_case("$TracksDatabase");
+    let events = name.eq_ignore_ascii_case("$AnimEventDatabase");
     let directive = name.starts_with('#') || name.starts_with(char::from(36u8));
     if name.is_empty()
         || reference.is_empty()
         || name.contains('*')
         || reference.contains('*')
-        || (directive && !database)
+        || (directive && !database && !events)
     {
         return Ok(());
     }
@@ -172,7 +173,10 @@ fn handle_animation(
         reference.truncate(offset + 4);
     }
     let lower = reference.to_ascii_lowercase();
-    let virtual_path = if lower.starts_with("characters/") || lower.starts_with("animations/") {
+    let virtual_path = if ["characters/", "animations/", "objects/", "libs/"]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+    {
         reference
     } else {
         format!("{base}/{reference}")
@@ -185,7 +189,10 @@ fn handle_animation(
             .next()
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if matches!(kind.as_str(), "caf" | "dba" | "bspace" | "comb") && out.len() < MAX_FRAMES {
+        if (matches!(kind.as_str(), "caf" | "dba" | "bspace" | "comb")
+            || (events && kind == "animevents"))
+            && out.len() < MAX_FRAMES
+        {
             out.push(AnimationReference {
                 name,
                 path,
@@ -792,11 +799,17 @@ mod tests {
         let xml=br##"<Params><AnimationList><Animation name="#filepath" path="characters/hunters/merc_tech/"/>
           <Animation name="idle" path="animations/tech_idle.caf"/>
           <Animation name="$TracksDatabase" path="animations/tech_3p.dba"/>
+          <Animation name="$AnimEventDatabase" path="characters/hunters/merc_tech/events.animevents"/>
           <Animation name="walk*" path="animations/*.caf"/>
         </AnimationList></Params>"##;
         let catalog = animation_references(xml).unwrap();
-        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog.len(), 3);
         assert_eq!(catalog[0].name, "idle");
         assert!(catalog[1].database);
+        assert_eq!(catalog[2].kind, "animevents");
+        assert_eq!(
+            catalog[2].path,
+            "characters/hunters/merc_tech/events.animevents"
+        );
     }
 }

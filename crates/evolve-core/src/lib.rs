@@ -2,6 +2,7 @@
 //! All game data is local and opt-in. No assets are embedded or downloaded.
 mod animated_glb_preview;
 pub mod animation;
+pub mod animation_events;
 pub mod archive;
 pub mod asset_compare;
 pub mod batch;
@@ -49,6 +50,11 @@ mod terrain_tiles;
 pub use animation::{
     AnimatedGlb, AnimationError, AnimationReference, CafInspection, MotionClip, PoseSample,
     animation_references, inspect_caf_bytes, inspect_caf_file,
+};
+pub use animation_events::{
+    AnimationEvent, AnimationEventDatabase, AnimationEventDiagnostic, AnimationEventError,
+    AnimationEventTimeline, normalize_animation_path, parse_animation_events,
+    read_animation_events,
 };
 pub use archive::{
     PakError, PakInventory, PakMember, RebuildReport, extract_legacy_pak, inspect_legacy_pak,
