@@ -271,19 +271,22 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| format!("Track {}", index + 1));
                 let source_rig_ready = state.render_source.as_ref().is_some_and(|path| {
-                    path.extension().and_then(|e| e.to_str()).is_some_and(|extension| {
-                        ["skinm", "chrm", "skin", "chr"]
-                            .iter()
-                            .any(|expected| extension.eq_ignore_ascii_case(expected))
-                    })
+                    path.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|extension| {
+                            ["skinm", "chrm", "skin", "chr"]
+                                .iter()
+                                .any(|expected| extension.eq_ignore_ascii_case(expected))
+                        })
                 }) && !state.skeleton_path.trim().is_empty();
                 clips = clips.push(
                     row![
                         design::button(text(name).size(12))
                             .on_press(Message::OpenConvertedGlb(index))
                             .style(design::text_button),
-                        design::button("Bind original rig")
-                            .on_press_maybe(source_rig_ready.then_some(Message::BindConvertedGlb(index)))
+                        design::button("Bind original rig").on_press_maybe(
+                            source_rig_ready.then_some(Message::BindConvertedGlb(index))
+                        )
                     ]
                     .spacing(8)
                     .align_y(iced::Center),
