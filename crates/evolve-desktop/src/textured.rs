@@ -37,9 +37,7 @@ fn fitted_source_dimensions(
         return None;
     }
     let (mut w, mut h) = (width, height);
-    while w > max_dimension
-        || h > max_dimension
-        || (u64::from(w) * u64::from(h) * 4) > limit as u64
+    while w > max_dimension || h > max_dimension || (u64::from(w) * u64::from(h) * 4) > limit as u64
     {
         if w == 1 && h == 1 {
             return None;
@@ -55,9 +53,7 @@ fn fitted_source_dimensions(
 /// few 4K textures can use the entire scene budget, leaving the final
 /// character head/armor pieces untextured despite valid source DDS files.
 fn diffuse_budget_share(used: usize, remaining_unique: usize) -> usize {
-    MAX_GPU_PREVIEW_TEXTURE_BYTES
-        .saturating_sub(used)
-        / remaining_unique.max(1)
+    MAX_GPU_PREVIEW_TEXTURE_BYTES.saturating_sub(used) / remaining_unique.max(1)
 }
 
 /// Reserve GPU space for ALL source diffuse maps before accepting optional
@@ -594,7 +590,14 @@ impl Pipeline {
         format: wgpu::TextureFormat,
         label: &'static str,
     ) -> (wgpu::Texture, wgpu::TextureView) {
-        Self::upload_map_pixels(device, queue, source.map(|pixels| pixels.as_ref()), fallback, format, label)
+        Self::upload_map_pixels(
+            device,
+            queue,
+            source.map(|pixels| pixels.as_ref()),
+            fallback,
+            format,
+            label,
+        )
     }
 
     fn upload_map_pixels(
@@ -1297,8 +1300,7 @@ impl Pipeline {
                 let available = if role == 0 && !can_fit_all_diffuse {
                     diffuse_budget_share(used_bytes, remaining_unique_diffuse)
                 } else {
-                    MAX_GPU_PREVIEW_TEXTURE_BYTES
-                        .saturating_sub(used_bytes.saturating_add(reserve))
+                    MAX_GPU_PREVIEW_TEXTURE_BYTES.saturating_sub(used_bytes.saturating_add(reserve))
                 };
                 let can_use_role = role == 0 || can_fit_all_diffuse;
                 let full_size = allows_cdf_role(
@@ -1313,9 +1315,7 @@ impl Pipeline {
                 } else if can_use_role {
                     image.and_then(|pixels| {
                         let gpu_limit = device.limits().max_texture_dimension_2d;
-                        if full_size
-                            && pixels.width() <= gpu_limit
-                            && pixels.height() <= gpu_limit
+                        if full_size && pixels.width() <= gpu_limit && pixels.height() <= gpu_limit
                         {
                             Some(pixels.dimensions())
                         } else {
@@ -1344,23 +1344,30 @@ impl Pipeline {
                     views.push(view.clone());
                 } else {
                     let downsampled = selected.and_then(|pixels| {
-                        desired.filter(|dims| *dims != pixels.dimensions()).map(|(w, h)| {
-                            image::imageops::resize(
-                                pixels.as_ref(),
-                                w,
-                                h,
-                                image::imageops::FilterType::Triangle,
-                            )
-                        })
+                        desired
+                            .filter(|dims| *dims != pixels.dimensions())
+                            .map(|(w, h)| {
+                                image::imageops::resize(
+                                    pixels.as_ref(),
+                                    w,
+                                    h,
+                                    image::imageops::FilterType::Triangle,
+                                )
+                            })
                     });
                     let upload_pixels = downsampled
                         .as_ref()
                         .or_else(|| selected.map(|pixels| pixels.as_ref()));
-                    let (texture, view) =
-                        Self::upload_map_pixels(device, queue, upload_pixels, &fallback, format, label);
-                    used_bytes = used_bytes.saturating_add(
-                        upload_pixels.map_or(4, |pixels| pixels.as_raw().len())
+                    let (texture, view) = Self::upload_map_pixels(
+                        device,
+                        queue,
+                        upload_pixels,
+                        &fallback,
+                        format,
+                        label,
                     );
+                    used_bytes = used_bytes
+                        .saturating_add(upload_pixels.map_or(4, |pixels| pixels.as_raw().len()));
                     uploaded.insert(selected_key, view.clone());
                     self._surface_textures.push(texture);
                     views.push(view);
@@ -1766,17 +1773,34 @@ mod tests {
     #[test]
     fn valid_original_character_maps_are_downscaled_not_discarded() {
         use super::fitted_source_dimensions;
-        assert_eq!(fitted_source_dimensions(4096, 4096, 16 * 1024 * 1024, 8192), Some((2048, 2048)));
-        assert_eq!(fitted_source_dimensions(4096, 4096, 4 * 1024 * 1024, 8192), Some((1024, 1024)));
-        assert_eq!(fitted_source_dimensions(4096, 4096, 256 * 1024 * 1024, 2048), Some((2048, 2048)));
+        assert_eq!(
+            fitted_source_dimensions(4096, 4096, 16 * 1024 * 1024, 8192),
+            Some((2048, 2048))
+        );
+        assert_eq!(
+            fitted_source_dimensions(4096, 4096, 4 * 1024 * 1024, 8192),
+            Some((1024, 1024))
+        );
+        assert_eq!(
+            fitted_source_dimensions(4096, 4096, 256 * 1024 * 1024, 2048),
+            Some((2048, 2048))
+        );
         assert_eq!(fitted_source_dimensions(4096, 4096, 0, 8192), None);
         assert_eq!(super::diffuse_budget_share(0, 8), 32 * 1024 * 1024);
-        assert_eq!(super::diffuse_budget_share(128 * 1024 * 1024, 4), 32 * 1024 * 1024);
+        assert_eq!(
+            super::diffuse_budget_share(128 * 1024 * 1024, 4),
+            32 * 1024 * 1024
+        );
         assert_eq!(super::diffuse_budget_share(256 * 1024 * 1024, 4), 0);
         let mut source = image::RgbaImage::from_pixel(32, 32, image::Rgba([10, 15, 200, 0]));
         source.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
         let limited = fitted_source_dimensions(32, 32, 16 * 16 * 4, 32).unwrap();
-        let reduced = image::imageops::resize(&source, limited.0, limited.1, image::imageops::FilterType::Triangle);
+        let reduced = image::imageops::resize(
+            &source,
+            limited.0,
+            limited.1,
+            image::imageops::FilterType::Triangle,
+        );
         assert_eq!(reduced.dimensions(), (16, 16));
         assert!(reduced.pixels().any(|px| px.0[3] < 255));
         assert!(reduced.pixels().any(|px| px.0[3] > 0));
