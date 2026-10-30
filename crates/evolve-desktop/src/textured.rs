@@ -1194,7 +1194,9 @@ impl Pipeline {
         full_textures: bool,
     ) {
         let identity = surfaces.map_or(0, |parts| Arc::as_ptr(parts) as usize);
-        if identity == self.last_surfaces_identity && full_textures == self.last_viewer_full_textures {
+        if identity == self.last_surfaces_identity
+            && full_textures == self.last_viewer_full_textures
+        {
             return;
         }
         self.last_surfaces_identity = identity;
@@ -1778,19 +1780,59 @@ mod tests {
 
     #[test]
     fn preview_upload_budget_rejects_oversized_unique_texture_without_overflow() {
-        assert!(super::gpu_budget_allows(0, 256 * 1024 * 1024, super::preview_budget(false)));
-        assert!(!super::gpu_budget_allows(256 * 1024 * 1024, 4, super::preview_budget(false)));
-        assert!(!super::gpu_budget_allows(usize::MAX, 64, super::preview_budget(false)));
+        assert!(super::gpu_budget_allows(
+            0,
+            256 * 1024 * 1024,
+            super::preview_budget(false)
+        ));
+        assert!(!super::gpu_budget_allows(
+            256 * 1024 * 1024,
+            4,
+            super::preview_budget(false)
+        ));
+        assert!(!super::gpu_budget_allows(
+            usize::MAX,
+            64,
+            super::preview_budget(false)
+        ));
         // With 180 MiB still owed to later original diffuse textures,
         // a new 90 MiB optional specular must NOT crowd them out.
         let mib = 1024 * 1024;
-        assert!(!super::allows_cdf_role(0, 90 * mib, 180 * mib, 3, true, super::preview_budget(false)));
-        assert!(super::allows_cdf_role(0, 90 * mib, 180 * mib, 0, true, super::preview_budget(false)));
+        assert!(!super::allows_cdf_role(
+            0,
+            90 * mib,
+            180 * mib,
+            3,
+            true,
+            super::preview_budget(false)
+        ));
+        assert!(super::allows_cdf_role(
+            0,
+            90 * mib,
+            180 * mib,
+            0,
+            true,
+            super::preview_budget(false)
+        ));
         // If all diffuse assets exceed the fixed budget, omit optional
         // maps first while still allowing each original diffuse to compete
         // for the remaining protected budget.
-        assert!(!super::allows_cdf_role(0, 4 * mib, 300 * mib, 2, false, super::preview_budget(false)));
-        assert!(super::allows_cdf_role(0, 4 * mib, 300 * mib, 0, false, super::preview_budget(false)));
+        assert!(!super::allows_cdf_role(
+            0,
+            4 * mib,
+            300 * mib,
+            2,
+            false,
+            super::preview_budget(false)
+        ));
+        assert!(super::allows_cdf_role(
+            0,
+            4 * mib,
+            300 * mib,
+            0,
+            false,
+            super::preview_budget(false)
+        ));
     }
 
     #[test]
@@ -1798,10 +1840,20 @@ mod tests {
         assert_eq!(super::preview_budget(false), 256 * 1024 * 1024);
         assert_eq!(super::preview_budget(true), 1024 * 1024 * 1024);
         assert!(super::allows_cdf_role(
-            0, 400 * 1024 * 1024, 400 * 1024 * 1024, 0, true, super::preview_budget(true)
+            0,
+            400 * 1024 * 1024,
+            400 * 1024 * 1024,
+            0,
+            true,
+            super::preview_budget(true)
         ));
         assert!(!super::allows_cdf_role(
-            0, 400 * 1024 * 1024, 400 * 1024 * 1024, 0, false, super::preview_budget(false)
+            0,
+            400 * 1024 * 1024,
+            400 * 1024 * 1024,
+            0,
+            false,
+            super::preview_budget(false)
         ));
     }
 
@@ -1821,12 +1873,18 @@ mod tests {
             Some((2048, 2048))
         );
         assert_eq!(fitted_source_dimensions(4096, 4096, 0, 8192), None);
-        assert_eq!(super::diffuse_budget_share(0, 8, super::preview_budget(false)), 32 * 1024 * 1024);
+        assert_eq!(
+            super::diffuse_budget_share(0, 8, super::preview_budget(false)),
+            32 * 1024 * 1024
+        );
         assert_eq!(
             super::diffuse_budget_share(128 * 1024 * 1024, 4, super::preview_budget(false)),
             32 * 1024 * 1024
         );
-        assert_eq!(super::diffuse_budget_share(256 * 1024 * 1024, 4, super::preview_budget(false)), 0);
+        assert_eq!(
+            super::diffuse_budget_share(256 * 1024 * 1024, 4, super::preview_budget(false)),
+            0
+        );
         let mut source = image::RgbaImage::from_pixel(32, 32, image::Rgba([10, 15, 200, 0]));
         source.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
         let limited = fitted_source_dimensions(32, 32, 16 * 16 * 4, 32).unwrap();
