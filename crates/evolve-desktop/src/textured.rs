@@ -353,6 +353,7 @@ struct GpuSurface {
     _emission_uniform: wgpu::Buffer,
     _uv_uniform: wgpu::Buffer,
     source_emission_strength: f32,
+    alpha_cutoff: f32,
     kala_emission_state: Option<evolve_core::KalaTubingState>,
     emissive_uv: Option<evolve_core::DecalTexMod>,
 }
@@ -491,10 +492,14 @@ impl Pipeline {
         queue: &wgpu::Queue,
         strength: f32,
         kala_emission_state: Option<evolve_core::KalaTubingState>,
+        alpha_cutoff: f32,
     ) -> wgpu::Buffer {
         // Retain the original GlowAmount as source multiplier, with the
         // legacy Qt 3 => 100 visualization reference in a separate uniform.
-        let values = emission_uniform_values(strength, 1.0, kala_emission_state);
+        let mut values = emission_uniform_values(strength, 1.0, kala_emission_state);
+        // vec4.w is unused by the emission shader: keep the source
+        // AlphaTest threshold here, avoiding a separate bind group/buffer.
+        values[3] = alpha_cutoff.clamp(0.0, 1.0);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Source material emission amount"),
             size: 16,
@@ -1023,7 +1028,7 @@ impl Pipeline {
             wgpu::TextureFormat::Rgba8Unorm,
             "Neutral authored opacity",
         );
-        let emission_uniform = Self::emission_uniform(device, queue, 1.0, None);
+        let emission_uniform = Self::emission_uniform(device, queue, 1.0, None, 0.5);
         let uv_uniform = Self::emissive_uv_uniform(device, queue, None);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
@@ -1273,6 +1278,7 @@ impl Pipeline {
                 queue,
                 part.emission_strength,
                 part.kala_emission_state,
+                part.alpha_cutoff,
             );
             let uv_uniform = Self::emissive_uv_uniform(device, queue, part.emissive_uv);
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1297,6 +1303,7 @@ impl Pipeline {
                 _emission_uniform: emission_uniform,
                 _uv_uniform: uv_uniform,
                 source_emission_strength: part.emission_strength,
+                alpha_cutoff: part.alpha_cutoff,
                 kala_emission_state: part.kala_emission_state,
                 emissive_uv: part.emissive_uv,
             });
@@ -1371,11 +1378,13 @@ impl Pipeline {
             let default = emission_uniform_values(1.0, primitive.emissive_gain, None);
             queue.write_buffer(&self._emission_uniform, 0, bytemuck::bytes_of(&default));
             for surface in &self.gpu_surfaces {
-                let values = emission_uniform_values(
+                let mut values = emission_uniform_values(
                     surface.source_emission_strength,
                     primitive.emissive_gain,
                     surface.kala_emission_state,
                 );
+                // Gain updates must not reset the foliage material cutoff.
+                values[3] = surface.alpha_cutoff.clamp(0.0, 1.0);
                 queue.write_buffer(&surface._emission_uniform, 0, bytemuck::bytes_of(&values));
             }
         }
