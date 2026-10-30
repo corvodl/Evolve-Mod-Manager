@@ -28,7 +28,7 @@ impl Lighting {
         let length = (dir.iter().map(|x| x * x).sum::<f32>()).sqrt().max(0.001);
         let night = [0.055, 0.08, 0.14];
         let day = [0.34, 0.36, 0.40];
-        let ambient = std::array::from_fn(|i| night[i] * (1.0 - lit) + day[i] * lit);
+        let ambient: [f32; 3] = std::array::from_fn(|i| night[i] * (1.0 - lit) + day[i] * lit);
         Self {
             sun: [
                 dir[0] / length,
