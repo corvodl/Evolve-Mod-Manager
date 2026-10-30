@@ -214,7 +214,11 @@ fn auxiliary_map(
     cache: &mut TextureCache,
     used_bytes: &mut u64,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let key = (source.map_or(0, |img| Arc::as_ptr(img) as usize), role, false);
+    let key = (
+        source.map_or(0, |img| Arc::as_ptr(img) as usize),
+        role,
+        false,
+    );
     if let Some((texture, view)) = cache.get(&key) {
         return (texture.clone(), view.clone());
     }
@@ -234,14 +238,8 @@ fn auxiliary_map(
         )
     });
     let (w, h) = selected.as_ref().map_or((1, 1), |img| img.dimensions());
-    let (texture, view) = upload_rgba_mips(
-        device,
-        queue,
-        selected.as_deref(),
-        fallback,
-        format,
-        label,
-    );
+    let (texture, view) =
+        upload_rgba_mips(device, queue, selected.as_deref(), fallback, format, label);
     if selected.is_some() {
         *used_bytes = used_bytes.saturating_add(mip_chain_bytes(w, h));
     }
@@ -1205,10 +1203,15 @@ mod tests {
         for source in ["normal_map", "specular_map", "gloss_map", "emissive_map"] {
             assert!(shader.contains(source));
         }
-        assert!(shader.contains("cross(b, c)"));
+        assert!(shader.contains("cross(b,c)"));
         assert!(shader.contains("let face_normal = cross(dpdx(input.world), dpdy(input.world));"));
         let rust = include_str!("world_instances.rs");
-        for field in ["surf.normal.as_ref()", "surf.specular.as_ref()", "surf.gloss.as_ref()", "surf.emissive.as_ref()"] {
+        for field in [
+            "surf.normal.as_ref()",
+            "surf.specular.as_ref()",
+            "surf.gloss.as_ref()",
+            "surf.emissive.as_ref()",
+        ] {
             assert!(rust.contains(field));
         }
         naga::front::wgsl::parse_str(shader).expect("full-source world material WGSL");

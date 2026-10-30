@@ -50,6 +50,16 @@ fn fitted_source_dimensions(
     Some((w, h))
 }
 
+/// For extremely large multi-part characters, divide the *remaining* GPU
+/// budget among remaining unique diffuse images. Without this, the first
+/// few 4K textures can use the entire scene budget, leaving the final
+/// character head/armor pieces untextured despite valid source DDS files.
+fn diffuse_budget_share(used: usize, remaining_unique: usize) -> usize {
+    MAX_GPU_PREVIEW_TEXTURE_BYTES
+        .saturating_sub(used)
+        / remaining_unique.max(1)
+}
+
 /// Reserve GPU space for ALL source diffuse maps before accepting optional
 /// normal/specular/glow uploads. Without this, early body sections consume
 /// the cap and later head/arm sections silently fall back to pale placeholders.
@@ -584,7 +594,7 @@ impl Pipeline {
         format: wgpu::TextureFormat,
         label: &'static str,
     ) -> (wgpu::Texture, wgpu::TextureView) {
-        Self::upload_map_pixels(device, queue, source.map(Arc::as_ref), fallback, format, label)
+        Self::upload_map_pixels(device, queue, source.map(|pixels| pixels.as_ref()), fallback, format, label)
     }
 
     fn upload_map_pixels(
@@ -1223,6 +1233,7 @@ impl Pipeline {
             }
         }
         let can_fit_all_diffuse = remaining_diffuse <= MAX_GPU_PREVIEW_TEXTURE_BYTES;
+        let mut remaining_unique_diffuse = unique_diffuse.len();
         for part in surfaces.iter() {
             if !part.visible {
                 continue;
@@ -1283,8 +1294,12 @@ impl Pipeline {
                 // Budget original diffuse maps first: decorative spec/gloss
                 // maps must not crowd out the head/body colors of a CDF.
                 let reserve = if role == 0 { 0 } else { remaining_diffuse };
-                let available = MAX_GPU_PREVIEW_TEXTURE_BYTES
-                    .saturating_sub(used_bytes.saturating_add(reserve));
+                let available = if role == 0 && !can_fit_all_diffuse {
+                    diffuse_budget_share(used_bytes, remaining_unique_diffuse)
+                } else {
+                    MAX_GPU_PREVIEW_TEXTURE_BYTES
+                        .saturating_sub(used_bytes.saturating_add(reserve))
+                };
                 let can_use_role = role == 0 || can_fit_all_diffuse;
                 let full_size = allows_cdf_role(
                     used_bytes,
@@ -1319,6 +1334,7 @@ impl Pipeline {
                 let selected = if allow_source { image } else { None };
                 if role == 0 && selected.is_some() && !already_uploaded {
                     remaining_diffuse = remaining_diffuse.saturating_sub(size);
+                    remaining_unique_diffuse = remaining_unique_diffuse.saturating_sub(1);
                 }
                 if !allow_source {
                     omitted_count += 1;
@@ -1754,6 +1770,9 @@ mod tests {
         assert_eq!(fitted_source_dimensions(4096, 4096, 4 * 1024 * 1024, 8192), Some((1024, 1024)));
         assert_eq!(fitted_source_dimensions(4096, 4096, 256 * 1024 * 1024, 2048), Some((2048, 2048)));
         assert_eq!(fitted_source_dimensions(4096, 4096, 0, 8192), None);
+        assert_eq!(super::diffuse_budget_share(0, 8), 32 * 1024 * 1024);
+        assert_eq!(super::diffuse_budget_share(128 * 1024 * 1024, 4), 32 * 1024 * 1024);
+        assert_eq!(super::diffuse_budget_share(256 * 1024 * 1024, 4), 0);
         let mut source = image::RgbaImage::from_pixel(32, 32, image::Rgba([10, 15, 200, 0]));
         source.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
         let limited = fitted_source_dimensions(32, 32, 16 * 16 * 4, 32).unwrap();
