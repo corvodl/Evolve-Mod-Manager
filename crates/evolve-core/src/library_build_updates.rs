@@ -717,7 +717,7 @@ pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>
         let member_ids = latest
             .members
             .values()
-            .map(|v| &v.archive_id)
+            .map(|v| v.archive_id.clone())
             .collect::<BTreeSet<_>>();
         let extracted_bytes = catalog
             .archives
