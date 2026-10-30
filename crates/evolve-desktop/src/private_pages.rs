@@ -553,10 +553,14 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                     row![
                         design::button("Continue Editing")
                             .on_press_maybe((!state.busy).then_some(Message::HomeContinueEditing))
-                            .style(move |theme, status| home_button_style(theme, status, wallpaper, true)),
+                            .style(move |theme, status| home_button_style(
+                                theme, status, wallpaper, true
+                            )),
                         design::button("Open Project")
                             .on_press_maybe((!state.busy).then_some(Message::HomeOpenProject))
-                            .style(move |theme, status| home_button_style(theme, status, wallpaper, false)),
+                            .style(move |theme, status| home_button_style(
+                                theme, status, wallpaper, false
+                            )),
                     ]
                     .spacing(9),
                 ]
@@ -612,7 +616,9 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                         Element::from(
                             design::button("Set up paths")
                                 .on_press(Message::Navigate(Page::Settings))
-                                .style(move |theme, status| home_button_style(theme, status, wallpaper, false)),
+                                .style(move |theme, status| {
+                                    home_button_style(theme, status, wallpaper, false)
+                                }),
                         )
                     },
                     row![primary_action, secondary_action].spacing(8),
@@ -681,7 +687,11 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             tile("Asset Library", Page::AssetLibrary, wallpaper),
         ]
         .spacing(10),
-        row![tile("Docs", Page::Docs, wallpaper), tile("Settings", Page::Settings, wallpaper),].spacing(10),
+        row![
+            tile("Docs", Page::Docs, wallpaper),
+            tile("Settings", Page::Settings, wallpaper),
+        ]
+        .spacing(10),
         row![
             tile("What's New", Page::WhatsNew, wallpaper),
             tile("Credits", Page::Credits, wallpaper),
