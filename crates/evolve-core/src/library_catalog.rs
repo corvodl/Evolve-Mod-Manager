@@ -356,16 +356,16 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
             && let Some(&previous) = identical_sources.get(&key)
         {
             let candidate = &mut archives[previous];
-                if candidate.entries == manifest.entries.len()
-                    && candidate.extracted_bytes == manifest.extracted_bytes
-                {
-                    candidate
-                        .builds
-                        .extend(owners.get(id).cloned().unwrap_or_default());
-                    candidate.builds.sort();
-                    candidate.builds.dedup();
-                    continue;
-                }
+            if candidate.entries == manifest.entries.len()
+                && candidate.extracted_bytes == manifest.extracted_bytes
+            {
+                candidate
+                    .builds
+                    .extend(owners.get(id).cloned().unwrap_or_default());
+                candidate.builds.sort();
+                candidate.builds.dedup();
+                continue;
+            }
         }
         let (group, description) = describe_archive(&manifest.name);
         total_bytes = total_bytes.saturating_add(manifest.extracted_bytes);

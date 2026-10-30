@@ -1027,28 +1027,28 @@ pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>
         && let Some(groups) = legacy["builds"].as_object()
     {
         for (id, group) in groups {
-                if id == "unassigned" {
-                    continue;
-                }
-                let Some(members) = group["members"].as_object() else {
-                    continue;
-                };
-                let ids = members.keys().collect::<BTreeSet<_>>();
-                let size = catalog
-                    .archives
-                    .iter()
-                    .filter(|a| ids.contains(&a.id))
-                    .fold(0u64, |sum, a| sum.saturating_add(a.extracted_bytes));
-                builds.push(ManagedLibraryBuild {
-                    id: format!("legacy:{id}"),
-                    source_root: LEGACY_COLLECTION_SOURCE.into(),
-                    display_name: group["label"].as_str().unwrap_or(id).to_owned(),
-                    aliases: 0,
-                    pak_count: members.len(),
-                    extracted_bytes: size,
-                    reclaimable_paks: 0,
-                    reclaimable_bytes: 0,
-                });
+            if id == "unassigned" {
+                continue;
+            }
+            let Some(members) = group["members"].as_object() else {
+                continue;
+            };
+            let ids = members.keys().collect::<BTreeSet<_>>();
+            let size = catalog
+                .archives
+                .iter()
+                .filter(|a| ids.contains(&a.id))
+                .fold(0u64, |sum, a| sum.saturating_add(a.extracted_bytes));
+            builds.push(ManagedLibraryBuild {
+                id: format!("legacy:{id}"),
+                source_root: LEGACY_COLLECTION_SOURCE.into(),
+                display_name: group["label"].as_str().unwrap_or(id).to_owned(),
+                aliases: 0,
+                pak_count: members.len(),
+                extracted_bytes: size,
+                reclaimable_paks: 0,
+                reclaimable_bytes: 0,
+            });
         }
     }
     for (id, snapshots) in &all {
