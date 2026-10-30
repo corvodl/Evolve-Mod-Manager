@@ -617,6 +617,148 @@ fn build_snapshots(library: &Path) -> Result<BTreeMap<String, Vec<BuildSnapshot>
     }).collect())
 }
 
+/// Versioned registry is a non-destructive migration index. Existing
+/// snapshot histories and extracted data remain byte-for-byte untouched.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct BuildRegistration {
+    source_root: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    history_ids: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct BuildRegistry {
+    version: u32,
+    builds: BTreeMap<String, BuildRegistration>,
+}
+
+fn registry_path(library: &Path) -> PathBuf {
+    library.join("managed-builds.json")
+}
+
+fn read_registry(library: &Path) -> Result<BuildRegistry, String> {
+    let path = registry_path(library);
+    if !path.exists() {
+        return Ok(BuildRegistry { version: 1, builds: BTreeMap::new() });
+    }
+    let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() || meta.len() > MAX_LEDGER_BYTES {
+        return Err("Unsafe managed-build registry".into());
+    }
+    let data: BuildRegistry = serde_json::from_reader(File::open(&path).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("Cannot parse managed-build registry: {e}"))?;
+    if data.version != 1 || data.builds.len() > 128 ||
+        data.builds.iter().any(|(id, build)| {
+            id.len() != 24 || !id.bytes().all(|b| b.is_ascii_hexdigit()) ||
+            build_identity(Path::new(&build.source_root)) != *id ||
+            build.display_name.len() > 120 ||
+            build.display_name.chars().any(char::is_control) ||
+            build.history_ids.len() > 128 ||
+            build.history_ids.iter().any(|alias| alias.len() != 24 || !alias.bytes().all(|b| b.is_ascii_hexdigit()))
+        }) {
+        return Err("Managed-build registry identity or label is invalid".into());
+    }
+    Ok(data)
+}
+
+fn write_registry(library: &Path, registry: &BuildRegistry) -> Result<(), String> {
+    let mut temp = tempfile::Builder::new()
+        .prefix(".managed-builds-")
+        .tempfile_in(library)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(temp.as_file_mut(), registry).map_err(|e| e.to_string())?;
+    temp.as_file_mut().write_all(b"\n").map_err(|e| e.to_string())?;
+    temp.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+    temp.persist(registry_path(library)).map_err(|e| e.error.to_string())?;
+    Ok(())
+}
+
+/// Read physical history folder IDs for a logical build. Every source record
+/// is revalidated against its original physical ID by read_snapshot.
+fn physical_history_ids(library: &Path, logical_id: &str) -> Result<BTreeSet<String>, String> {
+    let history = library.join("build-update-history");
+    if !history.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let history = real_directory(&history)?;
+    let mut result = BTreeSet::new();
+    for entry in fs::read_dir(&history).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            return Err("Unexpected build history entry".into());
+        }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if id.len() != 24 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("Invalid build history directory".into());
+        }
+        let mut files = fs::read_dir(entry.path()).map_err(|e| e.to_string())?
+            .map(|f| f.map(|f| f.path()).map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        files.sort();
+        if let Some(file) = files.first() {
+            let value: serde_json::Value = serde_json::from_reader(
+                File::open(file).map_err(|e| e.to_string())?
+            ).map_err(|e| e.to_string())?;
+            let root = value["source_root"].as_str().ok_or("History without source root")?;
+            let _ = read_snapshot(file, &id, Path::new(root))?;
+            if build_identity(Path::new(root)) == logical_id {
+                result.insert(id);
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Persist legacy extended-prefix IDs as aliases, without moving or deleting
+/// prior imported data. Called by explicit build-management operations.
+fn migrate_registry(library: &Path, all: &BTreeMap<String, Vec<BuildSnapshot>>) -> Result<BuildRegistry, String> {
+    let mut registry = read_registry(library)?;
+    let mut next = BTreeMap::new();
+    for (id, records) in all {
+        let latest = records.last().ok_or("Empty managed build")?;
+        let previous = registry.builds.remove(id);
+        next.insert(id.clone(), BuildRegistration {
+            source_root: ordinary_path(&latest.source_root),
+            display_name: previous.as_ref().map_or(String::new(), |row| row.display_name.clone()),
+            history_ids: physical_history_ids(library, id)?,
+        });
+    }
+    let updated = BuildRegistry {version: 1, builds: next};
+    if registry != updated {
+        write_registry(library, &updated)?;
+    }
+    Ok(updated)
+}
+
+/// A rename affects only the manager's friendly label, never the installation
+/// path, build identity, PAK provenance, or source files.
+pub fn rename_managed_library_build(
+    library: &Path,
+    id: &str,
+    expected_source_root: &str,
+    label: &str,
+) -> Result<Vec<ManagedLibraryBuild>, String> {
+    let label = label.trim();
+    if label.is_empty() || label.len() > 80 ||
+        label.chars().any(|ch| ch.is_control() || matches!(ch, '/' | '\\')) {
+        return Err("Build name must be 1-80 characters without slashes or controls".into());
+    }
+    let library = real_directory(library)?;
+    let all = build_snapshots(&library)?;
+    let latest = all.get(id).and_then(|rows| rows.last())
+        .ok_or("Selected managed build no longer exists")?;
+    if source_path_key(&latest.source_root) != source_path_key(expected_source_root) {
+        return Err("Managed build changed; refresh before renaming".into());
+    }
+    let mut registry = migrate_registry(&library, &all)?;
+    let record = registry.builds.get_mut(id).ok_or("Missing managed build registration")?;
+    record.display_name = label.to_owned();
+    write_registry(&library, &registry)?;
+    managed_library_builds(&library)
+}
+
 fn legacy_references(library: &Path) -> Result<BTreeSet<String>, String> {
     let file = library.join("build-collections.json");
     if !file.exists() {
