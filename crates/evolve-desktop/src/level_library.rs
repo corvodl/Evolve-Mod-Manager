@@ -818,6 +818,119 @@ mod tests {
     }
 
     #[test]
+    fn imported_tutorial_archive_containers_supply_map_relative_terrain() {
+        let dir = tempfile::tempdir().unwrap();
+        let library_root = dir.path().join("AssetLibrary");
+        let game = dir.path().join("Stage2/Game");
+        let map_dir = game.join("levels/Tutorial");
+        let legacy = dir.path().join("Legacy/Game/levels/Tutorial");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&map_dir).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        let mut cry_tiles = Vec::new();
+        cry_tiles.extend_from_slice(b"CRY\0");
+        cry_tiles.extend_from_slice(&[100, 0]);
+        cry_tiles.extend_from_slice(&9u16.to_le_bytes());
+        cry_tiles.extend_from_slice(&1u16.to_le_bytes());
+        cry_tiles.extend_from_slice(&0u16.to_le_bytes());
+        cry_tiles.extend_from_slice(&1.0f32.to_le_bytes());
+        cry_tiles.extend_from_slice(&4u16.to_le_bytes());
+        cry_tiles.extend_from_slice(&0u16.to_le_bytes());
+        cry_tiles.extend_from_slice(&2u32.to_le_bytes());
+        cry_tiles.extend_from_slice(&64u32.to_le_bytes());
+        cry_tiles.extend_from_slice(&5u16.to_le_bytes());
+        for index in [0i16, -1, -1, -1, -1] {
+            cry_tiles.extend_from_slice(&index.to_le_bytes());
+        }
+        for _ in 0..16 {
+            cry_tiles.extend_from_slice(&[48, 96, 144, 255]);
+        }
+
+        let install = |id: &str, name: &str, source: &Path, members: Vec<(&str, Vec<u8>)>| {
+            let directory = library_root.join(format!("{name}__{id}"));
+            let root = directory.join("files");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(source, b"original archive untouched").unwrap();
+            let mut entries = Vec::new();
+            for (relative, data) in members {
+                let target = root.join(relative);
+                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                std::fs::write(&target, &data).unwrap();
+                entries.push(serde_json::json!({"path":relative,"bytes":data.len()}));
+            }
+            std::fs::write(
+                directory.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "name": name,
+                    "source": source.to_string_lossy(), "entries": entries
+                })).unwrap(),
+            ).unwrap();
+        };
+        install(
+            "11111111111111111111", "levels_tutorial.pak",
+            &game.join("levels_tutorial.pak"),
+            vec![("Levels/Tutorial/Heightmap.dat", b"MAP!".to_vec())],
+        );
+        install(
+            "22222222222222222222", "level.pak",
+            &map_dir.join("level.pak"),
+            vec![("LevelData/TerrainTexture.xml", b"<TerrainTexture/>".to_vec())],
+        );
+        install(
+            "33333333333333333333", "terraintexture.pak",
+            &map_dir.join("terraintexture.pak"),
+            vec![
+                ("terrain/sector.dat", cry_tiles.clone()),
+                ("other/0.bin", vec![1]),
+                ("other/1.bin", vec![2]),
+                ("other/2.bin", vec![3]),
+            ],
+        );
+        install(
+            "44444444444444444444", "terraintexture.pak",
+            &legacy.join("terraintexture.pak"),
+            vec![("terrain/sector.dat", cry_tiles)],
+        );
+        std::fs::write(
+            library_root.join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "builds": {
+                    "stage-two": {"label":"Stage 2", "members":{
+                        "11111111111111111111":{},
+                        "22222222222222222222":{},
+                        "33333333333333333333":{},
+                        "44444444444444444444":{}
+                    }}
+                }
+            })).unwrap(),
+        ).unwrap();
+        let catalog = imported_library(&library_root).unwrap();
+        let selected = catalog.archives.iter()
+            .find(|pak| pak.name == "levels_tutorial.pak").unwrap();
+        let inventory = imported_archive_files(selected).unwrap();
+        let map = MapCandidate {
+            name: "Tutorial".into(),
+            layers: Vec::new(),
+            terrain: Some(PathBuf::from("Levels/Tutorial/Heightmap.dat")),
+            vegetation: None,
+            terrain_texture_xml: None,
+            terrain_texture_pak: None,
+        };
+        let root = Path::new(&inventory.root);
+        let xml = terrain_resource(
+            root, selected, Some(&inventory), &map, None, "TerrainTexture.xml"
+        ).unwrap().unwrap();
+        assert_eq!(std::fs::read(xml).unwrap(), b"<TerrainTexture/>");
+        let pak = terrain_resource(
+            root, selected, Some(&inventory), &map, None, "terraintexture.pak"
+        ).unwrap().unwrap();
+        assert!(pak.starts_with(&library_root));
+        assert_eq!(read_terrain_texture_header(&pak).unwrap().version, 9);
+        assert_eq!(read_terrain_texture_atlas(&pak).unwrap().decoded_tiles, 1);
+    }
+
+    #[test]
     fn only_level_archives_auto_open() {
         let mut pak = ImportedPak {
             id: "a".repeat(20),
