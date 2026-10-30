@@ -86,6 +86,16 @@ impl MovementFrame {
     }
 }
 
+/// Fly Mode must move toward the view even when the actor and third-person
+/// camera disagree. Freeze Z retains the explicit Actor/Camera choice.
+fn effective_movement_frame(mode: HoldMode, selected: MovementFrame) -> MovementFrame {
+    if mode == HoldMode::Fly {
+        MovementFrame::Camera
+    } else {
+        selected
+    }
+}
+
 impl HoldMode {
     pub fn label(self) -> &'static str {
         match self {
@@ -211,6 +221,34 @@ fn stable_camera_heading(
         *last_heading = Some(heading);
     }
     *last_heading
+}
+
+/// Rotate the entity about world Z to the camera's horizontal facing, without
+/// inheriting camera pitch/roll or removing the actor's existing tilt.
+/// Returns None when the actor is already aligned to avoid needless writes.
+/// Both inputs must be structurally valid before any process-memory mutation.
+fn camera_aligned_actor_rotation(
+    current: [f32; 4],
+    camera_heading: Position,
+) -> Result<Option<[f32; 4]>, String> {
+    let facing = fly_forward(current)?;
+    let camera = camera_forward(camera_heading)?;
+    let cross = facing.x * camera.y - facing.y * camera.x;
+    let dot = facing.x * camera.x + facing.y * camera.y;
+    let delta_yaw = cross.atan2(dot);
+    if delta_yaw.abs() < 0.01 {
+        return Ok(None);
+    }
+    let len = current.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let [w, x, y, z] = current;
+    let (s, c) = (0.5 * delta_yaw).sin_cos();
+    // q_new = q_world_z_delta * q_actor, expressed in WXYZ.
+    Ok(Some([
+        (c * w - s * z) / len,
+        (c * x - s * y) / len,
+        (c * y + s * x) / len,
+        (c * z + s * w) / len,
+    ]))
 }
 
 /// A transient unusable orientation must never end Fly Mode or reset its
@@ -819,6 +857,10 @@ mod windows {
         let mut previous_tick = Instant::now();
         let mut override_ticks = 0u32;
         let mut last_heading: Option<Position> = None;
+        let mut last_camera_heading: Option<Position> = None;
+        // Actor yaw is a best-effort visual synchronization. If a game build
+        // rejects the quaternion write, camera-relative movement must survive.
+        let mut yaw_writes_enabled = true;
         while !stop.load(Ordering::Acquire) {
             // Check that this is still the same controlled actor and validated
             // physics object. Never write to a stale/repurposed player pointer.
@@ -842,21 +884,49 @@ mod windows {
                 let dt = now.duration_since(previous_tick).as_secs_f32();
                 previous_tick = now;
                 let mut input = fly_input(r.pid);
-                // Freeze Z and Fly both move X/Y through an explicit,
-                // user-selected Actor or Camera frame rather than native
-                // locomotion that may stop working when airborne.
+                // Freeze Z keeps the selected movement frame. Fly always uses
+                // the camera's horizontal heading so actor/camera divergence
+                // cannot reverse W, even when CryEngine overwrites actor yaw.
                 if mode == HoldMode::Z {
                     input.vertical = 0.0;
+                }
+                // Read every Fly tick (including when idle) so looking around
+                // updates actor yaw. Cache yaw when the camera pitches vertical.
+                let camera_heading = if mode == HoldMode::Fly {
+                    stable_camera_heading(
+                        camera_direction(&handle, base).ok(),
+                        &mut last_camera_heading,
+                    )
+                } else {
+                    None
+                };
+                if mode == HoldMode::Fly
+                    && yaw_writes_enabled
+                    && let Some(heading) = camera_heading
+                    && let Ok(current_orientation) = actor_orientation(&handle, r.entity)
+                    && let Ok(Some(aligned)) =
+                        camera_aligned_actor_rotation(current_orientation, heading)
+                {
+                    // Entity+0x4C is an observed XYZW quaternion. Preserve the
+                    // actor's own pitch/roll; only apply the horizontal yaw delta.
+                    let xyzw = [aligned[1], aligned[2], aligned[3], aligned[0]];
+                    let mut bytes = [0u8; 16];
+                    for (index, value) in xyzw.iter().enumerate() {
+                        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                    }
+                    if let Err(error) = writer.write(r.entity + 0x4C, &bytes) {
+                        yaw_writes_enabled = false;
+                        eprintln!(
+                            "Fly Mode actor yaw sync disabled; WASD remains camera-relative: {error}"
+                        );
+                    }
                 }
                 if input.active() {
                     // Pure Space/Ctrl flight needs no horizontal direction.
                     // Do not interrupt vertical motion when looking straight up.
                     let heading = if input.forward != 0.0 || input.strafe != 0.0 {
-                        match movement_frame {
+                        match effective_movement_frame(mode, movement_frame) {
                             MovementFrame::Actor => {
-                                // Use the actor's actual XYZW orientation,
-                                // including after a camera orbit. The camera
-                                // is independent in third-person views.
                                 let actor_heading = actor_orientation(&handle, r.entity)
                                     .ok()
                                     .and_then(|q| fly_forward(q).ok());
@@ -866,16 +936,21 @@ mod windows {
                                 last_heading
                             }
                             MovementFrame::Camera => {
-                                // Explicit camera-relative movement: W may be
-                                // behind the visible actor during a free orbit.
-                                // Preserve yaw when pitching vertically and
-                                // use the corrected actor orientation only
-                                // when no valid camera heading was established.
-                                stable_camera_heading(
-                                    camera_direction(&handle, base).ok(),
-                                    &mut last_heading,
-                                )
-                                .or_else(|| {
+                                let camera = if mode == HoldMode::Fly {
+                                    camera_heading
+                                } else {
+                                    stable_camera_heading(
+                                        camera_direction(&handle, base).ok(),
+                                        &mut last_heading,
+                                    )
+                                };
+                                if let Some(heading) = camera {
+                                    last_heading = Some(heading);
+                                }
+                                // Camera can be temporarily unreadable at a
+                                // view transition; fall back to validated actor
+                                // heading only until live camera yaw is available.
+                                camera.or_else(|| {
                                     actor_orientation(&handle, r.entity)
                                         .ok()
                                         .and_then(|q| stable_fly_heading(q, &mut last_heading))
@@ -1137,6 +1212,79 @@ mod tests {
         assert_eq!(MovementFrame::default(), MovementFrame::Actor);
         assert_eq!(MovementFrame::Actor.label(), "Actor facing");
         assert_eq!(MovementFrame::Camera.label(), "Camera view");
+        assert_eq!(
+            effective_movement_frame(HoldMode::Fly, MovementFrame::Actor),
+            MovementFrame::Camera
+        );
+        assert_eq!(
+            effective_movement_frame(HoldMode::Z, MovementFrame::Actor),
+            MovementFrame::Actor
+        );
+        assert_eq!(
+            effective_movement_frame(HoldMode::Z, MovementFrame::Camera),
+            MovementFrame::Camera
+        );
+    }
+
+    #[test]
+    fn fly_w_follows_camera_even_when_actor_faces_opposite_way() {
+        let actor = fly_forward(actor_xyzw_to_wxyz([0.0, 0.0, -0.61137, 0.79134]))
+            .expect("recorded actor orientation");
+        let camera = camera_forward(Position {
+            x: -0.982935,
+            y: 0.179990,
+            z: 0.037959,
+        })
+        .unwrap();
+        assert!(actor.x * camera.x + actor.y * camera.y < -0.85);
+        let origin = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 30.0,
+        };
+        let moved = fly_step(
+            origin,
+            camera,
+            FlyInput {
+                forward: 1.0,
+                ..FlyInput::default()
+            },
+            10.0,
+            0.05,
+        );
+        assert!(
+            moved.x < -0.45,
+            "W follows camera, not opposite-facing actor"
+        );
+        assert!((moved.z - origin.z).abs() < 0.001);
+    }
+
+    #[test]
+    fn yaw_lock_preserves_actor_tilt_and_ignores_camera_pitch() {
+        let actor = [0.8660254_f32, 0.5, 0.0, 0.0]; // +60 degrees local X pitch
+        let camera = camera_forward(Position {
+            x: -0.8,
+            y: 0.6,
+            z: 0.0,
+        })
+        .unwrap();
+        let adjusted = camera_aligned_actor_rotation(actor, camera)
+            .unwrap()
+            .expect("yaw must change");
+        let facing = fly_forward(adjusted).unwrap();
+        let dot = facing.x * camera.x + facing.y * camera.y;
+        assert!(dot > 0.999, "actor yaw must match camera direction");
+        let norm2: f32 = adjusted.iter().map(|v| v * v).sum();
+        assert!((norm2 - 1.0).abs() < 0.001);
+        // Multiplication by a world-Z yaw preserves local pitch/roll.
+        let tilt = (adjusted[1] * adjusted[1] + adjusted[2] * adjusted[2]).sqrt();
+        assert!((tilt - 0.5).abs() < 0.001);
+        assert!(
+            camera_aligned_actor_rotation(adjusted, camera)
+                .unwrap()
+                .is_none()
+        );
+        assert!(camera_aligned_actor_rotation([0.0; 4], camera).is_err());
     }
 
     #[test]
