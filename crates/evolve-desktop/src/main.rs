@@ -11686,7 +11686,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             return launch(state, operation);
                         }
                         if let Some(idle) = state.auto_idle_pending.take() {
-                            state.auto_play_native_caf = true;
+                            state.auto_play_native_caf = false;
                             return launch(state, Operation::LoadCaf(idle));
                         }
                     }
@@ -11728,15 +11728,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     {
                         let part_count = assembly.part_count();
                         let bones = assembly.original_bones();
-                        let cyclic = assembly.source_motion().cyclic;
-                        state.skin_preview = None;
+                                                state.skin_preview = None;
                         state.cdf_caf_preview = Some(Arc::new(*assembly));
                         state.motion_time = 0.0;
                         apply_current_skin_frame(state);
                         if state.auto_play_native_caf {
                             state.playback_loop = true;
                         }
-                        state.playing = cyclic || state.auto_play_native_caf;
+                        state.playing = false;
                         state.auto_play_native_caf = false;
                         state.status = format!(
                             "Native CAF bound to {part_count} original CDF skin/equipment parts and {bones} source bones. Scrubbing deforms the assembled GPU viewport with verified CPU pose evaluation."
@@ -11755,15 +11754,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     {
                         let count = skin.original_vertices();
                         let bones = skin.original_bones();
-                        let cyclic = skin.source_motion().cyclic;
-                        state.cdf_caf_preview = None;
+                                                state.cdf_caf_preview = None;
                         state.skin_preview = Some(Arc::new(*skin));
                         state.motion_time = 0.0;
                         apply_current_skin_frame(state);
                         if state.auto_play_native_caf {
                             state.playback_loop = true;
                         }
-                        state.playing = cyclic || state.auto_play_native_caf;
+                        state.playing = false;
                         state.auto_play_native_caf = false;
                         state.status = format!(
                             "Native CAF bound to {count} original weighted vertices and {bones} compiled bones. Mesh deforms in the GPU viewport (CPU skin evaluation)."
@@ -11876,7 +11874,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         );
                     }
                     if let Some(idle) = state.auto_idle_pending.take() {
-                        state.auto_play_native_caf = true;
+                        state.auto_play_native_caf = false;
                         return launch(state, Operation::LoadCaf(idle));
                     }
                 }
@@ -11899,7 +11897,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         );
                         state.status = state.auto_resource_note.clone();
                         if let Some(idle) = state.auto_idle_pending.take() {
-                            state.auto_play_native_caf = true;
+                            state.auto_play_native_caf = false;
                             return launch(state, Operation::LoadCaf(idle));
                         }
                     }
@@ -12738,7 +12736,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if state.auto_material_pending && state.viewer_queued_preview.is_none() {
                         state.auto_material_pending = false;
                         if let Some(idle) = state.auto_idle_pending.take() {
-                            state.auto_play_native_caf = true;
+                            state.auto_play_native_caf = false;
                             return launch(state, Operation::LoadCaf(idle));
                         }
                     }
