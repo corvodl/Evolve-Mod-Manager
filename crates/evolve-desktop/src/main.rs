@@ -1083,22 +1083,30 @@ impl Operation {
                 let mesh = read_model(&source).map_err(|e| e.to_string())?;
                 let original_bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
                 let skeleton_bytes = std::fs::read(&skeleton).map_err(|e| e.to_string())?;
-                let (original_glb, _) = evolve_core::rigged_glb_bytes(
-                    &mesh, &original_bytes, &skeleton_bytes
-                ).map_err(|e| e.to_string())?;
+                let (original_glb, _) =
+                    evolve_core::rigged_glb_bytes(&mesh, &original_bytes, &skeleton_bytes)
+                        .map_err(|e| e.to_string())?;
                 let converted_bytes = std::fs::read(&converted).map_err(|e| e.to_string())?;
                 let attached =
                     evolve_core::converted_glb_transfer::attach_converted_motion_to_source_glb(
-                        &original_glb, &converted_bytes, None
+                        &original_glb,
+                        &converted_bytes,
+                        None,
                     )?;
                 let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
                 let verified = temp.path().join("verified-original-animation.glb");
                 std::fs::write(&verified, &attached.glb).map_err(|e| e.to_string())?;
                 let motion = AnimatedGlb::read(&verified).map_err(|e| e.to_string())?;
                 if !motion.has_skinned_preview() || motion.list_clips().is_empty() {
-                    return Err("Matched converter produced no playable weighted original mesh".into());
+                    return Err(
+                        "Matched converter produced no playable weighted original mesh".into(),
+                    );
                 }
-                Ok(Completed::BoundConvertedGlb(source, motion, attached.matching_joints))
+                Ok(Completed::BoundConvertedGlb(
+                    source,
+                    motion,
+                    attached.matching_joints,
+                ))
             }
             Self::LoadCafLayer(source, base, label, path) => {
                 let layer = read_native_caf(&path).map_err(|e| e.to_string())?;
@@ -10570,7 +10578,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Choose an original compiled skin/model first".into();
                 return Task::none();
             };
-            let extension = source.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+            let extension = source
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("");
             if !["skinm", "chrm", "skin", "chr"].contains(&extension.to_ascii_lowercase().as_str())
                 || state.skeleton_path.trim().is_empty()
             {
@@ -10578,7 +10589,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             let skeleton = PathBuf::from(&state.skeleton_path);
-            return launch(state, Operation::BindConvertedGlb(converted, source, skeleton));
+            return launch(
+                state,
+                Operation::BindConvertedGlb(converted, source, skeleton),
+            );
         }
         Message::MotionScrub(value) => {
             state.motion_time = value;
@@ -11690,7 +11704,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                     let preview = motion.mesh_at(0, 0.);
                     let Ok(first) = preview else {
-                        state.status = "Original converted animation has no renderable starting pose".into();
+                        state.status =
+                            "Original converted animation has no renderable starting pose".into();
                         return Task::none();
                     };
                     // The selected source mesh and exported GLB must refer to
