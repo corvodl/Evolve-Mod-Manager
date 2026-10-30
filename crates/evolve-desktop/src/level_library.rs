@@ -7,6 +7,7 @@ use crate::{
 };
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
+    imported_archive_preview_inventory, imported_library,
     parse_level_scene, read_terrain, read_terrain_paint, read_terrain_texture_atlas,
     read_terrain_texture_header, scan_directory,
 };
@@ -101,6 +102,108 @@ fn terrain_virtual_candidates(folder: &str, member: &str) -> Result<Vec<String>,
     }
 }
 
+/// An archive's *source folder* is part of its CryEngine virtual namespace.
+/// For example, Game/levels/Tutorial/level.pak contains LevelData/TerrainTexture.xml,
+/// while Game/levels/Tutorial/terraintexture.pak is an imported PAK in its own
+/// right. These are not necessarily game-virtual member names in a manifest.
+/// Require the exact map directory and the same original Game installation
+/// as the selected level PAK: similarly named Legacy imports cannot leak in.
+fn source_game_root(pak: &ImportedPak) -> Option<PathBuf> {
+    let source = Path::new(&pak.source);
+    source.ancestors().find(|parent| {
+        parent.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Game"))
+    }).and_then(|game| fs::canonicalize(game).ok())
+}
+
+fn source_map_parent(pak: &ImportedPak, game: &Path, map_folder: &str) -> bool {
+    let Some(parent) = Path::new(&pak.source).parent() else { return false };
+    let Ok(canonical) = fs::canonicalize(parent) else { return false };
+    let Ok(relative) = canonical.strip_prefix(game) else { return false };
+    relative.to_string_lossy().replace('\\', "/").eq_ignore_ascii_case(map_folder)
+}
+
+/// Validate the manifest's extracted member bytes and containment before
+/// treating them as possible terrain inputs. No original on-disk PAK is
+/// modified, scanned as an unrelated ZIP, or interpreted by filename alone.
+fn imported_terrain_member(
+    inventory: &Inventory,
+    relative: &str,
+) -> Result<Option<PathBuf>, String> {
+    auto_resources::exact(inventory, relative, None, None)
+}
+
+fn imported_map_terrain(
+    selected: &ImportedPak,
+    folder: &str,
+    member_name: &str,
+) -> Result<Option<PathBuf>, String> {
+    let Some(game) = source_game_root(selected) else { return Ok(None) };
+    let Some(library_root) = Path::new(&selected.directory).parent() else { return Ok(None) };
+    let library = imported_library(library_root).map_err(|error| error.to_string())?;
+    let selected_build = (selected.builds.len() == 1).then(|| selected.builds[0].as_str());
+    let mut found = Vec::new();
+    let mut matching_pak_details = Vec::new();
+    for archive in &library.archives {
+        if archive.id == selected.id
+            || (selected_build.is_none()
+                || !archive.builds.iter().any(|build| Some(build.as_str()) == selected_build))
+            || source_game_root(archive).as_deref() != Some(game.as_path())
+            || !source_map_parent(archive, &game, folder)
+        {
+            continue;
+        }
+        let is_terrain_pak = archive.name.eq_ignore_ascii_case("terraintexture.pak");
+        let is_level_pak = archive.name.eq_ignore_ascii_case("level.pak");
+        if !is_terrain_pak && !is_level_pak { continue }
+        let inventory = imported_archive_preview_inventory(archive).map_err(|e| e.to_string())?;
+        if member_name.eq_ignore_ascii_case("TerrainTexture.xml") {
+            for relative in [
+                "LevelData/TerrainTexture.xml",
+                "TerrainTexture.xml",
+                &format!("{folder}/LevelData/TerrainTexture.xml"),
+                &format!("{folder}/TerrainTexture.xml"),
+            ] {
+                if let Some(path) = imported_terrain_member(&inventory, relative)? {
+                    found.push(path);
+                }
+            }
+        } else if member_name.eq_ignore_ascii_case("terraintexture.pak") && is_terrain_pak {
+            // The imported 'terraintexture.pak' ZIP is a container, not an
+            // extracted file named terraintexture.pak. Look inside *that exact
+            // source archive* for a member with a verified CRY terrain header.
+            // Do not pass the outer ZIP archive to the baked-quadtree decoder.
+            matching_pak_details.push(format!(
+                "{} ({} extracted members)",
+                archive.name, inventory.entries.len()
+            ));
+            for entry in &inventory.entries {
+                if entry.byte_size < 24 || entry.byte_size > 2 * 1024 * 1024 * 1024 {
+                    continue;
+                }
+                let Some(path) = imported_terrain_member(&inventory, &entry.relative_path)? else {
+                    continue;
+                };
+                if read_terrain_texture_header(&path).is_ok() {
+                    found.push(path);
+                }
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    match found.len() {
+        0 if !matching_pak_details.is_empty() => Err(format!(
+            "Imported {} for {folder}, but none of its extracted members has a valid CRY baked-terrain tile header. It is indexed as a ZIP/signed archive rather than a raw baked-terrain stream; inspect its original member paths before implementing that variant.",
+            matching_pak_details.join(", ")
+        )),
+        0 => Ok(None),
+        1 => Ok(found.pop()),
+        _ => Err(format!(
+            "Multiple same-build imported sources have {member_name} for {folder}; refusing an ambiguous terrain selection"
+        )),
+    }
+}
+
 fn terrain_resource(
     source_root: &Path,
     selected: &ImportedPak,
@@ -140,7 +243,10 @@ fn terrain_resource(
             return Ok(Some(path));
         }
     }
-    Ok(None)
+    // The original source archive's folder may define the virtual prefix.
+    // In the Tutorial import, a separate "level.pak" can contain the map's
+    // LevelData XML, and "terraintexture.pak" is itself a ZIP/imported archive.
+    imported_map_terrain(selected, &folder, member_name)
 }
 
 fn verified_source(root: &Path, relative: &Path, max_bytes: u64) -> Result<PathBuf, String> {
