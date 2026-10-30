@@ -141,6 +141,10 @@ fn read_snapshot(path: &Path, id: &str, root: &Path) -> Result<BuildSnapshot, St
         || record.build_id != id
         || record.source_root != root.to_string_lossy()
         || record.members.len() > MAX_LIBRARY_COLLECTION_PAKS
+        || record.owned_extractions.len() > MAX_LIBRARY_COLLECTION_PAKS
+        || record.owned_extractions.iter().any(|id| {
+            id.len() != 20 || !id.bytes().all(|c| c.is_ascii_hexdigit())
+        })
         || record.members.iter().any(|(rel, member)| {
             rel.starts_with('/')
                 || rel
