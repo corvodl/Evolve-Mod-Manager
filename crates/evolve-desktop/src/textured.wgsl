@@ -179,7 +179,7 @@ fn fs_masked(input: Output) -> @location(0) vec4<f32> {
 @fragment
 fn fs_foliage(input: Output) -> @location(0) vec4<f32> {
     let leaf_alpha = textureSample(diffuse, material_sampler, input.uv).a;
-    if leaf_alpha < 0.5 {
+    if leaf_alpha < emission_params.w {
         discard;
     }
     let color = shade(input);
