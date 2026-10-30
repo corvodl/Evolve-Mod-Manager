@@ -161,10 +161,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             }),
         row![
             design::button("Import PAKs")
-                .style(design::primary)
+                .style(design::secondary)
                 .on_press(Message::LibraryToggleConfiguration),
             design::button("Update Game Build…")
-                .style(design::secondary)
+                .style(design::primary)
                 .on_press_maybe(
                     (!state.busy && !state.library_import_scanning)
                         .then_some(Message::LibraryUpdatePickFolder)
@@ -327,13 +327,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 design::button("Close").style(design::text_button)
                     .on_press_maybe((!disabled).then_some(Message::LibraryToggleConfiguration)),
             ].spacing(8),
-            text("Choose multiple signed PAKs or an entire EvolveGame/source folder. Folder scans include subfolders (up to 4,096 PAKs, 16 levels), as in the private manager. You can review the count before importing. Original game archives remain untouched.")
+            text("Select individual PAK files here, or use Import or Update Game Build Folder to scan all nested PAKs incrementally. Previously imported copies are reused across game folders. Original PAKs are never modified.")
                 .size(12).style(design::muted),
             row![
                 design::button("Add PAK files…").style(design::secondary)
                     .on_press_maybe((!disabled).then_some(Message::LibraryPickFiles)),
-                design::button("Import ALL PAKs from folder…").style(design::secondary)
-                    .on_press_maybe((!disabled).then_some(Message::LibraryPickFolder)),
+                design::button("Import or Update Game Build Folder…").style(design::secondary)
+                    .on_press_maybe((!disabled).then_some(Message::LibraryUpdatePickFolder)),
             ].spacing(10),
             text("Each PAK is independently verified using the bundled original public key and configured public keys. Existing complete imports are reused. A corrupt or incompatible archive will be reported without discarding successful imports.")
                 .size(12).style(design::muted),
