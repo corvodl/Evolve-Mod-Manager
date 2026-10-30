@@ -592,7 +592,7 @@ fn indexed_reference(
         }
         let source = match safe_member_name(&authored_path.replace('\\', "/")) {
             Ok(source) => source.to_ascii_lowercase(),
-            Err(error) => return Some(Err(error.into())),
+            Err(_) => return Some(Err(LibraryError::UnsafeArchive)),
         };
         let candidates = if source.ends_with(".dds.0") {
             vec![source]
