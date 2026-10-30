@@ -654,9 +654,7 @@ fn indexed_reference(
 /// the same authored cooked DDS may be treated as one asset. The fast cached
 /// lookup and the normal imported resolver use identical conflict semantics.
 /// Missing, oversized, unsafe, or different textures still fail closed.
-fn resolve_verified_duplicate_textures(
-    mut hits: Vec<LibraryReference>,
-) -> LibraryReferenceStatus {
+fn resolve_verified_duplicate_textures(mut hits: Vec<LibraryReference>) -> LibraryReferenceStatus {
     hits.sort_by(|a, b| a.archive_id.cmp(&b.archive_id));
     if hits.len() == 1 {
         return LibraryReferenceStatus::Found(hits.remove(0));
@@ -697,9 +695,7 @@ fn resolve_verified_duplicate_textures(
             }
             hash.update(&buf[..n]);
         }
-        if count != meta.len()
-            || fs::symlink_metadata(path).ok()?.len() != count
-        {
+        if count != meta.len() || fs::symlink_metadata(path).ok()?.len() != count {
             return None;
         }
         Some(hash.finalize().into())
