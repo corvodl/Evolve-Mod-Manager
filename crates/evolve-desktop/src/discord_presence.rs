@@ -299,7 +299,7 @@ fn manager_tab_art(page: Page) -> (&'static str, &'static str) {
 const LOBBY_VTABLE_RVA: usize = 0x23852D0;
 const LOBBY_STATE_OFFSET: usize = 0x8AC;
 const LOBBY_POINTER_PATHS: [(usize, usize); 2] = [
-    (0x3246360, 0x38), // Primary; survived Evolve restart
+    (0x3246360, 0x38),  // Primary; survived Evolve restart
     (0x2C67518, 0x1D8), // Fallback; independently restart-validated
 ];
 
@@ -399,7 +399,10 @@ fn format_activity_with_lobby(
             // queueing/character select. Unknown reads must not say "In match".
             (
                 "Playing Evolve".to_owned(),
-                lobby_state.map(LobbyState::presence).unwrap_or("Activity unavailable").to_owned(),
+                lobby_state
+                    .map(LobbyState::presence)
+                    .unwrap_or("Activity unavailable")
+                    .to_owned(),
             )
         } else if cfg.minimal {
             ("Playing Evolve".to_owned(), "In game".to_owned())
@@ -663,7 +666,6 @@ mod windows {
         let mut session_start = epoch();
         let manager_start = session_start;
         let mut local_actor: Option<LocalActor> = None;
-        let mut lobby_state: Option<LobbyState> = None;
         let mut last_actor_check = Instant::now() - Duration::from_secs(60);
         let mut nonce = 1u64;
         let mut last_presence_update = Instant::now() - Duration::from_secs(60);
@@ -680,10 +682,10 @@ mod windows {
                 last_activity = None;
                 last_pid = None;
                 local_actor = None;
-                lobby_state = None;
                 thread::sleep(Duration::from_secs(3));
                 continue;
             }
+            let lobby_state: Option<LobbyState>;
             let running_game = if cfg.show_game {
                 let snapshot = runtime_memory::inspect(&cfg.game_root);
                 if snapshot.pid != last_pid {
@@ -872,9 +874,7 @@ mod tests {
         pointers.insert(fallback_parent + fallback_off, lobby);
         pointers.insert(lobby, base + LOBBY_VTABLE_RVA);
         let read = |at: usize| pointers.get(&at).copied();
-        let state_at = |at: usize| {
-            (at == lobby + LOBBY_STATE_OFFSET).then_some(5u32)
-        };
+        let state_at = |at: usize| (at == lobby + LOBBY_STATE_OFFSET).then_some(5u32);
         assert_eq!(
             resolve_lobby_state(base, read, state_at),
             Some(LobbyState::PreRound)
@@ -893,9 +893,11 @@ mod tests {
         );
         pointers.insert(lobby, base + LOBBY_VTABLE_RVA);
         assert_eq!(
-            resolve_lobby_state(base, |at| pointers.get(&at).copied(), |at| {
-                (at == lobby + LOBBY_STATE_OFFSET).then_some(87)
-            }),
+            resolve_lobby_state(
+                base,
+                |at| pointers.get(&at).copied(),
+                |at| { (at == lobby + LOBBY_STATE_OFFSET).then_some(87) }
+            ),
             None
         );
     }
@@ -926,8 +928,13 @@ mod tests {
             assert!(!activity.to_string().contains("Evolution"));
         }
         let activity = format_activity_with_lobby(
-            &sample(), Some(12), Some(&actor), 100, Some(LobbyState::Game)
-        ).unwrap();
+            &sample(),
+            Some(12),
+            Some(&actor),
+            100,
+            Some(LobbyState::Game),
+        )
+        .unwrap();
         assert_eq!(activity["details"], "Playing as Goliath · Stage 2");
         assert!(activity["state"].as_str().unwrap().contains("Health"));
     }
