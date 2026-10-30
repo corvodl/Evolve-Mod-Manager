@@ -1,6 +1,6 @@
 # Update this file on main to request a Nightly release build.
 # GitHub Actions runs .github/workflows/nightly.yml only on this file's main-branch change or manual dispatch.
-request: merged-prs-144-146-2026-10-29
+request: merged-prs-147-150-2026-10-29
 requested: 2026-10-29
-base-main-commit: 27b5f0400bfbb37f95359a0443f460b9e6981538
-description: Manual Nightly build from main after merging PR #144 monster evolution/traversal energy diagnostics and Discord evolution percentage, plus PR #146 manager tab art presence and XML/Lua/TXT editor. PR #145 previously consolidated into #144; no other open PRs.
+base-main-commit: 7602dffac462d9603eb65450429509e27aebca15
+description: Manual Nightly build after merging PR #147 Level Editor opacity, PR #148 CGF asset recovery and Discord lobby states, PR #149 camera-relative Fly Mode actor yaw lock, and PR #150 manager/editor UI refresh. All previously open PRs have been merged.
