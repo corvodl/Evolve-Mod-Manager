@@ -795,6 +795,10 @@ fn physical_history_ids(library: &Path, logical_id: &str) -> Result<BTreeSet<Str
             .collect::<Result<Vec<_>, _>>()?;
         files.sort();
         if let Some(file) = files.first() {
+            let metadata = fs::symlink_metadata(file).map_err(|e| e.to_string())?;
+            if !metadata.file_type().is_file() || metadata.len() > MAX_LEDGER_BYTES {
+                return Err("Unsafe legacy build snapshot during migration".into());
+            }
             let value: serde_json::Value =
                 serde_json::from_reader(File::open(file).map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?;
