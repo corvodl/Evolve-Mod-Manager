@@ -7345,7 +7345,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelFullTexturesToggled => {
             state.level_full_textures = !state.level_full_textures;
-        },
+        }
         Message::LevelEditPositionChanged(value) => state.level_edit_position = value,
         Message::LevelEditRotationChanged(value) => state.level_edit_rotation = value,
         Message::LevelEditScaleChanged(value) => state.level_edit_scale = value,
