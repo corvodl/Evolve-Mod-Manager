@@ -172,6 +172,20 @@ fn fs_masked(input: Output) -> @location(0) vec4<f32> {
     return vec4<f32>(color.rgb, 1.0);
 }
 
+// Leaf cards in the standalone Model Viewer share the same original
+// Vegetation material semantics as the instanced Level Editor: diffuse.a
+// clips geometry with depth writes. Do not use the separate SSS/Opacity map
+// for coverage or alpha-blend a solid leaf card.
+@fragment
+fn fs_foliage(input: Output) -> @location(0) vec4<f32> {
+    let leaf_alpha = textureSample(diffuse, material_sampler, input.uv).a;
+    if leaf_alpha < 0.5 {
+        discard;
+    }
+    let color = shade(input);
+    return vec4<f32>(color.rgb, 1.0);
+}
+
 @fragment
 fn fs_opacity(input: Output) -> @location(0) vec4<f32> {
     let color = shade(input);
