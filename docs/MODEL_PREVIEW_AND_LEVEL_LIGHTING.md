@@ -131,3 +131,37 @@ from real member names, and the activity window now explicitly lists those
 names instead of falsely claiming the PAK itself is missing. **Importing a
 PAK is not evidence its member format matches the existing raw-quadtree
 parser.** No original PAK is modified or recompressed.
+
+
+## Ground-color tile layouts verified from user-provided exports
+
+Two map-owned `terraintexture` exports confirm that these archives use
+**the same RGB24 encoding at different grid sizes**, not necessarily separate
+codecs:
+
+| Source | Members | Grid | Per tile | Atlas |
+| --- | ---: | --- | --- | --- |
+| Tutorial | 4 | 2×2 | 1024² RGB24 | 2048² RGBA8 |
+| Ice_Crashsite | 16 | 4×4 | 1024² RGB24 | 4096² RGBA8 |
+
+Each raw tile contains 8 little-endian bytes (`u32 width`, `u32 height`)
+followed by `width * height * 3` RGB bytes. Side-to-side edge comparison
+confirms `tileX_Y` means X across and Y down: the adjoining edges are
+continuous in both provided maps.
+
+The importer now **automatically detects a complete NxN tile set** from the
+map-owned, manifest-verified archive, supporting either `tileX_Y.raw` or
+`files/tileX_Y.raw`. It checks exact source/build ownership, duplicate
+coordinates, all required tiles, regular file sizes, dimensions and bounded
+atlas memory; no Tile files are synthesized or borrowed from adjacent maps.
+It retains the existing CRY quadtree decoder as an independent format route.
+The Level Editor binds the resulting atlas to the terrain world material
+even when separately authored TerrainTexture.xml metadata is absent, and
+reports actual atlas dimensions rather than a hard-coded 2048×2048.
+
+Limits are explicit rather than promising arbitrary unknown binary formats:
+at most eight tiles per axis and 4096 pixels per atlas side. Other encodings,
+texture-compression variants or larger atlases should report an actionable
+unsupported-format error until a source-backed parser is added. Synthetic
+2×2 and 4×4 tests and truncated/missing-member tests cover the new path.
+The original user-supplied game images are not stored in the repository.
