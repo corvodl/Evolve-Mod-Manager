@@ -977,8 +977,16 @@ mod tests {
             unresolved: 0,
             ..Report::default()
         };
-        assert!(report.status().contains("5 model/material pairs without verified diffuse"));
-        assert!(report.status().contains("0 missing/unsupported geometry dependencies"));
+        assert!(
+            report
+                .status()
+                .contains("5 model/material pairs without verified diffuse")
+        );
+        assert!(
+            report
+                .status()
+                .contains("0 missing/unsupported geometry dependencies")
+        );
     }
 
     #[test]
