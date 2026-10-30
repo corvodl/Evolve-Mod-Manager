@@ -150,8 +150,12 @@ fn imported_map_terrain(
     folder: &str,
     member_name: &str,
 ) -> Result<Option<PathBuf>, String> {
-    let Some(game) = source_game_root(selected) else { return Ok(None) };
-    let Some(library_root) = Path::new(&selected.directory).parent() else { return Ok(None) };
+    let Some(game) = source_game_root(selected) else {
+        return Ok(None);
+    };
+    let Some(library_root) = Path::new(&selected.directory).parent() else {
+        return Ok(None);
+    };
     let library = imported_library(library_root).map_err(|error| error.to_string())?;
     if selected.builds.len() > 1 {
         return Err("Selected map belongs to multiple imported builds; choose a specific build before resolving terrain".into());
@@ -165,8 +169,9 @@ fn imported_map_terrain(
         // are admissible. A *known different* build is never admissible.
         // This handles independently imported Tutorial level/terrain PAKs.
         let same_build = match selected_build {
-            Some(label) => archive.builds.is_empty()
-                || archive.builds.iter().any(|build| build == label),
+            Some(label) => {
+                archive.builds.is_empty() || archive.builds.iter().any(|build| build == label)
+            }
             None => archive.builds.is_empty(),
         };
         if archive.id == selected.id
@@ -200,7 +205,8 @@ fn imported_map_terrain(
             // Do not pass the outer ZIP archive to the baked-quadtree decoder.
             matching_pak_details.push(format!(
                 "{} ({} extracted members)",
-                archive.name, inventory.entries.len()
+                archive.name,
+                inventory.entries.len()
             ));
             for entry in &inventory.entries {
                 if matching_pak_members.len() < 24 {
