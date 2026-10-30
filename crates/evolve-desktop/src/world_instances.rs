@@ -6,7 +6,7 @@ use evolve_core::{RenderMesh, Transform};
 use iced::wgpu;
 use iced::wgpu::util::DeviceExt;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 // Ordinary world-model diffuse textures are limited to 32 MiB so one map
@@ -245,6 +245,105 @@ fn auxiliary_map(
     }
     cache.insert(key, (texture.clone(), view.clone()));
     (texture, view)
+}
+
+/// Guarantee a share of the *existing* GPU scene budget to every distinct
+/// verified diffuse map before optional normal/spec/gloss/emissive textures.
+/// Without this pass, the last trees/props in a world can turn flat beige
+/// simply because earlier maps consumed the budget in traversal order.
+fn world_diffuse_quotas(full: bool, ground_count: usize, prop_count: usize) -> (u64, u64) {
+    let scene = if full {
+        MAX_SCENE_FULL_TEXTURE_BYTES
+    } else {
+        MAX_SCENE_BALANCED_TEXTURE_BYTES
+    };
+    // Reserve 75% for real diffuse colors (including source alpha). Other
+    // material roles use the remaining scene budget via existing upload logic.
+    let diffuse_budget = scene.saturating_mul(3) / 4;
+    let terrain_budget = if ground_count == 0 {
+        0
+    } else {
+        diffuse_budget.saturating_div(4).min(96 * 1024 * 1024)
+    };
+    let ground_share = if ground_count == 0 {
+        0
+    } else {
+        terrain_budget / ground_count as u64
+    };
+    let prop_share = if prop_count == 0 {
+        0
+    } else {
+        diffuse_budget.saturating_sub(terrain_budget) / prop_count as u64
+    };
+    (ground_share, prop_share)
+}
+
+/// Populate the cache from original source images before any optional map
+/// uploads. Account for full mip chains; cap the top level to 75% of each
+/// share so additional mips cannot silently exhaust another object's quota.
+/// Multiple placements reusing one Arc upload just one GPU texture.
+fn prefetch_world_diffuse(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    world: &World,
+    full: bool,
+    cache: &mut TextureCache,
+    used_bytes: &mut u64,
+) {
+    let mut unique = HashSet::new();
+    let mut sources = Vec::new();
+    for group in &world.groups {
+        let terrain = is_ground(group);
+        for surface in &group.surfaces {
+            if !surface.visible
+                || surface.index_count == 0
+                || (surface.first_index as usize)
+                    .saturating_add(surface.index_count as usize) > group.mesh.indices.len()
+            {
+                continue;
+            }
+            let Some(image) = surface.diffuse.as_ref() else {
+                continue;
+            };
+            let key = (Arc::as_ptr(image) as usize, 0u8, terrain);
+            if unique.insert(key) {
+                sources.push((key, image, terrain));
+            }
+        }
+    }
+    let ground_count = sources.iter().filter(|(_, _, terrain)| *terrain).count();
+    let prop_count = sources.len().saturating_sub(ground_count);
+    let (ground_share, prop_share) = world_diffuse_quotas(full, ground_count, prop_count);
+    let max_size = device.limits().max_texture_dimension_2d;
+    for (key, original, terrain) in sources {
+        let quota = if terrain { ground_share } else { prop_share };
+        // Maximum RGBA base level is 3/4 of the per-asset mip budget. This
+        // allows the complete mip pyramid to stay bounded by the quota.
+        let source = gpu_diffuse_quality(
+            original,
+            terrain,
+            max_size,
+            full,
+            quota.saturating_mul(3) / 4,
+        );
+        let Some(source) = source else {
+            continue;
+        };
+        let bytes = mip_chain_bytes(source.width(), source.height());
+        if bytes > quota {
+            continue;
+        }
+        let (tex, view) = upload_rgba_mips(
+            device,
+            queue,
+            Some(source.as_ref()),
+            [210, 205, 205, 255],
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            "Original level diffuse: source-first budget allocation",
+        );
+        *used_bytes = used_bytes.saturating_add(bytes);
+        cache.insert(key, (tex, view));
+    }
 }
 
 fn is_ground(group: &ModelGroup) -> bool {
@@ -1101,6 +1200,14 @@ impl Renderer {
         if key != self.world_identity || self.last_full_textures != full_textures {
             let mut cache = TextureCache::new();
             let mut used_bytes = 0u64;
+            prefetch_world_diffuse(
+                device,
+                queue,
+                world,
+                full_textures,
+                &mut cache,
+                &mut used_bytes,
+            );
             self.groups = world
                 .groups
                 .iter()
@@ -1258,6 +1365,26 @@ mod tests {
         assert!(shader.contains("let distance=length(camera.origin.xyz-input.world);"));
         assert!(shader.contains("fn distance_fog(input:Output, color:vec4<f32>)"));
         naga::front::wgsl::parse_str(shader).expect("distance fog preview shader is valid");
+    }
+
+    #[test]
+    fn level_diffuse_uploads_get_budget_before_optional_material_maps() {
+        let full = MAX_SCENE_FULL_TEXTURE_BYTES;
+        let balanced = MAX_SCENE_BALANCED_TEXTURE_BYTES;
+        for (enabled, scene) in [(false, balanced), (true, full)] {
+            let (ground, prop) = world_diffuse_quotas(enabled, 1, 200);
+            let allocated = ground + prop * 200;
+            assert!(allocated <= scene * 3 / 4);
+            assert!(ground >= 16 * 1024 * 1024);
+            assert!(prop >= 256 * 1024);
+            // A source 512×512 diffuse, plus mips, fits even for the last
+            // object in a scene with 200 distinct source maps.
+            let bytes = mip_chain_bytes(512, 512);
+            assert!(bytes <= prop);
+            let (unused_ground, all_props) = world_diffuse_quotas(enabled, 0, 200);
+            assert_eq!(unused_ground, 0);
+            assert!(all_props >= prop);
+        }
     }
 
     #[test]
