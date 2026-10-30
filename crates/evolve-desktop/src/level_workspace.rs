@@ -446,9 +446,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             row![
                 text("Time of day").size(12),
                 space().width(Fill),
-                text(super::level_lighting::Lighting::label(state.level_time_of_day))
-                    .size(12)
-                    .style(design::muted),
+                text(super::level_lighting::Lighting::label(
+                    state.level_time_of_day
+                ))
+                .size(12)
+                .style(design::muted),
             ]
             .align_y(iced::Center),
             iced::widget::slider(
@@ -518,10 +520,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .padding(12)
     .width(Fill)
     .style(design::panel);
-    let inspector = column![outliner_panel, details_panel, scene_settings_panel, changes_panel]
-        .spacing(8)
-        .width(Length::Fixed(350.0))
-        .height(Fill);
+    let inspector = column![
+        outliner_panel,
+        details_panel,
+        scene_settings_panel,
+        changes_panel
+    ]
+    .spacing(8)
+    .width(Length::Fixed(350.0))
+    .height(Fill);
     row![viewport, inspector].spacing(8).height(Fill).into()
 }
 
