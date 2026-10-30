@@ -202,7 +202,7 @@ fn tile(name: &'static str, page: Page, wallpaper: bool) -> Element<'static, Mes
         .spacing(14)
         .align_y(iced::Center),
     )
-    .style(|theme, status| {
+    .style(move |theme, status| {
         let mut style = design::secondary(theme, status);
         if design::is_legacy(theme) {
             // Legacy's iconic white hover must not be overridden by the
