@@ -547,8 +547,7 @@ fn unverified_solid_body_opacity(slot: &evolve_core::MaterialSlot) -> bool {
 /// not the shape of the leaf. Require the original shader identity; never
 /// interpret the alpha of ordinary Illum/character diffuse maps as coverage.
 fn source_vegetation_cutout(slot: &evolve_core::MaterialSlot) -> bool {
-    slot.shader.eq_ignore_ascii_case("Vegetation")
-        && slot.opacity.unwrap_or(1.0) >= 0.999
+    slot.shader.eq_ignore_ascii_case("Vegetation") && slot.opacity.unwrap_or(1.0) >= 0.999
 }
 
 /// Per-channel resolved source textures and independent missing-map diagnostics.
@@ -841,9 +840,8 @@ pub fn original_single_leaf_surface(
     } else {
         verified_opacity(leaf, opacity)
     };
-    surface.transparent = !surface.foliage_cutout
-        && needs_alpha_blending(leaf)
-        && surface.opacity.is_some();
+    surface.transparent =
+        !surface.foliage_cutout && needs_alpha_blending(leaf) && surface.opacity.is_some();
     Ok((surface, warnings))
 }
 
@@ -1294,16 +1292,14 @@ pub fn load_with_progress(
             .then_some(kala_state);
             surface.specular = specular;
             surface.gloss = gloss;
-            surface.foliage_cutout =
-                source_vegetation_cutout(leaf) && surface.diffuse.is_some();
+            surface.foliage_cutout = source_vegetation_cutout(leaf) && surface.diffuse.is_some();
             surface.opacity = if surface.foliage_cutout {
                 None
             } else {
                 verified_opacity(leaf, opacity)
             };
-            surface.transparent = !surface.foliage_cutout
-                && needs_alpha_blending(leaf)
-                && surface.opacity.is_some();
+            surface.transparent =
+                !surface.foliage_cutout && needs_alpha_blending(leaf) && surface.opacity.is_some();
             Ok(())
         })();
         if let Err(error) = result {
@@ -1643,10 +1639,9 @@ mod tests {
         )
         .unwrap();
         assert!(!source_vegetation_cutout(&ordinary.slots[0]));
-        let translucent = evolve_core::parse_material(
-            br#"<Material Shader="Vegetation" Opacity="0.5"/>"#,
-        )
-        .unwrap();
+        let translucent =
+            evolve_core::parse_material(br#"<Material Shader="Vegetation" Opacity="0.5"/>"#)
+                .unwrap();
         assert!(!source_vegetation_cutout(&translucent.slots[0]));
     }
 
