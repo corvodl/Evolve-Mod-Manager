@@ -10,14 +10,24 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use sysinfo::{Pid, ProcessesToUpdate, System};
 
 const HELPER_FLAG: &str = "--apply-verified-evolve-update";
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
+const SHUTDOWN_POLL: Duration = Duration::from_millis(250);
+// These are known executables / DLLs replaced by the installer. We also
+// inspect installed third-party files, as optional tooling may still be open.
+const INSTALLED_TOP_LEVEL_FILES: [&str; 3] = [
+    "evolve-mod-manager.exe",
+    "evolve-cli.exe",
+    "evolve-teleport-overlay.exe",
+];
 const MAX_ZIP_CONTENTS: u64 = 256 * 1024 * 1024;
 const PORTABLE_MEMBERS: [&str; 11] = [
     "evolve-mod-manager.exe",
@@ -47,6 +57,8 @@ pub struct PreparedUpdate {
     pub executable: PathBuf,
     pub root: PathBuf,
     pub kind: InstallationKind,
+    pub manager_pid: u32,
+    pub manager_started_at: u64,
 }
 
 fn is_manager_binary(exe: &Path) -> bool {
@@ -86,6 +98,8 @@ pub fn prepare_update(update: &ReleaseUpdate, root: &Path) -> Result<PreparedUpd
         executable,
         root: root.to_owned(),
         kind,
+        manager_pid: std::process::id(),
+        manager_started_at: current_manager_start_time()?,
     };
     validate_plan(&prepared)?;
     Ok(prepared)
@@ -98,6 +112,11 @@ fn validate_plan(plan: &PreparedUpdate) -> Result<(), UpdateError> {
         InstallationKind::Installed => format!("EvolveModManager-Setup-{}.exe", plan.version),
         InstallationKind::Portable => format!("EvolveModManager-Portable-{}.zip", plan.version),
     };
+    if plan.manager_pid == 0 || plan.manager_started_at == 0 {
+        return Err(UpdateError::Invalid(
+            "missing original manager process identity".into(),
+        ));
+    }
     if !is_manager_binary(&plan.executable)
         || plan.asset.name != expected_name
         || plan.payload.file_name().and_then(|n| n.to_str()) != Some(expected_name.as_str())
@@ -146,11 +165,17 @@ pub fn launch_worker(plan: &PreparedUpdate) -> Result<(), UpdateError> {
         .map_err(|e| UpdateError::Invalid(format!("cannot prepare update plan: {e}")))?;
     manifest.as_file_mut().sync_all()?;
     let (_, manifest_path) = manifest.keep().map_err(|e| UpdateError::Io(e.error))?;
-    if let Err(err) = Command::new(&worker)
-        .arg(HELPER_FLAG)
-        .arg(&manifest_path)
-        .spawn()
+    let mut command = Command::new(&worker);
+    command.arg(HELPER_FLAG).arg(&manifest_path);
+    // The helper must outlive Iced and not inherit the manager's process group.
+    #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    }
+    if let Err(err) = command.spawn() {
         let _ = fs::remove_file(&worker);
         let _ = fs::remove_file(&manifest_path);
         return Err(UpdateError::Io(err));
@@ -308,6 +333,146 @@ fn apply_portable_update(plan: &PreparedUpdate) -> Result<(), UpdateError> {
     Ok(())
 }
 
+/// Bind the update plan to this particular manager process, not just a PID
+/// which Windows may reuse after it exits.
+fn current_manager_start_time() -> Result<u64, UpdateError> {
+    let mut system = System::new();
+    let pid = Pid::from_u32(std::process::id());
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    system
+        .process(pid)
+        .map(|process| process.start_time())
+        .filter(|started| *started != 0)
+        .ok_or_else(|| UpdateError::Install("cannot identify the running manager process".into()))
+}
+
+fn original_manager_running(plan: &PreparedUpdate, system: &mut System) -> bool {
+    let pid = Pid::from_u32(plan.manager_pid);
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    system
+        .process(pid)
+        .is_some_and(|process| process.start_time() == plan.manager_started_at)
+}
+
+/// Probe without changing file contents. On Windows a loaded image or a file
+/// opened without write-sharing cannot be reopened for writing. Probe the
+/// install payloads BEFORE asking silent Inno Setup to replace any of them.
+fn blocked_install_file(plan: &PreparedUpdate) -> Result<Option<PathBuf>, UpdateError> {
+    let folder = plan
+        .executable
+        .parent()
+        .ok_or_else(|| UpdateError::Invalid("manager installation directory missing".into()))?;
+    let mut candidates: Vec<PathBuf> = match plan.kind {
+        InstallationKind::Installed => INSTALLED_TOP_LEVEL_FILES
+            .iter()
+            .map(|name| folder.join(name))
+            .collect(),
+        InstallationKind::Portable => PORTABLE_MEMBERS
+            .iter()
+            .map(|name| folder.join(name))
+            .collect(),
+    };
+    if plan.kind == InstallationKind::Installed {
+        // Optional tool dependencies can also keep the installer from closing
+        // files. Only walk the installation's bundled tool directory, never
+        // follow symlinks or inspect game files / user Asset Libraries.
+        let mut pending = vec![folder.join("third_party"), folder.join("assets")];
+        while let Some(directory) = pending.pop() {
+            let info = match fs::symlink_metadata(&directory) {
+                Ok(info) => info,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(UpdateError::Io(error)),
+            };
+            if !info.file_type().is_dir() {
+                return Err(UpdateError::Install(format!(
+                    "unexpected linked or non-directory install path: {}",
+                    directory.display()
+                )));
+            }
+            for entry in fs::read_dir(directory)? {
+                let entry = entry?;
+                let metadata = entry.metadata()?;
+                // Never follow symlinked paths in the privileged installer
+                // preflight, including junctions / reparse points.
+                if entry.file_type()?.is_symlink() {
+                    return Err(UpdateError::Install(format!(
+                        "linked install path is unsafe: {}",
+                        entry.path().display()
+                    )));
+                }
+                if metadata.is_dir() {
+                    pending.push(entry.path());
+                } else if metadata.is_file() {
+                    candidates.push(entry.path());
+                }
+            }
+        }
+    }
+    for path in candidates {
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(UpdateError::Io(error)),
+            Ok(info) if !info.file_type().is_file() => {
+                return Err(UpdateError::Install(format!(
+                    "unexpected install target: {}",
+                    path.display()
+                )));
+            }
+            Ok(_) => {}
+        }
+        // A standard user cannot request write access to a Program Files
+        // executable even when it is completely unlocked. Probe with a
+        // read-only handle that denies sharing instead: on Windows this
+        // detects open files without requiring administrator privileges.
+        let mut probe = OpenOptions::new();
+        probe.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            probe.share_mode(0);
+        }
+        match probe.open(&path) {
+            Ok(_) => {}
+            Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => {
+                return Ok(Some(path));
+            }
+            Err(error) => return Err(UpdateError::Io(error)),
+        }
+    }
+    Ok(None)
+}
+
+fn wait_until_ready(plan: &PreparedUpdate) -> Result<(), UpdateError> {
+    let start = Instant::now();
+    let mut system = System::new();
+    let mut blocked = None;
+    loop {
+        let still_running = original_manager_running(plan, &mut system);
+        if !still_running {
+            blocked = blocked_install_file(plan)?;
+            if blocked.is_none() {
+                return Ok(());
+            }
+        }
+        if start.elapsed() >= SHUTDOWN_TIMEOUT {
+            let detail = if still_running {
+                format!(
+                    "Evolve Mod Manager (PID {}) did not close within {} seconds.                      Close the manager and its windows, then select Retry update.",
+                    plan.manager_pid,
+                    SHUTDOWN_TIMEOUT.as_secs()
+                )
+            } else {
+                format!(
+                    "An installed file is still in use: {}.                      Close applications using that file, then select Retry update.",
+                    blocked.as_deref().unwrap_or(&plan.executable).display()
+                )
+            };
+            return Err(UpdateError::Install(detail));
+        }
+        thread::sleep(SHUTDOWN_POLL);
+    }
+}
+
 // Windows canonical paths often start with \\?\\. Inno Setup's /DIR switch
 // accepts normal drive or UNC paths, not Windows verbatim path prefixes.
 fn installer_directory_arg(directory: &Path) -> String {
@@ -393,8 +558,10 @@ fn apply_update_plan(manifest: &Path) -> Result<(), UpdateError> {
     }
     validate_plan(&plan)?;
 
-    // Wait for the GUI, model viewer and archive workers to release DLLs/EXEs.
-    thread::sleep(Duration::from_secs(3));
+    // Iced's shutdown is requested by the caller. Do not guess that three
+    // seconds was sufficient: observe that exact process leaving, then probe
+    // the install files that Inno Setup will replace.
+    wait_until_ready(&plan)?;
     match plan.kind {
         InstallationKind::Installed => {
             let directory = plan.executable.parent().ok_or_else(|| {
@@ -417,7 +584,7 @@ fn apply_update_plan(manifest: &Path) -> Result<(), UpdateError> {
                     "/VERYSILENT",
                     "/SUPPRESSMSGBOXES",
                     "/NORESTART",
-                    "/CLOSEAPPLICATIONS",
+                    "/NOCLOSEAPPLICATIONS",
                 ])
                 .arg(format!("/DIR={}", installer_directory_arg(directory)))
                 .arg(format!("/LOG={}", installer_directory_arg(&setup_log)))
@@ -454,8 +621,20 @@ pub fn try_run_helper() -> bool {
             "missing or extra update helper arguments".into(),
         )),
     };
-    if let (Err(error), Some(parent)) = (result, plan_path.as_deref().and_then(Path::parent)) {
-        let _ = fs::write(parent.join("last-update-error.txt"), error.to_string());
+    if let (Err(error), Some(plan_path)) = (result, plan_path.as_deref()) {
+        if let Some(parent) = plan_path.parent() {
+            let _ = fs::write(parent.join("last-update-error.txt"), error.to_string());
+        }
+        // A silent installer cannot show a failure dialog. Reopen the old
+        // manager so Settings -> Updates can explain the problem and retry.
+        // Never create a duplicate instance if Iced failed to exit.
+        if let Ok(bytes) = fs::read(plan_path)
+            && let Ok(plan) = serde_json::from_slice::<PreparedUpdate>(&bytes)
+            && validate_plan(&plan).is_ok()
+            && !original_manager_running(&plan, &mut System::new())
+        {
+            let _ = Command::new(&plan.executable).spawn();
+        }
     }
     true
 }
@@ -525,6 +704,8 @@ mod tests {
             executable: directory.join("evolve-mod-manager.exe"),
             root: directory.to_path_buf(),
             kind: InstallationKind::Portable,
+            manager_pid: std::process::id(),
+            manager_started_at: current_manager_start_time().unwrap(),
         }
     }
 
@@ -635,6 +816,32 @@ mod tests {
             UpdateError::Install("exit code Some(3)".into()).to_string(),
             "Windows installer failed: exit code Some(3)"
         );
+    }
+
+    #[test]
+    fn install_preflight_does_not_modify_unlocked_executables() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("evolve-mod-manager.exe");
+        fs::write(&exe, b"unchanged").unwrap();
+        // Simulate an installation whose binaries are readable but not
+        // writable by the non-elevated updater helper.
+        let mut permissions = fs::metadata(&exe).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&exe, permissions).unwrap();
+        let mut plan = mock_plan(dir.path());
+        plan.kind = InstallationKind::Installed;
+        assert!(blocked_install_file(&plan).unwrap().is_none());
+        assert_eq!(fs::read(&exe).unwrap(), b"unchanged");
+    }
+
+    #[test]
+    fn manager_identity_uses_start_time_as_well_as_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = mock_plan(dir.path());
+        assert!(original_manager_running(&plan, &mut System::new()));
+        let mut stale = plan;
+        stale.manager_started_at += 1;
+        assert!(!original_manager_running(&stale, &mut System::new()));
     }
 
     #[test]

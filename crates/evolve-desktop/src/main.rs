@@ -407,6 +407,7 @@ struct State {
     storage_usage: Option<storage_usage::StorageUsage>,
     update_status: String,
     update_worker_failure: Option<String>,
+    retry_update_after_check: bool,
     available_update: Option<ReleaseUpdate>,
     news: whats_new::NewsState,
     client_version: Option<String>,
@@ -2301,6 +2302,7 @@ enum Message {
     PreferenceWorkspace(String),
     SavePreferences,
     CheckUpdates,
+    RetryUpdate,
     UpdateChecked(Result<Option<ReleaseUpdate>, String>),
     RefreshNews,
     NewsLoaded(Result<whats_new::NewsResult, String>),
@@ -10115,6 +10117,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::PreferenceWorkspace(value) => state.preferences.current_workspace = value,
         Message::SavePreferences => persist_preferences(state),
+        Message::RetryUpdate => {
+            if state.busy {
+                return Task::none();
+            }
+            state.retry_update_after_check = true;
+            return update(state, Message::CheckUpdates);
+        }
         Message::CheckUpdates => {
             state.startup_update_checked = true;
             state.update_status = "Checking public GitHub Releases for verified updates...".into();
@@ -10185,17 +10194,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::UpdateChecked(result) => match result {
-            Ok(Some(update)) => {
+            Ok(Some(release)) => {
                 state.update_status = format!(
                     "Update {} ({:?}) is available. Portable: {}. Release: {}",
-                    update.version, update.channel, update.portable.name, update.release_url
+                    release.version, release.channel, release.portable.name, release.release_url
                 );
-                state.available_update = Some(update);
+                state.available_update = Some(release);
+                if state.retry_update_after_check {
+                    state.retry_update_after_check = false;
+                    return update(state, Message::ApplyUpdate);
+                }
             }
             Ok(None) => {
+                state.retry_update_after_check = false;
                 state.update_status = "No newer verified release on the selected channel.".into()
             }
-            Err(error) => state.update_status = format!("Cannot verify latest release: {error}"),
+            Err(error) => {
+                state.retry_update_after_check = false;
+                state.update_status = format!("Cannot verify latest release: {error}");
+            }
         },
         Message::ApplyUpdate => {
             let Some(update) = state.available_update.clone() else {
@@ -10239,12 +10256,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         return iced::exit();
                     }
                     Err(error) => {
-                        state.update_status =
-                            format!("Update was verified but could not start: {error}");
+                        state.update_worker_failure = Some(error.to_string());
+                        state.update_status = format!(
+                            "Update was verified but could not start: {error}. Select Retry update."
+                        );
                     }
                 },
                 Err(error) => {
-                    state.update_status = format!("Could not install update: {error}");
+                    state.update_worker_failure = Some(error.clone());
+                    state.update_status =
+                        format!("Could not install update: {error}. Select Retry update.");
                 }
             }
         }
