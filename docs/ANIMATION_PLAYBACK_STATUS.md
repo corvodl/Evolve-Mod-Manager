@@ -16,6 +16,8 @@ be confused with binding a converted track to an unrelated CDF mesh.
 - Measured playback elapsed time avoids large jumps on focus/resume.
 - Converted GLB clips with **one internally consistent skinned mesh** now
   deform their own rig and vertex geometry at clip selection, scrub and Play.
+  A strict source-rig transfer path can also match converted tracks onto a
+  selected original standalone skin/CHR using verified parent/bind identities.
   The read-only preview parses explicit weights, inverse binds, node parent
   hierarchy, glTF transforms and original triangle indices; each frame
   preserves UV0 and index topology and uses glTF Y-up -> viewer Z-up.
@@ -34,11 +36,17 @@ be confused with binding a converted track to an unrelated CDF mesh.
    names), 2012 Scorpid, Legacy, Stage 2 hunters and monsters. Compare two
    clip timestamps, Play/Pause, scrub, loop and actual weighted vertex changes
    while preserving source UVs, rig, materials and surface ordering.
-3. Converted glTF layered/additive channels currently have track data but no
-   verified layered viewport composition. Native CAF layers are implemented.
-4. Attach exact matched converted clips to an independently verified source
-   model/character GLB, then verify the Blender FBX Action round-trip and
-   animation-folder export parity. Exported DBA clips remain unverified.
+3. Same-GLB layered/additive clips are now sampled and composited when
+   explicitly tagged by the converter, including UI base/layer selection and
+   blend weights. Native CAF layers remain supported. Whole-character CDF
+   overlay retargeting and private aim/IK conventions need real asset tests.
+4. Strict, read-only converted-clip transfer onto an independently generated
+   **standalone** CryEngine source skin/CHR GLB is implemented: exact joint
+   names, parent relationships, local rest transforms and channel target
+   remapping must all agree. A mismatched rig is rejected, not guessed.
+   Whole-character CDF assemblies still need an equivalent verified source
+   exporter/binder, along with Blender FBX Action round-trip and
+   animation-folder export parity. Real 2012 DBA clips remain unverified.
 5. GPU joint-palette acceleration, material/submesh parity for converted GLBs,
    and UI integration of blended clip timelines need additional validation.
 
