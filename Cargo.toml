@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/evolve-core", "crates/evolve-desktop", "crates/evolve-privileged-worker"]
+members = [
+    "crates/evolve-core",
+    "crates/evolve-desktop",
+    "crates/evolve-privileged-worker",
+    "crates/evolve-teleport-overlay",
+]
 
 [workspace.package]
 edition = "2024"
