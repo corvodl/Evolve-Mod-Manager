@@ -82,6 +82,27 @@ jobs:
       - run: cargo check --workspace --all-targets
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
+      - name: Verify actual worker and overlay Windows manifests
+        shell: pwsh
+        run: |
+          cargo build -p evolve-privileged-worker -p evolve-teleport-overlay
+          if ($LASTEXITCODE -ne 0) { throw 'Could not build isolated binaries' }
+          $kit = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Windows Kits\10\bin'
+          $mt = Get-ChildItem -Path $kit -Recurse -Filter mt.exe -File |
+            Where-Object { $_.DirectoryName.EndsWith('\x64') } | Select-Object -First 1
+          if (!$mt) { throw 'Windows SDK manifest tool not found' }
+          foreach ($name in @('evolve-privileged-worker.exe', 'evolve-teleport-overlay.exe')) {
+            $exe = (Resolve-Path (Join-Path 'target/debug' $name)).Path
+            $manifestFile = Join-Path $env:RUNNER_TEMP ($name + '.manifest')
+            & $mt.FullName "-inputresource:${exe};#1" "-out:${manifestFile}"
+            if ($LASTEXITCODE -ne 0 -or !(Test-Path $manifestFile)) {
+              throw "Missing manifest in $name"
+            }
+            $manifest = Get-Content -LiteralPath $manifestFile -Raw
+            if (!$manifest.Contains('level="asInvoker"')) { throw "$name must use asInvoker" }
+            if (!$manifest.Contains('uiAccess="false"')) { throw "$name must disable UIAccess" }
+            if ($manifest.Contains('requireAdministrator')) { throw "$name must not auto-elevate" }
+          }
 
   portable-preview:
     name: Windows portable preview (not a release)
@@ -115,7 +136,7 @@ jobs:
         run: |
           $output = "dist/EvolveModManager-Rust-Preview"
           New-Item -ItemType Directory -Path $output -Force | Out-Null
-          foreach ($binary in @("evolve-mod-manager.exe", "evolve-cli.exe", "evolve-teleport-overlay.exe")) {
+          foreach ($binary in @("evolve-mod-manager.exe", "evolve-cli.exe", "evolve-teleport-overlay.exe", "evolve-privileged-worker.exe")) {
             $source = Join-Path "target/release" $binary
             if (!(Test-Path $source)) { throw "Missing required binary: $binary" }
             Copy-Item $source (Join-Path $output $binary)

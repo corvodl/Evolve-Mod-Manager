@@ -18,7 +18,11 @@ fn win_path_text(path: &Path) -> String {
     }
 }
 
-fn named_rule(executable: &Path) -> String {
+pub(crate) fn game_executable_path(game_root: &Path) -> PathBuf {
+    game_root.join("bin64_SteamRetail").join("Evolve.exe")
+}
+
+pub(crate) fn named_rule(executable: &Path) -> String {
     // Private Python manager: sha256(str(Path(exe).resolve()).casefold())[:20].
     // On ordinary Windows game paths, lowercase is equivalent to casefold.
     let canonical = win_path_text(executable).to_lowercase();
@@ -34,13 +38,26 @@ fn named_rule(executable: &Path) -> String {
 pub fn game_executable(game_root: &Path) -> Result<PathBuf, String> {
     let root = std::fs::canonicalize(game_root)
         .map_err(|e| format!("Cannot locate selected EvolveGame folder: {e}"))?;
-    let game = root.join("bin64_SteamRetail").join("Evolve.exe");
+    let game = game_executable_path(&root);
     let meta =
         std::fs::symlink_metadata(&game).map_err(|e| format!("Cannot locate Evolve.exe: {e}"))?;
     if !meta.file_type().is_file() {
         return Err("Evolve.exe is not a regular file".into());
     }
     std::fs::canonicalize(game).map_err(|e| e.to_string())
+}
+
+fn manager_rule_delete_args(name: &str, executable: &Path) -> Vec<String> {
+    // Name alone is not sufficient: netsh deletes *all* matching rules,
+    // including another program's rule with the same display name.
+    // Restrict deletion to outbound rules belonging to this Evolve executable.
+    vec![
+        "delete".into(),
+        "rule".into(),
+        format!("name={name}"),
+        "dir=out".into(),
+        format!("program={}", win_path_text(executable)),
+    ]
 }
 
 #[cfg(windows)]
@@ -50,10 +67,8 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
     use std::process::{Command, Output, Stdio};
 
     fn command(args: &[String]) -> Result<Output, String> {
-        let root = std::env::var_os("WINDIR")
-            .or_else(|| std::env::var_os("SystemRoot"))
-            .unwrap_or_else(|| r"C:\Windows".into());
-        Command::new(PathBuf::from(root).join("System32").join("netsh.exe"))
+        let netsh = crate::windows_system32::executable("netsh.exe")?;
+        Command::new(netsh)
             .args(["advfirewall", "firewall"])
             .args(args)
             .stdin(Stdio::null())
@@ -70,7 +85,26 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
             }
             return Ok(true);
         }
-        // No rules matched. Locale-specific output is not used for detection.
+        // Never interpret a failed query as proof that the rule is absent.
+        // A permissions or firewall-service failure must not silently turn
+        // online policy into an apparently successful operation.
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let combined = format!("{stdout} {stderr}").to_ascii_lowercase();
+            // netsh may return a failure exit code when no rule matches.
+            // Accept only its explicit no-match response, not arbitrary errors.
+            if combined.contains("no rules match the specified criteria") {
+                return Ok(false);
+            }
+            return Err(format!(
+                "Cannot verify manager firewall rule {name} (exit {}). {} {}",
+                out.status,
+                stderr.chars().take(240).collect::<String>(),
+                stdout.chars().take(240).collect::<String>()
+            ));
+        }
+        // A successful query that did not return this named rule is absent.
         Ok(false)
     }
     fn run(args: &[String], verb: &str) -> Result<(), String> {
@@ -89,23 +123,17 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
 
     let exe = game_executable(game_root)?;
     let mut seen = HashSet::new();
-    let mut names = Vec::new();
-    for candidate in [
-        &exe,
-        &game_root.join("bin64_SteamRetail").join("Evolve.exe"),
-    ] {
+    let mut rules = Vec::new();
+    for candidate in [&exe, &game_executable_path(game_root)] {
         let label = named_rule(candidate);
         if seen.insert(label.clone()) {
-            names.push(label);
+            rules.push((label, candidate.to_path_buf()));
         }
     }
     let mut removed = 0;
-    for name in &names {
+    for (name, executable) in &rules {
         if exists(name)? {
-            run(
-                &["delete".into(), "rule".into(), format!("name={name}")],
-                "rule removal",
-            )?;
+            run(&manager_rule_delete_args(name, executable), "rule removal")?;
             if exists(name)? {
                 return Err(format!(
                     "Firewall rule {name} remains active; online mode was NOT enabled."
@@ -167,5 +195,31 @@ mod tests {
             named_rule(Path::new(r"C:\A\Evolve.exe")),
             named_rule(Path::new(r"C:\B\Evolve.exe"))
         );
+    }
+    #[test]
+    fn derived_game_executable_shares_the_game_root_rule_name() {
+        let root = Path::new(r"C:\Games\ModdedEvolve\EvolveGame");
+        let expected = Path::new(r"C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail\Evolve.exe");
+        assert_eq!(
+            named_rule(&game_executable_path(root)),
+            named_rule(expected)
+        );
+    }
+    #[test]
+    fn firewall_deletion_is_scoped_to_selected_game_executable_and_outbound_rules() {
+        let exe = Path::new(r"C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail\Evolve.exe");
+        let rule = named_rule(exe);
+        let args = manager_rule_delete_args(&rule, exe);
+        assert_eq!(
+            args,
+            vec![
+                "delete".to_string(),
+                "rule".to_string(),
+                format!("name={rule}"),
+                "dir=out".to_string(),
+                format!("program={}", win_path_text(exe)),
+            ]
+        );
+        assert!(!args.iter().any(|arg| arg == "name=all"));
     }
 }

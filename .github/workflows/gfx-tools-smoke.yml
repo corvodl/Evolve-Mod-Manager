@@ -44,6 +44,7 @@ jobs:
           Set-Content -Path 'target/release/evolve-mod-manager.exe' -Value 'CI placeholder only'
           Set-Content -Path 'target/release/evolve-cli.exe' -Value 'CI placeholder only'
           Set-Content -Path 'target/release/evolve-teleport-overlay.exe' -Value 'CI placeholder only'
+          Set-Content -Path 'target/release/evolve-privileged-worker.exe' -Value 'CI placeholder only'
           $compiler = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Inno Setup 6/ISCC.exe'
           if (!(Test-Path $compiler)) {
             choco install innosetup --no-progress -y

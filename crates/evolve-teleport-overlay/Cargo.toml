@@ -1,0 +1,12 @@
+[package]
+name = "evolve-teleport-overlay"
+description = "Independent medium-integrity Evolve external overlay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[build-dependencies]
+winres = "0.1"
+
+[lints]
+workspace = true
