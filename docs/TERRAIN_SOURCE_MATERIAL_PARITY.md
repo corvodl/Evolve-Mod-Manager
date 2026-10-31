@@ -23,16 +23,27 @@ sources. Fixing only Tutorial-specific colors would hide the problem.
 - Decode and retain each original authored `Layer`'s ID, label,
   `SurfaceType` material path, tint, brightness and tiling, without
   hardcoded map or material names
+- Decode the **separate** `<SurfaceTypes>/<SurfaceType>` table, preserving
+  `SurfaceTypeID`, `DetailMaterial`, `DetailTexture`, tiling scale and
+  projection axis. Never join those IDs numerically to painted `LayerId`:
+  the user's real Tutorial has Layer IDs such as 22, 23 and 27 while its
+  source SurfaceType IDs run from 0 through 9
 - Preserve duplicate Layer IDs rather than silently collapsing all
   authored entries to a single material; report conflicts
 - Report the number of bitmap IDs with declared source materials,
   unmapped/special IDs, and sample material paths in Level Editor diagnostics
+- Add a **Terrain: Source RGB (unlit)** switch in the Scene tab. This
+  renders only the original ground-color atlas without preview sunlight,
+  fog, material BRDF or exposure; foliage, water and other models retain
+  their existing shading. Toggle it at the same camera position to isolate
+  source imagery from the preview renderer's lighting contribution
 - Add synthetic source-format regression tests; no CryEngine SDK, original
   PAKs or game texture bytes are checked in
 
 These source references are diagnostics **only**. They are not yet
 resolved to exact installed-build `.mtl` and DDS files or blended in the
-shader. The renderer must not fabricate terrain detail, default to a
+shader. The unlit switch is a comparison tool, **not** a replacement for
+the missing native high-pass terrain detail material pass. The renderer must not fabricate terrain detail, default to a
 different game build, or call this native parity without validating Evolve.
 
 ## User-supplied Tutorial fixture observations (not committed)
