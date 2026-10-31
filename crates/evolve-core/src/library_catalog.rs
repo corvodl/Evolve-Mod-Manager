@@ -4,6 +4,7 @@
 use crate::archive::safe_member_name;
 use crate::inventory::{AssetEntry, Inventory, classify_path};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -524,17 +525,49 @@ pub fn begin_imported_lookup_session(
     root: &Path,
     build_label: &str,
 ) -> Result<ImportedLookupGuard, LibraryError> {
+    begin_indexed_lookup_session(root, build_label, |archive| {
+        archive.builds.iter().any(|label| label == build_label)
+    })
+}
+
+fn game_root_from_source(source: &str) -> Option<PathBuf> {
+    Path::new(source)
+        .ancestors()
+        .find(|path| path.file_name().is_some_and(|name|
+            name.to_string_lossy().eq_ignore_ascii_case("Game")))
+        .and_then(|path| fs::canonicalize(path).ok())
+}
+
+/// Exact-installation material indexing, independent of migrated historical
+/// build labels. Other game directories never become candidates, even if an
+/// unrelated archive happens to share the same virtual resource filename.
+pub fn begin_imported_lookup_session_for_source(
+    root: &Path,
+    selected_source: &str,
+) -> Result<(String, ImportedLookupGuard), LibraryError> {
+    let selected_game =
+        game_root_from_source(selected_source).ok_or(LibraryError::InvalidRoot)?;
+    let key = selected_game.to_string_lossy().to_ascii_lowercase();
+    let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
+    let build_token = format!("source-game-{}", &digest[..24]);
+    let guard = begin_indexed_lookup_session(root, &build_token, |archive| {
+        game_root_from_source(&archive.source).as_ref() == Some(&selected_game)
+    })?;
+    Ok((build_token, guard))
+}
+
+fn begin_indexed_lookup_session(
+    root: &Path,
+    build_label: &str,
+    mut include: impl FnMut(&ImportedPak) -> bool,
+) -> Result<ImportedLookupGuard, LibraryError> {
     if build_label.trim().is_empty() {
         return Err(LibraryError::UnsafeArchive);
     }
     let library = imported_library(root)?;
     let mut members = HashMap::<String, Vec<IndexedMember>>::new();
     let mut total = 0usize;
-    for archive in library
-        .archives
-        .iter()
-        .filter(|archive| archive.builds.iter().any(|label| label == build_label))
-    {
+    for archive in library.archives.iter().filter(|archive| include(archive)) {
         let folder = Path::new(&archive.directory);
         let manifest: Manifest = serde_json::from_slice(&read_bounded(
             &folder.join("asset-library.json"),
