@@ -783,17 +783,29 @@ fn authored_particle_mask(
     {
         return Ok(None);
     }
-    let decals = slot.maps.iter().filter(|map| map.role == "decal").collect::<Vec<_>>();
+    let decals = slot
+        .maps
+        .iter()
+        .filter(|map| map.role == "decal")
+        .collect::<Vec<_>>();
     if decals.len() != 1 {
         return Err("Particles %MASK_TEXTURE needs one unambiguous authored Decal texture".into());
     }
     let (path, virtual_path) = authored_texture(
-        &decals[0].path, material_source, material_binding,
-        lookup.inventory, lookup.imported, lookup.build,
+        &decals[0].path,
+        material_source,
+        material_binding,
+        lookup.inventory,
+        lookup.imported,
+        lookup.build,
     )?;
     let (_, image) = decoded_dds_indexed(
-        cache, &path, &virtual_path,
-        lookup.inventory, lookup.imported, lookup.build,
+        cache,
+        &path,
+        &virtual_path,
+        lookup.inventory,
+        lookup.imported,
+        lookup.build,
     )?;
     if image.as_raw().len() > 64 * 1024 * 1024 {
         return Err("Particle mask source exceeds 64 MiB bounded preview".into());
@@ -824,7 +836,9 @@ fn apply_effect_mesh_preview(
     // is ALPHAGLOW. Neither flag means transparency. Do not show a
     // white/translucent proxy when the only alpha is really gloss or glow.
     let beam_aux_alpha = slot.shader.eq_ignore_ascii_case("TRSBeam")
-        && slot.shader_gen_mask.is_some_and(|flags| flags & (0x20 | 0x2000) != 0);
+        && slot
+            .shader_gen_mask
+            .is_some_and(|flags| flags & (0x20 | 0x2000) != 0);
     let has_alpha = !beam_aux_alpha && diffuse.pixels().any(|pixel| pixel[3] < 255);
     let has_mask = particle_mask.is_some();
     if !has_alpha && scalar >= 0.999 && !has_mask {
@@ -841,17 +855,19 @@ fn apply_effect_mesh_preview(
         for (x, y, target) in image.enumerate_pixels_mut() {
             let alpha = if model_viewer && has_alpha {
                 f32::from(diffuse.get_pixel(x, y)[3]) / 255.0
-            } else { 1.0 };
+            } else {
+                1.0
+            };
             let source_mask = particle_mask.map_or(1.0, |source| {
                 // Source Decal mask uses authored UV0 in this static preview.
                 // Exact particle sprite-sheet and TexMod animation is pending.
-                let mx = (u64::from(x) * u64::from(source.width())
-                    / u64::from(diffuse.width())) as u32;
-                let my = (u64::from(y) * u64::from(source.height())
-                    / u64::from(diffuse.height())) as u32;
-                f32::from(source.get_pixel(
-                    mx.min(source.width() - 1), my.min(source.height() - 1)
-                )[0]) / 255.0
+                let mx =
+                    (u64::from(x) * u64::from(source.width()) / u64::from(diffuse.width())) as u32;
+                let my = (u64::from(y) * u64::from(source.height()) / u64::from(diffuse.height()))
+                    as u32;
+                f32::from(
+                    source.get_pixel(mx.min(source.width() - 1), my.min(source.height() - 1))[0],
+                ) / 255.0
             });
             let value = (255.0 * alpha * source_mask * scalar).round() as u8;
             *target = image::Rgba([value, value, value, 255]);
@@ -860,7 +876,9 @@ fn apply_effect_mesh_preview(
     } else {
         let value = (scalar * 255.0).round() as u8;
         Arc::new(image::RgbaImage::from_pixel(
-            1, 1, image::Rgba([value, value, value, 255]),
+            1,
+            1,
+            image::Rgba([value, value, value, 255]),
         ))
     };
     surface.opacity = Some(mask);
@@ -1133,11 +1151,19 @@ fn load_authored_subset_surfaces(
                             && needs_alpha_blending(leaf)
                             && surface.opacity.is_some();
                         let particle_mask = authored_particle_mask(
-                            leaf, material, &source.to_string_lossy(), lookup, cache
+                            leaf,
+                            material,
+                            &source.to_string_lossy(),
+                            lookup,
+                            cache,
                         );
                         match particle_mask {
                             Ok(mask) => apply_effect_mesh_preview(
-                                leaf, &mut surface, &mut warnings, model_viewer, mask.as_deref()
+                                leaf,
+                                &mut surface,
+                                &mut warnings,
+                                model_viewer,
+                                mask.as_deref(),
                             ),
                             Err(error) => {
                                 surface.visible = false;
@@ -1503,13 +1529,23 @@ pub fn load_with_progress(
             surface.transparent =
                 !surface.foliage_cutout && needs_alpha_blending(leaf) && surface.opacity.is_some();
             let particle_mask = authored_particle_mask(
-                leaf, &path, &part.binding, MaterialLookup {
-                    inventory, imported, build,
-                }, cache
+                leaf,
+                &path,
+                &part.binding,
+                MaterialLookup {
+                    inventory,
+                    imported,
+                    build,
+                },
+                cache,
             );
             match particle_mask {
                 Ok(mask) => apply_effect_mesh_preview(
-                    leaf, &mut surface, &mut warnings, true, mask.as_deref()
+                    leaf,
+                    &mut surface,
+                    &mut warnings,
+                    true,
+                    mask.as_deref(),
                 ),
                 Err(error) => {
                     surface.visible = false;
@@ -1840,17 +1876,32 @@ mod tests {
             <Texture Map="Decal" File="textures/particle/misc/fx_scrolltiled01_8x8_p.tif"/></Textures></Material>"#).unwrap();
         assert_eq!(doc.slots[0].shader_gen_mask, Some(0x200));
         let mut surface = Surface {
-            first_index: 0,index_count:3,visible:true,transparent:false,
-            foliage_cutout:false,alpha_cutoff:0.5,
-            diffuse:Some(Arc::new(image::RgbaImage::from_pixel(2,2,image::Rgba([50,100,200,128])))),
-            normal:None,emissive:None,armor_emissive:None,emission_strength:1.0,
-            kala_emission_state:None,emissive_uv:None,specular:None,gloss:None,opacity:None,
+            first_index: 0,
+            index_count: 3,
+            visible: true,
+            transparent: false,
+            foliage_cutout: false,
+            alpha_cutoff: 0.5,
+            diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
+                2,
+                2,
+                image::Rgba([50, 100, 200, 128]),
+            ))),
+            normal: None,
+            emissive: None,
+            armor_emissive: None,
+            emission_strength: 1.0,
+            kala_emission_state: None,
+            emissive_uv: None,
+            specular: None,
+            gloss: None,
+            opacity: None,
         };
-        let mask = image::RgbaImage::from_pixel(2,2,image::Rgba([128,0,0,255]));
+        let mask = image::RgbaImage::from_pixel(2, 2, image::Rgba([128, 0, 0, 255]));
         let mut log = Vec::new();
-        apply_effect_mesh_preview(&doc.slots[0],&mut surface,&mut log,true,Some(&mask));
+        apply_effect_mesh_preview(&doc.slots[0], &mut surface, &mut log, true, Some(&mask));
         assert!(surface.visible && surface.transparent);
-        assert_eq!(surface.opacity.unwrap().get_pixel(0,0)[0],64);
+        assert_eq!(surface.opacity.unwrap().get_pixel(0, 0)[0], 64);
     }
 
     #[test]

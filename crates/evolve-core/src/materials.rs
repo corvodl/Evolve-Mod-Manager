@@ -197,9 +197,14 @@ fn authored_glow_amount(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialEr
 }
 
 fn source_shader_gen_mask(node: &BytesStart<'_>) -> Result<Option<u64>, MaterialError> {
-    let Some(raw) = attr(node, b"GenMask")? else { return Ok(None); };
+    let Some(raw) = attr(node, b"GenMask")? else {
+        return Ok(None);
+    };
     let source = raw.trim();
-    let hex = source.strip_prefix("0x").or_else(|| source.strip_prefix("0X")).unwrap_or(source);
+    let hex = source
+        .strip_prefix("0x")
+        .or_else(|| source.strip_prefix("0X"))
+        .unwrap_or(source);
     Ok(u64::from_str_radix(hex, 16).ok())
 }
 
@@ -749,7 +754,8 @@ mod tests {
             <Texture Map="Decal" File="textures/particle/misc/fx_scrolltiled01_8x8_p.tif"/></Textures>
             </Material>"#).unwrap();
         assert_eq!(doc.slots[0].shader_gen_mask, Some(0x220));
-        let malformed = super::parse_material(br#"<Material Shader="Particles" GenMask="bad-hex"/>"#).unwrap();
+        let malformed =
+            super::parse_material(br#"<Material Shader="Particles" GenMask="bad-hex"/>"#).unwrap();
         assert_eq!(malformed.slots[0].shader_gen_mask, None);
     }
 
