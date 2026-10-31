@@ -881,10 +881,85 @@ pub fn load_model(
             document.slots.len()
         ));
     }
+    load_authored_subset_surfaces(
+        source, material, &document, &ranges, inventory, imported, build, cache,
+    )
+}
+
+/// Assign original MTL leaf IDs for *each* decoded MeshChunk, rather than
+/// incorrectly applying one entire CGF's material table to every mesh node.
+pub(crate) fn load_world_model_surfaces(
+    source: &Path,
+    material: &Path,
+    parts: &[evolve_core::WorldModelPart],
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+    cache: &SharedCache,
+) -> Result<(Vec<Vec<Surface>>, Vec<String>), String> {
+    let document = read_material(material).map_err(|e| e.to_string())?;
+    let mut all = Vec::with_capacity(parts.len());
+    let mut warnings = Vec::new();
+    for (part_index, part) in parts.iter().enumerate() {
+        if !part.has_subset_table && document.slots.len() != 1 {
+            return Err(format!(
+                "Mesh {part_index}: {} authored MTL leaves need this mesh's verified subset reference",
+                document.slots.len(),
+            ));
+        }
+        validate_authored_subset_coverage(&part.subsets, part.mesh.indices.len())?;
+        let (surfaces, part_warnings) = load_authored_subset_surfaces(
+            source, material, &document, &part.subsets,
+            inventory, imported, build, cache,
+        )?;
+        all.push(surfaces);
+        warnings.extend(part_warnings.into_iter().map(|w| format!("Mesh {part_index}: {w}")));
+    }
+    Ok((all, warnings))
+}
+
+fn validate_authored_subset_coverage(
+    ranges: &[(u32, u32, u32)],
+    index_count: usize,
+) -> Result<(), String> {
+    let mut cursor = 0usize;
+    if ranges.is_empty() || !index_count.is_multiple_of(3) {
+        return Err("empty or invalid source mesh index ranges".into());
+    }
+    for &(first, count, material) in ranges {
+        if first as usize != cursor
+            || count == 0
+            || !count.is_multiple_of(3)
+            || material > 255
+        {
+            return Err("noncontiguous or invalid source material subset ranges".into());
+        }
+        cursor = cursor.checked_add(count as usize)
+            .ok_or_else(|| "source material index range overflow".to_string())?;
+        if cursor > index_count {
+            return Err("source material subset extends beyond mesh".into());
+        }
+    }
+    if cursor != index_count {
+        return Err("source material subsets do not cover the mesh".into());
+    }
+    Ok(())
+}
+
+fn load_authored_subset_surfaces(
+    source: &Path,
+    material: &Path,
+    document: &MaterialDocument,
+    ranges: &[(u32, u32, u32)],
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+    cache: &SharedCache,
+) -> Result<(Vec<Surface>, Vec<String>), String> {
     let mut result = Vec::with_capacity(ranges.len());
     let mut warnings = Vec::new();
     let mut budget = TextureBudget::default();
-    for (first_index, index_count, material_slot) in ranges {
+    for &(first_index, index_count, material_slot) in ranges {
         let mut surface = Surface {
             first_index,
             index_count,
