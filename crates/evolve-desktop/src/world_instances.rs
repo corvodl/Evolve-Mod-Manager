@@ -1497,12 +1497,44 @@ impl Renderer {
             self.groups[idx] = Some(gpu);
             uploaded += 1;
         }
+        // Advance one independent diffuse mip each redraw. Existing materials
+        // keep sampling their previously uploaded coarser mip until this write
+        // is submitted, so no undefined/uninitialized GPU texture reads occur.
+        let next_key = self.pending_diffuse.keys()
+            .copied()
+            .find(|key| cache.contains_key(key));
+        let mut mip_uploads = 0usize;
+        if let Some(key) = next_key
+            && let Some(pending) = self.pending_diffuse.get_mut(&key)
+            && let Some((texture, _, _)) = cache.get(&key)
+        {
+            let level = pending.next_level;
+            let pixels = next_diffuse_mip(&pending.source, level);
+            write_rgba_level(queue, texture, &pixels, level);
+            self.mip_min_level.insert(key, level);
+            for gpu in self.groups.iter().flatten() {
+                for surface in &gpu.surfaces {
+                    if surface.diffuse_key == key {
+                        queue.write_buffer(
+                            &surface._alpha_uniform, 12,
+                            bytemuck::bytes_of(&(level as f32)),
+                        );
+                    }
+                }
+            }
+            mip_uploads += 1;
+            if level == 0 {
+                self.pending_diffuse.remove(&key);
+            } else {
+                pending.next_level -= 1;
+            }
+        }
         let texture_bytes = cache_bytes(&cache);
         let geometry_bytes = resident_geometry_bytes(&self.groups);
         let resident = texture_bytes.saturating_add(geometry_bytes);
         self.peak_gpu_bytes = self.peak_gpu_bytes.max(resident);
         let progress = &world.gpu_progress;
-        progress.pending.store(pending, Ordering::Relaxed);
+        progress.pending.store(pending + self.pending_diffuse.len(), Ordering::Relaxed);
         progress.deferred.store(deferred, Ordering::Relaxed);
         progress.loaded.store(self.groups.iter().flatten().count(), Ordering::Relaxed);
         progress.textures.store(texture_bytes, Ordering::Relaxed);
@@ -1510,8 +1542,9 @@ impl Renderer {
         progress.peak.store(self.peak_gpu_bytes, Ordering::Relaxed);
         self.cache = cache;
         self.source_hashes = hashes;
-        if uploaded != 0
-            && (progress.loaded.load(Ordering::Relaxed) % 16 == 0 || pending == 0 || evicted > 0)
+        if (uploaded != 0 || mip_uploads != 0)
+            && (progress.loaded.load(Ordering::Relaxed) % 16 == 0
+                || (pending == 0 && self.pending_diffuse.is_empty()) || evicted > 0)
         {
             crate::crash_diagnostics::record(
                 "level_gpu_residency",
@@ -1522,7 +1555,7 @@ impl Renderer {
                     texture_bytes / 1048576,
                     geometry_bytes / 1048576,
                     self.peak_gpu_bytes / 1048576,
-                    pending, deferred,
+                    pending + self.pending_diffuse.len(), deferred,
                 ),
             );
         }
