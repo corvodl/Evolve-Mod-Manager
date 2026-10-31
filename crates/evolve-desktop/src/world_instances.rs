@@ -24,6 +24,7 @@ const MAX_SCENE_BALANCED_TEXTURE_BYTES: u64 = 384 * 1024 * 1024;
 // until adapter-local free VRAM can be queried reliably.
 const WORLD_RESIDENT_TARGET_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_NEW_GROUPS_PER_FRAME: usize = 2;
+const MAX_MIP_WRITE_BYTES_PER_FRAME: usize = 8 * 1024 * 1024;
 
 // Hash exact source pixel dimensions+bytes, not an Arc address. Distinct
 // imported PAK entries containing identical decoded pixels deduplicate while
@@ -253,6 +254,8 @@ fn upload_rgba_mips(
 struct PendingDiffuseMip {
     source: Arc<image::RgbaImage>,
     next_level: u32,
+    next_row: u32,
+    prepared: Option<image::RgbaImage>,
 }
 
 fn write_rgba_level(
@@ -311,6 +314,47 @@ fn create_streaming_diffuse(
     write_rgba_level(queue, &tex, &coarse, smallest);
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     (tex, view, smallest)
+}
+
+// Queue writes are striped so a single original 8K image cannot enqueue a
+// >256 MiB transfer in one frame. The shader's mip floor is lowered *only*
+// after all rows of the new level have been submitted.
+fn write_mip_rows(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    mip: &image::RgbaImage,
+    level: u32,
+    start_row: u32,
+) -> u32 {
+    let stride = mip.width() as usize * 4;
+    let rows = (MAX_MIP_WRITE_BYTES_PER_FRAME / stride).max(1) as u32;
+    let end_row = start_row.saturating_add(rows).min(mip.height());
+    let start = start_row as usize * stride;
+    let end = end_row as usize * stride;
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: level,
+            origin: wgpu::Origin3d {
+                x: 0,
+                y: start_row,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        &mip.as_raw()[start..end],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(mip.width() * 4),
+            rows_per_image: Some(end_row - start_row),
+        },
+        wgpu::Extent3d {
+            width: mip.width(),
+            height: end_row - start_row,
+            depth_or_array_layers: 1,
+        },
+    );
+    end_row
 }
 
 fn next_diffuse_mip(source: &image::RgbaImage, level: u32) -> image::RgbaImage {
@@ -1137,6 +1181,8 @@ impl Renderer {
                         pending_diffuse.insert(key, PendingDiffuseMip {
                             source: original,
                             next_level: lowest - 1,
+                            next_row: 0,
+                            prepared: None,
                         });
                     }
                     (tex, view)
@@ -1509,24 +1555,36 @@ impl Renderer {
             && let Some((texture, _, _)) = cache.get(&key)
         {
             let level = pending.next_level;
-            let pixels = next_diffuse_mip(&pending.source, level);
-            write_rgba_level(queue, texture, &pixels, level);
-            self.mip_min_level.insert(key, level);
-            for gpu in self.groups.iter().flatten() {
-                for surface in &gpu.surfaces {
-                    if surface.diffuse_key == key {
-                        queue.write_buffer(
-                            &surface._alpha_uniform, 12,
-                            bytemuck::bytes_of(&(level as f32)),
-                        );
+            let mip = if level == 0 {
+                &*pending.source
+            } else {
+                pending.prepared.get_or_insert_with(|| {
+                    next_diffuse_mip(&pending.source, level)
+                })
+            };
+            let row = write_mip_rows(queue, texture, mip, level, pending.next_row);
+            let completed = row == mip.height();
+            pending.next_row = row;
+            mip_uploads += 1;
+            if completed {
+                self.mip_min_level.insert(key, level);
+                for gpu in self.groups.iter().flatten() {
+                    for surface in &gpu.surfaces {
+                        if surface.diffuse_key == key {
+                            queue.write_buffer(
+                                &surface._alpha_uniform, 12,
+                                bytemuck::bytes_of(&(level as f32)),
+                            );
+                        }
                     }
                 }
-            }
-            mip_uploads += 1;
-            if level == 0 {
-                self.pending_diffuse.remove(&key);
-            } else {
-                pending.next_level -= 1;
+                if level == 0 {
+                    self.pending_diffuse.remove(&key);
+                } else {
+                    pending.next_level -= 1;
+                    pending.next_row = 0;
+                    pending.prepared = None;
+                }
             }
         }
         let texture_bytes = cache_bytes(&cache);
@@ -1607,6 +1665,14 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_mip_writes_are_bounded_independently_of_full_resolution() {
+        assert_eq!(MAX_MIP_WRITE_BYTES_PER_FRAME, 8 * 1024 * 1024);
+        let rows_8k = (MAX_MIP_WRITE_BYTES_PER_FRAME / (8192 * 4)).max(1);
+        assert_eq!(rows_8k, 256);
+        assert_eq!(8192usize.div_ceil(rows_8k), 32);
+    }
 
     #[test]
     fn streaming_diffuse_shader_never_reads_uninitialized_high_mips() {
