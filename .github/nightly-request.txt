@@ -1,5 +1,5 @@
 # Explicit manual Nightly build request. Only code already merged into main is packaged.
-request: user-requested-nightly-merged-pr161-pr164-2026-10-31
+request: user-requested-nightly-all-merged-pr165-pr166-2026-10-31
 requested: 2026-10-31
-base-main-commit: 90f3231efcb7e974a074f901201d13a5ab3cd20d
-description: Build latest main including PR #164 strict same-build split-DDS fragment resolution and Tutorial material diagnostics, and PR #161 restricted privileged-worker foundation with UAC handoff disabled. Preserve current GUI requireAdministrator startup. Native Tutorial terrain-color parity and missing-source dependencies remain unverified.
+base-main-commit: a846249b96f3809d188cc057ff42dfb8b730d851
+description: Build latest merged main after PR #166 restored exact CGF per-mesh subset material IDs and PR #165 added terrain high-pass details and map-owned sky, atmospheric scattering, local light and HDR preview. These previews are not yet Evolve native shader parity. Preserve official Stage2 runtime signing tools packaging and existing developer key safety requirements.
