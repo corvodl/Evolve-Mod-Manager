@@ -282,7 +282,7 @@ fn fs_opaque(input:Output)->@location(0) vec4<f32> {
   // desktop or Activity window behind it, even over the opaque backdrop.
   let color=shade(input,true);
   let fogged=distance_fog(input,color);
-  return vec4<f32>(tonemap(fogged.rgb),1.0);
+  return vec4<f32>(fogged.rgb,1.0);
 }
 
 @fragment
@@ -295,7 +295,7 @@ fn fs_foliage(input:Output)->@location(0) vec4<f32> {
   if (leaf_alpha < authored_cutoff.x) { discard; }
   let color=shade(input,false);
   let fogged=distance_fog(input,color);
-  return vec4<f32>(tonemap(fogged.rgb),1.0);
+  return vec4<f32>(fogged.rgb,1.0);
 }
 
 @fragment
@@ -306,5 +306,5 @@ fn fs_main(input:Output)->@location(0) vec4<f32> {
   let color=shade(input,false);
   let fogged=distance_fog(input,color);
   let alpha=textureSample(authored_opacity,tex_sampler,input.uv).r;
-  return vec4<f32>(tonemap(fogged.rgb),color.a*alpha);
+  return vec4<f32>(fogged.rgb,color.a*alpha);
 }
