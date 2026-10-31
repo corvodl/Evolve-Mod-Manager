@@ -1587,7 +1587,9 @@ impl Pipeline {
         }
         if !primitive.points.is_empty() && !primitive.indices.is_empty() {
             let vertex_bytes = bytemuck::cast_slice(&primitive.points);
-            if vertex_bytes.len() > self.vertex_capacity {
+            let mesh_changed = primitive.mesh_identity != self.last_mesh_identity;
+            let vertex_reallocated = vertex_bytes.len() > self.vertex_capacity;
+            if vertex_reallocated {
                 self.vertex = device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("CryEngine source GPU vertex stream"),
                     size: vertex_bytes.len() as u64,
@@ -1596,9 +1598,13 @@ impl Pipeline {
                 });
                 self.vertex_capacity = vertex_bytes.len();
             }
-            queue.write_buffer(&self.vertex, 0, vertex_bytes);
+            // Camera drags, lighting changes and streaming ticks must not
+            // resend the entire same mesh's vertices on every redraw.
+            if mesh_changed || vertex_reallocated {
+                queue.write_buffer(&self.vertex, 0, vertex_bytes);
+            }
             self.index_count = primitive.indices.len() as u32;
-            if primitive.mesh_identity != self.last_mesh_identity {
+            if mesh_changed {
                 let bytes = bytemuck::cast_slice(&primitive.indices);
                 if bytes.len() > self.index_capacity {
                     self.index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
