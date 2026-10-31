@@ -6,7 +6,8 @@
 use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface, world_instances};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform,
-    begin_imported_lookup_session, imported_archive_files, imported_archive_preview_inventory,
+    begin_imported_lookup_session, begin_imported_lookup_session_for_source,
+    imported_archive_files, imported_archive_preview_inventory,
     imported_library, read_world_model_parts,
 };
 use std::collections::{HashMap, HashSet};
@@ -569,19 +570,27 @@ pub(super) fn assemble(
                 }
             }
         }
-        let sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
-        // This scope caches all matching-build manifest paths for the duration
-        // of assembly. Every material/texture hit still rechecks its actual
-        // file size and canonical containment, but no dependency triggers a
-        // fresh enumeration of the entire Asset Library.
+        let mut sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
+        // Scope material/DDS resolution to the same real installed Game
+        // directory as geometry. Historical labels can be duplicated, so a
+        // single old build label is not strong enough provenance by itself.
         let lookup_started = Instant::now();
-        let _scoped_lookup = sources
-            .library_root
-            .as_deref()
-            .zip(sources.build.as_deref())
-            .map(|(root, build)| begin_imported_lookup_session(root, build))
-            .transpose()
-            .map_err(|error| error.to_string())?;
+        let _scoped_lookup = if let Some(root) = sources.library_root.as_deref() {
+            if source_game_directory(archive).is_some() {
+                let (label, guard) =
+                    begin_imported_lookup_session_for_source(root, &archive.source)
+                        .map_err(|error| error.to_string())?;
+                sources.build = Some(label);
+                Some(guard)
+            } else {
+                sources.build.as_deref()
+                    .map(|build| begin_imported_lookup_session(root, build))
+                    .transpose()
+                    .map_err(|error| error.to_string())?
+            }
+        } else {
+            None
+        };
         report.note(format!(
             "Exact-build material lookup index initialized in {} ms.",
             lookup_started.elapsed().as_millis()
