@@ -857,6 +857,7 @@ pub(super) struct Renderer {
     source_hashes: SourceKeys,
     pending_diffuse: HashMap<TextureKey, PendingDiffuseMip>,
     mip_min_level: HashMap<TextureKey, u32>,
+    mip_round_robin_cursor: usize,
     peak_gpu_bytes: u64,
     last_camera: Option<CameraGpu>,
 }
@@ -1114,6 +1115,7 @@ impl Renderer {
             source_hashes: SourceKeys::new(),
             pending_diffuse: HashMap::new(),
             mip_min_level: HashMap::new(),
+            mip_round_robin_cursor: 0,
             peak_gpu_bytes: 0,
             last_camera: None,
         }
@@ -1472,6 +1474,7 @@ impl Renderer {
             self.source_hashes.clear();
             self.pending_diffuse.clear();
             self.mip_min_level.clear();
+            self.mip_round_robin_cursor = 0;
             self.peak_gpu_bytes = 0;
             self.world_identity = 0;
             self.last_camera = None;
@@ -1488,6 +1491,7 @@ impl Renderer {
             self.source_hashes = (*world.source_pixel_hashes).clone();
             self.pending_diffuse.clear();
             self.mip_min_level.clear();
+            self.mip_round_robin_cursor = 0;
             self.peak_gpu_bytes = 0;
             self.world_identity = key;
             self.last_full_textures = full_textures;
@@ -1597,11 +1601,23 @@ impl Renderer {
         // Advance one independent diffuse mip each redraw. Existing materials
         // keep sampling their previously uploaded coarser mip until this write
         // is submitted, so no undefined/uninitialized GPU texture reads occur.
-        let next_key = self
+        // A HashMap's first key is stable enough to starve all other mip
+        // chains until a giant texture completes. Rotate across every
+        // verified, resident diffuse so surfaces refine together.
+        let mut mip_keys = self
             .pending_diffuse
             .keys()
             .copied()
-            .find(|key| cache.contains_key(key));
+            .filter(|key| cache.contains_key(key))
+            .collect::<Vec<_>>();
+        mip_keys.sort_unstable();
+        let next_key = if mip_keys.is_empty() {
+            None
+        } else {
+            let key = mip_keys[self.mip_round_robin_cursor % mip_keys.len()];
+            self.mip_round_robin_cursor = self.mip_round_robin_cursor.wrapping_add(1);
+            Some(key)
+        };
         let mut mip_uploads = 0usize;
         let mut finished_key = None;
         if let Some(key) = next_key
