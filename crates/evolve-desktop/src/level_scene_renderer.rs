@@ -811,19 +811,26 @@ pub(super) fn assemble(
                             };
                             match resolved {
                                 Ok((parts, warnings)) => {
-                                    let has_diffuse = parts.iter().any(|part| part.diffuse.is_some());
+                                    let has_diffuse =
+                                        parts.iter().any(|part| part.diffuse.is_some());
                                     report.textured += usize::from(has_diffuse);
                                     if !has_diffuse {
                                         if let Some(reason) = full_error.as_deref() {
-                                            diffuse_reasons.push(format!("Model material assignment: {reason}"));
+                                            diffuse_reasons.push(format!(
+                                                "Model material assignment: {reason}"
+                                            ));
                                         }
                                         diffuse_reasons.extend(
-                                            warnings.iter().filter(|warning| {
-                                                let lower = warning.to_ascii_lowercase();
-                                                lower.contains("diffuse")
-                                                    || lower.contains("dds")
-                                                    || lower.contains("texture")
-                                            }).take(3).cloned(),
+                                            warnings
+                                                .iter()
+                                                .filter(|warning| {
+                                                    let lower = warning.to_ascii_lowercase();
+                                                    lower.contains("diffuse")
+                                                        || lower.contains("dds")
+                                                        || lower.contains("texture")
+                                                })
+                                                .take(3)
+                                                .cloned(),
                                         );
                                     }
                                     material_ranges = parts;
@@ -842,26 +849,25 @@ pub(super) fn assemble(
                                         material.display(),
                                         meshes.len()
                                     ));
-                                },
+                                }
                             }
                         }
                         Ok(None) => {
-                            diffuse_reasons.push(format!(
-                                "No verified original MTL for {source_virtual}"
-                            ));
+                            diffuse_reasons
+                                .push(format!("No verified original MTL for {source_virtual}"));
                             report.note(format!(
                                 "No verified original MTL reference for {} ({source_virtual}; {} mesh sections)",
                                 object.name,
                                 meshes.len()
                             ));
-                        },
+                        }
                         Err(error) => {
                             diffuse_reasons.push(format!("MTL lookup: {error}"));
                             report.note(format!(
                                 "{}: exact source material resolution failed: {error}",
                                 object.name
                             ));
-                        },
+                        }
                     }
                 } else {
                     diffuse_reasons.push("Source PAK inventory unavailable".into());
@@ -877,9 +883,8 @@ pub(super) fn assemble(
                 if !material_ranges.iter().any(|part| part.diffuse.is_some()) {
                     report.without_diffuse += 1;
                     if diffuse_reasons.is_empty() {
-                        diffuse_reasons.push(
-                            "No verified diffuse assigned by original material slots".into(),
-                        );
+                        diffuse_reasons
+                            .push("No verified diffuse assigned by original material slots".into());
                     }
                     crate::crash_diagnostics::record(
                         "level_missing_verified_diffuse",
