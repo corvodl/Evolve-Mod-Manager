@@ -57,9 +57,13 @@ mod tests {
             let path = executable(tool).expect("Windows system tool");
             assert!(path.is_absolute());
             assert_eq!(path.file_name().and_then(|name| name.to_str()), Some(tool));
-            assert!(path.parent().and_then(|p| p.file_name()).is_some_and(
-                |folder| folder.to_string_lossy().eq_ignore_ascii_case("System32")
-            ));
+            assert!(
+                path.parent()
+                    .and_then(|p| p.file_name())
+                    .is_some_and(|folder| folder
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case("System32"))
+            );
         }
     }
 }
