@@ -268,7 +268,7 @@ impl shader::Program<super::Message> for Scene {
             // The orbit camera looks toward -Y at yaw 0. Its screen-right
             // direction is therefore -X, not +X. Preserve source geometry;
             // reverse only the camera-space horizontal axis.
-            let xr = y * sy - x * cy;
+            let xr = super::orientation_gizmo::model_screen_horizontal(x, y, sy, cy);
             let back = x * sy + y * cy;
             let yr = z * cp - back * sp;
             let depth = z * sp + back * cp;
@@ -290,7 +290,7 @@ impl shader::Program<super::Message> for Scene {
                 .and_then(|v| v.get(i))
                 .copied()
                 .unwrap_or([0., 0., 0.]); // fragment shader derives face normal from geometry
-            let nx = normal[1] * sy - normal[0] * cy;
+            let nx = super::orientation_gizmo::model_screen_horizontal(normal[0], normal[1], sy, cy);
             let nb = normal[0] * sy + normal[1] * cy;
             normal = [nx, normal[2] * cp - nb * sp, normal[2] * sp + nb * cp];
             points.push(Vertex {
@@ -315,7 +315,7 @@ impl shader::Program<super::Message> for Scene {
                 let x = (raw[0] - center[0]) / extent;
                 let y = (raw[1] - center[1]) / extent;
                 let z = (raw[2] - center[2]) / extent;
-                let xr = y * sy - x * cy;
+                let xr = super::orientation_gizmo::model_screen_horizontal(x, y, sy, cy);
                 let back = x * sy + y * cy;
                 let yr = z * cp - back * sp;
                 let depth = z * sp + back * cp;
