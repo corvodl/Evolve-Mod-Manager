@@ -135,10 +135,7 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
     let mut removed = 0;
     for (name, executable) in &rules {
         if exists(name)? {
-            run(
-                &manager_rule_delete_args(name, executable),
-                "rule removal",
-            )?;
+            run(&manager_rule_delete_args(name, executable), "rule removal")?;
             if exists(name)? {
                 return Err(format!(
                     "Firewall rule {name} remains active; online mode was NOT enabled."
