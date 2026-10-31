@@ -13,10 +13,7 @@ baked **macro-color atlas**. This image is not necessarily final shaded
 terrain. Flat regions can be legitimate source pixels. In particular a
 constant `[128,128,128]` block does not prove GPU streaming failed.
 
-The current Level Editor uploads the baked atlas, but its world shader has
-**no CryEngine terrain detail-material pass**. The missing material pass is
-a format-level limitation shared by every map using these original terrain
-sources. Fixing only Tutorial-specific colors would hide the problem.
+The Level Editor now implements an **experimental source-driven Terrain.Layer detail preview**. It preserves the baked atlas and composites original high-pass DDS data over it. The original Evolve terrain layer-mask equations, source project-axis handling and native-distance transitions remain unverified; this cannot yet be described as a 1:1 port of the game renderer.
 
 ## What this PR implements
 
@@ -40,11 +37,7 @@ sources. Fixing only Tutorial-specific colors would hide the problem.
 - Add synthetic source-format regression tests; no CryEngine SDK, original
   PAKs or game texture bytes are checked in
 
-These source references are diagnostics **only**. They are not yet
-resolved to exact installed-build `.mtl` and DDS files or blended in the
-shader. The unlit switch is a comparison tool, **not** a replacement for
-the missing native high-pass terrain detail material pass. The renderer must not fabricate terrain detail, default to a
-different game build, or call this native parity without validating Evolve.
+The source metadata is now used for actual build-scoped MTL/DDS loading when the referenced files are imported. The unlit switch intentionally remains an exact source-image diagnostic. The high-pass path uses the SDK-documented add-signed composition, but the boundary weight, displacement bias, world-space tiling and distance behavior are preview approximations until verified against the actual Evolve shader.
 
 ## User-supplied Tutorial fixture observations (not committed)
 
@@ -69,15 +62,9 @@ is allowed.
 
 ## Next implementation gates
 
-1. Resolve each authored `SurfaceType` to an **exact matching installed
-   Game directory and build**, including complete source `.mtl` and DDS
-   dependencies, with precise reasons for missing/ambiguous members
-2. Determine authentic CryEngine/Evolve terrain detail blending (UV projection,
-   high-pass composition, authored tint/brightness, transition weights,
-   surface type ID semantics and slope/altitude behavior) from original
-   source + matched in-game captures. Do not invent a multiplicative blend
-3. Add unlit macro-color and final shaded comparisons so axis/channel/
-   gamma mistakes can be distinguished from missing material data
+1. **Implemented in preview:** resolve authored paint-layer material paths from imported `.mtl` and cooked DDS streams under the original installed Game root, diagnose absent/ambiguous references, and fail closed on incomplete mip chains. Complete game inputs must still be supplied.
+2. **Partially implemented:** authored `Terrain.Layer` diffuse and `TexMod` tiling, optional height-based transition adjustment using `BlendFactor`/`BlendFalloff` and `DetailTextureStrength`, and add-signed high-pass WGSL shading. **Still requires native validation:** source transition masks, UV projection/DetailScale, POM/OBM, slope rules, normal/specular detail behavior and accurate distance thresholds. The interpolation and height transition are explicitly preview-only.
+3. **Implemented in preview:** unlit macro color vs shaded high-pass detail. Add capture-based per-pixel native Evolve comparisons to verify axis/channel/gamma.
 4. Validate Tutorial **and** at least one second map that has different
    layer IDs, tile count or RGB/CRY atlas format. Keep rendering efficient
    for all supported terrain layouts
@@ -90,9 +77,11 @@ single screenshot color patch.
 
 The two privately provided ZIPs are named for their **original source PAKs**, not map-owned texture files. Never rename them to terraintexture.pak or treat the ZIP files themselves as DDS resources:
 
-- \`materials_min_terrain.zip\` represents \`materials_min.pak\` terrain members: **90** \`materials/terrain/*.mtl\` source definitions. Their \`Shader="Terrain.Layer"\` slots preserve original \`PublicParams\`, texture roles, \`TexMod\` tiling and \`SurfaceType\`. Referenced \`.tif\` files are authored names; normal import resolution selects cooked \`.dds.0\` followed by a complete split-mip set.
-- \`materials_basic_terrain.zip\` represents \`materials_basic.pak\` terrain members: **3** high-pass diffuse source sets, each split into \`.dds.0\` through \`.dds.6\` (**21** archive members). Their DDS headers report **1024×1024 DXT1**, and the higher-resolution blocks reside in numbered fragments. Do not attempt to render the tiny low-resolution \`.dds.0\` tail as the full high-resolution image or claim it is complete without the other parts.
+- `materials_min_terrain.zip` represents `materials_min.pak` terrain members: **90** `materials/terrain/*.mtl` source definitions. Their `Shader="Terrain.Layer"` slots preserve original `PublicParams`, texture roles, `TexMod` tiling and `SurfaceType`. Referenced `.tif` files are authored names; normal import resolution selects cooked `.dds.0` followed by a complete split-mip set.
+- `materials_basic_terrain.zip` represents `materials_basic.pak` terrain members: **3** high-pass diffuse source sets, each split into `.dds.0` through `.dds.6` (**21** archive members). Their DDS headers report **1024×1024 DXT1**, and the higher-resolution blocks reside in numbered fragments. Do not attempt to render the tiny low-resolution `.dds.0` tail as the full high-resolution image or claim it is complete without the other parts.
 
-The same-install diagnostic now attempts an exact, verified material lookup for every original declared layer/surface material and audits each known terrain texture reference through the existing split DDS inspector. No game bytes or user ZIP assets were committed. Archive labels are secondary to the original installed \`Game\` root; differing known build labels are excluded. Missing and ambiguous dependencies are reported explicitly, and unrelated basename matches are forbidden.
+The same-install diagnostic now attempts an exact, verified material lookup for every original declared layer/surface material and audits each known terrain texture reference through the existing split DDS inspector. No game bytes or user ZIP assets were committed. Archive labels are secondary to the original installed `Game` root; differing known build labels are excluded. Missing and ambiguous dependencies are reported explicitly, and unrelated basename matches are forbidden.
 
-**Important limitations:** These extracts do not supply most referenced bump, height, and specular textures. The present additions are source/dependency verification and debugging, **not** native terrain detail shading: the GPU still does not evaluate \`Terrain.Layer\` high-pass composition, masks and transitions. Native color parity requires same-build complete dependencies and visual comparisons with the running game. A PAK's filename alone cannot prove source build compatibility when importing fixtures from an unknown installation.
+**Important limitations:** These extracts do not supply most referenced bump, height and specular textures. The implementation now reconstructs original diffuse high-pass overlays and applies add-signed composition in WGSL, with categorical layer-ID interpolation and an optional bounded height-adjusted blend where original displacement maps are available. It **does not** reproduce Evolve's exact POM/OBM, triplanar/project-axis blending, normals, specular, or native transition weights. Native parity requires same-build complete dependencies and paired in-game captures. A PAK filename alone cannot establish source build compatibility.
+
+Reference: [CryENGINE 3 Terrain.Layer shader](https://www.cryengine.com/docs/static/engines/cryengine-3/categories/1114113/pages/1048772) and [Painting Terrain](https://www.cryengine.com/docs/static/engines/cryengine-3/categories/1114113/pages/1048843) describe add-signed high-pass diffuse, baked distant color, authored detail strength, and height-assisted transitions. They are **SDK-level references**, not proof of the exact Evolve runtime shader.
