@@ -241,6 +241,38 @@ pub fn decode_terrain_bytes(source: &[u8], render_grid: u32) -> Result<TerrainMe
     })
 }
 
+/// Authored material metadata associated with a terrain layer ID.
+/// These source values are retained verbatim for build-scoped material
+/// resolution. They are not a native terrain shader or a color correction.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerrainLayerDefinition {
+    pub id: u8,
+    pub name: String,
+    pub surface_type: String,
+    pub filter_color: Option<[f32; 3]>,
+    pub brightness: Option<f32>,
+    pub tiling: Option<f32>,
+}
+
+fn finite_terrain_factor(value: &str) -> Option<f32> {
+    value
+        .parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite() && (0.0..=1024.0).contains(v))
+}
+
+fn terrain_filter_color(value: &str) -> Option<[f32; 3]> {
+    let parts = value.split(',').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return None;
+    }
+    Some([
+        finite_terrain_factor(parts[0].trim())?,
+        finite_terrain_factor(parts[1].trim())?,
+        finite_terrain_factor(parts[2].trim())?,
+    ])
+}
+
 /// One authentic terrain paint layer entry from Heightmap.dat's XML header.
 /// This is not the baked terrain diffuse: CryEngine stores its surface tiles
 /// separately in TerrainTexture.xml and terraintexture.pak.
@@ -249,6 +281,10 @@ pub struct TerrainPaintMap {
     pub width: u32,
     pub height: u32,
     pub layer_names: std::collections::BTreeMap<u8, String>,
+    /// Preserve all authored Layer entries. IDs can be repeated in original
+    /// source XML; do not silently assume each bitmap byte names one unique
+    /// detail material.
+    pub layers: Vec<TerrainLayerDefinition>,
     /// Exactly width * height bytes in the original layer bitmap order.
     pub ids: Vec<u8>,
 }
@@ -319,6 +355,7 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
         .ok_or_else(|| TerrainError::Format("truncated terrain layer bitmap".into()))?
         .to_vec();
     let mut names = std::collections::BTreeMap::new();
+    let mut layers = Vec::new();
     let mut reader = Reader::from_reader(xml);
     loop {
         match reader
@@ -328,23 +365,43 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
             Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"Layer" => {
                 let mut id = None;
                 let mut name = None;
+                let mut surface_type = String::new();
+                let mut filter_color = None;
+                let mut brightness = None;
+                let mut tiling = None;
                 for attr in e.attributes() {
                     let attr = attr.map_err(|e| TerrainError::Format(e.to_string()))?;
-                    if attr.key.as_ref() == b"LayerId" {
-                        id = attr
-                            .unescape_value()
-                            .ok()
-                            .and_then(|v| v.parse::<u8>().ok());
-                    } else if attr.key.as_ref() == b"Name" {
-                        name = attr.unescape_value().ok().map(|v| v.to_string());
+                    let value = attr
+                        .unescape_value()
+                        .map_err(|e| TerrainError::Format(e.to_string()))?;
+                    match attr.key.as_ref() {
+                        b"LayerId" => id = value.parse::<u8>().ok(),
+                        b"Name" => name = Some(value.to_string()),
+                        b"SurfaceType" if value.len() <= 512 => {
+                            surface_type = value.to_string();
+                        }
+                        b"FilterColor" => filter_color = terrain_filter_color(&value),
+                        b"LayerBrightness" => brightness = finite_terrain_factor(&value),
+                        b"LayerTiling" => tiling = finite_terrain_factor(&value),
+                        _ => {}
                     }
                 }
                 if let (Some(id), Some(name)) = (id, name)
                     && name.len() <= 128
                 {
-                    names.insert(id, name);
+                    // Preserve duplicates for auditing; some authored
+                    // heightmaps reuse a layer ID for the default layer.
+                    names.insert(id, name.clone());
+                    layers.push(TerrainLayerDefinition {
+                        id,
+                        name,
+                        surface_type,
+                        filter_color,
+                        brightness,
+                        tiling,
+                    });
                 }
-                if names.len() > 256 {
+                if layers.len() > 256 {
                     return Err(TerrainError::Limits);
                 }
             }
@@ -359,6 +416,7 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
         width,
         height,
         layer_names: names,
+        layers,
         ids,
     }))
 }
@@ -571,6 +629,7 @@ mod tests {
         assert_eq!(paint.id_at(1, 0), Some(1));
         assert_eq!(paint.id_at(16, 0), None);
         assert!(paint.layer_names.is_empty());
+        assert!(paint.layers.is_empty());
         data[3
             + br#"<Heightmap Width="16" Height="16" UnitSize="2" MaxHeight="100"/>"#.len()
             + 4
