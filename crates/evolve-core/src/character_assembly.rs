@@ -1018,7 +1018,7 @@ mod tests {
         transform_equipment(&mut rifle, &attachment, &skeleton).unwrap();
         assert_eq!(rifle.positions[0], [12., 22., 33.]);
         assert_eq!(rifle.normals.as_ref().unwrap()[0], [0., 0., 1.]);
-        let mut wrong = attachment;
+        let mut wrong = attachment.clone();
         wrong.bone_name = Some("OtherWeaponSocket".into());
         assert!(transform_equipment(&mut rifle, &wrong, &skeleton).is_err());
         // A CA_SKIN piece lacking weights but naming the original socket
