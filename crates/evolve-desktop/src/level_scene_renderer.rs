@@ -5,7 +5,7 @@
 //! game build. All loads run in the existing blocking Operation worker.
 use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface, world_instances};
 use evolve_core::{
-    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform, WorldModelPart,
+    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform,
     begin_imported_lookup_session, begin_imported_lookup_session_for_source,
     imported_archive_files, imported_archive_preview_inventory, imported_library,
     read_world_model_parts_with_subsets,
