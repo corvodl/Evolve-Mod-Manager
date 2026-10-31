@@ -233,7 +233,7 @@ pub(super) fn verify_source_particle_placements(
             matched+=1;
             child_definitions+=emitters.iter().filter(|e|
                 e.effect.len()>effect.len()
-                    && e.effect[..effect.len()].eq_ignore_ascii_case(effect)
+                    && e.effect.to_ascii_lowercase().starts_with(&effect.to_ascii_lowercase())
                     && e.effect.as_bytes().get(effect.len())==Some(&b'.')
             ).count();
         } else {
