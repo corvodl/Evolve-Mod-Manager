@@ -134,8 +134,12 @@ impl ViewportHdr {
             label:Some("HDR bloom composite layout"),
             entries:&[sampled(0),sampled(1),sampling(2),uniform(3)],
         });
-        let source=device.create_shader_module(wgpu::ShaderModuleDescriptor{
-            label:Some("Linear HDR bloom, Gaussian blur and tone mapping"),
+        let bloom_source=device.create_shader_module(wgpu::ShaderModuleDescriptor{
+            label:Some("Linear HDR bloom threshold and Gaussian blur"),
+            source:wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("viewport_bloom.wgsl"))),
+        });
+        let composite_source=device.create_shader_module(wgpu::ShaderModuleDescriptor{
+            label:Some("Final HDR bloom composite and ACES tone mapping"),
             source:wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("viewport_hdr.wgsl"))),
         });
         let filter_pipeline=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
@@ -146,15 +150,15 @@ impl ViewportHdr {
             label:Some("Final HDR to Iced window layout"),
             bind_group_layouts:&[&composite_layout],push_constant_ranges:&[],
         });
-        let pipeline=|label,layout:&wgpu::PipelineLayout,fragment,output|device.create_render_pipeline(
-            &wgpu::RenderPipelineDescriptor{
+        let pipeline=|label,layout:&wgpu::PipelineLayout,source:&wgpu::ShaderModule,fragment,output|
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
                 label:Some(label),layout:Some(layout),
                 vertex:wgpu::VertexState{
-                    module:&source,entry_point:Some("vs_fullscreen"),
+                    module:source,entry_point:Some("vs_fullscreen"),
                     buffers:&[],compilation_options:wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment:Some(wgpu::FragmentState{
-                    module:&source,entry_point:Some(fragment),
+                    module:source,entry_point:Some(fragment),
                     targets:&[Some(wgpu::ColorTargetState{
                         format:output,blend:None,write_mask:wgpu::ColorWrites::ALL,
                     })],
@@ -163,9 +167,9 @@ impl ViewportHdr {
                 primitive:wgpu::PrimitiveState::default(),depth_stencil:None,
                 multisample:wgpu::MultisampleState::default(),multiview:None,cache:None,
             });
-        let extract=pipeline("HDR source bright threshold",&filter_pipeline,"fs_extract",SCENE_FORMAT);
-        let blur=pipeline("Quarter-res Gaussian HDR bloom",&filter_pipeline,"fs_blur",SCENE_FORMAT);
-        let composite=pipeline("Linear HDR scene bloom composite",&composite_pipeline,"fs_composite",format);
+        let extract=pipeline("HDR source bright threshold",&filter_pipeline,&bloom_source,"fs_extract",SCENE_FORMAT);
+        let blur=pipeline("Quarter-res Gaussian HDR bloom",&filter_pipeline,&bloom_source,"fs_blur",SCENE_FORMAT);
+        let composite=pipeline("Linear HDR scene bloom composite",&composite_pipeline,&composite_source,"fs_composite",format);
         let composite_uniform=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
             label:Some("HDR bloom strength, exposure, bypass unlit"),
             // bloom strength=.20; manual exposure=1; bypass source color=0
@@ -232,12 +236,14 @@ impl ViewportHdr {
 mod tests {
     #[test]
     fn bloom_shader_has_extract_two_axis_blur_and_final_tonemap(){
-        let shader=include_str!("viewport_hdr.wgsl");
-        naga::front::wgsl::parse_str(shader).expect("HDR viewport shader parses");
-        for entry in ["fn fs_extract(", "fn fs_blur(", "fn fs_composite("] {
-            assert!(shader.contains(entry));
-        }
-        assert!(shader.contains("aces_fitted"));
+        let bloom=include_str!("viewport_bloom.wgsl");
+        let hdr=include_str!("viewport_hdr.wgsl");
+        naga::front::wgsl::parse_str(bloom).expect("Bloom filter shader parses");
+        naga::front::wgsl::parse_str(hdr).expect("HDR compositor shader parses");
+        assert!(bloom.contains("fn fs_extract("));
+        assert!(bloom.contains("fn fs_blur("));
+        assert!(hdr.contains("fn fs_composite("));
+        assert!(hdr.contains("aces_fitted"));
     }
     #[test]
     fn hdr_frame_format_is_floating_point(){
