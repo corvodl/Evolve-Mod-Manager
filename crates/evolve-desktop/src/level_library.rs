@@ -1089,10 +1089,21 @@ fn terrain_pixel_report(img: &image::RgbaImage) -> String {
     let avg = sums.map(|sum| sum / count);
     let first = img.get_pixel(0, 0);
     let center = img.get_pixel(width / 2, height / 2);
+    // Record the baked 2x2 tile orientation without guessing whether game UV
+    // axes are flipped. Use authored source pixels before any light/fog/shader.
+    let sample = |x: u32, y: u32| -> String {
+        let p = img.get_pixel(x.min(width - 1), y.min(height - 1));
+        format!("[{},{},{}]", p[0], p[1], p[2])
+    };
+    let upper_left = sample(width / 4, height / 4);
+    let upper_right = sample(width.saturating_mul(3) / 4, height / 4);
+    let lower_left = sample(width / 4, height.saturating_mul(3) / 4);
+    let lower_right = sample(width.saturating_mul(3) / 4, height.saturating_mul(3) / 4);
     format!(
-        "Original decoded terrain RGB8 (pre-lighting/sRGB): sampled average [{},{},{}], corner [{},{},{}], center [{},{},{}]; no correction applied.",
+        "Original decoded terrain RGB8 (pre-lighting/sRGB): sampled average [{},{},{}], corner [{},{},{}], center [{},{},{}]; atlas quadrants TL={} TR={} BL={} BR={}; no correction applied.",
         avg[0],avg[1],avg[2],first[0],first[1],first[2],
         center[0],center[1],center[2],
+        upper_left,upper_right,lower_left,lower_right,
     )
 }
 
@@ -1113,6 +1124,7 @@ mod tests {
         assert!(text.contains("sampled average [65,85,105]"));
         assert!(text.contains("corner [20,40,60]"));
         assert!(text.contains("no correction applied"));
+        assert!(text.contains("atlas quadrants TL=[20,40,60]"));
     }
 
     #[test]
