@@ -93,6 +93,10 @@ pub struct MaterialSlot {
     /// Exact CryEngine StringGenMask ALPHAGLOW flag, not diffuse alpha alone.
     #[serde(default)]
     pub alpha_glow: bool,
+    /// Original hexadecimal CryEngine GenMask. Flags are shader-local;
+    /// never compare identical bits across unrelated shader templates.
+    #[serde(default)]
+    pub shader_gen_mask: Option<u64>,
     /// The authored RGB Diffuse scalar. This is distinct from the Diffuse DDS.
     #[serde(default)]
     pub diffuse_tint: Option<[f32; 3]>,
@@ -190,6 +194,13 @@ fn authored_glow_amount(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialEr
         return Err(MaterialError::Xml("GlowAmount must be finite".into()));
     }
     Ok(Some(amount))
+}
+
+fn source_shader_gen_mask(node: &BytesStart<'_>) -> Result<Option<u64>, MaterialError> {
+    let Some(raw) = attr(node, b"GenMask")? else { return Ok(None); };
+    let source = raw.trim();
+    let hex = source.strip_prefix("0x").or_else(|| source.strip_prefix("0X")).unwrap_or(source);
+    Ok(u64::from_str_radix(hex, 16).ok())
 }
 
 fn source_alpha_glow(node: &BytesStart<'_>) -> Result<bool, MaterialError> {
@@ -448,6 +459,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         alpha_test,
                         glow_amount,
                         alpha_glow: source_alpha_glow(&node)?,
+                        shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
                         decal_tex_mod: None,
                     });
@@ -515,6 +527,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         alpha_test: material_alpha_test(&node)?,
                         glow_amount: authored_glow_amount(&node)?,
                         alpha_glow: source_alpha_glow(&node)?,
+                        shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
                         decal_tex_mod: None,
                     });
@@ -729,6 +742,17 @@ pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parses_original_hex_particle_feature_masks_without_inventing_invalid_flags() {
+        let doc = super::parse_material(br#"<Material Shader="Particles" GenMask="220" StringGenMask="">
+            <Textures><Texture Map="Diffuse" File="textures/particle/fire/fire_explosioncurl01_anim64.tif"/>
+            <Texture Map="Decal" File="textures/particle/misc/fx_scrolltiled01_8x8_p.tif"/></Textures>
+            </Material>"#).unwrap();
+        assert_eq!(doc.slots[0].shader_gen_mask, Some(0x220));
+        let malformed = super::parse_material(br#"<Material Shader="Particles" GenMask="bad-hex"/>"#).unwrap();
+        assert_eq!(malformed.slots[0].shader_gen_mask, None);
+    }
+
     use super::*;
     use crate::inventory::{AssetEntry, AssetKind};
 
