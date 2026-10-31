@@ -7565,6 +7565,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_selection.click(&[index], index, false, false);
                 }
                 state.level_selected = state.level_selection.primary_after(index);
+                // Viewport picking should reveal the corresponding actor
+                // inspector, not leave the user in the diagnostics tab.
+                state.level_sidebar_tab = LevelSidebarTab::Actors;
                 sync_level_fields(state);
             }
         }
