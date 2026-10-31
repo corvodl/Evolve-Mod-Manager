@@ -31,24 +31,41 @@ remain read-only/unchanged.
   not dedicated VRAM counters. Free physical VRAM cannot be obtained from the
   current wgpu Device interface; the UI explicitly reports it as unavailable.
 - The map import activity includes sampled original decoded baked-terrain RGB
-  values **before** sRGB sampling or original TimeOfDay lighting. The sample
-  allows a tester to distinguish wrong raw tile bytes from wrong GPU coloring.
+  values **before** sRGB sampling or original TimeOfDay lighting, including
+  representative TL/TR/BL/BR atlas quadrants. The samples allow a tester to
+  distinguish wrong source bytes and tile orientation from GPU color-space
+  conversion or lighting. They do not establish Evolve in-game parity.
 
 ## Not yet implemented or verified
 
-- Per-mipmap and per-texture *intra-group* asynchronous uploads. Each individual
-  admitted material group still creates and fills its full mip chain together;
-  unusually large groups can stall for a frame. The current pacing is by mesh
-  group, not by bytes or elapsed GPU time.
+- Diffuse textures now stream their mip images independently, starting with
+  the coarsest valid source mip. Each redraw uploads at most **8 MiB** of
+  texture rows, and a per-material GPU LOD floor prevents sampling uninitialized
+  mip levels. Source-resolution mips remain available as the queue progresses.
+  Auxiliary normal/specular/gloss/emissive/opacity maps still upload all their
+  mips during GPU group admission; **full all-role independent mip streaming
+  remains outstanding**. A CPU mip resize can still pause a frame, so an
+  asynchronous decode worker or GPU mip-generation path remains desirable.
 - Driver-provided actual remaining/dedicated memory and GPU allocation timing,
   including other applications and render targets.
-- Fully GPU-resident fallback for a visible group larger than the 512 MiB
-  residency target. Such groups are **reported as deferred**, rather than
-  downsampled and falsely described as full-quality.
+- Oversized **multi-material** groups are now partitioned into independent
+  GPU material-residency batches, reusing the same CPU mesh and authored
+  placements. This may duplicate some GPU geometry but avoids deferring the
+  entire mesh when several independent materials exceed the target together.
+  An individually oversized material or a single texture greater than the
+  512 MiB conservative target is still **reported as deferred**, not silently
+  downsampled. True sparse/tiled GPU textures and hardware VRAM capability
+  checks remain outstanding.
 - Exact Evolve baked terrain color, sRGB/linear conversion, layer blending,
   vegetation transmittance and engine HDR. No guessed color swap or tint has
   been added. Tutorial's four verified 1024² RGB24 tiles supply only a
   2048² source atlas; a higher-resolution ground texture cannot be invented.
+- Material and geometry lookup now scopes both MTL/DDS and CGF dependencies
+  by the selected canonical Game installation, even when legacy build labels
+  overlap. Duplicate exact-path geometry is only accepted when actual file
+  contents match by SHA-256. Local crash logs list every unresolved source
+  model/material pair and reason for diagnosis; this does **not** fabricate
+  missing original assets.
 - The 22 model/material pairs without verified diffuse, 16 missing/unsupported
   geometry dependencies and ambiguous cross-PAK carcass CGFs reported by
   Tutorial. Streaming does **not** prove these missing source dependencies
