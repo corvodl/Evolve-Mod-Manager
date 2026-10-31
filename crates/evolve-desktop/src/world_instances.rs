@@ -139,14 +139,16 @@ fn full_quality_dimensions(
     if width == 0 || height == 0 || gpu_max == 0 || (!full && remaining < 4) {
         return None;
     }
+    // Full quality is constrained by device dimensions, not the current
+    // transient upload budget. Residency is separately admitted/deferred
+    // by the streaming scheduler, which retains original source pixels.
     let cap = if full {
         MAX_FULL_TEXTURE_BYTES
     } else if ground {
-        MAX_TERRAIN_ATLAS_BYTES
+        MAX_TERRAIN_ATLAS_BYTES.min(remaining)
     } else {
-        MAX_WORLD_DIFFUSE_BYTES
-    }
-    .min(remaining);
+        MAX_WORLD_DIFFUSE_BYTES.min(remaining)
+    };
     let (mut w, mut h) = (width, height);
     while w > gpu_max || h > gpu_max || u64::from(w) * u64::from(h) * 4 > cap {
         if w == 1 && h == 1 {
