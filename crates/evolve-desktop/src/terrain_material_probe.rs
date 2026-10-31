@@ -510,6 +510,11 @@ fn same_install_catalog(selected: &ImportedPak) -> Result<HashMap<String, Vec<En
 /// Decode the *complete* original .dds.0 + numbered mip stream, rejecting
 /// partial streams and cross-installation ambiguity. Material paths are
 /// authoritative: never choose a similarly named texture elsewhere.
+fn needs_external_fragment(header: &Path, fragment: &Path) -> bool {
+    // Both are canonicalized by verified() before this call.
+    header.parent() != fragment.parent()
+}
+
 fn load_detail_image(
     catalog: &HashMap<String, Vec<Entry>>,
     authored: &str,
@@ -532,11 +537,20 @@ fn load_detail_image(
         if suffix != "0" {
             continue;
         }
+        // decode_dds_rgba_with_parts already enumerates numbered fragments
+        // in the .dds.0 file's own directory. Re-supplying those paths as
+        // external fragments makes it reject a complete original PAK texture
+        // as "duplicate numbered DDS fragment". Only cross-archive parts
+        // belong in the additional slice. textures.pak has many such complete
+        // same-directory sets (terrain and particle). Keep manifest checks.
         let mut more = Vec::new();
         for i in 1..20 {
             let part = format!("{prefix}.dds.{i}");
             if let Some(fragment) = find(catalog, &part)? {
-                more.push(verified(fragment)?);
+                let source = verified(fragment)?;
+                if needs_external_fragment(&header, &source) {
+                    more.push(source);
+                }
             }
         }
         return evolve_core::decode_dds_rgba_with_parts(&header, &more)
@@ -928,6 +942,16 @@ mod composition_tests {
         assert!(!is_terrain_dependency(
             "characters/hunters/markov/materials/body.mtl"
         ));
+    }
+
+    #[test]
+    fn local_split_dds_fragments_are_not_passed_twice_to_decoder() {
+        let root = Path::new("/import/game/textures/terrain/arctic");
+        let header = root.join("snow_dirt_a_terr.dds.0");
+        let local = root.join("snow_dirt_a_terr.dds.1");
+        let external = Path::new("/other_pak/files/textures/terrain/arctic/snow_dirt_a_terr.dds.2");
+        assert!(!needs_external_fragment(&header, &local));
+        assert!(needs_external_fragment(&header, external));
     }
 
     #[test]
