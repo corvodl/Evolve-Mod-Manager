@@ -567,6 +567,9 @@ pub(super) struct World {
     /// Signed high-pass detail overlay; painted layer composition is prepared
     /// from verified same-install sources in the blocking map-open worker.
     pub terrain_detail: Option<Arc<image::RgbaImage>>,
+    pub sky_source: super::level_atmosphere::SkySource,
+    pub static_sky: Option<Arc<super::level_atmosphere::StaticSky>>,
+    pub local_lights: Arc<Vec<super::level_atmosphere::LocalLight>>,
     pub gpu_progress: Arc<GpuProgress>,
     // Prehashed by the existing map assembly worker, never by the UI thread.
     source_pixel_hashes: Arc<SourceKeys>,
