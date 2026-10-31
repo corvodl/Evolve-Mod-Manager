@@ -591,8 +591,12 @@ fn painted_neighbors(paint: &TerrainPaintMap, uv: [f32; 2]) -> [Option<(u8, f32)
         (x0, y1, (1.0 - u) * v),
         (x1, y1, u * v),
     ] {
-        let Some(id) = paint.id_at(ix, iy) else { continue };
-        if let Some((_, accumulated)) = neighbors.iter_mut().flatten()
+        let Some(id) = paint.id_at(ix, iy) else {
+            continue;
+        };
+        if let Some((_, accumulated)) = neighbors
+            .iter_mut()
+            .flatten()
             .find(|(other, _)| *other == id)
         {
             *accumulated += weight;
@@ -623,8 +627,7 @@ fn compose_detail(
             let neighbors = painted_neighbors(paint, uv);
             // Fixed-size stack storage avoids millions of per-pixel Vec
             // allocations when processing full-resolution terrain tiles.
-            let mut samples: [Option<(&DetailLayer, [f32; 3], Option<f32>, f32)>; 4] =
-                [None; 4];
+            let mut samples: [Option<(&DetailLayer, [f32; 3], Option<f32>, f32)>; 4] = [None; 4];
             let mut sample_count = 0usize;
             for (id, original_weight) in neighbors.into_iter().flatten() {
                 let Some(layer) = layers.get(&id) else {
@@ -816,7 +819,9 @@ mod composition_tests {
         assert_eq!(paint.id_at(0, 0), Some(1));
         assert_eq!(paint.id_at(0, 1), Some(2));
         let adjacent: Vec<_> = painted_neighbors(&paint, [0.5, 0.5])
-            .into_iter().flatten().collect();
+            .into_iter()
+            .flatten()
+            .collect();
         assert_eq!(adjacent.len(), 2);
         assert!(adjacent.iter().all(|(_, w)| (*w - 0.5).abs() < 0.0001));
     }
