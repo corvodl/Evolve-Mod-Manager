@@ -303,10 +303,17 @@ pub fn read_terrain_rgb24_tiles(
         let atlas = image.as_mut().ok_or(TerrainError::Limits)?;
         let tile_x = tile_index % side;
         let tile_y = tile_index / side;
+        // Heightmap geometry uses UV0=[world X, world Y], but Cry3DEngine
+        // indexes baked terrain texture U by world Y and V by world X.
+        // The native CRY sector path applies this transposition in stamp().
+        // Do the same for the separate imported RGB24 tile grid, including
+        // each tile's interior pixels (not just the tile positions).
         for row in 0..height {
             for col in 0..width {
                 let from = (row * width + col) * 3;
-                let to = ((tile_y * height + row) * atlas_dim + tile_x * width + col) * 4;
+                let dest_x = tile_y * height + row;
+                let dest_y = tile_x * width + col;
+                let to = (dest_y * atlas_dim + dest_x) * 4;
                 let destination = &mut atlas.as_mut()[to..to + 4];
                 destination[..3].copy_from_slice(&pixels[from..from + 3]);
                 destination[3] = 255;
@@ -368,13 +375,32 @@ mod tests {
         assert_eq!(atlas.image.dimensions(), (8, 8));
         assert_eq!(atlas.decoded_tiles, 4);
         assert_eq!(atlas.color_format, 3);
-        for (x, y, index) in [(0, 0, 0), (4, 0, 1), (0, 4, 2), (4, 4, 3)] {
+        for (x, y, index) in [(0, 0, 0), (0, 4, 1), (4, 0, 2), (4, 4, 3)] {
             let sample = atlas.image.get_pixel(x, y);
             assert_eq!(&sample.0[..3], &colors[index]);
             assert_eq!(sample.0[3], 255);
         }
         std::fs::write(&paths[3], b"short").unwrap();
         assert!(read_terrain_rgb24_tiles(&paths, 2).is_err());
+    }
+
+    #[test]
+    fn rgb24_raw_tile_interior_axes_match_cry_sector_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tile0_0.raw");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        for row in 0..4u8 {
+            for col in 0..4u8 {
+                bytes.extend_from_slice(&[col * 30, row * 40, 17]);
+            }
+        }
+        std::fs::write(&path, bytes).unwrap();
+        let atlas = read_terrain_rgb24_tiles(&[path], 1).unwrap();
+        // Source row=1, col=3 moves to atlas X=1, Y=3.
+        assert_eq!(atlas.image.get_pixel(1, 3).0, [90, 40, 17, 255]);
+        assert_eq!(atlas.image.get_pixel(3, 1).0, [30, 120, 17, 255]);
     }
 
     #[test]
@@ -400,8 +426,8 @@ mod tests {
         assert_eq!(atlas.image.dimensions(), (16, 16));
         assert_eq!(atlas.decoded_tiles, 16);
         assert_eq!(atlas.image.get_pixel(0, 0).0, [0, 0, 120, 255]);
-        assert_eq!(atlas.image.get_pixel(15, 0).0, [150, 0, 120, 255]);
-        assert_eq!(atlas.image.get_pixel(0, 15).0, [0, 150, 120, 255]);
+        assert_eq!(atlas.image.get_pixel(15, 0).0, [0, 150, 120, 255]);
+        assert_eq!(atlas.image.get_pixel(0, 15).0, [150, 0, 120, 255]);
         assert_eq!(atlas.image.get_pixel(15, 15).0, [150, 150, 120, 255]);
         assert!(read_terrain_rgb24_tiles(&paths[..15], side).is_err());
         std::fs::write(&paths[15], b"invalid truncated tile").unwrap();

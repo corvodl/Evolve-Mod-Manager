@@ -1521,6 +1521,18 @@ fn viewport(state: &State) -> Element<'_, Message> {
         text(state.auto_resource_note.as_str())
             .size(11)
             .style(design::muted),
+        text({
+            let remaining = state
+                .viewer_gpu_remaining
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if remaining > 0 && state.cdf_surfaces.is_some() {
+                format!("GPU material streaming: {remaining} source sections queued")
+            } else {
+                "GPU material streaming: ready (source DDS resolution remains separate)".to_owned()
+            }
+        })
+        .size(11)
+        .style(design::muted),
     ]
     .spacing(2);
     let main: Element<'_, Message> = if let Some(mesh) = &state.model {
@@ -1547,6 +1559,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 level_hour: 12.0,
                 level_full_textures: true,
                 viewer_full_textures: state.viewer_full_textures,
+                viewer_gpu_remaining: Some(state.viewer_gpu_remaining.clone()),
             })
             .width(Fill)
             .height(Fill)

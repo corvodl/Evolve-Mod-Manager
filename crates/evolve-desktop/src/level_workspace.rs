@@ -228,6 +228,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 level_hour: state.level_time_of_day,
                 level_full_textures: state.level_full_textures,
                 viewer_full_textures: state.level_full_textures,
+                viewer_gpu_remaining: None,
             },
         })
         .width(Fill)
