@@ -836,6 +836,13 @@ pub(super) struct Renderer {
     terrain_source_unlit: bool,
     foliage_cutout: wgpu::RenderPipeline,
     transparent: wgpu::RenderPipeline,
+    sky_pipeline: wgpu::RenderPipeline,
+    sky_layout: wgpu::BindGroupLayout,
+    sky_group: wgpu::BindGroup,
+    sky_images: [wgpu::Texture; 3],
+    sky_uniform: wgpu::Buffer,
+    local_uniform: wgpu::Buffer,
+    hdr_uniform: wgpu::Buffer,
     layout: wgpu::BindGroupLayout,
     camera_uniform: wgpu::Buffer,
     lighting_uniform: wgpu::Buffer,
@@ -856,7 +863,7 @@ pub(super) struct Renderer {
     last_camera: Option<CameraGpu>,
 }
 impl Renderer {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Original level full source material bindings"),
             entries: &[
@@ -995,6 +1002,27 @@ impl Renderer {
                     },
                     count: None,
                 },
+
+                wgpu::BindGroupLayoutEntry {
+                    binding: 13,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let camera_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1016,6 +1044,21 @@ impl Renderer {
         let height_fog_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Source TimeOfDay analytical height fog preview"),
             contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 2]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let local_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Map source local point/spot light GPU table"),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 73]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let hdr_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Source TimeOfDay filmic exposure and scene key"),
+            contents: bytemuck::cast_slice(&[1.0_f32, 4.0, 1.0, 12.0]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let sky_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Original map dynamic/static sky controls"),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 8]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1106,12 +1149,112 @@ impl Renderer {
                 cache: None,
             })
         };
+
+        let sky_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Source map Sky box and procedural scattering bindings"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding:0,visibility:wgpu::ShaderStages::FRAGMENT,
+                    ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset:false,min_binding_size:None},count:None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:1,visibility:wgpu::ShaderStages::FRAGMENT,
+                    ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset:false,min_binding_size:None},count:None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:2,visibility:wgpu::ShaderStages::FRAGMENT,
+                    ty:wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count:None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:3,visibility:wgpu::ShaderStages::FRAGMENT,
+                    ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},
+                        view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:4,visibility:wgpu::ShaderStages::FRAGMENT,
+                    ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},
+                        view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:5,visibility:wgpu::ShaderStages::FRAGMENT,
+                    ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},
+                        view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:6,visibility:wgpu::ShaderStages::FRAGMENT,
+                    ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset:false,min_binding_size:None},count:None,
+                },
+            ],
+        });
+        let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
+            label:Some("Map-authored Sky / SkyHDR atmospheric preview"),
+            source:wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("world_sky.wgsl"))),
+        });
+        let sky_pipe_layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:Some("World sky-only pipeline layout"),
+            bind_group_layouts:&[&sky_layout],
+            push_constant_ranges:&[],
+        });
+        let sky_pipeline=device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
+            label:Some("Original map sky dome before world geometry"),
+            layout:Some(&sky_pipe_layout),
+            vertex:wgpu::VertexState {module:&sky_shader,entry_point:Some("vs_sky"),
+                buffers:&[],compilation_options:wgpu::PipelineCompilationOptions::default()},
+            fragment:Some(wgpu::FragmentState{module:&sky_shader,entry_point:Some("fs_sky"),
+                targets:&[Some(wgpu::ColorTargetState {format,blend:None,write_mask:wgpu::ColorWrites::ALL})],
+                compilation_options:wgpu::PipelineCompilationOptions::default()}),
+            primitive:wgpu::PrimitiveState {cull_mode:None,..Default::default()},
+            depth_stencil:Some(wgpu::DepthStencilState {
+                format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:false,
+                depth_compare:wgpu::CompareFunction::Always,
+                stencil:wgpu::StencilState::default(),bias:wgpu::DepthBiasState::default(),
+            }),
+            multisample:wgpu::MultisampleState::default(),multiview:None,cache:None,
+        });
+        let sky_sampler=device.create_sampler(&wgpu::SamplerDescriptor{
+            address_mode_u:wgpu::AddressMode::ClampToEdge,
+            address_mode_v:wgpu::AddressMode::ClampToEdge,
+            mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,
+            mipmap_filter:wgpu::FilterMode::Linear,..Default::default()
+        });
+        let neutral_sky=[90u8,120,155,255];
+        let images=std::array::from_fn::<_,3,_>(|_|upload_rgba_mips(device,
+            queue, None, neutral_sky,
+            wgpu::TextureFormat::Rgba8UnormSrgb,"Unresolved source sky fallback"));
+
+        let views=images.iter().map(|(texture,view)|{let _=texture;view}).collect::<Vec<_>>();
+        let sky_group=device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:Some("Original map sky source faces"),
+            layout:&sky_layout,
+            entries:&[
+                wgpu::BindGroupEntry{binding:0,resource:camera_uniform.as_entire_binding()},
+                wgpu::BindGroupEntry{binding:1,resource:sky_uniform.as_entire_binding()},
+                wgpu::BindGroupEntry{binding:2,resource:wgpu::BindingResource::Sampler(&sky_sampler)},
+                wgpu::BindGroupEntry{binding:3,resource:wgpu::BindingResource::TextureView(views[0])},
+                wgpu::BindGroupEntry{binding:4,resource:wgpu::BindingResource::TextureView(views[1])},
+                wgpu::BindGroupEntry{binding:5,resource:wgpu::BindingResource::TextureView(views[2])},
+                wgpu::BindGroupEntry{binding:6,resource:lighting_uniform.as_entire_binding()},
+            ],
+        });
+        let sky_images=images.map(|(texture,_)|texture);
+
         Self {
             solid: make(false, false, false),
             terrain_source: make(false, false, true),
             terrain_source_unlit: false,
             foliage_cutout: make(false, true, false),
             transparent: make(true, false, false),
+            sky_pipeline,
+            sky_layout,
+            sky_group,
+            sky_images,
+            sky_uniform,
+            local_uniform,
+            hdr_uniform,
             layout,
             camera_uniform,
             lighting_uniform,
@@ -1445,6 +1588,14 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 12,
                         resource: wgpu::BindingResource::TextureView(&detail_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
+                        resource: self.local_uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 14,
+                        resource: self.hdr_uniform.as_entire_binding(),
                     },
                 ],
             });
