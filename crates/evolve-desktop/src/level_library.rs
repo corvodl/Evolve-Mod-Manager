@@ -750,6 +750,37 @@ fn open_selected(
             None
         }
     };
+    let sky_source = match authored_environment(&archive, chosen, &inventory) {
+        Ok(Some(file)) => match fs::read(file) {
+            Ok(data) => match crate::level_atmosphere::sky_source(&data) {
+                Ok(value) => value,
+                Err(error) => {
+                    diagnostics.push(format!("Original sky configuration unsupported: {error}"));
+                    Default::default()
+                }
+            },
+            Err(error) => {
+                diagnostics.push(format!("Could not read original SkyBox configuration: {error}"));
+                Default::default()
+            }
+        },
+        Ok(None) => Default::default(),
+        Err(error) => {
+            diagnostics.push(format!("Could not resolve original SkyBox configuration: {error}"));
+            Default::default()
+        }
+    };
+    let static_sky = match crate::level_atmosphere::load_static_sky(&archive, &sky_source) {
+        Ok(Some(sky)) => {
+            diagnostics.push("Map-owned static Sky material and three complete, matching original DDS face textures resolved.".into());
+            Some(std::sync::Arc::new(sky))
+        }
+        Ok(None) => None,
+        Err(error) => {
+            diagnostics.push(format!("Static Sky source unavailable: {error}; original TimeOfDay dynamic sky preview used when present."));
+            None
+        }
+    };
     let mut sources = Vec::<(String, Vec<u8>)>::new();
     // Keep both memory and parser work bounded. A map with more than this
     // requires an incremental scene loader rather than silent unbounded reads.
@@ -865,6 +896,9 @@ fn open_selected(
             )),
         }
     }
+    let (local_lights, light_warnings) = crate::level_atmosphere::lights(&sources, scene.as_ref());
+    diagnostics.push(format!("Original map light entities with verified authored color, radius and strength: {}. GPU viewport uses nearby point/spot preview lighting; authored shadow maps and projector textures require separate verification.",local_lights.len()));
+    diagnostics.extend(light_warnings.into_iter().take(5));
     let terrain_xml = if chosen.terrain.is_some() {
         terrain_resource(
             &root,
@@ -1065,6 +1099,9 @@ fn open_selected(
     diagnostics.push(resources.description());
     if let Some(assembled) = full_scene.as_mut() {
         let mut world = (*assembled.world).clone();
+        world.sky_source = sky_source;
+        world.static_sky = static_sky;
+        world.local_lights = std::sync::Arc::new(local_lights);
         world.time_of_day = original_time.map(std::sync::Arc::new);
         world.fog_profile = original_fog;
         world.source_resources = resources;
