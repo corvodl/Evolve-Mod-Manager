@@ -89,6 +89,7 @@ fn is_terrain_dependency(path: &str) -> bool {
                 .is_some_and(|(_, suffix)| suffix.parse::<u8>().is_ok_and(|n| n <= 19)));
     is_cooked
         && (path.starts_with("materials/terrain/")
+            || (path.ends_with(".mtl") && path.starts_with("materials/universal/default/"))
             || path.starts_with("textures/terrain/")
             || (path.starts_with("levels/") && path.contains("/textures/terrain/")))
 }
@@ -264,7 +265,7 @@ pub(super) fn audit(selected: &ImportedPak, paint: &TerrainPaintMap) -> Vec<Stri
         }
     }
     messages.push(format!(
-        "Same-install terrain material audit: {loaded}/{} declared .mtl definitions loaded; {decoded} cooked DDS references have complete verified mip chains; {absent} missing definitions, {ambiguous} ambiguous definitions, {} missing and {} invalid/ambiguous texture references. Sources remain original imported PAK files; shaders are NOT yet blended into the ground.",
+        "Same-install terrain material audit: {loaded}/{} declared .mtl definitions loaded; {decoded} cooked DDS heads pass header inspection (full mip decoding is checked separately); {absent} missing definitions, {ambiguous} ambiguous definitions, {} missing and {} invalid/ambiguous texture references. Sources remain original imported PAK files; shaders are NOT yet blended into the ground.",
         paths.len(), missing_textures.len(), broken_textures.len(),
     ));
     if !mismatched_shaders.is_empty() {
@@ -373,7 +374,6 @@ struct DetailLayer {
 }
 #[derive(Default)]
 struct AuthoredDetail {
-    diffuse: Option<String>,
     height: Option<String>,
     tile: [f32; 2],
     strength: f32,
@@ -402,7 +402,12 @@ fn authored_detail(bytes: &[u8]) -> Result<AuthoredDetail, String> {
         blend_falloff: 2.0,
         ..Default::default()
     };
-    let mut reader = quick_xml::Reader::from_reader(bytes);
+    // CryEngine material XML may be stored as CryXmlB in imported PAKs.
+    // The normal MTL resolver already decodes it; use the same bounded
+    // decoder for optional TexMod/PublicParams rather than silently
+    // treating a compiled material as an empty XML document.
+    let xml = evolve_core::cryxml::xml_bytes(bytes, 4 * 1024 * 1024).map_err(|e| e.to_string())?;
+    let mut reader = quick_xml::Reader::from_reader(xml.as_ref());
     let mut diffuse_open = false;
     loop {
         use quick_xml::events::Event;
@@ -410,18 +415,13 @@ fn authored_detail(bytes: &[u8]) -> Result<AuthoredDetail, String> {
             Event::Start(e) if e.name().as_ref() == b"Texture" => {
                 let role = attr(&e, b"Map").unwrap_or_default();
                 diffuse_open = role.eq_ignore_ascii_case("Diffuse");
-                if diffuse_open {
-                    parsed.diffuse = attr(&e, b"File");
-                }
                 if role.eq_ignore_ascii_case("Heightmap") {
                     parsed.height = attr(&e, b"File");
                 }
             }
             Event::Empty(e) if e.name().as_ref() == b"Texture" => {
                 let role = attr(&e, b"Map").unwrap_or_default();
-                if role.eq_ignore_ascii_case("Diffuse") {
-                    parsed.diffuse = attr(&e, b"File");
-                } else if role.eq_ignore_ascii_case("Heightmap") {
+                if role.eq_ignore_ascii_case("Heightmap") {
                     parsed.height = attr(&e, b"File");
                 }
             }
@@ -686,6 +686,38 @@ fn compose_detail(
     image::RgbaImage::from_raw(width, height, bytes).expect("bounded RGBA terrain atlas")
 }
 
+/// Select only explicitly authored Terrain.Layer diffuse maps from the
+/// verified material decoder. The ad-hoc source parameter scan is never
+/// authoritative for DDS selection: real materials can use nested leaf
+/// slots, mixed-case attributes or compiled CryXmlB.
+fn terrain_layer_diffuse(
+    document: &evolve_core::MaterialDocument,
+) -> Result<Option<String>, String> {
+    let mut paths = BTreeSet::new();
+    for slot in document
+        .slots
+        .iter()
+        .filter(|s| s.shader.eq_ignore_ascii_case("Terrain.Layer"))
+    {
+        for map in slot
+            .maps
+            .iter()
+            .filter(|map| map.role.eq_ignore_ascii_case("diffuse"))
+        {
+            let key = safe_virtual(&map.path)
+                .ok_or_else(|| format!("Unsafe Terrain.Layer diffuse path: {}", map.path))?;
+            paths.insert(key);
+        }
+    }
+    match paths.len() {
+        0 => Ok(None),
+        1 => Ok(paths.into_iter().next()),
+        count => Err(format!(
+            "{count} different authored Terrain.Layer diffuse paths; refusing arbitrary choice"
+        )),
+    }
+}
+
 /// A high-pass overlay in *neutral signed color*, not a replacement for the
 /// map-owned RGB atlas. The fragment shader composes signed detail and then
 /// applies ordinary preview lighting/fog. A missing layer is transparent.
@@ -717,6 +749,7 @@ pub(super) fn compose(
     }
     let mut layers = HashMap::new();
     let mut failures = Vec::new();
+    let mut verified_resolutions = Vec::new();
     for (&id, names) in &matches {
         if names.len() != 1 {
             failures.push(format!(
@@ -741,15 +774,46 @@ pub(super) fn compose(
             failures.push(format!("{material}: not Terrain.Layer"));
             continue;
         }
-        let authored = authored_detail(&fs::read(path).map_err(|e| e.to_string())?)?;
-        let Some(diffuse) = authored.diffuse else {
-            continue;
+        let diffuse = match terrain_layer_diffuse(&document) {
+            Ok(Some(source)) => source,
+            Ok(None) => {
+                failures.push(format!(
+                    "{material}: Terrain.Layer has no authored diffuse map"
+                ));
+                continue;
+            }
+            Err(error) => {
+                failures.push(format!("{material}: {error}"));
+                continue;
+            }
+        };
+        let authored = match authored_detail(&fs::read(&path).map_err(|e| e.to_string())?) {
+            Ok(value) => value,
+            Err(error) => {
+                failures.push(format!(
+                    "{material}: material parameters unavailable ({error})"
+                ));
+                AuthoredDetail {
+                    tile: [1.0, 1.0],
+                    strength: 1.0,
+                    blend_factor: 16.0,
+                    blend_falloff: 2.0,
+                    ..Default::default()
+                }
+            }
         };
         // The Terrain.Layer shader contract is the authority. Many original
         // high-pass diffuse resources lack a "_highpass" filename suffix;
         // do not silently omit legitimate Evolve terrain materials by name.
         match load_detail_image(&catalog, &diffuse, material) {
             Ok(image) => {
+                verified_resolutions.push(format!(
+                    "paint ID {id} -> {}x{} ({}; {})",
+                    image.width(),
+                    image.height(),
+                    material,
+                    diffuse
+                ));
                 let height = authored
                     .height
                     .as_deref()
@@ -770,13 +834,32 @@ pub(super) fn compose(
         }
     }
     if layers.is_empty() {
-        return Ok(None);
+        return Err(format!(
+            "No usable Terrain.Layer diffuse DDS for {} active paint IDs; {} IDs have authored bindings. Examples: {}",
+            active.len(),
+            matches.len(),
+            if failures.is_empty() {
+                "no authored diffuse references were resolved".into()
+            } else {
+                failures
+                    .iter()
+                    .take(6)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }
+        ));
     }
     let report = format!(
-        "Terrain.Layer high-pass preview: {}/{} authored painted material IDs reconstructed from complete same-install DDS streams; {} unresolved/unsupported. Original RGB ground atlas preserved. Detail add-signed shader enabled; categorical layer borders use interpolated coverage (not original engine blend masks). {}",
+        "Terrain.Layer high-pass preview: {}/{} authored painted material IDs reconstructed from complete same-install DDS streams; {} unresolved/unsupported. Original RGB ground atlas preserved. Detail add-signed shader enabled; categorical layer borders use interpolated coverage (not original engine blend masks). Source resolutions: {}. Unresolved examples: {}",
         layers.len(),
         active.len(),
         failures.len(),
+        verified_resolutions
+            .into_iter()
+            .take(8)
+            .collect::<Vec<_>>()
+            .join("; "),
         failures.into_iter().take(5).collect::<Vec<_>>().join("; ")
     );
     Ok(Some((
@@ -799,6 +882,54 @@ mod composition_tests {
             ids: vec![1, 2, 1, 2],
         }
     }
+    #[test]
+    fn terrain_diffuse_comes_from_verified_nested_mtl_leaf_not_optional_xml_scan() {
+        let doc = evolve_core::parse_material(
+            br#"<Material Name="Outer"><SubMaterials>
+                <Material Name="Dirt" Shader="Terrain.Layer"><Textures>
+                  <Texture Map="Diffuse" File="Materials/Terrain/Clay_Dirt_B_Highpass.tif"/>
+                  <Texture Map="Bumpmap" File="Materials/Terrain/clay_ddn.tif"/>
+                </Textures></Material>
+            </SubMaterials></Material>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            terrain_layer_diffuse(&doc).unwrap().as_deref(),
+            Some("materials/terrain/clay_dirt_b_highpass.tif"),
+        );
+    }
+
+    #[test]
+    fn missing_and_ambiguous_diffuse_remain_explicit_not_silent() {
+        let no_diffuse = evolve_core::parse_material(
+            br#"<Material Shader="Terrain.Layer"><Textures>
+            <Texture Map="Bumpmap" File="materials/terrain/dirt_ddn.tif"/>
+            </Textures></Material>"#,
+        )
+        .unwrap();
+        assert!(terrain_layer_diffuse(&no_diffuse).unwrap().is_none());
+        let competing = evolve_core::parse_material(
+            br#"<Material><SubMaterials>
+              <Material Shader="Terrain.Layer"><Textures><Texture Map="Diffuse" File="Materials/Terrain/A.tif"/></Textures></Material>
+              <Material Shader="Terrain.Layer"><Textures><Texture Map="Diffuse" File="Materials/Terrain/B.tif"/></Textures></Material>
+            </SubMaterials></Material>"#,
+        ).unwrap();
+        assert!(terrain_layer_diffuse(&competing).is_err());
+    }
+
+    #[test]
+    fn default_terrain_material_is_included_without_indexing_unrelated_assets() {
+        assert!(is_terrain_dependency(
+            "materials/universal/default/material_terrain_default.mtl"
+        ));
+        assert!(!is_terrain_dependency(
+            "materials/universal/default/unrelated.dds.0"
+        ));
+        assert!(!is_terrain_dependency(
+            "characters/hunters/markov/materials/body.mtl"
+        ));
+    }
+
     #[test]
     fn authored_texmod_strength_and_height_params_are_retained() {
         let xml = br#"<Material Shader="Terrain.Layer"><Textures>

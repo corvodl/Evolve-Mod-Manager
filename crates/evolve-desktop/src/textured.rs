@@ -1823,6 +1823,9 @@ impl Pipeline {
             }
         }
         self.world_renderer.draw(&mut pass);
+        // Authored point-source corona preview is a separate depth-tested,
+        // additive pass; it never increases local-light influence radius.
+        self.world_renderer.draw_light_points(&mut pass);
     }
 }
 impl shader::Pipeline for Pipeline {
