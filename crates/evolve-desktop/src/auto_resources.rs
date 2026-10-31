@@ -19,6 +19,10 @@ pub struct AutoClip {
 pub struct AutoDiscovery {
     pub material: Option<PathBuf>,
     pub skeleton: Option<PathBuf>,
+    /// Unique authored CDF that owns this standalone skin/equipment mesh.
+    /// Used to preview complete skeleton-bound character assemblies rather
+    /// than leaving an isolated equipment arm in raw mesh coordinates.
+    pub owning_cdf: Option<String>,
     pub material_note: String,
     pub clips: Vec<AutoClip>,
     pub idle: Option<PathBuf>,
@@ -112,9 +116,9 @@ pub fn exact_render_companion(
 fn declaring_local_cdf(
     relative: &str,
     inv: &Inventory,
-) -> Result<Option<evolve_core::CdfDefinition>, String> {
+) -> Result<Option<(String, evolve_core::CdfDefinition)>, String> {
     let lower = relative.replace('\\', "/").to_ascii_lowercase();
-    let binding = [(".skinm", ".skin"), (".chrm", ".chr")]
+    let binding = [(".skinm", ".skin"), (".chrm", ".chr"), (".cgfm", ".cgf"), (".cgam", ".cga")]
         .iter()
         .find_map(|(compiled, authored)| {
             lower
@@ -165,7 +169,7 @@ fn declaring_local_cdf(
                 "Multiple authored CDFs reference {binding}; select the intended CDF assembly"
             ));
         }
-        owner = Some(cdf);
+        owner = Some((entry.relative_path.clone(), cdf));
     }
     Ok(owner)
 }
@@ -336,12 +340,13 @@ pub fn discover(
     // owning CDF. Use its exact Binding references for skeleton/CAF lookup.
     // The selected mesh retains its own material discovery path.
     if !canonical.to_ascii_lowercase().ends_with(".cdf")
-        && [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cga"]
+        && [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam"]
             .iter()
             .any(|ext| canonical.to_ascii_lowercase().ends_with(ext))
     {
         match declaring_local_cdf(&canonical, inv) {
-            Ok(Some(cdf)) => {
+            Ok(Some((owner, cdf))) => {
+                found.owning_cdf = Some(owner);
                 animation_source = cdf.skeleton.clone();
                 match exact(inv, &cdf.skeleton, imported, build) {
                     Ok(Some(skeleton)) => found.skeleton = Some(skeleton),
@@ -764,6 +769,7 @@ mod tests {
         .unwrap();
         let inventory = scan_directory(dir.path()).unwrap();
         let found = discover("characters/hunter/torso.skinm", &inventory, None, None);
+        assert_eq!(found.owning_cdf.as_deref(), Some("characters/hunter/whole_hunter.cdf"));
         assert!(found.skeleton.unwrap().ends_with("rig.chr"));
         assert!(found.config.unwrap().ends_with("rig.chrparams"));
         assert!(found.warnings.is_empty(), "{:?}", found.warnings);
