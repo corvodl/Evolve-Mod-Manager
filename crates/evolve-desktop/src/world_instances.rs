@@ -20,7 +20,6 @@ use std::sync::{
 const MAX_WORLD_DIFFUSE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TERRAIN_ATLAS_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FULL_TEXTURE_BYTES: u64 = u64::MAX;
-const MAX_SCENE_FULL_TEXTURE_BYTES: u64 = u64::MAX;
 const MAX_SCENE_BALANCED_TEXTURE_BYTES: u64 = 384 * 1024 * 1024;
 // Residency target, not a full-resolution quality cap. Streams source images
 // as visible, retaining the complete originals in the CPU World. Conservative
@@ -1118,6 +1117,7 @@ impl Renderer {
             last_camera: None,
         }
     }
+    #[expect(clippy::too_many_arguments, reason = "Explicit GPU upload state keeps residency and mip tracking scoped to each renderer")]
     fn group(
         &self,
         device: &wgpu::Device,
