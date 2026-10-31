@@ -1557,12 +1557,9 @@ impl Renderer {
             .filter(|&idx| !visible_groups[idx].is_empty() && self.groups[idx].is_none())
             .collect::<Vec<_>>();
         candidates.sort_by(|&left, &right| {
-            group_distance_sq(&world.groups[left], &visible_groups[left], camera)
-                .total_cmp(&group_distance_sq(
-                    &world.groups[right],
-                    &visible_groups[right],
-                    camera,
-                ))
+            group_distance_sq(&world.groups[left], &visible_groups[left], camera).total_cmp(
+                &group_distance_sq(&world.groups[right], &visible_groups[right], camera),
+            )
         });
         for idx in candidates {
             if uploaded == MAX_NEW_GROUPS_PER_FRAME {
@@ -1817,9 +1814,7 @@ mod tests {
         assert_eq!(initial_diffuse_mip(1000, 500), 3);
         assert_eq!(initial_diffuse_mip(128, 64), 0);
         assert_eq!(initial_diffuse_mip(1, 1), 0);
-        assert!(
-            (8192 >> initial_diffuse_mip(8192, 8192)) <= INITIAL_DIFFUSE_MAX_DIMENSION
-        );
+        assert!((8192 >> initial_diffuse_mip(8192, 8192)) <= INITIAL_DIFFUSE_MAX_DIMENSION);
     }
 
     #[test]
