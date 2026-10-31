@@ -164,7 +164,7 @@ pub use signed_pak::{
 };
 pub use skin_preview::{VerifiedCafAssembly, VerifiedCafSkin};
 pub use terrain::{
-    TerrainError, TerrainInfo, TerrainLayerDefinition, TerrainMesh, TerrainPaintMap,
+    TerrainError, TerrainInfo, TerrainLayerDefinition, TerrainMesh, TerrainPaintMap, TerrainSurfaceType,
     TerrainTextureHeader, TerrainTextureLayer, decode_terrain_bytes, decode_terrain_paint_bytes,
     export_terrain_obj, read_terrain, read_terrain_paint, read_terrain_texture_header,
 };
