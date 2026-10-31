@@ -346,10 +346,10 @@ pub(super) fn particle_placements(
                         if let Some(source) = attr(&e, b"ParticleEffect") {
                             *effect = Some(source);
                         }
-                        if let Some(flag) = attr(&e, b"Active").or_else(|| attr(&e, b"bActive")) {
-                            if flag == "0" || flag.eq_ignore_ascii_case("false") {
-                                *active = false;
-                            }
+                        if let Some(flag) = attr(&e, b"Active").or_else(|| attr(&e, b"bActive"))
+                            && (flag == "0" || flag.eq_ignore_ascii_case("false"))
+                        {
+                            *active = false;
                         }
                     }
                     if !nested && is_object && pending.as_ref().is_some_and(|p| p.0 == depth) {
