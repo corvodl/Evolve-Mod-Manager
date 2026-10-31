@@ -11,7 +11,9 @@ use evolve_core::{
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 const MAX_ARCHIVES: usize = 1_024;
@@ -198,6 +200,39 @@ fn source_game_directory(pak: &ImportedPak) -> Option<PathBuf> {
         .and_then(|path| fs::canonicalize(path).ok())
 }
 
+// An exact virtual asset in several PAKs is only unambiguous when the
+// decoded *source files* themselves have identical bytes. Avoid selecting the
+// first matching basename or assuming Stage 2 and Legacy PAKs interoperate.
+fn identical_verified_sources(assets: &[AssetLocation]) -> Result<bool, String> {
+    if assets.len() <= 1 {
+        return Ok(true);
+    }
+    let mut first: Option<(u64, [u8; 32])> = None;
+    for asset in assets {
+        let metadata = fs::symlink_metadata(&asset.path)
+            .map_err(|error| format!("Cannot inspect duplicate source: {error}"))?;
+        if !metadata.file_type().is_file() || metadata.len() > 128 * 1024 * 1024 {
+            return Ok(false);
+        }
+        let mut file = fs::File::open(&asset.path)
+            .map_err(|error| format!("Cannot read duplicate source: {error}"))?;
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
+            if count == 0 { break; }
+            digest.update(&buffer[..count]);
+        }
+        let current = (metadata.len(), digest.finalize().into());
+        if let Some(previous) = first {
+            if previous != current { return Ok(false); }
+        } else {
+            first = Some(current);
+        }
+    }
+    Ok(true)
+}
+
 impl Index {
     fn new(
         selected: &ImportedPak,
@@ -319,11 +354,13 @@ impl Index {
         if let Some(selected) = found.iter().find(|a| a.archive == self.selected_id) {
             return Ok(Some(selected));
         }
-        if found.len() == 1 {
+        if found.len() == 1 || identical_verified_sources(found)? {
+            // Multiple identical verified files are equivalent. The selected
+            // archive still takes precedence. Never collapse changed bytes.
             Ok(found.first())
         } else {
             Err(format!(
-                "Ambiguous imported asset {raw} appears in {} PAKs",
+                "Ambiguous imported asset {raw} differs across {} PAKs",
                 found.len()
             ))
         }
@@ -828,6 +865,20 @@ pub(super) fn reproject_after_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matching_byte_identical_cgf_assets_are_not_falsely_ambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.cgf");
+        let b = dir.path().join("b.cgf");
+        std::fs::write(&a, b"exact-verified-geometry").unwrap();
+        std::fs::write(&b, b"exact-verified-geometry").unwrap();
+        let original = AssetLocation {archive: "A".into(), path: a};
+        let candidate = AssetLocation {archive: "B".into(), path: b.clone()};
+        assert!(identical_verified_sources(&[original.clone(), candidate.clone()]).unwrap());
+        std::fs::write(&b, b"conflicting-geometry").unwrap();
+        assert!(!identical_verified_sources(&[original, candidate]).unwrap());
+    }
 
     #[test]
     fn exact_static_mesh_companions_do_not_search_other_folders() {
