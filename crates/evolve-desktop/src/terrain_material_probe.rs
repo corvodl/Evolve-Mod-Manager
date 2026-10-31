@@ -739,13 +739,9 @@ pub(super) fn compose(
         let Some(diffuse) = authored.diffuse else {
             continue;
         };
-        // Adding an ordinary colored diffuse to macro terrain makes it
-        // inaccurate. Only authored high-pass materials or source images
-        // explicitly named highpass qualify for the add-signed stage.
-        if !material.contains("highpass") && !diffuse.to_ascii_lowercase().contains("highpass") {
-            failures.push(format!("{material}: diffuse is not explicitly high-pass"));
-            continue;
-        }
+        // The Terrain.Layer shader contract is the authority. Many original
+        // high-pass diffuse resources lack a "_highpass" filename suffix;
+        // do not silently omit legitimate Evolve terrain materials by name.
         match load_detail_image(&catalog, &diffuse, material) {
             Ok(image) => {
                 let height = authored
