@@ -838,7 +838,6 @@ struct GpuGroup {
     capacity: usize,
     visible: u32,
     surfaces: Vec<GpuSurface>,
-    source_keys: HashSet<TextureKey>,
     geometry_bytes: u64,
 }
 pub(super) struct Renderer {
@@ -1183,7 +1182,6 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let mut surfaces = Vec::new();
-        let mut source_keys = HashSet::new();
         let fallback = [210u8, 205, 205, 255];
         let terrain = is_ground(model);
         let limit_2d = device.limits().max_texture_dimension_2d;
@@ -1195,7 +1193,6 @@ impl Renderer {
                 continue;
             }
             let key = texture_key(surf.diffuse.as_ref(), 0, terrain, hashes);
-            source_keys.insert(key);
             let (tex, view, diffuse_uploaded) = if let Some((tex, view, _)) = cache.get(&key) {
                 (tex.clone(), view.clone(), surf.diffuse.is_some())
             } else {
@@ -1262,7 +1259,6 @@ impl Renderer {
             // cutouts. Never misinterpret a packed diffuse alpha channel
             // (which may be gloss or specular) as vegetation coverage.
             let mask_key = texture_key(surf.opacity.as_ref(), 1, false, hashes);
-            source_keys.insert(mask_key);
             let (opacity_tex, opacity_view) = if let Some((tex, view, _)) = cache.get(&mask_key) {
                 (tex.clone(), view.clone())
             } else {
@@ -1295,7 +1291,6 @@ impl Renderer {
                 cache.insert(mask_key, (opacity_tex.clone(), view.clone(), bytes));
                 (opacity_tex, view)
             };
-            source_keys.insert(texture_key(surf.normal.as_ref(), 2, false, hashes));
             let (normal_tex, normal_view) = auxiliary_map(
                 device,
                 queue,
@@ -1310,7 +1305,6 @@ impl Renderer {
                 hashes,
                 used_bytes,
             );
-            source_keys.insert(texture_key(surf.specular.as_ref(), 3, false, hashes));
             let (specular_tex, specular_view) = auxiliary_map(
                 device,
                 queue,
@@ -1325,7 +1319,6 @@ impl Renderer {
                 hashes,
                 used_bytes,
             );
-            source_keys.insert(texture_key(surf.gloss.as_ref(), 4, false, hashes));
             let (gloss_tex, gloss_view) = auxiliary_map(
                 device,
                 queue,
@@ -1340,7 +1333,6 @@ impl Renderer {
                 hashes,
                 used_bytes,
             );
-            source_keys.insert(texture_key(surf.emissive.as_ref(), 5, false, hashes));
             let (emissive_tex, emissive_view) = auxiliary_map(
                 device,
                 queue,
@@ -1450,7 +1442,6 @@ impl Renderer {
             capacity,
             visible: 0,
             surfaces,
-            source_keys,
             geometry_bytes: (vert.len() * std::mem::size_of::<Vertex>()
                 + model.mesh.indices.len() * std::mem::size_of::<u32>()
                 + capacity * std::mem::size_of::<InstanceGpu>()
@@ -1781,8 +1772,10 @@ mod tests {
             ],
             radius: 1.0,
         };
-        let mut distant_visible = Transform::default();
-        distant_visible.position = [100.0, 0.0, 0.0];
+        let distant_visible = Transform {
+            position: [100.0, 0.0, 0.0],
+            ..Transform::default()
+        };
         let visible = [InstanceGpu::from_transform(distant_visible)];
         let camera = level_camera::Camera::default();
         assert_eq!(group_distance_sq(&group, &visible, camera), 10000.0);
