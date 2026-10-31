@@ -1,6 +1,6 @@
 # Explicit manual Nightly request. This file is the connector-safe build trigger.
-# Only code already merged into main is packaged; draft PR #158 is NOT included.
-request: verified-main-after-pr159-2026-10-31
+# Only code already merged into main is packaged. Draft PR #161 is excluded.
+request: user-requested-nightly-after-pr158-pr160-2026-10-31
 requested: 2026-10-31
-base-main-commit: eae0761291a901f3d90e412c3b4f17f053272fa5
-description: User-requested Nightly build of currently merged main. PR #158 is unmerged, draft, merge-conflicted, and missing fresh Rust/Windows CI; do not package its unvalidated GPU-streaming changes.
+base-main-commit: d0df517b85636a67a602f65bdffad70243b521d7
+description: Build the latest merged main including PR #159 (DDS/full-quality texture fixes and Manage Game Builds), PR #160 (manager UI redesign), and PR #158 (Level Editor fog/GPU streaming). PR #161 remains a draft and must not be included.
