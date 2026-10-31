@@ -683,6 +683,62 @@ impl CameraGpu {
         }
     }
 }
+/// Bounded view-sensitive light selection, independent of light falloff.
+/// A nearby behind-camera light is kept if its sphere intersects the camera
+/// vicinity; on-screen distant lights are favored over off-screen sources.
+/// Frustum uses the already-calculated camera basis and source sphere radius,
+/// not unverified emitter visibility flags or guessed map clipping ranges.
+fn select_visible_lights<'a>(
+    lights: &'a [super::level_atmosphere::LocalLight],
+    camera: CameraGpu,
+    limit: usize,
+) -> Vec<&'a super::level_atmosphere::LocalLight> {
+    let origin = &camera.origin[..3];
+    let mut ranked = lights
+        .iter()
+        .filter_map(|light| {
+            if light.radius <= 0.0 || !light.radius.is_finite()
+                || light.intensity <= 0.0
+                || !light.position.iter().all(|v| v.is_finite())
+            {
+                return None;
+            }
+            let delta = [
+                light.position[0] - origin[0],
+                light.position[1] - origin[1],
+                light.position[2] - origin[2],
+            ];
+            let dot = |basis: [f32; 4]| {
+                delta[0] * basis[0] + delta[1] * basis[1] + delta[2] * basis[2]
+            };
+            let dist2 = delta.iter().map(|v| v * v).sum::<f32>();
+            let distance = dist2.sqrt();
+            let forward = dot(camera.forward);
+            let right = dot(camera.right).abs();
+            let up = dot(camera.up).abs();
+            let in_view = forward + light.radius > 0.0
+                && right <= forward.max(0.0) * camera.right[3] + light.radius
+                && up <= forward.max(0.0) * camera.up[3] + light.radius;
+            let touches_camera = distance <= light.radius * 1.25;
+            if !in_view && !touches_camera {
+                return None;
+            }
+            // World sources can be thousands of units from the camera, but
+            // do not traverse an unbounded light list across the entire map.
+            if distance > 6000.0 + light.radius {
+                return None;
+            }
+            let priority = if touches_camera { 0_u8 } else { 1_u8 };
+            let edge_distance = (distance - light.radius).max(0.0);
+            let score = edge_distance / (light.radius.max(1.0) *
+                light.intensity.max(0.1).sqrt());
+            Some((priority, score, light))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
+    ranked.into_iter().take(limit).map(|(_, _, light)| light).collect()
+}
+
 impl World {
     /// Compute exact content identities on the import worker before the GPU
     /// viewport starts. Avoid hashing multi-megabyte source textures on the
@@ -1809,7 +1865,7 @@ impl Renderer {
         let uniform = CameraGpu::make(camera, yaw, pitch, aspect, zoom);
         let camera_changed = self.last_camera != Some(uniform);
         if camera_changed {
-            self.update_local_lights(queue, world, camera.position);
+            self.update_local_lights(queue, world, uniform);
         }
         let mut cache = std::mem::take(&mut self.cache);
         let mut hashes = std::mem::take(&mut self.source_hashes);
@@ -2047,54 +2103,26 @@ impl Renderer {
         self.sky_images = images.map(|(texture, _)| texture);
         self.sky_group = sky_group;
     }
-    fn update_local_lights(&self, queue: &wgpu::Queue, world: &World, position: [f32; 3]) {
+    /// Pick original light spheres intersecting the camera view, not merely
+    /// sources whose radius contains the camera. A distant floodlight may
+    /// illuminate terrain in front of us even though we stand far outside
+    /// its authored radius. Never increase the original shader's influence
+    /// radius to compensate for an editor selection/culling mistake.
+    fn update_local_lights(&self, queue: &wgpu::Queue, world: &World, camera: CameraGpu) {
         const LIMIT: usize = 24;
-        let mut nearest = world
-            .local_lights
-            .iter()
-            .filter(|light| {
-                let distance = light
-                    .position
-                    .iter()
-                    .zip(position)
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f32>();
-                distance <= light.radius * light.radius
-            })
-            .collect::<Vec<_>>();
-        nearest.sort_by(|a, b| {
-            let squared = |light: &super::level_atmosphere::LocalLight| {
-                light
-                    .position
-                    .iter()
-                    .zip(position)
-                    .map(|(a, b)| (a - b) * (a - b))
-                    .sum::<f32>()
-            };
-            squared(a).total_cmp(&squared(b))
-        });
+        let selected = select_visible_lights(&world.local_lights, camera, LIMIT);
         let mut uniform = [[0.0_f32; 4]; 1 + LIMIT * 3];
-        let visible = nearest.len().min(LIMIT);
-        uniform[0][0] = visible as f32;
-        for (idx, light) in nearest.into_iter().take(LIMIT).enumerate() {
+        uniform[0][0] = selected.len() as f32;
+        for (idx, light) in selected.into_iter().enumerate() {
             let base = 1 + idx * 3;
             uniform[base] = [
-                light.position[0],
-                light.position[1],
-                light.position[2],
-                light.radius,
+                light.position[0], light.position[1], light.position[2], light.radius,
             ];
             uniform[base + 1] = [
-                light.direction[0],
-                light.direction[1],
-                light.direction[2],
-                light.cone_cos,
+                light.direction[0], light.direction[1], light.direction[2], light.cone_cos,
             ];
             uniform[base + 2] = [
-                light.color[0],
-                light.color[1],
-                light.color[2],
-                light.intensity,
+                light.color[0], light.color[1], light.color[2], light.intensity,
             ];
         }
         queue.write_buffer(&self.local_uniform, 0, bytemuck::cast_slice(&uniform));
@@ -2297,6 +2325,33 @@ mod tests {
         assert_eq!(MAX_NEW_GROUPS_PER_FRAME, 2);
     }
 
+    #[test]
+    fn distant_frustum_lights_are_selected_without_extending_authored_falloff() {
+        let camera = CameraGpu {
+            origin: [0.0, 0.0, 0.0, 0.0],
+            forward: [1.0, 0.0, 0.0, 0.1],
+            right: [0.0, 1.0, 0.0, 0.8],
+            up: [0.0, 0.0, 1.0, 0.6],
+        };
+        let light = |x: f32, y: f32, radius: f32| super::super::level_atmosphere::LocalLight {
+            position: [x, y, 0.0],
+            direction: [1.0, 0.0, 0.0],
+            color: [1.0, 1.0, 1.0],
+            intensity: 2.0,
+            radius,
+            cone_cos: -1.0,
+        };
+        let lights = [
+            light(1200.0, 0.0, 45.0),
+            light(1200.0, 1400.0, 45.0),
+            light(-1200.0, 0.0, 45.0),
+        ];
+        let selected = select_visible_lights(&lights, camera, 24);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].radius, 45.0, "authored falloff unchanged");
+        assert_eq!(selected[0].position[0], 1200.0);
+    }
+    
     #[test]
     fn world_camera_binding_allows_fragment_shading() {
         // Both editors initialize the shared world renderer even in model-only views.
