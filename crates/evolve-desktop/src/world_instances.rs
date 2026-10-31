@@ -1753,6 +1753,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn visible_group_priority_ignores_offscreen_placements_of_same_model() {
+        let dummy_mesh = Arc::new(RenderMesh {
+            info: evolve_core::ModelInfo {
+                format: "test".into(),
+                version: 1,
+                chunk_count: 0,
+                vertex_count: 0,
+                triangle_count: 0,
+                original_uv0: true,
+                original_normals: true,
+            },
+            positions: Vec::new(),
+            indices: Vec::new(),
+            uv0: None,
+            normals: None,
+        });
+        let group = ModelGroup {
+            mesh: dummy_mesh,
+            surfaces: Vec::new(),
+            instances: vec![
+                Instance {
+                    object_index: 1,
+                    transform: Transform::default(),
+                },
+                Instance {
+                    object_index: 2,
+                    transform: Transform::default(),
+                },
+            ],
+            radius: 1.0,
+        };
+        let mut distant_visible = Transform::default();
+        distant_visible.position = [100.0, 0.0, 0.0];
+        let visible = [InstanceGpu::from_transform(distant_visible)];
+        let camera = level_camera::Camera::default();
+        assert_eq!(group_distance_sq(&group, &visible, camera), 10000.0);
+        assert_eq!(group_distance_sq(&group, &[], camera), f32::INFINITY);
+    }
+
+    #[test]
     fn streamed_mip_writes_are_bounded_independently_of_full_resolution() {
         assert_eq!(MAX_MIP_WRITE_BYTES_PER_FRAME, 8 * 1024 * 1024);
         let rows_8k = (MAX_MIP_WRITE_BYTES_PER_FRAME / (8192 * 4)).max(1);
