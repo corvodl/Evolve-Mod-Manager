@@ -143,6 +143,7 @@ pub struct Scene {
     pub world: Option<Arc<super::world_instances::World>>,
     pub level_hour: f32,
     pub level_full_textures: bool,
+    pub level_terrain_unlit: bool,
     pub viewer_full_textures: bool,
     pub viewer_gpu_remaining: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
@@ -214,6 +215,7 @@ pub struct Primitive {
     world: Option<Arc<super::world_instances::World>>,
     level_hour: f32,
     level_full_textures: bool,
+    level_terrain_unlit: bool,
     viewer_full_textures: bool,
     viewer_gpu_remaining: Option<Arc<std::sync::atomic::AtomicUsize>>,
     camera: Option<super::level_camera::Camera>,
@@ -378,6 +380,7 @@ impl shader::Program<super::Message> for Scene {
             world: self.world.clone(),
             level_hour: self.level_hour,
             level_full_textures: self.level_full_textures,
+            level_terrain_unlit: self.level_terrain_unlit,
             viewer_full_textures: self.viewer_full_textures,
             viewer_gpu_remaining: self.viewer_gpu_remaining.clone(),
             camera: self.level_camera,
@@ -1552,6 +1555,7 @@ impl Pipeline {
             primitive.zoom,
             primitive.level_hour,
             primitive.level_full_textures,
+            primitive.level_terrain_unlit,
         );
         let floor_bytes = bytemuck::cast_slice(&primitive.ground);
         self.ground_count = primitive.ground.len() as u32;
