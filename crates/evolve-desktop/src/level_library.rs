@@ -1139,7 +1139,9 @@ fn terrain_surface_type_report(paint: &TerrainPaintMap) -> String {
     let matched = paint
         .layers
         .iter()
-        .filter(|layer| !layer.surface_type.is_empty() && known.contains(layer.surface_type.as_str()))
+        .filter(|layer| {
+            !layer.surface_type.is_empty() && known.contains(layer.surface_type.as_str())
+        })
         .count();
     let samples = paint
         .surface_types
