@@ -89,6 +89,7 @@ fn is_terrain_dependency(path: &str) -> bool {
                 .is_some_and(|(_, suffix)| suffix.parse::<u8>().is_ok_and(|n| n <= 19)));
     is_cooked
         && (path.starts_with("materials/terrain/")
+            || (path.ends_with(".mtl") && path.starts_with("materials/universal/default/"))
             || path.starts_with("textures/terrain/")
             || (path.starts_with("levels/") && path.contains("/textures/terrain/")))
 }
@@ -402,7 +403,13 @@ fn authored_detail(bytes: &[u8]) -> Result<AuthoredDetail, String> {
         blend_falloff: 2.0,
         ..Default::default()
     };
-    let mut reader = quick_xml::Reader::from_reader(bytes);
+    // CryEngine material XML may be stored as CryXmlB in imported PAKs.
+    // The normal MTL resolver already decodes it; use the same bounded
+    // decoder for optional TexMod/PublicParams rather than silently
+    // treating a compiled material as an empty XML document.
+    let xml = evolve_core::cryxml::xml_bytes(bytes, 4 * 1024 * 1024)
+        .map_err(|e| e.to_string())?;
+    let mut reader = quick_xml::Reader::from_reader(xml.as_ref());
     let mut diffuse_open = false;
     loop {
         use quick_xml::events::Event;
@@ -686,6 +693,26 @@ fn compose_detail(
     image::RgbaImage::from_raw(width, height, bytes).expect("bounded RGBA terrain atlas")
 }
 
+/// Select only explicitly authored Terrain.Layer diffuse maps from the
+/// verified material decoder. The ad-hoc source parameter scan is never
+/// authoritative for DDS selection: real materials can use nested leaf
+/// slots, mixed-case attributes or compiled CryXmlB.
+fn terrain_layer_diffuse(document: &evolve_core::MaterialDocument) -> Result<Option<String>, String> {
+    let mut paths = BTreeSet::new();
+    for slot in document.slots.iter().filter(|s| s.shader.eq_ignore_ascii_case("Terrain.Layer")) {
+        for map in slot.maps.iter().filter(|map| map.role.eq_ignore_ascii_case("diffuse")) {
+            let key = safe_virtual(&map.path)
+                .ok_or_else(|| format!("Unsafe Terrain.Layer diffuse path: {}", map.path))?;
+            paths.insert(key);
+        }
+    }
+    match paths.len() {
+        0 => Ok(None),
+        1 => Ok(paths.into_iter().next()),
+        count => Err(format!("{count} different authored Terrain.Layer diffuse paths; refusing arbitrary choice")),
+    }
+}
+
 /// A high-pass overlay in *neutral signed color*, not a replacement for the
 /// map-owned RGB atlas. The fragment shader composes signed detail and then
 /// applies ordinary preview lighting/fog. A missing layer is transparent.
@@ -741,9 +768,29 @@ pub(super) fn compose(
             failures.push(format!("{material}: not Terrain.Layer"));
             continue;
         }
-        let authored = authored_detail(&fs::read(path).map_err(|e| e.to_string())?)?;
-        let Some(diffuse) = authored.diffuse else {
-            continue;
+        let diffuse = match terrain_layer_diffuse(&document) {
+            Ok(Some(source)) => source,
+            Ok(None) => {
+                failures.push(format!("{material}: Terrain.Layer has no authored diffuse map"));
+                continue;
+            }
+            Err(error) => {
+                failures.push(format!("{material}: {error}"));
+                continue;
+            }
+        };
+        let authored = match authored_detail(&fs::read(&path).map_err(|e| e.to_string())?) {
+            Ok(value) => value,
+            Err(error) => {
+                failures.push(format!("{material}: material parameters unavailable ({error})"));
+                AuthoredDetail {
+                    tile: [1.0, 1.0],
+                    strength: 1.0,
+                    blend_factor: 16.0,
+                    blend_falloff: 2.0,
+                    ..Default::default()
+                }
+            }
         };
         // The Terrain.Layer shader contract is the authority. Many original
         // high-pass diffuse resources lack a "_highpass" filename suffix;
@@ -770,7 +817,12 @@ pub(super) fn compose(
         }
     }
     if layers.is_empty() {
-        return Ok(None);
+        return Err(format!(
+            "No usable Terrain.Layer diffuse DDS for {} active paint IDs; {} IDs have authored bindings. Examples: {}",
+            active.len(), matches.len(),
+            if failures.is_empty() { "no authored diffuse references were resolved".into() }
+            else { failures.iter().take(6).cloned().collect::<Vec<_>>().join("; ") }
+        ));
     }
     let report = format!(
         "Terrain.Layer high-pass preview: {}/{} authored painted material IDs reconstructed from complete same-install DDS streams; {} unresolved/unsupported. Original RGB ground atlas preserved. Detail add-signed shader enabled; categorical layer borders use interpolated coverage (not original engine blend masks). {}",
