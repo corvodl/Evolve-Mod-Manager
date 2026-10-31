@@ -905,7 +905,7 @@ fn open_selected(
         match read_terrain_paint(&exact) {
             Ok(Some(paint)) => {
                 let mut counts = std::collections::BTreeMap::<u8, usize>::new();
-                for id in paint.ids {
+                for &id in &paint.ids {
                     *counts.entry(id).or_default() += 1;
                 }
                 diagnostics.push(format!(
