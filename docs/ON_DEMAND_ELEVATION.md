@@ -40,7 +40,7 @@ tested boundary. This is separate from the UI redesign.
 | Signing stage and profile writes | `StageInit/Import/Apply/Restore`, profile operations, initial/test setup | Elevate only if the actual destination is protected |
 | Other configured roots and install writes | asset/library/project exports, GFX tool install, updater | User-writable locations stay medium; protected targets need an explicit audited path or fail clearly |
 | System Health | `main.rs` `CheckSystemHealth`, `system_health.rs` | Explicit UAC request; report cancelled/failed separately |
-| Teleport overlay | second executable in the desktop package | Ensure it does not inherit `requireAdministrator` when GUI changes |
+| Teleport overlay | independent `evolve-teleport-overlay` workspace package | Ensure it does not inherit `requireAdministrator` when GUI changes |
 
 The installer itself may remain admin-only for its Program Files destination.
 The desktop test `tests/windows_admin_manifest.rs` and the CI manifest assertion
@@ -74,9 +74,13 @@ is derived from the canonical game executable by `online_guard.rs`.
   The firewall commands call only `online_guard::apply`, after rejecting
   relative or linked game paths. The health command returns a read-only JSON
   snapshot on stdout.
-- The worker currently has **no GUI UAC launcher, authenticated output channel
-  or installer packaging contract**. Its separate crate prevents inheriting
-  the GUI's `requireAdministrator` manifest through `winres`. The GUI must **not** invoke an arbitrary
+- The worker currently has **no GUI UAC launcher or authenticated output
+  channel**. It now ships as a separate executable in the protected installer
+  directory and in the development portable archive. A portable copy remains
+  user-writable and is **not eligible for automatic elevation**. The separate
+  worker and overlay packages embed explicit `asInvoker` manifests, avoiding
+  the GUI's package-scoped `requireAdministrator` resource. Windows CI checks
+  those manifests on the actual linked binaries. The GUI must **not** invoke an arbitrary
   sibling worker from a user-writable portable folder: that would allow
   replacement of the elevated executable. A future broker must verify a
   protected installation and implement an authenticated reply, cancellation,
