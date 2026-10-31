@@ -2102,8 +2102,8 @@ mod tests {
 
     #[test]
     fn model_viewer_sections_stream_one_at_a_time_while_world_rendering_keeps_existing_mode() {
-        assert_eq!(viewer_material_batch_size(true), 1);
-        assert_eq!(viewer_material_batch_size(false), usize::MAX);
+        assert_eq!(super::viewer_material_batch_size(true), 1);
+        assert_eq!(super::viewer_material_batch_size(false), usize::MAX);
     }
 
     #[test]
