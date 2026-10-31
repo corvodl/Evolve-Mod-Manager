@@ -43,6 +43,10 @@ struct HeightFogPreview {
   control: vec4<f32>,         // enabled, reserved
 }
 @group(0) @binding(11) var<uniform> height_fog: HeightFogPreview;
+// Authored terrain material high-pass color, assembled as a separate overlay.
+// Linear UNORM, not sRGB: the original authored high-pass neutral is RGB 128.
+// Non-terrain meshes bind alpha=0 and remain completely unaffected.
+@group(0) @binding(12) var terrain_detail: texture_2d<f32>;
 struct Output {
   @builtin(position) clip: vec4<f32>,
   @location(0) uv: vec2<f32>,
@@ -102,7 +106,17 @@ fn sample_source_albedo(uv:vec2<f32>)->vec4<f32> {
 // explicitly routed through the transparent pipeline. CryEngine can store
 // gloss, masks and other non-opacity data in a diffuse texture's alpha.
 fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
-  let base=sample_source_albedo(input.uv);
+  var base=sample_source_albedo(input.uv);
+  let detail=textureSample(terrain_detail,tex_sampler,input.uv);
+  // CryEngine 3.5 Terrain.Layer: high-pass diffuse is ADD-SIGNED over the
+  // low-frequency baked terrain color, not an ordinary diffuse replacement.
+  // 128/255 is neutral. Missing/ambiguous layers contribute zero alpha.
+  // 120-350 world-unit fade is an EDITOR preview while Evolve's real
+  // DetailLayersViewDistRatio remains unverified for this map/build.
+  let distance=length(input.world-camera.origin.xyz);
+  let detail_fade=1.0-smoothstep(120.0,350.0,distance);
+  let signed_detail=(detail.rgb-vec3<f32>(128.0/255.0))*detail.a*detail_fade;
+  base=vec4<f32>(clamp(base.rgb+signed_detail,vec3<f32>(0.0),vec3<f32>(1.0)),base.a);
   if (use_opacity_mask) {
     let coverage=textureSample(authored_opacity,tex_sampler,input.uv).r;
     if (coverage < 0.5) { discard; }
