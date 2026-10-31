@@ -1834,6 +1834,9 @@ impl Pipeline {
         self.world_renderer.draw(&mut pass);
         // Authored point-source corona preview is a separate depth-tested,
         // additive pass; it never increases local-light influence radius.
+        // Only original map spotlights, not Omni point lights, get a
+        // translucent depth-tested scattering preview ahead of final bloom.
+        self.world_renderer.draw_spotlight_beams(&mut pass);
         self.world_renderer.draw_light_points(&mut pass);
         drop(pass);
         // Apply bloom and ACES only after all opaque, transparent, sky and
