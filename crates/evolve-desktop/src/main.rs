@@ -239,6 +239,16 @@ fn sidebar_width(reveal: f32) -> f32 {
         + (SIDEBAR_EXPANDED_WIDTH - SIDEBAR_COLLAPSED_WIDTH) * reveal.clamp(0.0, 1.0)
 }
 
+/// Right-hand Level Editor workspace. Actor editing is the default; verbose
+/// GPU/source diagnostics must not consume the actor hierarchy's space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum LevelSidebarTab {
+    #[default]
+    Actors,
+    Scene,
+    Diagnostics,
+}
+
 #[derive(Default)]
 struct State {
     sidebar_hovered: bool,
@@ -397,6 +407,7 @@ struct State {
     level_open_after_copy: bool,
     level_diagnostics: Vec<String>,
     level_show_overview: bool,
+    level_sidebar_tab: LevelSidebarTab,
     /// Preview-only lighting controls, never written to original game files.
     level_time_of_day: f32,
     level_full_textures: bool,
@@ -2213,6 +2224,7 @@ enum Message {
     LightStrengthChanged(f32),
     LevelSelect(usize),
     LevelFilterChanged(String),
+    LevelSidebarTabSelected(LevelSidebarTab),
     LevelZoomChanged(f32),
     LevelTimeOfDayChanged(f32),
     LevelTimePreset(f32),
@@ -7557,6 +7569,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LevelFilterChanged(value) => state.level_filter = value,
+        Message::LevelSidebarTabSelected(tab) => state.level_sidebar_tab = tab,
         Message::LevelZoomChanged(value) => state.level_zoom = value.clamp(0.3, 3.0),
         Message::LevelTimeOfDayChanged(value) => {
             if value.is_finite() {
@@ -12804,6 +12817,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let loaded = *loaded;
                     state.level_diagnostics = loaded.diagnostics.clone();
                     state.level_show_overview = false;
+                    state.level_sidebar_tab = LevelSidebarTab::Actors;
                     let map_name = loaded.maps[loaded.index].name.clone();
                     state.input = loaded
                         .source
@@ -12923,6 +12937,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .collect();
                     state.level_dirty_count = 0;
                     state.level_scene = Some(Arc::new(scene));
+                    state.level_sidebar_tab = LevelSidebarTab::Actors;
                     state.level_selected = None;
                     state.level_selection.clear();
                     state.level_undo.clear();
