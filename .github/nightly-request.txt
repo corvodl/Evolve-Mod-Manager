@@ -1,6 +1,5 @@
-# Explicit user-requested Nightly: merged level streaming and model/terrain fixes.
-# Only merged main branch is packaged; unfinished security PR #161 is excluded.
-request: user-requested-nightly-after-pr162-pr163-2026-10-31
+# Explicit manual Nightly build request. Only code already merged into main is packaged.
+request: user-requested-nightly-merged-pr161-pr164-2026-10-31
 requested: 2026-10-31
-base-main-commit: 7c8b5c58c4bdc3e8f316b3bc9c6fe0fa44211a60
-description: Build main including PR #162 persistent Level Editor object residency, no CPU camera culling and progressive diffuse streaming, plus PR #163 RGB24 terrain atlas orientation and incremental Model Viewer GPU material uploads. No claim of fully resolved DDS/CGF dependencies or exact native terrain parity.
+base-main-commit: 90f3231efcb7e974a074f901201d13a5ab3cd20d
+description: Build latest main including PR #164 strict same-build split-DDS fragment resolution and Tutorial material diagnostics, and PR #161 restricted privileged-worker foundation with UAC handoff disabled. Preserve current GUI requireAdministrator startup. Native Tutorial terrain-color parity and missing-source dependencies remain unverified.
