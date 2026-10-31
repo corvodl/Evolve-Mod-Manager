@@ -7229,7 +7229,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             if state.damage_blend_percent == 0 {
-                state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                state
+                    .viewer_gpu_remaining
+                    .store(1, std::sync::atomic::Ordering::Relaxed);
                 state.cdf_surfaces = Some(Arc::clone(base));
                 state.status =
                     "Original character diffuse restored from memory (no reload).".into();
@@ -7237,7 +7239,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if let Some(full) = &state.cdf_full_damage_surfaces {
                 if state.damage_blend_percent == 100 {
-                    state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .viewer_gpu_remaining
+                        .store(1, std::sync::atomic::Ordering::Relaxed);
                     state.cdf_surfaces = Some(Arc::clone(full));
                     state.status = "100% damage applied from cached original maps.".into();
                     return Task::none();
@@ -7505,7 +7509,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
         Message::ViewerFullTexturesToggled => {
             state.viewer_full_textures = !state.viewer_full_textures;
-            state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+            state
+                .viewer_gpu_remaining
+                .store(1, std::sync::atomic::Ordering::Relaxed);
             state.preferences.viewer_full_textures = state.viewer_full_textures;
             persist_preferences(state);
             state.status = if state.viewer_full_textures {
@@ -7635,7 +7641,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 model, picks, &scene, &edited,
                             )
                         {
-                            state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                            state
+                                .viewer_gpu_remaining
+                                .store(1, std::sync::atomic::Ordering::Relaxed);
                             state.model = Some(Arc::new(reprojected));
                         }
                         if let Some(world) = &state.level_world {
@@ -12103,7 +12111,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.motion_time = 0.;
                     state.motion_tick = None;
                     state.playing = false;
-                    state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .viewer_gpu_remaining
+                        .store(1, std::sync::atomic::Ordering::Relaxed);
                     state.model = Some(Arc::new(first));
                     state.status = format!(
                         "Converted animation bound to the selected original skin after verifying {matched_bones} exact source joints and rest transforms. Idle frame loaded paused."
@@ -12134,7 +12144,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     };
                     match verified {
                         Ok(mesh) => {
-                            state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                            state
+                                .viewer_gpu_remaining
+                                .store(1, std::sync::atomic::Ordering::Relaxed);
                             state.model = Some(Arc::new(mesh));
                             state.caf_layer = Some(Arc::new(motion));
                             state.caf_layer_label = label;
@@ -12163,7 +12175,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.skin_preview = None;
                     state.cdf_caf_preview = None;
                     if let Some(rest) = &state.cdf_rest_mesh {
-                        state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                        state
+                            .viewer_gpu_remaining
+                            .store(1, std::sync::atomic::Ordering::Relaxed);
                         state.model = Some(rest.clone());
                     }
                     state.caf_layer = None;
@@ -12254,7 +12268,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.skin_preview = None;
                         state.cdf_caf_preview = None;
                         if let Some(rest) = &state.cdf_rest_mesh {
-                            state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                            state
+                                .viewer_gpu_remaining
+                                .store(1, std::sync::atomic::Ordering::Relaxed);
                             state.model = Some(rest.clone());
                         }
                         state.caf_layer = None;
@@ -12438,7 +12454,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         && state.model.is_some()
                     {
                         let textured = surfaces.iter().filter(|s| s.diffuse.is_some()).count();
-                        state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                        state
+                            .viewer_gpu_remaining
+                            .store(1, std::sync::atomic::Ordering::Relaxed);
                         state.cdf_surfaces = Some(Arc::new(surfaces));
                         state.auto_resource_note = format!(
                             "Original CryEngine GPU mesh subsets: {textured} textured; {} material warnings. {}",
@@ -12595,9 +12613,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .unwrap_or_default();
                     let original = Arc::new(surfaces);
                     state.cdf_base_surfaces = Some(Arc::clone(&original));
-                    state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .viewer_gpu_remaining
+                        .store(1, std::sync::atomic::Ordering::Relaxed);
                     state.cdf_surfaces = Some(original);
-                    state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .viewer_gpu_remaining
+                        .store(1, std::sync::atomic::Ordering::Relaxed);
                     state.model = Some(Arc::new(mesh));
                     state.diffuse = None;
                     state.normal_map = None;
@@ -12653,7 +12675,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         && !state.cdf_legacy_2012
                         && percent == state.damage_blend_percent
                     {
-                        state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                        state
+                            .viewer_gpu_remaining
+                            .store(1, std::sync::atomic::Ordering::Relaxed);
                         state.cdf_surfaces = Some(Arc::new(surfaces));
                         state.status = format!(
                             "Damage blend {percent}%: updated cached GPU textures; CDF geometry and DDS sources unchanged."
@@ -12683,7 +12707,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Loaded {} source vertices and {} triangles (raw geometry only).",
                         mesh.info.vertex_count, mesh.info.triangle_count
                     );
-                    state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .viewer_gpu_remaining
+                        .store(1, std::sync::atomic::Ordering::Relaxed);
                     state.model = Some(Arc::new(mesh));
                     state.converted_dba_cache = None;
                     state.converted_glbs.clear();
@@ -12745,7 +12771,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.terrain = Some(info);
                     state.level_surfaces = None;
                     state.level_picks = None;
-                    state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .viewer_gpu_remaining
+                        .store(1, std::sync::atomic::Ordering::Relaxed);
                     state.model = Some(Arc::new(mesh));
                     state.skin_preview = None;
                     state.playing = false;
@@ -12834,7 +12862,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.level_world = Some(assembled.world.clone());
                         state.level_surfaces = Some(Arc::new(assembled.surfaces));
                         state.level_picks = Some(Arc::new(assembled.picks));
-                        state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                        state
+                            .viewer_gpu_remaining
+                            .store(1, std::sync::atomic::Ordering::Relaxed);
                         state.model = Some(Arc::new(assembled.mesh));
                     } else {
                         state.level_world = None;
@@ -13303,7 +13333,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.damage_blend_percent = 0;
                         state.damage_blend_enabled = false;
                         if let Some(base) = &state.cdf_base_surfaces {
-                            state.viewer_gpu_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+                            state
+                                .viewer_gpu_remaining
+                                .store(1, std::sync::atomic::Ordering::Relaxed);
                             state.cdf_surfaces = Some(Arc::clone(base));
                         }
                     }
