@@ -85,6 +85,7 @@ mod updater;
 mod updater_apply;
 mod uv_preview;
 mod vegetation_map;
+mod viewport_hdr;
 mod view_navigation;
 mod viewer_grid;
 mod viewer_inspector;
