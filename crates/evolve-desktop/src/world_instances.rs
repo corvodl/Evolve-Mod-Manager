@@ -1505,60 +1505,74 @@ impl Renderer {
             ],
         });
 
-        let beam_shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
-            label:Some("Original map source spotlight scattering preview"),
-            source:wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("world_beam_preview.wgsl"))),
+        let beam_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Original map source spotlight scattering preview"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "world_beam_preview.wgsl"
+            ))),
         });
-        let beam_pipeline=device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
-            label:Some("Depth-tested source spotlight scattering sheets"),
-            layout:Some(&light_point_pipe_layout),
-            vertex:wgpu::VertexState{
-                module:&beam_shader,entry_point:Some("vs_beam"),buffers:&[],
-                compilation_options:wgpu::PipelineCompilationOptions::default(),
+        let beam_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Depth-tested source spotlight scattering sheets"),
+            layout: Some(&light_point_pipe_layout),
+            vertex: wgpu::VertexState {
+                module: &beam_shader,
+                entry_point: Some("vs_beam"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
-            fragment:Some(wgpu::FragmentState{
-                module:&beam_shader,entry_point:Some("fs_beam"),
-                targets:&[Some(wgpu::ColorTargetState{
+            fragment: Some(wgpu::FragmentState {
+                module: &beam_shader,
+                entry_point: Some("fs_beam"),
+                targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend:Some(wgpu::BlendState{
-                        color:wgpu::BlendComponent{
-                            src_factor:wgpu::BlendFactor::SrcAlpha,
-                            dst_factor:wgpu::BlendFactor::One,
-                            operation:wgpu::BlendOperation::Add,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
                         },
-                        alpha:wgpu::BlendComponent{
-                            src_factor:wgpu::BlendFactor::Zero,
-                            dst_factor:wgpu::BlendFactor::One,
-                            operation:wgpu::BlendOperation::Add,
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
                         },
                     }),
-                    write_mask:wgpu::ColorWrites::ALL,
+                    write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options:wgpu::PipelineCompilationOptions::default(),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            primitive:wgpu::PrimitiveState{
-                cull_mode:None,..Default::default()
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
             },
-            depth_stencil:Some(wgpu::DepthStencilState{
-                format:wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled:false,
-                depth_compare:wgpu::CompareFunction::LessEqual,
-                stencil:wgpu::StencilState::default(),
-                bias:wgpu::DepthBiasState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
             }),
-            multisample:wgpu::MultisampleState::default(),multiview:None,cache:None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
         });
-        let beam_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
-            label:Some("Empty original spotlight preview"),
-            contents:bytemuck::cast_slice(&[[0.0_f32;4];3]),
-            usage:wgpu::BufferUsages::STORAGE,
+        let beam_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Empty original spotlight preview"),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 3]),
+            usage: wgpu::BufferUsages::STORAGE,
         });
-        let beam_group=device.create_bind_group(&wgpu::BindGroupDescriptor{
-            label:Some("Original spotlight camera and geometry"),
-            layout:&light_point_layout,
-            entries:&[
-                wgpu::BindGroupEntry{binding:0,resource:camera_uniform.as_entire_binding()},
-                wgpu::BindGroupEntry{binding:1,resource:beam_buffer.as_entire_binding()},
+        let beam_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Original spotlight camera and geometry"),
+            layout: &light_point_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: beam_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -2015,7 +2029,7 @@ impl Renderer {
             self.last_lighting_hour = f32::NAN;
             self.update_sky_source(device, queue, world);
             self.update_light_point_sources(device, world);
-            self.update_source_spotlight_beams(device,world);
+            self.update_source_spotlight_beams(device, world);
             world.gpu_progress.pending.store(1, Ordering::Relaxed);
         }
         let hour = if hour.is_finite() {
@@ -2364,47 +2378,67 @@ impl Renderer {
         pass.draw(0..6, 0..self.light_point_count);
     }
 
-    fn update_source_spotlight_beams(&mut self,device:&wgpu::Device,world:&World) {
+    fn update_source_spotlight_beams(&mut self, device: &wgpu::Device, world: &World) {
         // These are a bounded, non-native transparent approximation of
         // source-authored spotlight scattering. Never render omni lights as
         // cones, and never extend their original radius/half angle.
-        const MAX_BEAMS:usize=64;
-        let sources=world.local_lights.iter()
-            .filter(|l|l.cone_cos.is_finite() && (0.1..1.0).contains(&l.cone_cos)
-                && l.radius.is_finite() && l.radius>0.0 && l.intensity.is_finite()
-                && l.intensity>0.0 && l.direction.iter().all(|v|v.is_finite())
-                && l.position.iter().all(|v|v.is_finite())
-                && l.color.iter().all(|v|v.is_finite())
-                && l.direction.iter().map(|v|v*v).sum::<f32>()>0.01)
+        const MAX_BEAMS: usize = 64;
+        let sources = world
+            .local_lights
+            .iter()
+            .filter(|l| {
+                l.cone_cos.is_finite()
+                    && (0.1..1.0).contains(&l.cone_cos)
+                    && l.radius.is_finite()
+                    && l.radius > 0.0
+                    && l.intensity.is_finite()
+                    && l.intensity > 0.0
+                    && l.direction.iter().all(|v| v.is_finite())
+                    && l.position.iter().all(|v| v.is_finite())
+                    && l.color.iter().all(|v| v.is_finite())
+                    && l.direction.iter().map(|v| v * v).sum::<f32>() > 0.01
+            })
             .take(MAX_BEAMS)
-            .flat_map(|l| [
-                [l.position[0],l.position[1],l.position[2],l.radius],
-                [l.direction[0],l.direction[1],l.direction[2],l.cone_cos],
-                [l.color[0],l.color[1],l.color[2],l.intensity],
-            ])
+            .flat_map(|l| {
+                [
+                    [l.position[0], l.position[1], l.position[2], l.radius],
+                    [l.direction[0], l.direction[1], l.direction[2], l.cone_cos],
+                    [l.color[0], l.color[1], l.color[2], l.intensity],
+                ]
+            })
             .collect::<Vec<_>>();
-        self.beam_count=(sources.len()/3) as u32;
-        if sources.is_empty(){return;}
-        let buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
-            label:Some("Original spotlights as bounded scattering preview"),
-            contents:bytemuck::cast_slice(&sources),
-            usage:wgpu::BufferUsages::STORAGE,
+        self.beam_count = (sources.len() / 3) as u32;
+        if sources.is_empty() {
+            return;
+        }
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Original spotlights as bounded scattering preview"),
+            contents: bytemuck::cast_slice(&sources),
+            usage: wgpu::BufferUsages::STORAGE,
         });
-        self.beam_group=device.create_bind_group(&wgpu::BindGroupDescriptor{
-            label:Some("Original spotlight scattering camera"),
-            layout:&self.light_point_layout,
-            entries:&[
-                wgpu::BindGroupEntry{binding:0,resource:self.camera_uniform.as_entire_binding()},
-                wgpu::BindGroupEntry{binding:1,resource:buffer.as_entire_binding()},
+        self.beam_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Original spotlight scattering camera"),
+            layout: &self.light_point_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.camera_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buffer.as_entire_binding(),
+                },
             ],
         });
-        self.beam_buffer=buffer;
+        self.beam_buffer = buffer;
     }
-    pub fn draw_spotlight_beams<'a>(&'a self,pass:&mut wgpu::RenderPass<'a>) {
-        if self.beam_count==0 {return;}
+    pub fn draw_spotlight_beams<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        if self.beam_count == 0 {
+            return;
+        }
         pass.set_pipeline(&self.beam_pipeline);
-        pass.set_bind_group(0,&self.beam_group,&[]);
-        pass.draw(0..6,0..self.beam_count);
+        pass.set_bind_group(0, &self.beam_group, &[]);
+        pass.draw(0..6, 0..self.beam_count);
     }
 
     fn update_local_lights(&self, queue: &wgpu::Queue, world: &World, camera: CameraGpu) {
@@ -2635,7 +2669,7 @@ mod tests {
 
     #[test]
     fn original_spotlight_beam_preview_shader_parses() {
-        let source=include_str!("world_beam_preview.wgsl");
+        let source = include_str!("world_beam_preview.wgsl");
         naga::front::wgsl::parse_str(source).expect("spotlight preview WGSL");
         assert!(source.contains("fn vs_beam("));
         assert!(source.contains("fn fs_beam("));

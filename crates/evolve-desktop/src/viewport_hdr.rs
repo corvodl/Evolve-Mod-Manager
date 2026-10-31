@@ -442,7 +442,7 @@ mod tests {
     }
     #[test]
     fn masked_scene_refraction_shader_parses_without_original_game_shaders() {
-        let shader=include_str!("viewport_refraction.wgsl");
+        let shader = include_str!("viewport_refraction.wgsl");
         naga::front::wgsl::parse_str(shader).expect("depth-aware scene refraction shader parses");
         assert!(shader.contains("textureLoad(source_depth"));
         assert!(shader.contains("textureSampleLevel(authored_normal"));
