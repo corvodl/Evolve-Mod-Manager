@@ -645,15 +645,21 @@ mod equipment_socket_tests {
     use super::*;
     #[test]
     fn trims_exact_bone_socket_without_renaming_equipment() {
-        let cdf = parse_cdf(br#"<CharacterDefinition>
+        let cdf = parse_cdf(
+            br#"<CharacterDefinition>
             <Model File="characters/hunters/merc_emet/emet_3p.chr"/>
             <AttachmentList>
                 <Attachment Type="CA_BONE" AName="arm_tool"
                     Binding="characters/hunters/merc_emet/arm_tool.cgf"
                     BoneName="  right_arm_socket  "/>
             </AttachmentList>
-        </CharacterDefinition>"#).unwrap();
-        assert_eq!(cdf.attachments[0].bone_name.as_deref(), Some("right_arm_socket"));
+        </CharacterDefinition>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cdf.attachments[0].bone_name.as_deref(),
+            Some("right_arm_socket")
+        );
         assert_eq!(cdf.attachments[0].name, "arm_tool");
     }
 }
