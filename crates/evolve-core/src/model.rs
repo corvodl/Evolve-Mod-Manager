@@ -47,6 +47,16 @@ pub struct RenderMesh {
     pub normals: Option<Vec<[f32; 3]>>,
 }
 
+/// A decoded source-authored world mesh with its own index ranges and
+/// original material leaf IDs. The MeshChunk owns a particular SUBSETS chunk;
+/// unrelated mesh chunks in one CGF must never share a global subset table.
+#[derive(Clone, Debug)]
+pub struct WorldModelPart {
+    pub mesh: RenderMesh,
+    pub subsets: Vec<(u32, u32, u32)>,
+    pub has_subset_table: bool,
+}
+
 fn u32at(data: &[u8], at: usize) -> Result<u32, ModelError> {
     let row = data
         .get(at..at + 4)
@@ -519,16 +529,74 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     })
 }
 
+/// Decode one referenced CrChF v7 SUBSETS chunk, without guessing
+/// ownership from the ordering of chunks in the source file.
+fn source_crchf_subsets(
+    data: &[u8],
+    offset: usize,
+    size: usize,
+    expected_count: usize,
+    index_count: usize,
+) -> Result<Vec<(u32, u32, u32)>, ModelError> {
+    if size < 16 || expected_count == 0 || expected_count > 128 {
+        return Err(ModelError::Format("invalid referenced subset count".into()));
+    }
+    let count = u32at(data, offset + 4)? as usize;
+    if count != expected_count
+        || 16usize
+            .checked_add(count.checked_mul(36).ok_or(ModelError::Limits)?)
+            .is_none_or(|required| required > size)
+    {
+        return Err(ModelError::Format(
+            "mesh subset reference and table count disagree".into(),
+        ));
+    }
+    let mut ranges = Vec::with_capacity(count + 1);
+    let mut cursor = 0usize;
+    for row in 0..count {
+        let at = offset + 16 + row * 36;
+        let first = u32at(data, at)? as usize;
+        let n = u32at(data, at + 4)? as usize;
+        let material = u32at(data, at + 16)?;
+        if first != cursor
+            || n == 0
+            || !first.is_multiple_of(3)
+            || !n.is_multiple_of(3)
+            || first.checked_add(n).is_none_or(|end| end > index_count)
+            || material >= 128
+        {
+            return Err(ModelError::Format(
+                "referenced mesh subset geometry/material ranges are invalid".into(),
+            ));
+        }
+        ranges.push((first as u32, n as u32, material));
+        cursor += n;
+    }
+    if cursor < index_count {
+        ranges.push((cursor as u32, (index_count - cursor) as u32, 255));
+    }
+    Ok(ranges)
+}
+
 /// Decode authored multi-node meshes by following the source MeshChunk's
 /// explicit stream-chunk references. Distinct repeated stream types must never
 /// be selected by file order, count, proximity, or guessed mesh ownership.
 ///
 /// The returned submeshes are kept separate; the caller can apply the exact
 /// parent placement per submesh and avoid conflating local material slots.
-pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelError> {
+pub fn parse_world_model_parts_with_subsets(
+    data: &[u8],
+) -> Result<Vec<WorldModelPart>, ModelError> {
     let (format, _, chunks) = validate_chunks(data)?;
     if format != "CrChF v7" {
-        return parse_model_bytes(data).map(|part| vec![part]);
+        let mesh = parse_model_bytes(data)?;
+        let subsets = original_mesh_subsets(data, mesh.indices.len())?;
+        let has_subset_table = has_original_mesh_subset_table(data)?;
+        return Ok(vec![WorldModelPart {
+            mesh,
+            subsets,
+            has_subset_table,
+        }]);
     }
     const MESH: u32 = 0x08001000;
     // A compiled CGF may contain standalone physics, collision, or helper
@@ -539,7 +607,14 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         .filter(|(ty, _, _, _)| *ty == MESH)
         .collect::<Vec<_>>();
     if all_mesh_chunks.is_empty() {
-        return parse_model_bytes(data).map(|part| vec![part]);
+        let mesh = parse_model_bytes(data)?;
+        let subsets = original_mesh_subsets(data, mesh.indices.len())?;
+        let has_subset_table = has_original_mesh_subset_table(data)?;
+        return Ok(vec![WorldModelPart {
+            mesh,
+            subsets,
+            has_subset_table,
+        }]);
     }
     if all_mesh_chunks.len() > 1024 {
         return Err(ModelError::Limits);
@@ -617,6 +692,8 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         let packed = u32at(data, at + 88)?;
         let expected_vertices = u32at(data, at + 8)?;
         let expected_indices = u32at(data, at + 12)?;
+        let subset_count = u32at(data, at + 16)? as usize;
+        let subset_ref = u32at(data, at + 20)?;
         if expected_vertices > MAX_VERTICES as u32 || expected_indices > MAX_INDICES as u32 {
             return Err(ModelError::Limits);
         }
@@ -696,7 +773,41 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
                 "mesh and referenced datastream counts differ".into(),
             ));
         }
-        parts.push(mesh);
+        let (subsets, has_subset_table) = if subset_count == 0 && matches!(subset_ref, 0 | u32::MAX)
+        {
+            (vec![(0, mesh.indices.len() as u32, 0)], false)
+        } else {
+            if subset_count == 0 || matches!(subset_ref, 0 | u32::MAX) {
+                return Err(ModelError::Format(
+                    "mesh declares incomplete original subset reference".into(),
+                ));
+            }
+            let Some(&(kind, subset_at, subset_size)) = directory.get(&subset_ref) else {
+                return Err(ModelError::Format(
+                    "mesh references missing original material subsets".into(),
+                ));
+            };
+            if kind != 0x08001017 {
+                return Err(ModelError::Format(
+                    "mesh material subset reference has wrong chunk kind".into(),
+                ));
+            }
+            (
+                source_crchf_subsets(
+                    data,
+                    subset_at,
+                    subset_size,
+                    subset_count,
+                    mesh.indices.len(),
+                )?,
+                true,
+            )
+        };
+        parts.push(WorldModelPart {
+            mesh,
+            subsets,
+            has_subset_table,
+        });
     }
     if parts.is_empty() {
         return Err(ModelError::Format(
@@ -706,12 +817,24 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
     Ok(parts)
 }
 
-pub fn read_world_model_parts(path: &Path) -> Result<Vec<RenderMesh>, ModelError> {
+/// Backward-compatible geometry-only view; the world renderer uses the
+/// provenance-bearing variant below when assigning original MTL leaves.
+pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelError> {
+    parse_world_model_parts_with_subsets(data)
+        .map(|parts| parts.into_iter().map(|part| part.mesh).collect())
+}
+
+pub fn read_world_model_parts_with_subsets(path: &Path) -> Result<Vec<WorldModelPart>, ModelError> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() || meta.len() > MAX_BYTES as u64 {
         return Err(ModelError::Limits);
     }
-    parse_world_model_parts(&fs::read(path)?)
+    parse_world_model_parts_with_subsets(&fs::read(path)?)
+}
+
+pub fn read_world_model_parts(path: &Path) -> Result<Vec<RenderMesh>, ModelError> {
+    read_world_model_parts_with_subsets(path)
+        .map(|parts| parts.into_iter().map(|part| part.mesh).collect())
 }
 
 /// Whether a verified original CryEngine SUBSETS table was provided.
@@ -976,6 +1099,92 @@ pub(crate) mod tests {
         assert_eq!(parts[1].indices, vec![0, 1, 2]);
         assert_eq!(parts[0].positions[1][0], 1.0);
         assert_eq!(parts[1].positions[1][0], 2.0);
+    }
+
+    fn two_mesh_source_subset_fixture() -> Vec<u8> {
+        // Source-authored MeshChunk references are independent: two distinct
+        // render meshes share a four-leaf MTL but use different leaf IDs.
+        let original = fixture();
+        let mut data = vec![0u8; 16 + 10 * 16];
+        data[..8].copy_from_slice(b"CrChF\x07\0\0");
+        data[8..12].copy_from_slice(&10u32.to_le_bytes());
+        data[12..16].copy_from_slice(&16u32.to_le_bytes());
+        let mut add = |row: usize, kind: u32, id: u32, payload: &[u8]| {
+            let at = 16 + row * 16;
+            let offset = data.len();
+            data[at..at + 4].copy_from_slice(&kind.to_le_bytes());
+            data[at + 4..at + 8].copy_from_slice(&id.to_le_bytes());
+            data[at + 8..at + 12].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            data[at + 12..at + 16].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(payload);
+        };
+        for i in 0..6 {
+            let source_at = 16 + (i % 3) * 16;
+            let offset = u32at(&original, source_at + 12).unwrap() as usize;
+            let len = u32at(&original, source_at + 8).unwrap() as usize;
+            add(
+                i,
+                CRCHF_STREAM,
+                (i + 1) as u32,
+                &original[offset..offset + len],
+            );
+        }
+        for i in 0..2 {
+            let mut mesh = vec![0u8; 104];
+            mesh[8..12].copy_from_slice(&3u32.to_le_bytes());
+            mesh[12..16].copy_from_slice(&3u32.to_le_bytes());
+            mesh[16..20].copy_from_slice(&1u32.to_le_bytes());
+            mesh[20..24].copy_from_slice(&((9 + i) as u32).to_le_bytes());
+            mesh[28..32].copy_from_slice(&((1 + 3 * i) as u32).to_le_bytes());
+            mesh[36..40].copy_from_slice(&((3 + 3 * i) as u32).to_le_bytes());
+            mesh[48..52].copy_from_slice(&((2 + 3 * i) as u32).to_le_bytes());
+            add(6 + i, 0x08001000, (7 + i) as u32, &mesh);
+        }
+        for i in 0..2 {
+            let mut subset = vec![0u8; 52];
+            subset[4..8].copy_from_slice(&1u32.to_le_bytes());
+            subset[20..24].copy_from_slice(&3u32.to_le_bytes());
+            subset[32..36].copy_from_slice(&((if i == 0 { 2 } else { 1 }) as u32).to_le_bytes());
+            add(8 + i, 0x08001017, (9 + i) as u32, &subset);
+        }
+        data
+    }
+
+    #[test]
+    fn world_meshes_preserve_per_mesh_referenced_material_ids() {
+        let bytes = two_mesh_source_subset_fixture();
+        let parts = parse_world_model_parts_with_subsets(&bytes).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert!(parts.iter().all(|part| part.has_subset_table));
+        assert_eq!(parts[0].subsets, vec![(0, 3, 2)]);
+        assert_eq!(parts[1].subsets, vec![(0, 3, 1)]);
+        assert_eq!(parts[0].mesh.indices, vec![0, 1, 2]);
+        assert_eq!(parts[1].mesh.indices, vec![0, 1, 2]);
+        assert_eq!(parse_world_model_parts(&bytes).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn world_subset_reference_must_match_exact_chunk_kind_and_count() {
+        let bytes = two_mesh_source_subset_fixture();
+        // First MeshChunk's referenced subset ID is 9. Mutating the ID
+        // to the second mesh must not borrow the other material leaf.
+        let mut wrong_ref = bytes.clone();
+        let mesh_at = u32at(&bytes, 16 + 6 * 16 + 12).unwrap() as usize;
+        wrong_ref[mesh_at + 20..mesh_at + 24].copy_from_slice(&7u32.to_le_bytes());
+        assert!(parse_world_model_parts_with_subsets(&wrong_ref).is_err());
+        let mut bad_count = bytes.clone();
+        bad_count[mesh_at + 16..mesh_at + 20].copy_from_slice(&2u32.to_le_bytes());
+        assert!(parse_world_model_parts_with_subsets(&bad_count).is_err());
+        let mut missing_ref = bytes.clone();
+        missing_ref[mesh_at + 20..mesh_at + 24].copy_from_slice(&0u32.to_le_bytes());
+        assert!(parse_world_model_parts_with_subsets(&missing_ref).is_err());
+        let mut bad_range = bytes.clone();
+        let subset_at = u32at(&bytes, 16 + 8 * 16 + 12).unwrap() as usize;
+        bad_range[subset_at + 20..subset_at + 24].copy_from_slice(&6u32.to_le_bytes());
+        assert!(parse_world_model_parts_with_subsets(&bad_range).is_err());
+        let mut bad_slot = bytes.clone();
+        bad_slot[subset_at + 32..subset_at + 36].copy_from_slice(&250u32.to_le_bytes());
+        assert!(parse_world_model_parts_with_subsets(&bad_slot).is_err());
     }
 
     #[test]

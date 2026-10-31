@@ -130,9 +130,10 @@ pub use library_import::{
     scan_library_import_sources,
 };
 pub use model::{
-    ModelError, ModelInfo, RenderMesh, export_model_obj, has_original_mesh_subset_table,
-    original_mesh_subsets, parse_model_bytes, parse_world_model_parts, read_model,
-    read_world_model_parts,
+    ModelError, ModelInfo, RenderMesh, WorldModelPart, export_model_obj,
+    has_original_mesh_subset_table, original_mesh_subsets, parse_model_bytes,
+    parse_world_model_parts, parse_world_model_parts_with_subsets, read_model,
+    read_world_model_parts, read_world_model_parts_with_subsets,
 };
 pub use native_caf::{
     CafBonePose, CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
