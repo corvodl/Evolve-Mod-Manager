@@ -367,14 +367,13 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
             .find(|url| crate::whats_new::allowed_image_url(url))
         {
             if let Some(handle) = news.image_handles.get(url) {
-                // A 340px "Contain" frame reduced ultrawide screenshots to
-                // tiny strips. Use a larger filled preview; clicking it opens
-                // the complete original attachment without cropping.
+                // A compact filled thumbnail keeps the workspace visible on
+                // Home; clicking opens the complete original attachment.
                 preview = Some(
                     button(
                         image(handle.clone())
                             .width(Fill)
-                            .height(Length::Fixed(190.0))
+                            .height(Length::Fixed(112.0))
                             .content_fit(iced::ContentFit::Cover),
                     )
                     .width(Length::FillPortion(3))

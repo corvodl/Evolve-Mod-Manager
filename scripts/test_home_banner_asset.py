@@ -89,7 +89,7 @@ class HomeBannerAssetTests(unittest.TestCase):
         self.assertRegex(news, r"\.image_urls\s*\.iter\(\)")
         self.assertIn(".find(|url| crate::whats_new::allowed_image_url(url))", news)
         self.assertIn("row![details, preview]", news)
-        self.assertIn("Length::Fixed(190.0)", news)
+        self.assertIn("Length::Fixed(112.0)", news)
         self.assertIn(".content_fit(iced::ContentFit::Cover)", news)
         self.assertIn("Message::OpenNewsLink(url.clone())", news)
         self.assertNotIn("Length::Fixed(125.0)", news)
