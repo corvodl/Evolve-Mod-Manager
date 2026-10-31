@@ -247,6 +247,81 @@ fn upload_rgba_mips(
     (texture, view)
 }
 
+// A source image is resident at its original dimensions, but new mip pixels
+// arrive one level at a time. The shader clamps LOD to the lowest *uploaded*
+// level, so never samples uninitialized GPU texture data.
+struct PendingDiffuseMip {
+    source: Arc<image::RgbaImage>,
+    next_level: u32,
+}
+
+fn write_rgba_level(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    image: &image::RgbaImage,
+    level: u32,
+) {
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: level,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        image.as_raw(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(image.width() * 4),
+            rows_per_image: Some(image.height()),
+        },
+        wgpu::Extent3d {
+            width: image.width(),
+            height: image.height(),
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
+fn create_streaming_diffuse(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    source: &image::RgbaImage,
+) -> (wgpu::Texture, wgpu::TextureView, u32) {
+    let count = source.width().max(source.height()).ilog2() + 1;
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Full source diffuse streamed mip-by-mip"),
+        size: wgpu::Extent3d {
+            width: source.width(),
+            height: source.height(),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: count,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let smallest = count - 1;
+    let coarse = image::imageops::resize(
+        source, (source.width() >> smallest).max(1),
+        (source.height() >> smallest).max(1),
+        image::imageops::FilterType::Triangle,
+    );
+    write_rgba_level(queue, &tex, &coarse, smallest);
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    (tex, view, smallest)
+}
+
+fn next_diffuse_mip(source: &image::RgbaImage, level: u32) -> image::RgbaImage {
+    image::imageops::resize(
+        source,
+        (source.width() >> level).max(1),
+        (source.height() >> level).max(1),
+        image::imageops::FilterType::Triangle,
+    )
+}
+
 /// Bounded, source-verified auxiliary MTL maps (normal/specular/gloss/emissive).
 /// Original decoded Arc texture data is shared between world meshes. When a
 /// GPU limit is reached the exact neutral fallback is used, never an unrelated
@@ -658,6 +733,7 @@ fn visible(
         .collect()
 }
 struct GpuSurface {
+    diffuse_key: TextureKey,
     first: u32,
     count: u32,
     transparent: bool,
@@ -698,6 +774,8 @@ pub(super) struct Renderer {
     groups: Vec<Option<GpuGroup>>,
     cache: TextureCache,
     source_hashes: SourceKeys,
+    pending_diffuse: HashMap<TextureKey, PendingDiffuseMip>,
+    mip_min_level: HashMap<TextureKey, u32>,
     peak_gpu_bytes: u64,
     last_camera: Option<CameraGpu>,
 }
@@ -953,6 +1031,8 @@ impl Renderer {
             groups: Vec::new(),
             cache: TextureCache::new(),
             source_hashes: SourceKeys::new(),
+            pending_diffuse: HashMap::new(),
+            mip_min_level: HashMap::new(),
             peak_gpu_bytes: 0,
             last_camera: None,
         }
