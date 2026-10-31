@@ -491,6 +491,9 @@ fn compose_detail(
                 let detail = bilinear_wrap(&layer.image,tiled);
                 let height = layer.height.as_ref()
                     .map(|img| bilinear_wrap(img,tiled)[0]);
+                // Original layer IDs are categorical. Preserve the authored
+                // fractional coverage of resolved neighbors at boundaries.
+                coverage += original_weight;
                 samples.push((layer, detail, height, original_weight));
             }
             if !samples.is_empty() {
@@ -514,7 +517,6 @@ fn compose_detail(
                 if total > 0.0 {
                     for (layer, color, _, weight) in samples {
                         let w = weight/total;
-                        coverage += w;
                         for c in 0..3 {
                             mixed[c] += (color[c]-neutral)*layer.strength*w;
                         }
