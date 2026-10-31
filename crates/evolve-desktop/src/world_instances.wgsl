@@ -195,6 +195,15 @@ fn distance_fog(input:Output, color:vec4<f32>)->vec4<f32> {
   return vec4<f32>(mix(color.rgb,fog.color.rgb,amount),color.a);
 }
 
+// Diagnostic source-color mode ONLY for the original ground atlas. It
+// bypasses the approximate preview sun, material BRDF and fog but keeps
+// the GPU sRGB decode/output path intact. No source pixels are changed.
+@fragment
+fn fs_terrain_source(input:Output)->@location(0) vec4<f32> {
+  let raw=sample_source_albedo(input.uv);
+  return vec4<f32>(raw.rgb,1.0);
+}
+
 @fragment
 fn fs_opaque(input:Output)->@location(0) vec4<f32> {
   // World geometry renders directly into the native Iced window surface.
