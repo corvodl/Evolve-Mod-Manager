@@ -306,6 +306,22 @@ fn write_rgba_level(
     );
 }
 
+// Upload useful low-resolution imagery immediately instead of leaving new
+// geometry painted with a single 1x1 average-color pixel for many ticks.
+// Every coarser level is also populated, because distant GPU samples may
+// legally request LODs larger than the first valid texture level.
+const INITIAL_DIFFUSE_MAX_DIMENSION: u32 = 128;
+fn initial_diffuse_mip(source_width: u32, source_height: u32) -> u32 {
+    let largest = source_width.max(source_height).max(1);
+    let count = largest.ilog2() + 1;
+    (0..count)
+        .find(|level| {
+            (source_width >> level).max(1) <= INITIAL_DIFFUSE_MAX_DIMENSION
+                && (source_height >> level).max(1) <= INITIAL_DIFFUSE_MAX_DIMENSION
+        })
+        .unwrap_or(count - 1)
+}
+
 fn create_streaming_diffuse(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -326,16 +342,13 @@ fn create_streaming_diffuse(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let smallest = count - 1;
-    let coarse = image::imageops::resize(
-        source,
-        (source.width() >> smallest).max(1),
-        (source.height() >> smallest).max(1),
-        image::imageops::FilterType::Triangle,
-    );
-    write_rgba_level(queue, &tex, &coarse, smallest);
+    let first_valid = initial_diffuse_mip(source.width(), source.height());
+    for level in first_valid..count {
+        let coarse = next_diffuse_mip(source, level);
+        write_rgba_level(queue, &tex, &coarse, level);
+    }
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-    (tex, view, smallest)
+    (tex, view, first_valid)
 }
 
 // Queue writes are striped so a single original 8K image cannot enqueue a
@@ -1732,6 +1745,18 @@ mod tests {
         assert!(shader.contains("let leaf_alpha=sample_source_albedo(input.uv).a;"));
         assert!(shader.contains("let base=sample_source_albedo(input.uv);"));
         naga::front::wgsl::parse_str(shader).expect("streamed diffuse shader must parse");
+    }
+
+    #[test]
+    fn initial_diffuse_upload_shows_detail_and_allows_valid_coarser_mips() {
+        assert_eq!(initial_diffuse_mip(8192, 8192), 6);
+        assert_eq!(initial_diffuse_mip(4096, 4096), 5);
+        assert_eq!(initial_diffuse_mip(1000, 500), 3);
+        assert_eq!(initial_diffuse_mip(128, 64), 0);
+        assert_eq!(initial_diffuse_mip(1, 1), 0);
+        assert!(
+            (8192 >> initial_diffuse_mip(8192, 8192)) <= INITIAL_DIFFUSE_MAX_DIMENSION
+        );
     }
 
     #[test]
