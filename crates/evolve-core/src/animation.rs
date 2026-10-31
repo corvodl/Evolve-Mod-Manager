@@ -206,8 +206,10 @@ fn handle_animation(
         } else {
             extension.as_str()
         };
-        if (matches!(kind, "caf" | "dba" | "bspace" | "comb" | "caf_glob" | "dba_glob")
-            || (events && kind == "animevents"))
+        if (matches!(
+            kind,
+            "caf" | "dba" | "bspace" | "comb" | "caf_glob" | "dba_glob"
+        ) || (events && kind == "animevents"))
             && out.len() < MAX_FRAMES
         {
             out.push(AnimationReference {
@@ -238,7 +240,8 @@ pub fn animation_wildcard_matches(pattern: &str, candidate: &str) -> bool {
             for at in 0..=s.len() {
                 // '*' can consume no characters, or one more non-separator.
                 next[at] = row[at]
-                    || (at > 0 && (recursive || (s[at - 1] != b'/' && s[at - 1] != b'\\'))
+                    || (at > 0
+                        && (recursive || (s[at - 1] != b'/' && s[at - 1] != b'\\'))
                         && next[at - 1]);
             }
         } else {
@@ -786,13 +789,19 @@ mod wildcard_catalog_tests {
 
     #[test]
     fn parser_preserves_authored_wildcard_instead_of_losing_it() {
-        let refs = animation_references(br##"<Params><AnimationList>
+        let refs = animation_references(
+            br##"<Params><AnimationList>
             <Animation name="#filepath" path="characters/hunters/merc_bucket/animations"/>
             <Animation name="*" path="*.caf"/>
-        </AnimationList></Params>"##).unwrap();
+        </AnimationList></Params>"##,
+        )
+        .unwrap();
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].kind, "caf_glob");
-        assert_eq!(refs[0].path, "characters/hunters/merc_bucket/animations/*.caf");
+        assert_eq!(
+            refs[0].path,
+            "characters/hunters/merc_bucket/animations/*.caf"
+        );
     }
 }
 
