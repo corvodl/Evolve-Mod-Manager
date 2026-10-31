@@ -792,75 +792,6 @@ fn verified_opacity(
 /// while the authored MTL has just one leaf. In that specific unambiguous
 /// case every section receives the *same original* material without guessing
 /// submesh slot IDs or failing the multi-stream source decoder.
-pub fn original_single_leaf_surface(
-    material: &Path,
-    inventory: &Inventory,
-    imported: Option<&Path>,
-    build: Option<&str>,
-    cache: &SharedCache,
-) -> Result<(Surface, Vec<String>), String> {
-    let document = read_material(material).map_err(|e| e.to_string())?;
-    if document.slots.len() != 1 {
-        return Err(format!(
-            "{} MTL leaves require the source per-mesh subset table",
-            document.slots.len()
-        ));
-    }
-    let leaf = &document.slots[0];
-    let visible = !leaf.shader.eq_ignore_ascii_case("NoDraw");
-    let mut surface = Surface {
-        first_index: 0,
-        index_count: 0, // filled from each *verified* mesh's index count
-        visible,
-        transparent: false,
-        foliage_cutout: false,
-        alpha_cutoff: 0.5,
-        diffuse: None,
-        normal: None,
-        emissive: None,
-        armor_emissive: None,
-        emission_strength: leaf.glow_amount.unwrap_or(1.0).max(0.0),
-        kala_emission_state: None,
-        emissive_uv: source_decal_motion(leaf),
-        specular: None,
-        gloss: None,
-        opacity: None,
-    };
-    if !visible {
-        return Ok((surface, Vec::new()));
-    }
-    let (maps, warnings) = authored_maps(
-        &document,
-        material,
-        &material.to_string_lossy(),
-        0,
-        MaterialLookup {
-            inventory,
-            imported,
-            build,
-        },
-        cache,
-        &mut TextureBudget::default(),
-        None,
-    )?;
-    let [diffuse, normal, emissive, specular, gloss, opacity] = maps;
-    surface.diffuse = diffuse;
-    surface.normal = normal;
-    surface.emissive = emissive;
-    surface.specular = specular;
-    surface.gloss = gloss;
-    surface.foliage_cutout = source_vegetation_cutout(leaf) && surface.diffuse.is_some();
-    surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
-    surface.opacity = if surface.foliage_cutout {
-        None
-    } else {
-        verified_opacity(leaf, opacity)
-    };
-    surface.transparent =
-        !surface.foliage_cutout && needs_alpha_blending(leaf) && surface.opacity.is_some();
-    Ok((surface, warnings))
-}
-
 pub fn load_model(
     source: &Path,
     material: &Path,
@@ -882,7 +813,16 @@ pub fn load_model(
         ));
     }
     load_authored_subset_surfaces(
-        source, material, &document, &ranges, inventory, imported, build, cache,
+        source,
+        material,
+        &document,
+        &ranges,
+        MaterialLookup {
+            inventory,
+            imported,
+            build,
+        },
+        cache,
     )
 }
 
@@ -913,9 +853,11 @@ pub(crate) fn load_world_model_surfaces(
             material,
             &document,
             &part.subsets,
-            inventory,
-            imported,
-            build,
+            MaterialLookup {
+                inventory,
+                imported,
+                build,
+            },
             cache,
         )?;
         all.push(surfaces);
@@ -958,9 +900,7 @@ fn load_authored_subset_surfaces(
     material: &Path,
     document: &MaterialDocument,
     ranges: &[(u32, u32, u32)],
-    inventory: &Inventory,
-    imported: Option<&Path>,
-    build: Option<&str>,
+    lookup: MaterialLookup<'_>,
     cache: &SharedCache,
 ) -> Result<(Vec<Surface>, Vec<String>), String> {
     let mut result = Vec::with_capacity(ranges.len());
@@ -1003,14 +943,14 @@ fn load_authored_subset_surfaces(
                 surface.visible = false;
             } else {
                 match authored_maps(
-                    &document,
+                    document,
                     material,
                     &source.to_string_lossy(),
                     material_slot,
                     MaterialLookup {
-                        inventory,
-                        imported,
-                        build,
+                        inventory: lookup.inventory,
+                        imported: lookup.imported,
+                        build: lookup.build,
                     },
                     cache,
                     &mut budget,
