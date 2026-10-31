@@ -1558,6 +1558,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 world: None,
                 level_hour: 12.0,
                 level_full_textures: true,
+                level_terrain_unlit: false,
                 viewer_full_textures: state.viewer_full_textures,
                 viewer_gpu_remaining: Some(state.viewer_gpu_remaining.clone()),
             })
