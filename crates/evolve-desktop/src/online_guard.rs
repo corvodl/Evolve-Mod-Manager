@@ -47,6 +47,19 @@ pub fn game_executable(game_root: &Path) -> Result<PathBuf, String> {
     std::fs::canonicalize(game).map_err(|e| e.to_string())
 }
 
+fn manager_rule_delete_args(name: &str, executable: &Path) -> Vec<String> {
+    // Name alone is not sufficient: netsh deletes *all* matching rules,
+    // including another program's rule with the same display name.
+    // Restrict deletion to outbound rules belonging to this Evolve executable.
+    vec![
+        "delete".into(),
+        "rule".into(),
+        format!("name={name}"),
+        "dir=out".into(),
+        format!("program={}", win_path_text(executable)),
+    ]
+}
+
 #[cfg(windows)]
 pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
     use std::collections::HashSet;
@@ -93,18 +106,18 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
 
     let exe = game_executable(game_root)?;
     let mut seen = HashSet::new();
-    let mut names = Vec::new();
+    let mut rules = Vec::new();
     for candidate in [&exe, &game_executable_path(game_root)] {
         let label = named_rule(candidate);
         if seen.insert(label.clone()) {
-            names.push(label);
+            rules.push((label, candidate.to_path_buf()));
         }
     }
     let mut removed = 0;
-    for name in &names {
+    for (name, executable) in &rules {
         if exists(name)? {
             run(
-                &["delete".into(), "rule".into(), format!("name={name}")],
+                &manager_rule_delete_args(name, executable),
                 "rule removal",
             )?;
             if exists(name)? {
@@ -177,5 +190,22 @@ mod tests {
             named_rule(&game_executable_path(root)),
             named_rule(expected)
         );
+    }
+    #[test]
+    fn firewall_deletion_is_scoped_to_selected_game_executable_and_outbound_rules() {
+        let exe = Path::new(r"C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail\Evolve.exe");
+        let rule = named_rule(exe);
+        let args = manager_rule_delete_args(&rule, exe);
+        assert_eq!(
+            args,
+            [
+                "delete",
+                "rule",
+                &format!("name={rule}"),
+                "dir=out",
+                &format!("program={}", win_path_text(exe)),
+            ]
+        );
+        assert!(!args.iter().any(|arg| arg == "name=all"));
     }
 }
