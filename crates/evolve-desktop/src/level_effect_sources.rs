@@ -33,7 +33,10 @@ struct EffectCounts {
     particle_library_xml: usize,
 }
 fn count_asset(counts: &mut EffectCounts, original: &str) {
-    let path = original.trim_start_matches("files/").replace('\\', "/").to_ascii_lowercase();
+    let path = original
+        .trim_start_matches("files/")
+        .replace('\\', "/")
+        .to_ascii_lowercase();
     if path.ends_with(".mtl") {
         counts.material_definitions += 1;
     } else if path.ends_with(".cgf") {
@@ -61,7 +64,10 @@ pub(super) fn shared_effect_sources(selected: &ImportedPak) -> Vec<String> {
         return vec!["Shared textures/effects lookup unavailable: original map Game directory cannot be verified.".into()];
     };
     let Some(root) = Path::new(&selected.directory).parent() else {
-        return vec!["Shared textures/effects lookup unavailable: imported Asset Library root missing.".into()];
+        return vec![
+            "Shared textures/effects lookup unavailable: imported Asset Library root missing."
+                .into(),
+        ];
     };
     let library = match imported_library(root) {
         Ok(catalog) => catalog,
@@ -70,14 +76,18 @@ pub(super) fn shared_effect_sources(selected: &ImportedPak) -> Vec<String> {
     let build = (selected.builds.len() == 1).then(|| selected.builds[0].as_str());
     let mut lines = Vec::new();
     for name in SHARED_EFFECT_PAKS {
-        let matches = library.archives.iter().filter(|pak| {
-            pak.name.eq_ignore_ascii_case(name)
-                && game_root(pak).as_deref() == Some(game.as_path())
-                && build.is_none_or(|label| {
-                    pak.builds.is_empty() || pak.builds.iter().any(|other| other == label)
-                })
-                && (build.is_some() || pak.builds.len() <= 1)
-        }).collect::<Vec<_>>();
+        let matches = library
+            .archives
+            .iter()
+            .filter(|pak| {
+                pak.name.eq_ignore_ascii_case(name)
+                    && game_root(pak).as_deref() == Some(game.as_path())
+                    && build.is_none_or(|label| {
+                        pak.builds.is_empty() || pak.builds.iter().any(|other| other == label)
+                    })
+                    && (build.is_some() || pak.builds.len() <= 1)
+            })
+            .collect::<Vec<_>>();
         if matches.len() != 1 {
             lines.push(format!(
                 "{name}: {} exact same-install source matches; no cross-build substitution. {}",

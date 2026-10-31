@@ -764,7 +764,10 @@ fn is_original_beam_effect(slot: &evolve_core::MaterialSlot) -> bool {
 /// a verified textured polygon using its own alpha and GlowAmount; it does
 /// NOT synthesize an emitter, projector beam, sprite lifetime, or particles.
 fn mesh_effect_preview(slot: &evolve_core::MaterialSlot) -> bool {
-    matches!(slot.shader.to_ascii_lowercase().as_str(), "particles" | "electricity" | "trsbeam")
+    matches!(
+        slot.shader.to_ascii_lowercase().as_str(),
+        "particles" | "electricity" | "trsbeam"
+    )
 }
 fn apply_effect_mesh_preview(
     slot: &evolve_core::MaterialSlot,
@@ -772,41 +775,57 @@ fn apply_effect_mesh_preview(
     warnings: &mut Vec<String>,
     model_viewer: bool,
 ) {
-    if !mesh_effect_preview(slot) { return; }
-    let Some(diffuse) = surface.diffuse.as_ref() else {
-        surface.visible = false;
-        warnings.push(format!("{} effect requires an exact cooked diffuse texture; no white proxy drawn", slot.shader));
-        return;
-    };
-    let scalar=slot.opacity.unwrap_or(1.0).clamp(0.0,1.0);
-    let has_alpha=diffuse.pixels().any(|pixel|pixel[3]<255);
-    if !has_alpha && scalar>=0.999 {
-        surface.visible=false;
-        warnings.push(format!("{} has no authored transparency in its source DDS; native additive shader required",slot.shader));
+    if !mesh_effect_preview(slot) {
         return;
     }
-    let mask=if !model_viewer {
+    let Some(diffuse) = surface.diffuse.as_ref() else {
+        surface.visible = false;
+        warnings.push(format!(
+            "{} effect requires an exact cooked diffuse texture; no white proxy drawn",
+            slot.shader
+        ));
+        return;
+    };
+    let scalar = slot.opacity.unwrap_or(1.0).clamp(0.0, 1.0);
+    let has_alpha = diffuse.pixels().any(|pixel| pixel[3] < 255);
+    if !has_alpha && scalar >= 0.999 {
+        surface.visible = false;
+        warnings.push(format!(
+            "{} has no authored transparency in its source DDS; native additive shader required",
+            slot.shader
+        ));
+        return;
+    }
+    let mask = if !model_viewer {
         // World shader samples base.a separately. Only original scalar
         // opacity belongs in the independent mask; multiplying the source
         // alpha into this image would incorrectly square translucency.
-        let value=(scalar*255.0).round() as u8;
-        Arc::new(image::RgbaImage::from_pixel(1,1,image::Rgba([value,value,value,255])))
+        let value = (scalar * 255.0).round() as u8;
+        Arc::new(image::RgbaImage::from_pixel(
+            1,
+            1,
+            image::Rgba([value, value, value, 255]),
+        ))
     } else if has_alpha {
-        let mut image=image::RgbaImage::new(diffuse.width(),diffuse.height());
-        for (target,source) in image.pixels_mut().zip(diffuse.pixels()) {
-            let value=(f32::from(source[3])*scalar).round() as u8;
-            *target=image::Rgba([value,value,value,255]);
+        let mut image = image::RgbaImage::new(diffuse.width(), diffuse.height());
+        for (target, source) in image.pixels_mut().zip(diffuse.pixels()) {
+            let value = (f32::from(source[3]) * scalar).round() as u8;
+            *target = image::Rgba([value, value, value, 255]);
         }
         Arc::new(image)
     } else {
-        let value=(scalar*255.0).round() as u8;
-        Arc::new(image::RgbaImage::from_pixel(1,1,image::Rgba([value,value,value,255])))
+        let value = (scalar * 255.0).round() as u8;
+        Arc::new(image::RgbaImage::from_pixel(
+            1,
+            1,
+            image::Rgba([value, value, value, 255]),
+        ))
     };
-    surface.opacity=Some(mask);
-    surface.transparent=true;
-    surface.foliage_cutout=false;
-    if surface.emissive.is_none() && slot.glow_amount.is_some_and(|n|n>0.0) {
-        surface.emissive=surface.diffuse.clone();
+    surface.opacity = Some(mask);
+    surface.transparent = true;
+    surface.foliage_cutout = false;
+    if surface.emissive.is_none() && slot.glow_amount.is_some_and(|n| n > 0.0) {
+        surface.emissive = surface.diffuse.clone();
     }
     warnings.push(format!("{} source diffuse-alpha and GlowAmount preview; native additive particle simulation unavailable",slot.shader));
 }
@@ -1017,8 +1036,7 @@ fn load_authored_subset_surfaces(
                 )
             })?;
             if leaf.shader.eq_ignore_ascii_case("NoDraw")
-                || (is_original_beam_effect(leaf)
-                    && !mesh_effect_preview(leaf))
+                || (is_original_beam_effect(leaf) && !mesh_effect_preview(leaf))
             {
                 // An effect-only beam needs an additive/volumetric shader.
                 // Do not turn that source volume into an opaque solid tube.
@@ -1754,20 +1772,34 @@ mod tests {
         let doc=evolve_core::parse_material(br#"<Material Shader="Particles" Opacity="1" GlowAmount="2">
           <Textures><Texture Map="Diffuse" File="objects/effects/abilities/grounder/fx_01_p.tif"/></Textures>
           </Material>"#).unwrap();
-        let leaf=&doc.slots[0];
+        let leaf = &doc.slots[0];
         assert!(mesh_effect_preview(leaf));
-        let mut surface=Surface {
-            first_index:0,index_count:3,visible:true,transparent:false,
-            foliage_cutout:false,alpha_cutoff:0.5,
-            diffuse:Some(Arc::new(image::RgbaImage::from_pixel(2,2,image::Rgba([40,80,150,57])))),
-            normal:None,emissive:None,armor_emissive:None,
-            emission_strength:2.0,kala_emission_state:None,emissive_uv:None,
-            specular:None,gloss:None,opacity:None,
+        let mut surface = Surface {
+            first_index: 0,
+            index_count: 3,
+            visible: true,
+            transparent: false,
+            foliage_cutout: false,
+            alpha_cutoff: 0.5,
+            diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
+                2,
+                2,
+                image::Rgba([40, 80, 150, 57]),
+            ))),
+            normal: None,
+            emissive: None,
+            armor_emissive: None,
+            emission_strength: 2.0,
+            kala_emission_state: None,
+            emissive_uv: None,
+            specular: None,
+            gloss: None,
+            opacity: None,
         };
-        let mut warnings=Vec::new();
-        apply_effect_mesh_preview(leaf,&mut surface,&mut warnings,true);
+        let mut warnings = Vec::new();
+        apply_effect_mesh_preview(leaf, &mut surface, &mut warnings, true);
         assert!(surface.visible && surface.transparent);
-        assert_eq!(surface.opacity.as_ref().unwrap().get_pixel(0,0)[0],57);
+        assert_eq!(surface.opacity.as_ref().unwrap().get_pixel(0, 0)[0], 57);
         assert!(surface.emissive.is_some());
         assert!(!warnings.is_empty());
     }
