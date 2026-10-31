@@ -1098,6 +1098,87 @@ pub(crate) mod tests {
         assert_eq!(parts[1].positions[1][0], 2.0);
     }
 
+    fn two_mesh_source_subset_fixture() -> Vec<u8> {
+        // Source-authored MeshChunk references are independent: two distinct
+        // render meshes share a four-leaf MTL but use different leaf IDs.
+        let original = fixture();
+        let mut data = vec![0u8; 16 + 10 * 16];
+        data[..8].copy_from_slice(b"CrChF\x07\0\0");
+        data[8..12].copy_from_slice(&10u32.to_le_bytes());
+        data[12..16].copy_from_slice(&16u32.to_le_bytes());
+        let mut add = |row: usize, kind: u32, id: u32, payload: &[u8]| {
+            let at = 16 + row * 16;
+            let offset = data.len();
+            data[at..at + 4].copy_from_slice(&kind.to_le_bytes());
+            data[at + 4..at + 8].copy_from_slice(&id.to_le_bytes());
+            data[at + 8..at + 12].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            data[at + 12..at + 16].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(payload);
+        };
+        for i in 0..6 {
+            let source_at = 16 + (i % 3) * 16;
+            let offset = u32at(&original, source_at + 12).unwrap() as usize;
+            let len = u32at(&original, source_at + 8).unwrap() as usize;
+            add(i, CRCHF_STREAM, (i + 1) as u32, &original[offset..offset + len]);
+        }
+        for i in 0..2 {
+            let mut mesh = vec![0u8; 104];
+            mesh[8..12].copy_from_slice(&3u32.to_le_bytes());
+            mesh[12..16].copy_from_slice(&3u32.to_le_bytes());
+            mesh[16..20].copy_from_slice(&1u32.to_le_bytes());
+            mesh[20..24].copy_from_slice(&((9 + i) as u32).to_le_bytes());
+            mesh[28..32].copy_from_slice(&((1 + 3 * i) as u32).to_le_bytes());
+            mesh[36..40].copy_from_slice(&((3 + 3 * i) as u32).to_le_bytes());
+            mesh[48..52].copy_from_slice(&((2 + 3 * i) as u32).to_le_bytes());
+            add(6 + i, 0x08001000, (7 + i) as u32, &mesh);
+        }
+        for i in 0..2 {
+            let mut subset = vec![0u8; 52];
+            subset[4..8].copy_from_slice(&1u32.to_le_bytes());
+            subset[20..24].copy_from_slice(&3u32.to_le_bytes());
+            subset[32..36].copy_from_slice(&((if i == 0 { 2 } else { 1 }) as u32).to_le_bytes());
+            add(8 + i, 0x08001017, (9 + i) as u32, &subset);
+        }
+        data
+    }
+
+    #[test]
+    fn world_meshes_preserve_per_mesh_referenced_material_ids() {
+        let bytes = two_mesh_source_subset_fixture();
+        let parts = parse_world_model_parts_with_subsets(&bytes).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert!(parts.iter().all(|part| part.has_subset_table));
+        assert_eq!(parts[0].subsets, vec![(0, 3, 2)]);
+        assert_eq!(parts[1].subsets, vec![(0, 3, 1)]);
+        assert_eq!(parts[0].mesh.indices, vec![0, 1, 2]);
+        assert_eq!(parts[1].mesh.indices, vec![0, 1, 2]);
+        assert_eq!(parse_world_model_parts(&bytes).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn world_subset_reference_must_match_exact_chunk_kind_and_count() {
+        let bytes = two_mesh_source_subset_fixture();
+        // First MeshChunk's referenced subset ID is 9. Mutating the ID
+        // to the second mesh must not borrow the other material leaf.
+        let mut wrong_ref = bytes.clone();
+        let mesh_at = u32at(&bytes, 16 + 6 * 16 + 12).unwrap() as usize;
+        wrong_ref[mesh_at + 20..mesh_at + 24].copy_from_slice(&7u32.to_le_bytes());
+        assert!(parse_world_model_parts_with_subsets(&wrong_ref).is_err());
+        let mut bad_count = bytes.clone();
+        bad_count[mesh_at + 16..mesh_at + 20].copy_from_slice(&2u32.to_le_bytes());
+        assert!(parse_world_model_parts_with_subsets(&bad_count).is_err());
+        let mut missing_ref = bytes.clone();
+        missing_ref[mesh_at + 20..mesh_at + 24].copy_from_slice(&0u32.to_le_bytes());
+        assert!(parse_world_model_parts_with_subsets(&missing_ref).is_err());
+        let mut bad_range = bytes.clone();
+        let subset_at = u32at(&bytes, 16 + 8 * 16 + 12).unwrap() as usize;
+        bad_range[subset_at + 20..subset_at + 24].copy_from_slice(&6u32.to_le_bytes());
+        assert!(parse_world_model_parts_with_subsets(&bad_range).is_err());
+        let mut bad_slot = bytes.clone();
+        bad_slot[subset_at + 32..subset_at + 36].copy_from_slice(&250u32.to_le_bytes());
+        assert!(parse_world_model_parts_with_subsets(&bad_slot).is_err());
+    }
+
     #[test]
     fn original_node_ownership_excludes_physics_proxy_meshes() {
         let source = fixture();
