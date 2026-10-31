@@ -1555,7 +1555,8 @@ impl Pipeline {
             self.depth_dimensions = size;
         }
         self.hdr.resize(device, size);
-        self.hdr.set_source_unlit(queue, primitive.level_terrain_unlit);
+        self.hdr
+            .set_source_unlit(queue, primitive.level_terrain_unlit);
         self.world_renderer.prepare(
             device,
             queue,
