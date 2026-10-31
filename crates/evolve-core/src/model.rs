@@ -773,7 +773,8 @@ pub fn parse_world_model_parts_with_subsets(
                 "mesh and referenced datastream counts differ".into(),
             ));
         }
-        let (subsets, has_subset_table) = if subset_count == 0 && matches!(subset_ref, 0 | u32::MAX) {
+        let (subsets, has_subset_table) = if subset_count == 0 && matches!(subset_ref, 0 | u32::MAX)
+        {
             (vec![(0, mesh.indices.len() as u32, 0)], false)
         } else {
             if subset_count == 0 || matches!(subset_ref, 0 | u32::MAX) {
@@ -792,7 +793,13 @@ pub fn parse_world_model_parts_with_subsets(
                 ));
             }
             (
-                source_crchf_subsets(data, subset_at, subset_size, subset_count, mesh.indices.len())?,
+                source_crchf_subsets(
+                    data,
+                    subset_at,
+                    subset_size,
+                    subset_count,
+                    mesh.indices.len(),
+                )?,
                 true,
             )
         };
@@ -813,14 +820,11 @@ pub fn parse_world_model_parts_with_subsets(
 /// Backward-compatible geometry-only view; the world renderer uses the
 /// provenance-bearing variant below when assigning original MTL leaves.
 pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelError> {
-    parse_world_model_parts_with_subsets(data).map(|parts| {
-        parts.into_iter().map(|part| part.mesh).collect()
-    })
+    parse_world_model_parts_with_subsets(data)
+        .map(|parts| parts.into_iter().map(|part| part.mesh).collect())
 }
 
-pub fn read_world_model_parts_with_subsets(
-    path: &Path,
-) -> Result<Vec<WorldModelPart>, ModelError> {
+pub fn read_world_model_parts_with_subsets(path: &Path) -> Result<Vec<WorldModelPart>, ModelError> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() || meta.len() > MAX_BYTES as u64 {
         return Err(ModelError::Limits);
@@ -829,9 +833,8 @@ pub fn read_world_model_parts_with_subsets(
 }
 
 pub fn read_world_model_parts(path: &Path) -> Result<Vec<RenderMesh>, ModelError> {
-    read_world_model_parts_with_subsets(path).map(|parts| {
-        parts.into_iter().map(|part| part.mesh).collect()
-    })
+    read_world_model_parts_with_subsets(path)
+        .map(|parts| parts.into_iter().map(|part| part.mesh).collect())
 }
 
 /// Whether a verified original CryEngine SUBSETS table was provided.
@@ -1119,7 +1122,12 @@ pub(crate) mod tests {
             let source_at = 16 + (i % 3) * 16;
             let offset = u32at(&original, source_at + 12).unwrap() as usize;
             let len = u32at(&original, source_at + 8).unwrap() as usize;
-            add(i, CRCHF_STREAM, (i + 1) as u32, &original[offset..offset + len]);
+            add(
+                i,
+                CRCHF_STREAM,
+                (i + 1) as u32,
+                &original[offset..offset + len],
+            );
         }
         for i in 0..2 {
             let mut mesh = vec![0u8; 104];
