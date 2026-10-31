@@ -26,6 +26,25 @@ struct AxisPoint {
     preset: &'static str,
 }
 
+/// CryEngine 3 character geometry faces +Y. A true FRONT inspection camera
+/// must therefore look toward the origin from +Y (yaw 180), *not* from -Y.
+/// Returning only camera angles preserves original vertex positions, UVs,
+/// skinning, triangle winding, and exported rig basis.
+pub(crate) const FRONT_YAW: f32 = 180.0;
+
+pub(crate) fn model_camera_preset(preset: &str) -> Option<(f32, f32)> {
+    match preset {
+        "Front" => Some((FRONT_YAW, 0.0)),
+        "Back" => Some((0.0, 0.0)),
+        "Left" => Some((-90.0, 0.0)),
+        "Right" => Some((90.0, 0.0)),
+        "Top" => Some((FRONT_YAW, 89.5)),
+        "Bottom" => Some((FRONT_YAW, -89.5)),
+        "Isometric" => Some((150.0, 14.0)),
+        _ => None,
+    }
+}
+
 impl OrientationGizmo {
     fn axes(&self, width: f32, height: f32) -> Vec<AxisPoint> {
         let (sy, cy) = self.yaw.to_radians().sin_cos();
@@ -43,8 +62,8 @@ impl OrientationGizmo {
             (
                 "Y",
                 [0.0, 1.0, 0.0],
-                "Back",
                 "Front",
+                "Back",
                 Color::from_rgb8(117, 195, 132),
             ),
             (
@@ -228,6 +247,22 @@ impl canvas::Program<super::Message> for OrientationGizmo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cryengine_front_camera_sees_positive_y_and_keeps_right_left_consistent() {
+        use std::f32::consts::PI;
+        assert_eq!(model_camera_preset("Front"), Some((180.0, 0.0)));
+        assert_eq!(model_camera_preset("Back"), Some((0.0, 0.0)));
+        let theta = FRONT_YAW * PI / 180.0;
+        // From +Y looking toward the character, its local +X is camera-left.
+        let screen_x = theta.cos();
+        assert!(screen_x < -0.99);
+        let view = OrientationGizmo { yaw: FRONT_YAW, pitch: 0.0 };
+        let x_axis = view.axes(112.0, 112.0)
+            .into_iter().find(|axis| axis.preset == "Right").unwrap();
+        assert!(x_axis.point.x < 56.0);
+        assert_eq!(model_camera_preset("Unknown"), None);
+    }
+
     #[test]
     fn gizmo_signed_axes_follow_private_camera_presets() {
         let view = OrientationGizmo {
