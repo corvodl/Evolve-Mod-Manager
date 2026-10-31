@@ -325,6 +325,17 @@ fn group_new_bytes(
     bytes
 }
 
+fn group_distance_sq(group: &ModelGroup, camera: level_camera::Camera) -> f32 {
+    if is_ground(group) {
+        return -1.0;
+    }
+    group.instances.iter()
+        .map(|instance| instance.transform.position.iter().zip(camera.position)
+            .map(|(point, origin)| (point - origin) * (point - origin)).sum::<f32>())
+        .filter(|distance| distance.is_finite())
+        .fold(f32::INFINITY, f32::min)
+}
+
 fn resident_geometry_bytes(groups: &[Option<GpuGroup>]) -> u64 {
     groups.iter().flatten().fold(0u64, |total, group| total.saturating_add(group.geometry_bytes))
 }
@@ -1296,17 +1307,8 @@ impl Renderer {
             .filter(|&idx| !visible_groups[idx].is_empty() && self.groups[idx].is_none())
             .collect::<Vec<_>>();
         candidates.sort_by(|&left, &right| {
-            let priority = |i: usize| -> f32 {
-                if is_ground(&world.groups[i]) {
-                    return -1.0;
-                }
-                world.groups[i].instances.iter()
-                    .map(|instance| instance.transform.position.iter()
-                        .zip(camera.position).map(|(p,c)| (p-c)*(p-c)).sum::<f32>())
-                    .filter(|distance| distance.is_finite())
-                    .fold(f32::INFINITY, f32::min)
-            };
-            priority(left).total_cmp(&priority(right))
+            group_distance_sq(&world.groups[left], camera)
+                .total_cmp(&group_distance_sq(&world.groups[right], camera))
         });
         for idx in candidates {
             if uploaded == MAX_NEW_GROUPS_PER_FRAME {
@@ -1314,10 +1316,35 @@ impl Renderer {
                 continue;
             }
             let requested = group_new_bytes(&world.groups[idx], &cache, &mut hashes);
-            let current = used_bytes.saturating_add(resident_geometry_bytes(&self.groups));
-            if current.saturating_add(requested) > target_bytes {
-                // No GPU allocation occurs here. The camera can later evict
-                // offscreen groups and retry at the full original resolution.
+            // Prefer near/ground geometry when visible groups collectively
+            // exceed the conservative residency target. Evict the farthest
+            // loaded group only if it is genuinely farther than this candidate,
+            // so repeated stream ticks cannot thrash the same two groups.
+            let distance = group_distance_sq(&world.groups[idx], camera);
+            while used_bytes
+                .saturating_add(resident_geometry_bytes(&self.groups))
+                .saturating_add(requested) > target_bytes
+            {
+                let farthest = self.groups.iter().enumerate()
+                    .filter(|(i, group)| group.is_some()
+                        && group_distance_sq(&world.groups[*i], camera) > distance)
+                    .max_by(|(left, _), (right, _)| {
+                        group_distance_sq(&world.groups[*left], camera)
+                            .total_cmp(&group_distance_sq(&world.groups[*right], camera))
+                    }).map(|(i, _)| i);
+                let Some(victim) = farthest else { break };
+                self.groups[victim].take();
+                let retained: HashSet<TextureKey> = self.groups.iter().flatten()
+                    .flat_map(|group| group.source_keys.iter().copied()).collect();
+                cache.retain(|key, _| retained.contains(key));
+                used_bytes = cache_bytes(&cache);
+            }
+            if used_bytes
+                .saturating_add(resident_geometry_bytes(&self.groups))
+                .saturating_add(requested) > target_bytes
+            {
+                // The requested resource remains available in source CPU
+                // memory and can be retried after camera movement/eviction.
                 deferred += 1;
                 continue;
             }
