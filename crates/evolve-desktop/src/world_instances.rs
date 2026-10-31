@@ -546,6 +546,9 @@ pub(super) struct World {
     pub time_of_day: Option<Arc<super::level_environment::TimeOfDay>>,
     pub fog_profile: Option<super::level_environment::FogProfile>,
     pub source_resources: super::level_environment::ResourceSummary,
+    /// Signed high-pass detail overlay; painted layer composition is prepared
+    /// from verified same-install sources in the blocking map-open worker.
+    pub terrain_detail: Option<Arc<image::RgbaImage>>,
     pub gpu_progress: Arc<GpuProgress>,
     // Prehashed by the existing map assembly worker, never by the UI thread.
     source_pixel_hashes: Arc<SourceKeys>,
@@ -681,6 +684,9 @@ impl World {
                 }
             }
         }
+        if let Some(ref detail) = self.terrain_detail {
+            let _ = texture_key(Some(detail), 6, false, &mut hashes);
+        }
         self.source_pixel_hashes = Arc::new(hashes);
     }
 
@@ -791,6 +797,7 @@ struct GpuSurface {
     _specular_image: wgpu::Texture,
     _gloss_image: wgpu::Texture,
     _emissive_image: wgpu::Texture,
+    _detail_image: wgpu::Texture,
     _alpha_uniform: wgpu::Buffer,
 }
 struct GpuGroup {
@@ -955,6 +962,18 @@ impl Renderer {
                     },
                     count: None,
                 },
+                // Exact source high-pass terrain overlay. Non-ground geometry
+                // binds a neutral RGBA pixel with zero alpha.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let camera_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1101,6 +1120,7 @@ impl Renderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         model: &ModelGroup,
+        terrain_detail: Option<&Arc<image::RgbaImage>>,
         full_textures: bool,
         cache: &mut TextureCache,
         hashes: &mut SourceKeys,
@@ -1321,6 +1341,20 @@ impl Renderer {
                 hashes,
                 used_bytes,
             );
+            let (detail_tex, detail_view) = auxiliary_map(
+                device,
+                queue,
+                if terrain { terrain_detail } else { None },
+                6,
+                [128, 128, 128, 0],
+                wgpu::TextureFormat::Rgba8Unorm,
+                "Original terrain signed high-pass detail overlay",
+                full_textures,
+                limit_2d,
+                cache,
+                hashes,
+                used_bytes,
+            );
             let alpha_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Authored per-material Vegetation AlphaTest"),
                 contents: bytemuck::cast_slice(&[
@@ -1387,6 +1421,10 @@ impl Renderer {
                         binding: 11,
                         resource: self.height_fog_uniform.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: wgpu::BindingResource::TextureView(&detail_view),
+                    },
                 ],
             });
             surfaces.push(GpuSurface {
@@ -1402,6 +1440,7 @@ impl Renderer {
                 _specular_image: specular_tex,
                 _gloss_image: gloss_tex,
                 _emissive_image: emissive_tex,
+                _detail_image: detail_tex,
                 _alpha_uniform: alpha_uniform,
             });
         }
@@ -1552,6 +1591,7 @@ impl Renderer {
                 device,
                 queue,
                 &world.groups[idx],
+                if is_ground(&world.groups[idx]) { world.terrain_detail.as_ref() } else { None },
                 full_textures,
                 &mut cache,
                 &mut hashes,
