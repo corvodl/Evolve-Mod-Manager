@@ -18,7 +18,11 @@ fn win_path_text(path: &Path) -> String {
     }
 }
 
-fn named_rule(executable: &Path) -> String {
+pub(crate) fn game_executable_path(game_root: &Path) -> PathBuf {
+    game_root.join("bin64_SteamRetail").join("Evolve.exe")
+}
+
+pub(crate) fn named_rule(executable: &Path) -> String {
     // Private Python manager: sha256(str(Path(exe).resolve()).casefold())[:20].
     // On ordinary Windows game paths, lowercase is equivalent to casefold.
     let canonical = win_path_text(executable).to_lowercase();
@@ -34,7 +38,7 @@ fn named_rule(executable: &Path) -> String {
 pub fn game_executable(game_root: &Path) -> Result<PathBuf, String> {
     let root = std::fs::canonicalize(game_root)
         .map_err(|e| format!("Cannot locate selected EvolveGame folder: {e}"))?;
-    let game = root.join("bin64_SteamRetail").join("Evolve.exe");
+    let game = game_executable_path(&root);
     let meta =
         std::fs::symlink_metadata(&game).map_err(|e| format!("Cannot locate Evolve.exe: {e}"))?;
     if !meta.file_type().is_file() {
@@ -90,10 +94,7 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
     let exe = game_executable(game_root)?;
     let mut seen = HashSet::new();
     let mut names = Vec::new();
-    for candidate in [
-        &exe,
-        &game_root.join("bin64_SteamRetail").join("Evolve.exe"),
-    ] {
+    for candidate in [&exe, &game_executable_path(game_root)] {
         let label = named_rule(candidate);
         if seen.insert(label.clone()) {
             names.push(label);
@@ -166,6 +167,15 @@ mod tests {
         assert_ne!(
             named_rule(Path::new(r"C:\A\Evolve.exe")),
             named_rule(Path::new(r"C:\B\Evolve.exe"))
+        );
+    }
+    #[test]
+    fn derived_game_executable_shares_the_game_root_rule_name() {
+        let root = Path::new(r"C:\Games\ModdedEvolve\EvolveGame");
+        let expected = Path::new(r"C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail\Evolve.exe");
+        assert_eq!(
+            named_rule(&game_executable_path(root)),
+            named_rule(expected)
         );
     }
 }

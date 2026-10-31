@@ -2,6 +2,8 @@
 //! Does not change the firewall, registry, WER, game files or backup state.
 use std::fs;
 use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Clone, Debug)]
@@ -30,14 +32,89 @@ fn path_state(path: &Path, label: &str) -> String {
 }
 
 #[cfg(windows)]
-fn read_command(name: &str, arguments: &[&str]) -> String {
-    match Command::new(name).args(arguments).output() {
-        Ok(result) if result.status.success() => String::from_utf8_lossy(&result.stdout)
-            .chars()
-            .take(12_000)
-            .collect(),
+fn system32_executable(name: &str) -> PathBuf {
+    let root = std::env::var_os("WINDIR")
+        .or_else(|| std::env::var_os("SystemRoot"))
+        .unwrap_or_else(|| r"C:\Windows".into());
+    PathBuf::from(root).join("System32").join(name)
+}
+
+#[cfg(windows)]
+fn bounded_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .take(12_000)
+        .collect()
+}
+
+#[cfg(windows)]
+fn read_command(program: &Path, arguments: &[&str]) -> String {
+    match Command::new(program).args(arguments).output() {
+        Ok(result) if result.status.success() => bounded_text(&result.stdout),
         Ok(result) => format!("Query unavailable (exit {})", result.status),
         Err(error) => format!("Query unavailable: {error}"),
+    }
+}
+
+/// Only the manager-owned rule is ever queried, always filtered by its
+/// derived name; global or third-party firewall rules are never requested.
+#[cfg(windows)]
+fn query_manager_rule(name: &str) -> Result<(bool, String), String> {
+    let program = system32_executable("netsh.exe");
+    let filter = format!("name={name}");
+    let output = Command::new(&program)
+        .args(["advfirewall", "firewall", "show", "rule", &filter])
+        .output()
+        .map_err(|error| format!("Cannot query Windows Firewall: {error}"))?;
+    let mut text = bounded_text(&output.stdout);
+    if !output.status.success() {
+        text.push(' ');
+        text.push_str(&bounded_text(&output.stderr));
+    }
+    Ok((output.status.success(), text))
+}
+
+/// Rule name derived from the selected game root, matching what
+/// `online_guard::apply` creates. Empty paths are not queried at all.
+fn manager_rule_name(game_path: &str) -> Option<String> {
+    if game_path.trim().is_empty() {
+        return None;
+    }
+    let root = Path::new(game_path);
+    // Match the canonical executable used by apply; if it is absent, show
+    // the prospective rule for the configured root without changing policy.
+    let executable = crate::online_guard::game_executable(root).unwrap_or_else(|_| {
+        let resolved = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        crate::online_guard::game_executable_path(&resolved)
+    });
+    Some(crate::online_guard::named_rule(&executable))
+}
+
+fn firewall_summary(game_path: &str) -> String {
+    let Some(name) = manager_rule_name(game_path) else {
+        return "Manager offline firewall rule not checked: no game folder selected".into();
+    };
+    #[cfg(windows)]
+    {
+        let (success, output) = match query_manager_rule(&name) {
+            Ok(result) => result,
+            Err(error) => return format!("Query unavailable: {error}"),
+        };
+        let lower = output.to_ascii_lowercase();
+        if success && lower.contains(&name.to_ascii_lowercase()) {
+            format!("Manager-owned offline firewall rule {name} is present")
+        } else if success || lower.contains("no rules") {
+            format!("Manager-owned offline firewall rule {name} not found")
+        } else {
+            format!(
+                "Firewall query did not report manager-owned rule {name}; review Windows Firewall for exact policy"
+            )
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = name;
+        "Windows Firewall diagnostics require Windows".into()
     }
 }
 
@@ -58,7 +135,7 @@ pub fn inspect(game_path: &str, stage_path: &str, projects_path: &str) -> Snapsh
     );
     #[cfg(windows)]
     {
-        let running = read_command("tasklist", &["/FO", "CSV", "/NH"]);
+        let running = read_command(&system32_executable("tasklist.exe"), &["/FO", "CSV", "/NH"]);
         let game_process = if running.starts_with("Query unavailable") {
             running
         } else if running.to_ascii_lowercase().contains("\"evolve.exe\"") {
@@ -67,28 +144,7 @@ pub fn inspect(game_path: &str, stage_path: &str, projects_path: &str) -> Snapsh
             "Evolve.exe not detected in current process list".into()
         };
         // Only query the manager-owned rule; never create/remove/reconfigure.
-        let firewall_status = read_command(
-            "netsh",
-            &[
-                "advfirewall",
-                "firewall",
-                "show",
-                "rule",
-                "name=Evolve Mod Manager Offline",
-            ],
-        );
-        let firewall = if firewall_status.starts_with("Query unavailable") {
-            firewall_status
-        } else if firewall_status
-            .to_ascii_lowercase()
-            .contains("no rules match")
-            || firewall_status.to_ascii_lowercase().contains("no rules")
-        {
-            "Manager offline firewall rule not found".into()
-        } else {
-            "Firewall query returned rule information; review Windows Firewall for exact policy"
-                .into()
-        };
+        let firewall = firewall_summary(game_path);
         Snapshot {
             firewall,
             game_process,
@@ -103,7 +159,7 @@ pub fn inspect(game_path: &str, stage_path: &str, projects_path: &str) -> Snapsh
     {
         let _ = Command::new("true");
         Snapshot {
-            firewall: "Windows Firewall diagnostics require Windows".into(),
+            firewall: firewall_summary(game_path),
             game_process: "Windows process diagnostics require Windows".into(),
             environment,
             recovery,
@@ -124,5 +180,38 @@ mod tests {
         assert!(snapshot.environment.contains("not found"));
         assert!(snapshot.recovery.contains("not configured"));
         assert!(!game.exists());
+    }
+    #[test]
+    fn firewall_query_uses_the_manager_derived_rule_name() {
+        let root = Path::new(r"C:\Games\ModdedEvolve\EvolveGame");
+        let expected =
+            crate::online_guard::named_rule(&crate::online_guard::game_executable_path(root));
+        let actual = manager_rule_name(&root.to_string_lossy()).expect("configured game root");
+        assert_eq!(actual, expected);
+        assert!(actual.starts_with("EvolveModManager-Offline-"));
+        assert_ne!(actual, "Evolve Mod Manager Offline");
+    }
+    #[test]
+    fn missing_game_path_skips_the_firewall_query() {
+        assert_eq!(manager_rule_name(""), None);
+        assert_eq!(manager_rule_name("   "), None);
+        assert!(firewall_summary("").contains("no game folder selected"));
+        let missing = std::env::temp_dir().join("evolve-health-missing-game-root");
+        assert!(manager_rule_name(&missing.to_string_lossy()).is_some());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn system32_queries_use_absolute_executable_paths() {
+        for name in ["tasklist.exe", "netsh.exe"] {
+            let path = system32_executable(name);
+            assert!(path.is_absolute());
+            assert_eq!(path.file_name().and_then(|part| part.to_str()), Some(name));
+            assert!(
+                path.parent()
+                    .and_then(Path::file_name)
+                    .and_then(|part| part.to_str())
+                    .is_some_and(|part| part.eq_ignore_ascii_case("System32"))
+            );
+        }
     }
 }
