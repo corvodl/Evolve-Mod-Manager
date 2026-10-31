@@ -25,6 +25,31 @@ installed EvolveGame build folder and compare its PAKs before importing.
   Distinct game directories remain separate builds even when they share
   extracted source data.
 
+## Manage Game Builds popup and identity migration
+
+**Asset Library → Manage Game Builds** opens a floating modal, leaving the
+archive browser and its scroll position unchanged. It lists incremental
+registered installations and legacy `build-collections.json` groups. Each
+entry provides a friendly **Rename** action and a confirmed removal action;
+the toolbar can refresh registrations and import/update a selected installation.
+
+The first explicit Manage Game Builds refresh creates or updates
+`managed-builds.json` as a **non-destructive migration index**. It records a
+stable path-normalized build ID, its prior history-folder IDs and the optional
+friendly name. A normal Windows drive path and the `\\\\?\\` verbatim
+spelling map to the same logical build. Existing history JSON, original PAKs
+and extracted content are not moved or rewritten by this migration. Update
+scans append new snapshots to the stable identity and respect the latest
+previous snapshot across old folder aliases.
+
+Imported archives use ordinary path spellings in new manifests, and the
+read-only catalog hides *byte-identical, same-source* duplicates when the
+original name, SHA-256 and extracted member counts/bytes match. It never
+merges different game roots or conflicting archive bytes. The Level Editor
+can resolve exact same-installation geometry even where stale duplicate build
+labels existed. Truly missing CGFs, unknown DDS formats and unsupported baked
+terrain tile formats remain separate rendering issues.
+
 ## Deleting old imported builds safely
 
 Use **Asset Library → Manage Game Builds** to view managed build snapshots,
@@ -39,11 +64,14 @@ referenced by another build (including legacy collections). An imported
 archive whose ownership/provenance is uncertain is retained. Cleanup errors
 are reported, and the library is reindexed afterward.
 
-This panel currently manages **incremental build-update snapshots**.
-Legacy `build-collections.json` groups and unassigned manual archive imports
-are deliberately left alone rather than silently deleting potentially shared
-data. Disk estimates are based on recorded extracted asset sizes, not full
-filesystem allocation accounting.
+Incremental build removal deletes the selected logical group's validated
+historical snapshot folders (including validated alternate Windows-path IDs)
+and only provably manager-owned, unshared extractions. Legacy collection
+removal deletes **only that collection's registration** from
+`build-collections.json`; extracted imports, other collection members and
+the protected `unassigned` bucket remain intact. Renaming either kind changes
+only its label. Disk estimates are based on recorded extracted asset sizes,
+not full filesystem allocation accounting.
 
 ## Testing and remaining limits
 

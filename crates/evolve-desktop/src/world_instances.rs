@@ -6,17 +6,15 @@ use evolve_core::{RenderMesh, Transform};
 use iced::wgpu;
 use iced::wgpu::util::DeviceExt;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-// Ordinary world-model diffuse textures are limited to 32 MiB so one map
-// cannot flood GPU memory with hundreds of oversized props. Baked ground
-// color is a single, verified atlas: the original Ice_Crashsite layout is
-// 4096×4096 RGBA8 (64 MiB), which must NOT silently fall back to gray.
+// Balanced mode keeps its conservative GPU budget. FULL mode deliberately
+// has NO manager-defined per-map, per-texture or per-scene byte ceiling: it
+// uploads all verified source RGBA pixels at their original dimensions when
+// the adapter supports them. Actual GPU allocation/VRAM limits still apply.
 const MAX_WORLD_DIFFUSE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TERRAIN_ATLAS_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_FULL_TEXTURE_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_SCENE_FULL_TEXTURE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_SCENE_BALANCED_TEXTURE_BYTES: u64 = 384 * 1024 * 1024;
 
 // A shared source Arc must produce only one GPU texture per role, even when
@@ -75,17 +73,17 @@ fn full_quality_dimensions(
     full: bool,
     remaining: u64,
 ) -> Option<(u32, u32)> {
-    if width == 0 || height == 0 || gpu_max == 0 || remaining < 4 {
+    if width == 0 || height == 0 || gpu_max == 0 || (!full && remaining < 4) {
         return None;
     }
-    let cap = if ground {
-        MAX_TERRAIN_ATLAS_BYTES
-    } else if full {
-        MAX_FULL_TEXTURE_BYTES
+    // Full mode never downsizes solely because of a manager-defined budget.
+    let cap = if full {
+        u64::MAX
+    } else if ground {
+        MAX_TERRAIN_ATLAS_BYTES.min(remaining)
     } else {
-        MAX_WORLD_DIFFUSE_BYTES
-    }
-    .min(remaining);
+        MAX_WORLD_DIFFUSE_BYTES.min(remaining)
+    };
     let (mut w, mut h) = (width, height);
     while w > gpu_max || h > gpu_max || u64::from(w) * u64::from(h) * 4 > cap {
         if w == 1 && h == 1 {
@@ -222,12 +220,11 @@ fn auxiliary_map(
     if let Some((texture, view)) = cache.get(&key) {
         return (texture.clone(), view.clone());
     }
-    let remaining = (if full_textures {
-        MAX_SCENE_FULL_TEXTURE_BYTES
+    let remaining = if full_textures {
+        u64::MAX
     } else {
-        MAX_SCENE_BALANCED_TEXTURE_BYTES
-    })
-    .saturating_sub(*used_bytes);
+        MAX_SCENE_BALANCED_TEXTURE_BYTES.saturating_sub(*used_bytes)
+    };
     let selected = source.and_then(|img| {
         gpu_diffuse_quality(
             img,
@@ -245,6 +242,140 @@ fn auxiliary_map(
     }
     cache.insert(key, (texture.clone(), view.clone()));
     (texture, view)
+}
+
+/// Guarantee a share of the *existing* GPU scene budget to every distinct
+/// verified diffuse map before optional normal/spec/gloss/emissive textures.
+/// Without this pass, the last trees/props in a world can turn flat beige
+/// simply because earlier maps consumed the budget in traversal order.
+fn world_diffuse_quotas(ground_count: usize, prop_count: usize) -> (u64, u64) {
+    let scene = MAX_SCENE_BALANCED_TEXTURE_BYTES;
+    // Reserve 75% for real diffuse colors (including source alpha). Other
+    // material roles use the remaining scene budget via existing upload logic.
+    let diffuse_budget = scene.saturating_mul(3) / 4;
+    let terrain_budget = if ground_count == 0 {
+        0
+    } else {
+        diffuse_budget.saturating_div(4).min(96 * 1024 * 1024)
+    };
+    let ground_share = if ground_count == 0 {
+        0
+    } else {
+        terrain_budget / ground_count as u64
+    };
+    let prop_share = if prop_count == 0 {
+        0
+    } else {
+        diffuse_budget.saturating_sub(terrain_budget) / prop_count as u64
+    };
+    (ground_share, prop_share)
+}
+
+/// Populate the cache from original source images before any optional map
+/// uploads. Account for full mip chains; cap the top level to 75% of each
+/// share so additional mips cannot silently exhaust another object's quota.
+/// Multiple placements reusing one Arc upload just one GPU texture.
+fn prefetch_world_diffuse(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    world: &World,
+    full: bool,
+    cache: &mut TextureCache,
+    used_bytes: &mut u64,
+) {
+    let mut unique = HashSet::new();
+    let mut sources = Vec::new();
+    for group in &world.groups {
+        let terrain = is_ground(group);
+        for surface in &group.surfaces {
+            if !surface.visible
+                || surface.index_count == 0
+                || (surface.first_index as usize).saturating_add(surface.index_count as usize)
+                    > group.mesh.indices.len()
+            {
+                continue;
+            }
+            let Some(image) = surface.diffuse.as_ref() else {
+                continue;
+            };
+            let key = (Arc::as_ptr(image) as usize, 0u8, terrain);
+            if unique.insert(key) {
+                sources.push((key, image, terrain));
+            }
+        }
+    }
+    let max_size = device.limits().max_texture_dimension_2d;
+    if full {
+        // Full quality intentionally has no software texture memory ceiling.
+        // Upload every distinct original diffuse before optional MTL channels.
+        for (key, image, terrain) in sources {
+            let Some(selected) = gpu_diffuse_quality(image, terrain, max_size, true, u64::MAX)
+            else {
+                continue;
+            };
+            let bytes = mip_chain_bytes(selected.width(), selected.height());
+            let (texture, view) = upload_rgba_mips(
+                device,
+                queue,
+                Some(selected.as_ref()),
+                [210, 205, 205, 255],
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                "Full-quality original world diffuse (uncapped)",
+            );
+            *used_bytes = used_bytes.saturating_add(bytes);
+            cache.insert(key, (texture, view));
+        }
+        return;
+    }
+    let ground_count = sources.iter().filter(|(_, _, terrain)| *terrain).count();
+    let prop_count = sources.len().saturating_sub(ground_count);
+    let (ground_share, prop_share) = world_diffuse_quotas(ground_count, prop_count);
+    // Preserve original source resolution when all unique diffuse mipchains
+    // actually fit. Only share/downsample fairly for a crowded scene. Full
+    // quality should not reduce a perfectly affordable 2K/4K material.
+    let scene_limit = MAX_SCENE_BALANCED_TEXTURE_BYTES;
+    let diffuse_limit = scene_limit.saturating_mul(3) / 4;
+    let exact_bytes = sources.iter().try_fold(0u64, |sum, (_, img, ground)| {
+        let (w, h) = full_quality_dimensions(
+            img.width(),
+            img.height(),
+            *ground,
+            max_size,
+            full,
+            scene_limit,
+        )?;
+        sum.checked_add(mip_chain_bytes(w, h))
+    });
+    let preserve_original_quality = exact_bytes.is_some_and(|bytes| bytes <= diffuse_limit);
+    for (key, original, terrain) in sources {
+        let quota = if terrain { ground_share } else { prop_share };
+        // The constrained path caps the base mip below the per-image quota,
+        // reserving enough room for lower mip levels. The all-fit path keeps
+        // original image quality within device and per-source safety caps.
+        let source_budget = if preserve_original_quality {
+            scene_limit
+        } else {
+            quota.saturating_mul(3) / 4
+        };
+        let source = gpu_diffuse_quality(original, terrain, max_size, full, source_budget);
+        let Some(source) = source else {
+            continue;
+        };
+        let bytes = mip_chain_bytes(source.width(), source.height());
+        if !preserve_original_quality && bytes > quota {
+            continue;
+        }
+        let (tex, view) = upload_rgba_mips(
+            device,
+            queue,
+            Some(source.as_ref()),
+            [210, 205, 205, 255],
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            "Original level diffuse: source-first budget allocation",
+        );
+        *used_bytes = used_bytes.saturating_add(bytes);
+        cache.insert(key, (tex, view));
+    }
 }
 
 fn is_ground(group: &ModelGroup) -> bool {
@@ -859,12 +990,11 @@ impl Renderer {
             let (tex, view, diffuse_uploaded) = if let Some((tex, view)) = cache.get(&key) {
                 (tex.clone(), view.clone(), key.0 != 0)
             } else {
-                let remaining = (if full_textures {
-                    MAX_SCENE_FULL_TEXTURE_BYTES
+                let remaining = if full_textures {
+                    u64::MAX
                 } else {
-                    MAX_SCENE_BALANCED_TEXTURE_BYTES
-                })
-                .saturating_sub(*used_bytes);
+                    MAX_SCENE_BALANCED_TEXTURE_BYTES.saturating_sub(*used_bytes)
+                };
                 let source = surf.diffuse.as_ref().and_then(|img| {
                     gpu_diffuse_quality(
                         img,
@@ -903,12 +1033,11 @@ impl Renderer {
                 (tex.clone(), view.clone())
             } else {
                 let opaque = [255u8, 255, 255, 255];
-                let remaining = (if full_textures {
-                    MAX_SCENE_FULL_TEXTURE_BYTES
+                let remaining = if full_textures {
+                    u64::MAX
                 } else {
-                    MAX_SCENE_BALANCED_TEXTURE_BYTES
-                })
-                .saturating_sub(*used_bytes);
+                    MAX_SCENE_BALANCED_TEXTURE_BYTES.saturating_sub(*used_bytes)
+                };
                 let mask = surf.opacity.as_ref().and_then(|img| {
                     gpu_diffuse_quality(
                         img,
@@ -1101,6 +1230,14 @@ impl Renderer {
         if key != self.world_identity || self.last_full_textures != full_textures {
             let mut cache = TextureCache::new();
             let mut used_bytes = 0u64;
+            prefetch_world_diffuse(
+                device,
+                queue,
+                world,
+                full_textures,
+                &mut cache,
+                &mut used_bytes,
+            );
             self.groups = world
                 .groups
                 .iter()
@@ -1261,6 +1398,42 @@ mod tests {
     }
 
     #[test]
+    fn balanced_diffuses_reserve_budget_before_optional_material_maps() {
+        let scene = MAX_SCENE_BALANCED_TEXTURE_BYTES;
+        let (ground, prop) = world_diffuse_quotas(1, 200);
+        let allocated = ground + prop * 200;
+        assert!(allocated <= scene * 3 / 4);
+        assert!(ground >= 16 * 1024 * 1024);
+        assert!(prop >= 256 * 1024);
+        assert!(mip_chain_bytes(256, 256) <= prop);
+        let (unused_ground, all_props) = world_diffuse_quotas(0, 200);
+        assert_eq!(unused_ground, 0);
+        assert!(all_props >= prop);
+    }
+
+    #[test]
+    fn full_quality_has_no_legacy_world_or_terrain_texture_caps() {
+        // Source 8192² RGBA needs 256 MiB for its top mip alone, exceeding
+        // every previous per-texture world cap.
+        assert_eq!(
+            full_quality_dimensions(8192, 8192, false, 16384, true, 0),
+            Some((8192, 8192))
+        );
+        assert_eq!(
+            full_quality_dimensions(8192, 8192, true, 16384, true, 0),
+            Some((8192, 8192))
+        );
+        assert_eq!(
+            full_quality_dimensions(8192, 8192, true, 4096, true, 0),
+            Some((4096, 4096))
+        );
+        assert_eq!(
+            full_quality_dimensions(8192, 8192, false, 16384, false, u64::MAX),
+            Some((2048, 2048))
+        );
+    }
+
+    #[test]
     fn world_material_shader_uses_original_bump_specular_gloss_and_emittance() {
         let shader = include_str!("world_instances.wgsl");
         for source in ["normal_map", "specular_map", "gloss_map", "emissive_map"] {
@@ -1328,7 +1501,7 @@ mod tests {
     }
 
     #[test]
-    fn full_quality_retains_original_4096_model_textures_and_bounds_scene_budget() {
+    fn full_quality_retains_original_4096_model_textures_without_manager_budget() {
         assert_eq!(
             full_quality_dimensions(4096, 4096, false, 8192, true, 256 * 1024 * 1024),
             Some((4096, 4096))
@@ -1339,13 +1512,16 @@ mod tests {
         );
         assert_eq!(
             full_quality_dimensions(4096, 4096, false, 8192, true, 4 * 1024 * 1024),
-            Some((1024, 1024))
+            Some((4096, 4096))
         );
         assert_eq!(
             full_quality_dimensions(4096, 4096, false, 2048, true, 256 * 1024 * 1024),
             Some((2048, 2048))
         );
-        assert!(full_quality_dimensions(4096, 4096, false, 8192, true, 0).is_none());
+        assert_eq!(
+            full_quality_dimensions(4096, 4096, false, 8192, true, 0),
+            Some((4096, 4096))
+        );
     }
 
     #[test]

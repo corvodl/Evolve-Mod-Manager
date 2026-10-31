@@ -1173,7 +1173,7 @@ fn unique_gpu_material_bytes(surfaces: &[Surface]) -> usize {
 fn warn_gpu_material_limit(surfaces: &[Surface], warnings: &mut Vec<String>) {
     if unique_gpu_material_bytes(surfaces) > MAX_GPU_PREVIEW_TEXTURE_BYTES {
         warnings.push(
-            "GPU texture preview exceeds the 256 MiB upload limit. Some maps use neutral previews to avoid a renderer crash; the original source files are untouched.".into(),
+            "Model textures exceed the 256 MiB Balanced preview budget. Select Full quality for uncapped GPU texture uploads (VRAM required); original source files are untouched.".into(),
         );
     }
 }

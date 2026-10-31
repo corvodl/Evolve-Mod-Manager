@@ -1634,7 +1634,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 "Textures: Balanced"
             })
             .on_press(Message::ViewerFullTexturesToggled),
-            text("Remembered per-user. Full favors original source DDS pixels, limited by GPU memory.").size(12),
+            text("Full quality has no manager-imposed texture budget. GPU memory exhaustion is possible; Balanced limits usage.").size(12),
             tooltip::Position::Bottom,
         ),
         camera_icon("−", "Zoom out", Message::ViewerZoomWheel(-2.0)),
@@ -2521,7 +2521,7 @@ pub(super) fn preferences_view(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(8)
                 .align_y(iced::Center),
-                text("Full quality prioritizes original DDS resolution for CDF parts; GPU limits can still require downscaling.").size(12).style(design::muted),
+                text("Full uses original DDS resolution with no manager texture cap. Requires sufficient VRAM; the GPU's maximum texture dimensions still apply. Balanced is the low-memory option.").size(12).style(design::muted),
                 design::button("Save preferences").on_press(Message::ViewerSaveLayout),
             ]
             .spacing(15),

@@ -32,6 +32,7 @@ pub mod level_export;
 pub mod library_build_updates;
 pub mod library_catalog;
 pub mod library_import;
+pub mod library_paths;
 pub mod material_effects;
 pub mod materials;
 pub mod model;
@@ -114,7 +115,7 @@ pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_g
 pub use library_build_updates::{
     BuildUpdateFile, LibraryBuildRemovalReport, LibraryBuildUpdatePlan, LibraryBuildUpdateReport,
     ManagedLibraryBuild, apply_library_build_updates, managed_library_builds,
-    remove_managed_library_build, scan_library_build_updates,
+    remove_managed_library_build, rename_managed_library_build, scan_library_build_updates,
 };
 pub use library_catalog::{
     ImportedLibrary, ImportedLookupGuard, ImportedPak, LibraryError, LibraryReference,
