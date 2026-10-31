@@ -1,8 +1,13 @@
-# Optional independent Cryengine-Converter (GPLv2)
+# Bundled independent Cryengine-Converter (GPLv2)
 
 Cryengine-Converter is a **separate command-line executable**, not linked into
-Evolve Mod Manager. It is not required to build or run the manager. This setup
-does not contain game files, extracted assets, or private tools.
+Evolve Mod Manager. The Windows Nightly, production installer, and portable
+package stage it automatically with the corresponding GPLv2 source archive and
+attribution. No separate converter installation is required for supported DBA
+conversion. The manager itself can still compile without the converter, but
+DBA conversion is unavailable if the independent binary was deliberately
+omitted from a custom development build. This setup contains no game files,
+extracted assets, or private tools.
 
 For local Windows builds, either provide both downloaded upstream files:
 
@@ -30,11 +35,14 @@ the executable, matching source ZIP, and `NOTICE.txt`. Existing staging is
 never overwritten automatically. `dist/` is ignored by Git; do not commit
 converter binaries, local game data, or extracted assets.
 
-Manual installer builds include the staged converter as an **unchecked**
-optional task; the portable ZIP includes it only if staging was requested
-before packaging. On GitHub Actions, `include_cryengine_converter` is an
-explicit opt-in input for manual Nightly or production release dispatch;
-ordinary Nightly request pushes never fetch it. Keep the source archive and
-notice next to the binary in any redistribution, and comply with GPLv2.
-If distributing a changed binary, this pin and its corresponding source must
-be updated together, with licensing reviewed again.
+Release workflows always stage the pinned executable and matching source in
+`dist/third_party/Cryengine-Converter/`. The Inno Setup installer installs them
+inside `{app}\\third_party\\Cryengine-Converter` by default, and the portable
+ZIP includes the same directory. The Model Viewer auto-detects its installed
+copy on startup for the DBA browser and manual animation conversion. No
+`PATH` modification or separate user download is needed.
+
+This is still an **independent GPLv2 program**, not part of the Rust binary.
+Every package must retain the upstream source ZIP and notice beside the EXE.
+GPLv2 distribution obligations apply. If distributing a modified binary, its
+corresponding source, hash pin, and documentation must be updated together.
