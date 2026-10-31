@@ -24,3 +24,5 @@ Work follows the merged PR #168/#169 nightly snapshot. No proprietary game PAK, 
 - Verify cargo fmt, core and Windows desktop tests/Clippy, and WGSL parser tests. Synthetic tests only, never original assets.
 - Visual-test source spotlights and HDR on Ice_Crashsite, source texture colors, geometry depth and render order. Validate particle emitter names against same-build imported libs.pak before rendering.
 - Next: source-linked emitter placement, texture atlases, GPU sprite instancing and effects-browser playback; refraction coverage mask and scene-color capture; native raymarched fog/beam lighting.
+
+CI note: The branch uses a temporary formatting workflow that removes itself after applying cargo fmt; this documentation update triggers ordinary checks against the formatted source. PR remains draft until validation and in-game visual inspection.
