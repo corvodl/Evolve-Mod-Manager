@@ -2,7 +2,8 @@
 //! model viewer. Never infer an animation from a matching filename alone.
 use evolve_core::{
     AnimationEventDatabase, AssetResolution, Inventory, LibraryReferenceStatus,
-    animation_references, read_animation_events, resolve_imported_reference, resolve_virtual,
+    animation_references, animation_wildcard_matches, imported_library,
+    read_animation_events, resolve_imported_reference, resolve_virtual,
 };
 use std::path::{Path, PathBuf};
 
@@ -231,6 +232,69 @@ fn idle_priority(name: &str) -> Option<(bool, bool, bool, String)> {
     ))
 }
 
+/// Expand only source-declared wildcard CAFs. Local entries and matching-build
+/// AnimationsCAF manifests are metadata; each clip is independently verified
+/// by exact() when selected. Never walk arbitrary game directories or borrow
+/// a different build's animation by basename.
+fn matching_caf_paths(
+    pattern: &str,
+    inv: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Vec<String>, String> {
+    const MAX_MATCHES: usize = 12_000;
+    const MAX_MANIFEST: u64 = 32 * 1024 * 1024;
+    let mut paths = std::collections::BTreeMap::<String, String>::new();
+    let mut consider = |path: &str| -> Result<(), String> {
+        let normalized = path.replace('\\', "/");
+        if normalized.to_ascii_lowercase().ends_with(".caf")
+            && animation_wildcard_matches(pattern, &normalized)
+        {
+            paths.entry(normalized.to_ascii_lowercase()).or_insert(normalized);
+            if paths.len() > MAX_MATCHES {
+                return Err("Animation wildcard exceeds 12000 matching CAFs".into());
+            }
+        }
+        Ok(())
+    };
+    for entry in &inv.entries {
+        consider(&entry.relative_path)?;
+    }
+    if let Some(root) = imported {
+        let catalog = imported_library(root).map_err(|e| e.to_string())?;
+        for archive in &catalog.archives {
+            if !archive.name.eq_ignore_ascii_case("AnimationsCAF.pak")
+                || build.is_some_and(|label| !archive.builds.iter().any(|b| b == label))
+            {
+                continue;
+            }
+            let manifest = Path::new(&archive.directory).join("asset-library.json");
+            let meta = std::fs::symlink_metadata(&manifest).map_err(|e| e.to_string())?;
+            if !meta.file_type().is_file() || meta.len() > MAX_MANIFEST {
+                return Err("Unsafe animation archive manifest".into());
+            }
+            let raw = std::fs::read(&manifest).map_err(|e| e.to_string())?;
+            let document: serde_json::Value =
+                serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+            if document["version"].as_u64() != Some(1)
+                || document["name"].as_str().is_none_or(|s| !s.eq_ignore_ascii_case(&archive.name))
+            {
+                return Err("Animation archive manifest identity mismatch".into());
+            }
+            let entries = document["entries"].as_array().ok_or("Missing animation archive entries")?;
+            if entries.len() > 250_000 {
+                return Err("Animation archive manifest member limit".into());
+            }
+            for entry in entries {
+                if let Some(name) = entry["path"].as_str() {
+                    consider(name)?;
+                }
+            }
+        }
+    }
+    Ok(paths.into_values().collect())
+}
+
 pub fn discover(
     relative: &str,
     inv: &Inventory,
@@ -438,6 +502,24 @@ pub fn discover(
             }
             continue;
         }
+        if r.kind == "caf_glob" {
+            match matching_caf_paths(&r.path, inv, imported, build) {
+                Ok(paths) => {
+                    for path in paths {
+                        let label = path.rsplit('/').next().unwrap_or(&path)
+                            .trim_end_matches(".caf").to_owned();
+                        found.clips.push(AutoClip {
+                            label,
+                            kind: "caf".into(),
+                            virtual_path: path,
+                            source: None,
+                        });
+                    }
+                }
+                Err(error) => found.warnings.push(format!("CAF wildcard: {error}")),
+            }
+            continue;
+        }
         let path = if r.kind == "caf" {
             match exact(inv, &r.path, None, None) {
                 Ok(path) => path,
@@ -513,6 +595,18 @@ pub fn resolve_declared_dba(
 mod tests {
     use super::*;
     use evolve_core::scan_directory;
+
+    #[test]
+    fn wildcard_expands_only_matching_character_cafs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("characters/hunters/merc_bucket/animations")).unwrap();
+        std::fs::create_dir_all(dir.path().join("characters/hunters/merc_emet/animations")).unwrap();
+        std::fs::write(dir.path().join("characters/hunters/merc_bucket/animations/bucket_idle.caf"), b"caf").unwrap();
+        std::fs::write(dir.path().join("characters/hunters/merc_emet/animations/emet_idle.caf"), b"caf").unwrap();
+        let inv = scan_directory(dir.path()).unwrap();
+        let clips = matching_caf_paths("characters/hunters/merc_bucket/animations/*.caf", &inv, None, None).unwrap();
+        assert_eq!(clips, vec!["characters/hunters/merc_bucket/animations/bucket_idle.caf"]);
+    }
 
     #[test]
     fn render_companion_never_falls_back_to_neighboring_character() {
