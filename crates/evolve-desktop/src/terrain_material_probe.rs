@@ -809,7 +809,10 @@ pub(super) fn compose(
             Ok(image) => {
                 verified_resolutions.push(format!(
                     "paint ID {id} -> {}x{} ({}; {})",
-                    image.width(), image.height(), material, diffuse
+                    image.width(),
+                    image.height(),
+                    material,
+                    diffuse
                 ));
                 let height = authored
                     .height
@@ -852,7 +855,11 @@ pub(super) fn compose(
         layers.len(),
         active.len(),
         failures.len(),
-        verified_resolutions.into_iter().take(8).collect::<Vec<_>>().join("; "),
+        verified_resolutions
+            .into_iter()
+            .take(8)
+            .collect::<Vec<_>>()
+            .join("; "),
         failures.into_iter().take(5).collect::<Vec<_>>().join("; ")
     );
     Ok(Some((
