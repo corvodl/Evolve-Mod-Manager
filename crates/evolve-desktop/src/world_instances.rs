@@ -799,10 +799,13 @@ struct GpuGroup {
     instances: wgpu::Buffer,
     visible: u32,
     surfaces: Vec<GpuSurface>,
+    terrain: bool,
     geometry_bytes: u64,
 }
 pub(super) struct Renderer {
     solid: wgpu::RenderPipeline,
+    terrain_source: wgpu::RenderPipeline,
+    terrain_source_unlit: bool,
     foliage_cutout: wgpu::RenderPipeline,
     transparent: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
@@ -1004,9 +1007,11 @@ impl Renderer {
             bind_group_layouts: &[&layout],
             push_constant_ranges: &[],
         });
-        let make = |blend: bool, cutout: bool| {
+        let make = |blend: bool, cutout: bool, raw_terrain: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(if blend {
+                label: Some(if raw_terrain {
+                    "Unlit original terrain color atlas"
+                } else if blend {
                     "Transparent instanced world geometry"
                 } else if cutout {
                     "Alpha-tested CryEngine vegetation (depth-writing)"
@@ -1025,7 +1030,9 @@ impl Renderer {
                     // Solid world meshes must NOT forward packed diffuse alpha
                     // into the Iced window target; it can make the actual
                     // window transparent to applications beneath it.
-                    entry_point: Some(if cutout {
+                    entry_point: Some(if raw_terrain {
+                        "fs_terrain_source"
+                    } else if cutout {
                         "fs_foliage"
                     } else if blend {
                         "fs_main"
@@ -1060,9 +1067,11 @@ impl Renderer {
             })
         };
         Self {
-            solid: make(false, false),
-            foliage_cutout: make(false, true),
-            transparent: make(true, false),
+            solid: make(false, false, false),
+            terrain_source: make(false, false, true),
+            terrain_source_unlit: false,
+            foliage_cutout: make(false, true, false),
+            transparent: make(true, false, false),
             layout,
             camera_uniform,
             lighting_uniform,
@@ -1406,6 +1415,7 @@ impl Renderer {
             instances,
             visible: model.instances.len().min(u32::MAX as usize) as u32,
             surfaces,
+            terrain,
             geometry_bytes: (vert.len() * std::mem::size_of::<Vertex>()
                 + model.mesh.indices.len() * std::mem::size_of::<u32>()
                 + capacity * std::mem::size_of::<InstanceGpu>()
@@ -1425,6 +1435,7 @@ impl Renderer {
         zoom: f32,
         hour: f32,
         full_textures: bool,
+        terrain_source_unlit: bool,
     ) {
         let Some(world) = world else {
             self.groups.clear();
@@ -1438,6 +1449,7 @@ impl Renderer {
             self.last_camera = None;
             return;
         };
+        self.terrain_source_unlit = terrain_source_unlit;
         let key = Arc::as_ptr(world) as usize;
         if key != self.world_identity || self.last_full_textures != full_textures {
             // Drop the former GPU scene before creating any new allocations.
@@ -1661,15 +1673,16 @@ impl Renderer {
         // Opaque, masked foliage, then blended glass/water. Alpha-tested
         // vegetation writes depth, unlike translucent overlays.
         for mode in 0..3 {
-            pass.set_pipeline(match mode {
-                0 => &self.solid,
-                1 => &self.foliage_cutout,
-                _ => &self.transparent,
-            });
             for group in self.groups.iter().flatten() {
                 if group.visible == 0 {
                     continue;
                 }
+                pass.set_pipeline(match mode {
+                    0 if group.terrain && self.terrain_source_unlit => &self.terrain_source,
+                    0 => &self.solid,
+                    1 => &self.foliage_cutout,
+                    _ => &self.transparent,
+                });
                 pass.set_vertex_buffer(0, group.vertices.slice(..));
                 pass.set_vertex_buffer(1, group.instances.slice(..));
                 pass.set_index_buffer(group.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -1689,6 +1702,22 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_terrain_shader_does_not_apply_lighting_or_fog_to_original_pixels() {
+        let shader = include_str!("world_instances.wgsl");
+        let entry = shader
+            .split("fn fs_terrain_source(input:Output)")
+            .nth(1)
+            .expect("unlit source terrain shader")
+            .split("@fragment")
+            .next()
+            .unwrap();
+        assert!(entry.contains("sample_source_albedo(input.uv)"));
+        assert!(!entry.contains("distance_fog("));
+        assert!(!entry.contains("shade("));
+        naga::front::wgsl::parse_str(shader).expect("terrain source shader parses");
+    }
 
     #[test]
     fn group_loading_priority_uses_position_not_camera_direction() {
