@@ -84,3 +84,15 @@ is allowed.
 
 The expected result is a reusable terrain material renderer, not a
 single screenshot color patch.
+
+
+## Supplied PAK provenance fixtures (2026-10-31)
+
+The two privately provided ZIPs are named for their **original source PAKs**, not map-owned texture files. Never rename them to terraintexture.pak or treat the ZIP files themselves as DDS resources:
+
+- \`materials_min_terrain.zip\` represents \`materials_min.pak\` terrain members: **90** \`materials/terrain/*.mtl\` source definitions. Their \`Shader="Terrain.Layer"\` slots preserve original \`PublicParams\`, texture roles, \`TexMod\` tiling and \`SurfaceType\`. Referenced \`.tif\` files are authored names; normal import resolution selects cooked \`.dds.0\` followed by a complete split-mip set.
+- \`materials_basic_terrain.zip\` represents \`materials_basic.pak\` terrain members: **3** high-pass diffuse source sets, each split into \`.dds.0\` through \`.dds.6\` (**21** archive members). Their DDS headers report **1024×1024 DXT1**, and the higher-resolution blocks reside in numbered fragments. Do not attempt to render the tiny low-resolution \`.dds.0\` tail as the full high-resolution image or claim it is complete without the other parts.
+
+The same-install diagnostic now attempts an exact, verified material lookup for every original declared layer/surface material and audits each known terrain texture reference through the existing split DDS inspector. No game bytes or user ZIP assets were committed. Archive labels are secondary to the original installed \`Game\` root; differing known build labels are excluded. Missing and ambiguous dependencies are reported explicitly, and unrelated basename matches are forbidden.
+
+**Important limitations:** These extracts do not supply most referenced bump, height, and specular textures. The present additions are source/dependency verification and debugging, **not** native terrain detail shading: the GPU still does not evaluate \`Terrain.Layer\` high-pass composition, masks and transitions. Native color parity requires same-build complete dependencies and visual comparisons with the running game. A PAK's filename alone cannot prove source build compatibility when importing fixtures from an unknown installation.
