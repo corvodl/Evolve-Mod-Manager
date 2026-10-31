@@ -1115,6 +1115,48 @@ fn terrain_layer_material_report(paint: &TerrainPaintMap) -> String {
     )
 }
 
+/// The original SurfaceTypeID namespace is distinct from painted LayerId.
+/// Joining them numerically could assign an unrelated high-pass texture and
+/// would make valid baked source colors appear wrong on every map.
+fn terrain_surface_type_report(paint: &TerrainPaintMap) -> String {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut definitions = BTreeMap::<u8, BTreeSet<&str>>::new();
+    for entry in &paint.surface_types {
+        let path = if entry.detail_material.is_empty() {
+            entry.name.as_str()
+        } else {
+            entry.detail_material.as_str()
+        };
+        if !path.is_empty() {
+            definitions.entry(entry.id).or_default().insert(path);
+        }
+    }
+    let conflicting_ids = definitions.values().filter(|paths| paths.len() > 1).count();
+    let known = definitions
+        .values()
+        .flat_map(|paths| paths.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let matched = paint
+        .layers
+        .iter()
+        .filter(|layer| !layer.surface_type.is_empty() && known.contains(layer.surface_type.as_str()))
+        .count();
+    let samples = paint
+        .surface_types
+        .iter()
+        .take(4)
+        .map(|entry| format!("{}:{}", entry.id, entry.detail_material))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Original terrain SurfaceTypes: {} definitions, {} conflicting source IDs, {matched}/{} authored Layers reference a declared high-pass material; source samples [{}]. SurfaceTypeID and LayerId are separate, and the original surface detail textures are not yet blended in the preview.",
+        paint.surface_types.len(),
+        conflicting_ids,
+        paint.layers.len(),
+        samples,
+    )
+}
+
 /// Diagnostic of original decoded atlas bytes, before shader lighting or
 /// the GPU sRGB conversion. Never recolor, gamma-adjust or rewrite source.
 fn terrain_pixel_report(img: &image::RgbaImage) -> String {
@@ -1169,6 +1211,35 @@ fn terrain_pixel_report(img: &image::RgbaImage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_type_ids_are_never_assumed_equal_to_layer_bitmap_ids() {
+        let paint = TerrainPaintMap {
+            width: 1,
+            height: 1,
+            layer_names: [(22, "Beach".into())].into(),
+            layers: vec![evolve_core::TerrainLayerDefinition {
+                id: 22,
+                name: "Beach".into(),
+                surface_type: "materials/terrain/sand".into(),
+                filter_color: None,
+                brightness: None,
+                tiling: None,
+            }],
+            surface_types: vec![evolve_core::TerrainSurfaceType {
+                id: 0,
+                name: "Sand".into(),
+                detail_material: "materials/terrain/sand".into(),
+                detail_texture: String::new(),
+                project_axis: Some(2),
+                detail_scale: Some([1.0, 1.0]),
+            }],
+            ids: vec![22],
+        };
+        let report = terrain_surface_type_report(&paint);
+        assert!(report.contains("1/1 authored Layers"));
+        assert!(report.contains("SurfaceTypeID and LayerId are separate"));
+    }
 
     #[test]
     fn reports_missing_and_duplicate_source_terrain_layer_mappings_generically() {
