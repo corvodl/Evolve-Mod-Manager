@@ -1651,8 +1651,7 @@ impl Renderer {
         self.source_hashes = hashes;
         if (uploaded != 0 || mip_uploads != 0)
             && (progress.loaded.load(Ordering::Relaxed) % 16 == 0
-                || (pending == 0 && self.pending_diffuse.is_empty())
-                )
+                || (pending == 0 && self.pending_diffuse.is_empty()))
         {
             crate::crash_diagnostics::record(
                 "level_gpu_residency",
