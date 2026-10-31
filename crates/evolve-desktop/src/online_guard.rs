@@ -93,6 +93,12 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             let stdout = String::from_utf8_lossy(&out.stdout);
+            let combined = format!("{stdout} {stderr}").to_ascii_lowercase();
+            // netsh may return a failure exit code when no rule matches.
+            // Accept only its explicit no-match response, not arbitrary errors.
+            if combined.contains("no rules match the specified criteria") {
+                return Ok(false);
+            }
             return Err(format!(
                 "Cannot verify manager firewall rule {name} (exit {}). {} {}",
                 out.status,
@@ -211,12 +217,12 @@ mod tests {
         let args = manager_rule_delete_args(&rule, exe);
         assert_eq!(
             args,
-            [
-                "delete",
-                "rule",
-                &format!("name={rule}"),
-                "dir=out",
-                &format!("program={}", win_path_text(exe)),
+            vec![
+                "delete".to_string(),
+                "rule".to_string(),
+                format!("name={rule}"),
+                "dir=out".to_string(),
+                format!("program={}", win_path_text(exe)),
             ]
         );
         assert!(!args.iter().any(|arg| arg == "name=all"));
