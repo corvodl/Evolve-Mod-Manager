@@ -1,0 +1,29 @@
+name: One-time terrain PR Rust formatting
+on:
+  push:
+    branches:
+      - feature/terrain-surface-layer-provenance-20261031
+    paths:
+      - .github/workflows/terrain-fmt-once.yml
+permissions:
+  contents: write
+jobs:
+  format:
+    if: github.repository == 'corvodl/Evolve-Mod-Manager'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/terrain-surface-layer-provenance-20261031
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format current PR and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git rm .github/workflows/terrain-fmt-once.yml
+          git -c user.name='Terrain CI' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -am 'Apply rustfmt to terrain detail implementation'
+          git push origin HEAD:feature/terrain-surface-layer-provenance-20261031
