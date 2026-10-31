@@ -902,9 +902,20 @@ fn open_selected(
     }
     let (particle_placements, particle_warnings) =
         crate::level_atmosphere::particle_placements(&sources, scene.as_ref());
+    let particle_examples = particle_placements
+        .iter()
+        .take(3)
+        .map(|placed| {
+            format!(
+                "{} at ({:.0}, {:.0}, {:.0})",
+                placed.effect, placed.position[0], placed.position[1], placed.position[2]
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
     diagnostics.push(format!(
-        "Original map particle placements: {} active named ParticleEffect entities with exact GUID/world transforms. Source particle library assets and sprite simulation are separate; placement alone does not render particles.",
-        particle_placements.len()
+        "Original map particle placements: {} active named ParticleEffect entities with exact GUID/world transforms. Examples: [{}]. Source particle library assets and sprite simulation are separate; placement alone does not render particles.",
+        particle_placements.len(), particle_examples
     ));
     diagnostics.extend(particle_warnings.into_iter().take(5));
     let (local_lights, light_warnings) = crate::level_atmosphere::lights(&sources, scene.as_ref());
