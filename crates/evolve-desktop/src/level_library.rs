@@ -760,13 +760,17 @@ fn open_selected(
                 }
             },
             Err(error) => {
-                diagnostics.push(format!("Could not read original SkyBox configuration: {error}"));
+                diagnostics.push(format!(
+                    "Could not read original SkyBox configuration: {error}"
+                ));
                 Default::default()
             }
         },
         Ok(None) => Default::default(),
         Err(error) => {
-            diagnostics.push(format!("Could not resolve original SkyBox configuration: {error}"));
+            diagnostics.push(format!(
+                "Could not resolve original SkyBox configuration: {error}"
+            ));
             Default::default()
         }
     };
