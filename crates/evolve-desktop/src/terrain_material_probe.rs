@@ -749,6 +749,7 @@ pub(super) fn compose(
     }
     let mut layers = HashMap::new();
     let mut failures = Vec::new();
+    let mut verified_resolutions = Vec::new();
     for (&id, names) in &matches {
         if names.len() != 1 {
             failures.push(format!(
@@ -806,6 +807,10 @@ pub(super) fn compose(
         // do not silently omit legitimate Evolve terrain materials by name.
         match load_detail_image(&catalog, &diffuse, material) {
             Ok(image) => {
+                verified_resolutions.push(format!(
+                    "paint ID {id} -> {}x{} ({}; {})",
+                    image.width(), image.height(), material, diffuse
+                ));
                 let height = authored
                     .height
                     .as_deref()
@@ -843,10 +848,11 @@ pub(super) fn compose(
         ));
     }
     let report = format!(
-        "Terrain.Layer high-pass preview: {}/{} authored painted material IDs reconstructed from complete same-install DDS streams; {} unresolved/unsupported. Original RGB ground atlas preserved. Detail add-signed shader enabled; categorical layer borders use interpolated coverage (not original engine blend masks). {}",
+        "Terrain.Layer high-pass preview: {}/{} authored painted material IDs reconstructed from complete same-install DDS streams; {} unresolved/unsupported. Original RGB ground atlas preserved. Detail add-signed shader enabled; categorical layer borders use interpolated coverage (not original engine blend masks). Source resolutions: {}. Unresolved examples: {}",
         layers.len(),
         active.len(),
         failures.len(),
+        verified_resolutions.into_iter().take(8).collect::<Vec<_>>().join("; "),
         failures.into_iter().take(5).collect::<Vec<_>>().join("; ")
     );
     Ok(Some((
