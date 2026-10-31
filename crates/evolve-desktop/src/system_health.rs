@@ -2,8 +2,6 @@
 //! Does not change the firewall, registry, WER, game files or backup state.
 use std::fs;
 use std::path::Path;
-#[cfg(windows)]
-use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Clone, Debug)]
@@ -32,11 +30,8 @@ fn path_state(path: &Path, label: &str) -> String {
 }
 
 #[cfg(windows)]
-fn system32_executable(name: &str) -> PathBuf {
-    let root = std::env::var_os("WINDIR")
-        .or_else(|| std::env::var_os("SystemRoot"))
-        .unwrap_or_else(|| r"C:\Windows".into());
-    PathBuf::from(root).join("System32").join(name)
+fn system32_executable(name: &str) -> Result<std::path::PathBuf, String> {
+    crate::windows_system32::executable(name)
 }
 
 #[cfg(windows)]
@@ -60,7 +55,7 @@ fn read_command(program: &Path, arguments: &[&str]) -> String {
 /// derived name; global or third-party firewall rules are never requested.
 #[cfg(windows)]
 fn query_manager_rule(name: &str) -> Result<(bool, String), String> {
-    let program = system32_executable("netsh.exe");
+    let program = system32_executable("netsh.exe")?;
     let filter = format!("name={name}");
     let output = Command::new(&program)
         .args(["advfirewall", "firewall", "show", "rule", &filter])
@@ -135,7 +130,9 @@ pub fn inspect(game_path: &str, stage_path: &str, projects_path: &str) -> Snapsh
     );
     #[cfg(windows)]
     {
-        let running = read_command(&system32_executable("tasklist.exe"), &["/FO", "CSV", "/NH"]);
+        let running = system32_executable("tasklist.exe")
+            .map(|program| read_command(&program, &["/FO", "CSV", "/NH"]))
+            .unwrap_or_else(|error| format!("Query unavailable: {error}"));
         let game_process = if running.starts_with("Query unavailable") {
             running
         } else if running.to_ascii_lowercase().contains("\"evolve.exe\"") {
@@ -203,7 +200,7 @@ mod tests {
     #[test]
     fn system32_queries_use_absolute_executable_paths() {
         for name in ["tasklist.exe", "netsh.exe"] {
-            let path = system32_executable(name);
+            let path = system32_executable(name).expect("Windows system tool");
             assert!(path.is_absolute());
             assert_eq!(path.file_name().and_then(|part| part.to_str()), Some(name));
             assert!(
