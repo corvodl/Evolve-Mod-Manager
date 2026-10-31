@@ -301,6 +301,7 @@ fn group_new_bytes(
     group: &ModelGroup,
     cache: &TextureCache,
     hashes: &mut SourceKeys,
+    gpu_max_dimension: u32,
 ) -> u64 {
     let mut seen = HashSet::new();
     let mut bytes = (group.mesh.positions.len() * std::mem::size_of::<Vertex>()
@@ -318,7 +319,13 @@ fn group_new_bytes(
         ] {
             let key = texture_key(source, role, ground, hashes);
             if !cache.contains_key(&key) && seen.insert(key) {
-                bytes = bytes.saturating_add(source.map_or(4, |img| mip_chain_bytes(img.width(), img.height())));
+                let footprint = source.map_or(4, |img| {
+                    let (width, height) = full_quality_dimensions(
+                        img.width(), img.height(), ground, gpu_max_dimension, true, u64::MAX,
+                    ).unwrap_or((1, 1));
+                    mip_chain_bytes(width, height)
+                });
+                bytes = bytes.saturating_add(footprint);
             }
         }
     }
@@ -1341,7 +1348,10 @@ impl Renderer {
                 pending += 1;
                 continue;
             }
-            let requested = group_new_bytes(&world.groups[idx], &cache, &mut hashes);
+            let requested = group_new_bytes(
+                &world.groups[idx], &cache, &mut hashes,
+                device.limits().max_texture_dimension_2d,
+            );
             // Prefer near/ground geometry when visible groups collectively
             // exceed the conservative residency target. Evict the farthest
             // loaded group only if it is genuinely farther than this candidate,
