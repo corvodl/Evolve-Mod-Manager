@@ -406,8 +406,7 @@ fn authored_detail(bytes: &[u8]) -> Result<AuthoredDetail, String> {
     // The normal MTL resolver already decodes it; use the same bounded
     // decoder for optional TexMod/PublicParams rather than silently
     // treating a compiled material as an empty XML document.
-    let xml = evolve_core::cryxml::xml_bytes(bytes, 4 * 1024 * 1024)
-        .map_err(|e| e.to_string())?;
+    let xml = evolve_core::cryxml::xml_bytes(bytes, 4 * 1024 * 1024).map_err(|e| e.to_string())?;
     let mut reader = quick_xml::Reader::from_reader(xml.as_ref());
     let mut diffuse_open = false;
     loop {
@@ -691,10 +690,20 @@ fn compose_detail(
 /// verified material decoder. The ad-hoc source parameter scan is never
 /// authoritative for DDS selection: real materials can use nested leaf
 /// slots, mixed-case attributes or compiled CryXmlB.
-fn terrain_layer_diffuse(document: &evolve_core::MaterialDocument) -> Result<Option<String>, String> {
+fn terrain_layer_diffuse(
+    document: &evolve_core::MaterialDocument,
+) -> Result<Option<String>, String> {
     let mut paths = BTreeSet::new();
-    for slot in document.slots.iter().filter(|s| s.shader.eq_ignore_ascii_case("Terrain.Layer")) {
-        for map in slot.maps.iter().filter(|map| map.role.eq_ignore_ascii_case("diffuse")) {
+    for slot in document
+        .slots
+        .iter()
+        .filter(|s| s.shader.eq_ignore_ascii_case("Terrain.Layer"))
+    {
+        for map in slot
+            .maps
+            .iter()
+            .filter(|map| map.role.eq_ignore_ascii_case("diffuse"))
+        {
             let key = safe_virtual(&map.path)
                 .ok_or_else(|| format!("Unsafe Terrain.Layer diffuse path: {}", map.path))?;
             paths.insert(key);
@@ -703,7 +712,9 @@ fn terrain_layer_diffuse(document: &evolve_core::MaterialDocument) -> Result<Opt
     match paths.len() {
         0 => Ok(None),
         1 => Ok(paths.into_iter().next()),
-        count => Err(format!("{count} different authored Terrain.Layer diffuse paths; refusing arbitrary choice")),
+        count => Err(format!(
+            "{count} different authored Terrain.Layer diffuse paths; refusing arbitrary choice"
+        )),
     }
 }
 
@@ -765,7 +776,9 @@ pub(super) fn compose(
         let diffuse = match terrain_layer_diffuse(&document) {
             Ok(Some(source)) => source,
             Ok(None) => {
-                failures.push(format!("{material}: Terrain.Layer has no authored diffuse map"));
+                failures.push(format!(
+                    "{material}: Terrain.Layer has no authored diffuse map"
+                ));
                 continue;
             }
             Err(error) => {
@@ -776,7 +789,9 @@ pub(super) fn compose(
         let authored = match authored_detail(&fs::read(&path).map_err(|e| e.to_string())?) {
             Ok(value) => value,
             Err(error) => {
-                failures.push(format!("{material}: material parameters unavailable ({error})"));
+                failures.push(format!(
+                    "{material}: material parameters unavailable ({error})"
+                ));
                 AuthoredDetail {
                     tile: [1.0, 1.0],
                     strength: 1.0,
@@ -813,9 +828,18 @@ pub(super) fn compose(
     if layers.is_empty() {
         return Err(format!(
             "No usable Terrain.Layer diffuse DDS for {} active paint IDs; {} IDs have authored bindings. Examples: {}",
-            active.len(), matches.len(),
-            if failures.is_empty() { "no authored diffuse references were resolved".into() }
-            else { failures.iter().take(6).cloned().collect::<Vec<_>>().join("; ") }
+            active.len(),
+            matches.len(),
+            if failures.is_empty() {
+                "no authored diffuse references were resolved".into()
+            } else {
+                failures
+                    .iter()
+                    .take(6)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }
         ));
     }
     let report = format!(
@@ -854,7 +878,8 @@ mod composition_tests {
                   <Texture Map="Bumpmap" File="Materials/Terrain/clay_ddn.tif"/>
                 </Textures></Material>
             </SubMaterials></Material>"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(
             terrain_layer_diffuse(&doc).unwrap().as_deref(),
             Some("materials/terrain/clay_dirt_b_highpass.tif"),
@@ -867,7 +892,8 @@ mod composition_tests {
             br#"<Material Shader="Terrain.Layer"><Textures>
             <Texture Map="Bumpmap" File="materials/terrain/dirt_ddn.tif"/>
             </Textures></Material>"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(terrain_layer_diffuse(&no_diffuse).unwrap().is_none());
         let competing = evolve_core::parse_material(
             br#"<Material><SubMaterials>
@@ -880,9 +906,15 @@ mod composition_tests {
 
     #[test]
     fn default_terrain_material_is_included_without_indexing_unrelated_assets() {
-        assert!(is_terrain_dependency("materials/universal/default/material_terrain_default.mtl"));
-        assert!(!is_terrain_dependency("materials/universal/default/unrelated.dds.0"));
-        assert!(!is_terrain_dependency("characters/hunters/markov/materials/body.mtl"));
+        assert!(is_terrain_dependency(
+            "materials/universal/default/material_terrain_default.mtl"
+        ));
+        assert!(!is_terrain_dependency(
+            "materials/universal/default/unrelated.dds.0"
+        ));
+        assert!(!is_terrain_dependency(
+            "characters/hunters/markov/materials/body.mtl"
+        ));
     }
 
     #[test]
