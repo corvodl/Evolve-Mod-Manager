@@ -1,6 +1,6 @@
-# Explicit manual Nightly request. This file is the connector-safe build trigger.
-# Only code already merged into main is packaged. Draft PR #161 is excluded.
-request: user-requested-nightly-after-pr158-pr160-2026-10-31
+# Explicit user-requested Nightly: merged level streaming and model/terrain fixes.
+# Only merged main branch is packaged; unfinished security PR #161 is excluded.
+request: user-requested-nightly-after-pr162-pr163-2026-10-31
 requested: 2026-10-31
-base-main-commit: d0df517b85636a67a602f65bdffad70243b521d7
-description: Build the latest merged main including PR #159 (DDS/full-quality texture fixes and Manage Game Builds), PR #160 (manager UI redesign), and PR #158 (Level Editor fog/GPU streaming). PR #161 remains a draft and must not be included.
+base-main-commit: 7c8b5c58c4bdc3e8f316b3bc9c6fe0fa44211a60
+description: Build main including PR #162 persistent Level Editor object residency, no CPU camera culling and progressive diffuse streaming, plus PR #163 RGB24 terrain atlas orientation and incremental Model Viewer GPU material uploads. No claim of fully resolved DDS/CGF dependencies or exact native terrain parity.
