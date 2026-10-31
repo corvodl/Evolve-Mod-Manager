@@ -333,7 +333,13 @@ pub(super) fn atmosphere_uniform(
             .and_then(|tod| tod.scalar(key, hour))
             .unwrap_or(default)
     };
-    let sky_sun = color("Sky light sun intensity", [1., 0.94, 0.85]);
+    let sky_sun = source
+        .and_then(|tod| {
+            tod.color("Sky light sun intensity", hour)
+                .or_else(|| tod.color("Sun color", hour))
+        })
+        .unwrap_or([1.0, 0.94, 0.85]);
+    let skybox_multiplier = scalar("Skybox multiplier", if static_available { 1.0 } else { 0.0 });
     let intensity = scalar("Sky light sun intensity multiplier", 1.0);
     let rayleigh = scalar("Rayleigh scattering", 2.0);
     let mie = scalar("Mie scattering", 4.8);
@@ -361,7 +367,11 @@ pub(super) fn atmosphere_uniform(
             rayleigh.clamp(0.01, 2000.),
             mie.clamp(0.01, 2000.),
             anisotropy.clamp(-0.999, 0.999),
-            if static_available { 1.0 } else { 0.0 },
+            if static_available && skybox_multiplier >= 0.5 {
+                1.0
+            } else {
+                0.0
+            },
         ],
         [
             waves[0].clamp(380., 780.),
