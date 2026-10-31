@@ -39,6 +39,7 @@ mod launcher_bridge;
 mod level_atmosphere;
 mod level_camera;
 mod level_editor_shell;
+mod level_effect_sources;
 mod level_environment;
 mod level_library;
 mod level_lighting;
