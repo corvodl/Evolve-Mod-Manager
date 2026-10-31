@@ -1258,7 +1258,7 @@ impl Renderer {
                     if surf.normal.is_some() { 1.0 } else { 0.0 },
                     mip_min_level.get(&key).copied().unwrap_or(0) as f32,
                 ]),
-                usage: wgpu::BufferUsages::UNIFORM,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
             let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact source material per instanced mesh"),
@@ -1609,6 +1609,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn streaming_diffuse_shader_never_reads_uninitialized_high_mips() {
+        let shader = include_str!("world_instances.wgsl");
+        assert!(shader.contains("let safe_lod=max(implicit_lod, authored_cutoff.w);"));
+        assert!(shader.contains("textureSampleLevel(albedo,tex_sampler,uv,safe_lod)"));
+        assert!(shader.contains("let leaf_alpha=sample_source_albedo(input.uv).a;"));
+        assert!(shader.contains("let base=sample_source_albedo(input.uv);"));
+        naga::front::wgsl::parse_str(shader).expect("streamed diffuse shader must parse");
+    }
+
+    #[test]
+    fn diffuse_mip_upload_dimensions_are_independent() {
+        let img = image::RgbaImage::from_pixel(8, 4, image::Rgba([3, 4, 5, 255]));
+        assert_eq!(next_diffuse_mip(&img, 3).dimensions(), (1, 1));
+        assert_eq!(next_diffuse_mip(&img, 2).dimensions(), (2, 1));
+        assert_eq!(next_diffuse_mip(&img, 1).dimensions(), (4, 2));
+        assert_eq!(next_diffuse_mip(&img, 0).dimensions(), (8, 4));
+    }
+
+    #[test]
     fn content_identity_deduplicates_independent_imported_rgba_buffers() {
         let original = Arc::new(image::RgbaImage::from_pixel(
             8, 8, image::Rgba([20, 40, 60, 255]),
@@ -1673,7 +1692,7 @@ mod tests {
         assert!(shader.contains("fn fs_opaque(input:Output)"));
         assert!(shader.contains("return vec4<f32>(fogged.rgb,1.0);"));
         assert!(shader.contains("fn fs_foliage(input:Output)"));
-        assert!(shader.contains("let leaf_alpha=textureSample(albedo,tex_sampler,input.uv).a;"));
+        assert!(shader.contains("let leaf_alpha=sample_source_albedo(input.uv).a;"));
         assert!(shader.contains("leaf_alpha < authored_cutoff.x"));
         assert!(shader.contains("let color=shade(input,false);"));
         // Explicitly transparent materials still use authored coverage.
