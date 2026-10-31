@@ -474,6 +474,21 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 "Textures: Balanced"
             })
             .on_press(Message::LevelFullTexturesToggled),
+            text(state.level_world.as_ref().map_or_else(
+                || "GPU residency: no world loaded.".to_owned(),
+                |world| {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    let p = &world.gpu_progress;
+                    let mib = 1_048_576_f64;
+                    format!(
+                        "GPU streaming: {} of {} resident groups; {} pending, {} deferred. Textures {:.1} MiB, geometry {:.1} MiB, peak {:.1} MiB (estimated). Full source resolution retained; available VRAM not exposed by wgpu.",
+                        p.loaded.load(Relaxed), world.groups.len(), p.pending.load(Relaxed),
+                        p.deferred.load(Relaxed), p.textures.load(Relaxed) as f64 / mib,
+                        p.geometry.load(Relaxed) as f64 / mib,
+                        p.peak.load(Relaxed) as f64 / mib,
+                    )
+                },
+            )).size(11).style(design::muted),
             text(if let Some(source) = state.level_world.as_ref()
                 .and_then(|world| world.time_of_day.as_ref()) {
                 format!("Original TimeOfDay.xml: {} variables, {} animated splines, {} out-of-day editor keys ignored; {}. Source sun/sky and tangent-aware curves are preview approximations; native CryEngine particles, fog, HDR, GI and shaders are not rendered.",
