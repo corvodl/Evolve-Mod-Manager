@@ -760,7 +760,7 @@ fn is_original_beam_effect(slot: &evolve_core::MaterialSlot) -> bool {
     )
 }
 
-/// Source-authored effect CGF preview in the Model Viewer only. This renders
+/// Source-authored effect CGF preview in the Level Editor and Model Viewer. This renders
 /// a verified textured polygon using its own alpha and GlowAmount; it does
 /// NOT synthesize an emitter, projector beam, sprite lifetime, or particles.
 fn mesh_effect_preview(slot: &evolve_core::MaterialSlot) -> bool {
@@ -770,6 +770,7 @@ fn apply_effect_mesh_preview(
     slot: &evolve_core::MaterialSlot,
     surface: &mut Surface,
     warnings: &mut Vec<String>,
+    model_viewer: bool,
 ) {
     if !mesh_effect_preview(slot) { return; }
     let Some(diffuse) = surface.diffuse.as_ref() else {
@@ -784,7 +785,13 @@ fn apply_effect_mesh_preview(
         warnings.push(format!("{} has no authored transparency in its source DDS; native additive shader required",slot.shader));
         return;
     }
-    let mask=if has_alpha {
+    let mask=if !model_viewer {
+        // World shader samples base.a separately. Only original scalar
+        // opacity belongs in the independent mask; multiplying the source
+        // alpha into this image would incorrectly square translucency.
+        let value=(scalar*255.0).round() as u8;
+        Arc::new(image::RgbaImage::from_pixel(1,1,image::Rgba([value,value,value,255])))
+    } else if has_alpha {
         let mut image=image::RgbaImage::new(diffuse.width(),diffuse.height());
         for (target,source) in image.pixels_mut().zip(diffuse.pixels()) {
             let value=(f32::from(source[3])*scalar).round() as u8;
@@ -1011,7 +1018,7 @@ fn load_authored_subset_surfaces(
             })?;
             if leaf.shader.eq_ignore_ascii_case("NoDraw")
                 || (is_original_beam_effect(leaf)
-                    && !(model_viewer && mesh_effect_preview(leaf)))
+                    && !mesh_effect_preview(leaf))
             {
                 // An effect-only beam needs an additive/volumetric shader.
                 // Do not turn that source volume into an opaque solid tube.
@@ -1065,9 +1072,7 @@ fn load_authored_subset_surfaces(
                         surface.transparent = !surface.foliage_cutout
                             && needs_alpha_blending(leaf)
                             && surface.opacity.is_some();
-                        if model_viewer {
-                            apply_effect_mesh_preview(leaf, &mut surface, &mut warnings);
-                        }
+                        apply_effect_mesh_preview(leaf, &mut surface, &mut warnings, model_viewer);
                     }
                     Err(error) => warnings.push(format!(
                         "Original material slot {} ({}): {}",
@@ -1426,7 +1431,7 @@ pub fn load_with_progress(
             };
             surface.transparent =
                 !surface.foliage_cutout && needs_alpha_blending(leaf) && surface.opacity.is_some();
-            apply_effect_mesh_preview(leaf, &mut surface, &mut warnings);
+            apply_effect_mesh_preview(leaf, &mut surface, &mut warnings, true);
             Ok(())
         })();
         if let Err(error) = result {
@@ -1760,7 +1765,7 @@ mod tests {
             specular:None,gloss:None,opacity:None,
         };
         let mut warnings=Vec::new();
-        apply_effect_mesh_preview(leaf,&mut surface,&mut warnings);
+        apply_effect_mesh_preview(leaf,&mut surface,&mut warnings,true);
         assert!(surface.visible && surface.transparent);
         assert_eq!(surface.opacity.as_ref().unwrap().get_pixel(0,0)[0],57);
         assert!(surface.emissive.is_some());
