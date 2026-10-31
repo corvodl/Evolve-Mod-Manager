@@ -538,6 +538,20 @@ mod tests {
         assert!(lights.is_empty());
     }
     #[test]
+    fn authored_projector_light_uses_original_properties_and_world_position() {
+        let xml = br#"<Objects><Object Id="light-a" EntityClass="Light" Pos="3,5,7"><Properties Radius="30" DiffuseColor="1,0.5,0.25" DiffuseMultiplier="2" ProjectorFov="60"/></Object></Objects>"#;
+        let scene = evolve_core::parse_level_scene(&[("map.lyr", xml.as_slice())]).unwrap();
+        let (found, warnings) = lights(&[("map.lyr".into(), xml.to_vec())], Some(&scene));
+        assert!(warnings.is_empty());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].position, [3.0, 5.0, 7.0]);
+        assert_eq!(found[0].color, [1.0, 0.5, 0.25]);
+        assert_eq!(found[0].radius, 30.0);
+        assert_eq!(found[0].intensity, 2.0);
+        assert!((found[0].cone_cos - (30.0_f32.to_radians()).cos()).abs() < 0.0001);
+    }
+
+    #[test]
     fn exposure_is_finite_without_original_tod() {
         let p = atmosphere_uniform(None, 12.0, &SkySource::default(), false);
         assert!(p.iter().flatten().all(|v| v.is_finite()));
