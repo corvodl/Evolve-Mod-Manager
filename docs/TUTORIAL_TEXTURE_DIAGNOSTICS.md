@@ -27,8 +27,11 @@ Before this PR, the per-pair `level_missing_verified_diffuse` crash record
 reported only the object, material and source archive. It now includes the
 best retained original resolver/decoder diagnostic where available:
 `MTL lookup`, `Missing exact cooked DDS`, `Ambiguous imported DDS fragment`,
-or material section mismatch. This permits an evidence-based fix of each
-remaining unresolved pair using the actual original game files.
+or material section mismatch. Mixed-quality models where *some* visible
+material sections already have a diffuse while others do not now also
+emit `level_partially_missing_diffuse` with the number of absent sections.
+This permits an evidence-based fix of each remaining unresolved pair
+using the actual original game files.
 
 ## Terrain color is a distinct issue
 
