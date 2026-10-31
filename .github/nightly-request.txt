@@ -1,5 +1,5 @@
 # Explicit manual Nightly build request. Only code already merged into main is packaged.
-request: user-requested-nightly-all-merged-pr165-pr166-2026-10-31
+request: user-requested-after-merged-pr168-pr169-2026-10-31
 requested: 2026-10-31
-base-main-commit: a846249b96f3809d188cc057ff42dfb8b730d851
-description: Build latest merged main after PR #166 restored exact CGF per-mesh subset material IDs and PR #165 added terrain high-pass details and map-owned sky, atmospheric scattering, local light and HDR preview. These previews are not yet Evolve native shader parity. Preserve official Stage2 runtime signing tools packaging and existing developer key safety requirements.
+base-main-commit: 9aabe417d70f46e32b008b1b9f7caf4b92ab8e06
+description: Release combined merged PR #168 (linear HDR Rgba16Float, quarter-resolution bloom, authored terrain detail, source-backed light and effect previews) and PR #169 (single-pass AnimationsCAF catalog discovery). New volumetric beam, refraction and particle simulation work begins on a separate branch after this release snapshot. Do not include unmerged work. Preserve official runtime packaging and signing safeguards.
