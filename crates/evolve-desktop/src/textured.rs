@@ -140,6 +140,7 @@ pub struct Scene {
     pub level_hour: f32,
     pub level_full_textures: bool,
     pub viewer_full_textures: bool,
+    pub viewer_gpu_remaining: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -210,6 +211,7 @@ pub struct Primitive {
     level_hour: f32,
     level_full_textures: bool,
     viewer_full_textures: bool,
+    viewer_gpu_remaining: Option<Arc<std::sync::atomic::AtomicUsize>>,
     camera: Option<super::level_camera::Camera>,
     yaw: f32,
     pitch: f32,
@@ -373,6 +375,7 @@ impl shader::Program<super::Message> for Scene {
             level_hour: self.level_hour,
             level_full_textures: self.level_full_textures,
             viewer_full_textures: self.viewer_full_textures,
+            viewer_gpu_remaining: self.viewer_gpu_remaining.clone(),
             camera: self.level_camera,
             yaw: self.yaw,
             pitch: self.pitch,
