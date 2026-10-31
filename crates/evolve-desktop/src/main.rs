@@ -12194,6 +12194,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if !still_selected {
                         state.auto_idle_pending = None;
                     } else {
+                        // A standalone arm/weapon skin is not a complete character.
+                        // If exactly one original CDF owns this mesh, load that
+                        // assembly so CA_SKIN weights and CA_BONE sockets use the
+                        // owning skeleton instead of previewing root-space parts.
+                        // Multiple candidate CDFs already fail as ambiguous.
+                        if let Some(owner) = resources.owning_cdf.as_deref()
+                            && let Some(index) = state.inventory.as_ref().and_then(|inv| {
+                                inv.entries.iter().position(|item| {
+                                    item.relative_path.eq_ignore_ascii_case(owner)
+                                        && item.relative_path.to_ascii_lowercase().ends_with(".cdf")
+                                })
+                            })
+                        {
+                            state.selected = Some(index);
+                            state.file_selection.click(&[index], index, false, false);
+                            state.status = format!(
+                                "Opening exact owning CDF {owner} to preserve skeleton-bound equipment arms"
+                            );
+                            return update(state, Message::ViewerPreviewStaticCdf);
+                        }
                         state.auto_clips = resources.clips;
                         if let Some((source, events)) = resources.event_database {
                             state.animation_event_source = source;
