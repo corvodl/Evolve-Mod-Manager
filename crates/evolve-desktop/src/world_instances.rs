@@ -697,7 +697,8 @@ fn select_visible_lights<'a>(
     let mut ranked = lights
         .iter()
         .filter_map(|light| {
-            if light.radius <= 0.0 || !light.radius.is_finite()
+            if light.radius <= 0.0
+                || !light.radius.is_finite()
                 || light.intensity <= 0.0
                 || !light.position.iter().all(|v| v.is_finite())
             {
@@ -708,9 +709,8 @@ fn select_visible_lights<'a>(
                 light.position[1] - origin[1],
                 light.position[2] - origin[2],
             ];
-            let dot = |basis: [f32; 4]| {
-                delta[0] * basis[0] + delta[1] * basis[1] + delta[2] * basis[2]
-            };
+            let dot =
+                |basis: [f32; 4]| delta[0] * basis[0] + delta[1] * basis[1] + delta[2] * basis[2];
             let dist2 = delta.iter().map(|v| v * v).sum::<f32>();
             let distance = dist2.sqrt();
             let forward = dot(camera.forward);
@@ -730,13 +730,16 @@ fn select_visible_lights<'a>(
             }
             let priority = if touches_camera { 0_u8 } else { 1_u8 };
             let edge_distance = (distance - light.radius).max(0.0);
-            let score = edge_distance / (light.radius.max(1.0) *
-                light.intensity.max(0.1).sqrt());
+            let score = edge_distance / (light.radius.max(1.0) * light.intensity.max(0.1).sqrt());
             Some((priority, score, light))
         })
         .collect::<Vec<_>>();
     ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
-    ranked.into_iter().take(limit).map(|(_, _, light)| light).collect()
+    ranked
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, light)| light)
+        .collect()
 }
 
 impl World {
@@ -1395,86 +1398,106 @@ impl Renderer {
         // shader slots. These source positions remain visible at distance when
         // facing the camera even outside the original radius; a screen-space
         // light marker never modifies an object's physically authored falloff.
-        let light_point_layout=device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-            label:Some("Authored map light point source and camera"),
-            entries:&[
-                wgpu::BindGroupLayoutEntry{
-                    binding:0,
-                    visibility:wgpu::ShaderStages::VERTEX,
-                    ty:wgpu::BindingType::Buffer{
-                        ty:wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset:false,
-                        min_binding_size:None,
-                    },count:None,
-                },
-                wgpu::BindGroupLayoutEntry{
-                    binding:1,
-                    visibility:wgpu::ShaderStages::VERTEX,
-                    ty:wgpu::BindingType::Buffer{
-                        ty:wgpu::BufferBindingType::Storage{read_only:true},
-                        has_dynamic_offset:false,
-                        min_binding_size:None,
-                    },count:None,
-                },
-            ],
-        });
-        let light_point_shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
-            label:Some("Source-authored light-point corona preview"),
-            source:wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("world_light_points.wgsl"))),
-        });
-        let light_point_pipe_layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
-            label:Some("Source point-corona preview pipeline"),
-            bind_group_layouts:&[&light_point_layout],
-            push_constant_ranges:&[],
-        });
-        let light_point_pipeline=device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
-            label:Some("Depth-occluded authored point-light coronas"),
-            layout:Some(&light_point_pipe_layout),
-            vertex:wgpu::VertexState{
-                module:&light_point_shader,entry_point:Some("vs_light"),
-                buffers:&[],compilation_options:wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment:Some(wgpu::FragmentState{
-                module:&light_point_shader,entry_point:Some("fs_light"),
-                targets:&[Some(wgpu::ColorTargetState{
-                    format,
-                    blend:Some(wgpu::BlendState {
-                        color:wgpu::BlendComponent{
-                            src_factor:wgpu::BlendFactor::SrcAlpha,
-                            dst_factor:wgpu::BlendFactor::One,
-                            operation:wgpu::BlendOperation::Add,
+        let light_point_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Authored map light point source and camera"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
-                        alpha:wgpu::BlendComponent{
-                            src_factor:wgpu::BlendFactor::Zero,
-                            dst_factor:wgpu::BlendFactor::One,
-                            operation:wgpu::BlendOperation::Add,
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let light_point_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Source-authored light-point corona preview"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "world_light_points.wgsl"
+            ))),
+        });
+        let light_point_pipe_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Source point-corona preview pipeline"),
+                bind_group_layouts: &[&light_point_layout],
+                push_constant_ranges: &[],
+            });
+        let light_point_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Depth-occluded authored point-light coronas"),
+            layout: Some(&light_point_pipe_layout),
+            vertex: wgpu::VertexState {
+                module: &light_point_shader,
+                entry_point: Some("vs_light"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &light_point_shader,
+                entry_point: Some("fs_light"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
                         },
                     }),
-                    write_mask:wgpu::ColorWrites::ALL,
+                    write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options:wgpu::PipelineCompilationOptions::default(),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
-            depth_stencil:Some(wgpu::DepthStencilState{
-                format:wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled:false,
-                depth_compare:wgpu::CompareFunction::LessEqual,
-                stencil:wgpu::StencilState::default(),
-                bias:wgpu::DepthBiasState::default(),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
             }),
-            multisample:wgpu::MultisampleState::default(),multiview:None,cache:None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
         });
-        let light_point_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
-            label:Some("Empty source light point preview"),
-            contents:bytemuck::cast_slice(&[[0.0_f32;4];2]),
-            usage:wgpu::BufferUsages::STORAGE,
+        let light_point_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Empty source light point preview"),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 2]),
+            usage: wgpu::BufferUsages::STORAGE,
         });
-        let light_point_group=device.create_bind_group(&wgpu::BindGroupDescriptor{
-            label:Some("Empty original map light point buffer"),
-            layout:&light_point_layout,
-            entries:&[
-                wgpu::BindGroupEntry{binding:0,resource:camera_uniform.as_entire_binding()},
-                wgpu::BindGroupEntry{binding:1,resource:light_point_buffer.as_entire_binding()},
+        let light_point_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Empty original map light point buffer"),
+            layout: &light_point_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: light_point_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -2207,41 +2230,71 @@ impl Renderer {
     /// illuminate terrain in front of us even though we stand far outside
     /// its authored radius. Never increase the original shader's influence
     /// radius to compensate for an editor selection/culling mistake.
-    fn update_light_point_sources(&mut self,device:&wgpu::Device,world:&World) {
+    fn update_light_point_sources(&mut self, device: &wgpu::Device, world: &World) {
         // Up to 256 verified original map lights. This is a localized,
         // distance-visible source locator, not a generic particle shader.
-        const MAX_PREVIEW_POINTS:usize=256;
-        let points=world.local_lights.iter().filter(|light|
-            light.intensity.is_finite() && light.intensity>0.0
-            && light.radius.is_finite() && light.radius>0.0
-            && light.position.iter().all(|v|v.is_finite())
-            && light.color.iter().all(|v|v.is_finite())
-        ).take(MAX_PREVIEW_POINTS).flat_map(|light|[
-            [light.position[0],light.position[1],light.position[2],light.radius],
-            [light.color[0],light.color[1],light.color[2],light.intensity],
-        ]).collect::<Vec<_>>();
-        self.light_point_count=(points.len()/2) as u32;
-        if points.is_empty() {return;}
-        let buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
-            label:Some("Original point/spot light preview sources"),
-            contents:bytemuck::cast_slice(&points),
-            usage:wgpu::BufferUsages::STORAGE,
+        const MAX_PREVIEW_POINTS: usize = 256;
+        let points = world
+            .local_lights
+            .iter()
+            .filter(|light| {
+                light.intensity.is_finite()
+                    && light.intensity > 0.0
+                    && light.radius.is_finite()
+                    && light.radius > 0.0
+                    && light.position.iter().all(|v| v.is_finite())
+                    && light.color.iter().all(|v| v.is_finite())
+            })
+            .take(MAX_PREVIEW_POINTS)
+            .flat_map(|light| {
+                [
+                    [
+                        light.position[0],
+                        light.position[1],
+                        light.position[2],
+                        light.radius,
+                    ],
+                    [
+                        light.color[0],
+                        light.color[1],
+                        light.color[2],
+                        light.intensity,
+                    ],
+                ]
+            })
+            .collect::<Vec<_>>();
+        self.light_point_count = (points.len() / 2) as u32;
+        if points.is_empty() {
+            return;
+        }
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Original point/spot light preview sources"),
+            contents: bytemuck::cast_slice(&points),
+            usage: wgpu::BufferUsages::STORAGE,
         });
-        self.light_point_group=device.create_bind_group(&wgpu::BindGroupDescriptor{
-            label:Some("Original point/spot light camera projections"),
-            layout:&self.light_point_layout,
-            entries:&[
-                wgpu::BindGroupEntry{binding:0,resource:self.camera_uniform.as_entire_binding()},
-                wgpu::BindGroupEntry{binding:1,resource:buffer.as_entire_binding()},
+        self.light_point_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Original point/spot light camera projections"),
+            layout: &self.light_point_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.camera_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buffer.as_entire_binding(),
+                },
             ],
         });
-        self.light_point_buffer=buffer;
+        self.light_point_buffer = buffer;
     }
-    pub fn draw_light_points<'a>(&'a self,pass:&mut wgpu::RenderPass<'a>) {
-        if self.light_point_count==0 {return;}
+    pub fn draw_light_points<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        if self.light_point_count == 0 {
+            return;
+        }
         pass.set_pipeline(&self.light_point_pipeline);
-        pass.set_bind_group(0,&self.light_point_group,&[]);
-        pass.draw(0..6,0..self.light_point_count);
+        pass.set_bind_group(0, &self.light_point_group, &[]);
+        pass.draw(0..6, 0..self.light_point_count);
     }
 
     fn update_local_lights(&self, queue: &wgpu::Queue, world: &World, camera: CameraGpu) {
@@ -2252,13 +2305,22 @@ impl Renderer {
         for (idx, light) in selected.into_iter().enumerate() {
             let base = 1 + idx * 3;
             uniform[base] = [
-                light.position[0], light.position[1], light.position[2], light.radius,
+                light.position[0],
+                light.position[1],
+                light.position[2],
+                light.radius,
             ];
             uniform[base + 1] = [
-                light.direction[0], light.direction[1], light.direction[2], light.cone_cos,
+                light.direction[0],
+                light.direction[1],
+                light.direction[2],
+                light.cone_cos,
             ];
             uniform[base + 2] = [
-                light.color[0], light.color[1], light.color[2], light.intensity,
+                light.color[0],
+                light.color[1],
+                light.color[2],
+                light.intensity,
             ];
         }
         queue.write_buffer(&self.local_uniform, 0, bytemuck::cast_slice(&uniform));
@@ -2495,7 +2557,7 @@ mod tests {
         assert_eq!(selected[0].radius, 45.0, "authored falloff unchanged");
         assert_eq!(selected[0].position[0], 1200.0);
     }
-    
+
     #[test]
     fn world_camera_binding_allows_fragment_shading() {
         // Both editors initialize the shared world renderer even in model-only views.

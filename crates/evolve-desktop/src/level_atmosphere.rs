@@ -276,7 +276,6 @@ fn finalize(
     });
 }
 
-
 /// CryEngine level placement XML uses EntityClass="ParticleEffect" on an
 /// Object/Entity; the parser's scene.kind is merely "Object", not the class.
 /// Resolve exact scene GUIDs for world transforms. An authored emitter is
@@ -290,89 +289,117 @@ pub(super) fn particle_placements(
     sources: &[(String, Vec<u8>)],
     scene: Option<&LevelScene>,
 ) -> (Vec<ParticlePlacement>, Vec<String>) {
-    let Some(scene) = scene else { return (Vec::new(),Vec::new()); };
-    let placements: HashMap<_, _> = scene.objects.iter()
+    let Some(scene) = scene else {
+        return (Vec::new(), Vec::new());
+    };
+    let placements: HashMap<_, _> = scene
+        .objects
+        .iter()
         .filter(|obj| !obj.hidden)
         .map(|obj| (obj.id.as_str(), obj))
         .collect();
-    let mut found=Vec::new();
-    let mut warnings=Vec::new();
+    let mut found = Vec::new();
+    let mut warnings = Vec::new();
     for (name, bytes) in sources {
-        if bytes.len()>MAX_LAYER_BYTES { continue; }
-        let Ok(xml)=evolve_core::cryxml::xml_bytes(bytes,MAX_LAYER_BYTES) else {continue;};
-        let mut xml=quick_xml::Reader::from_reader(xml.as_ref());
-        let mut depth=0usize;
-        let mut pending:Option<(usize,String,Option<String>,bool)>=None;
+        if bytes.len() > MAX_LAYER_BYTES {
+            continue;
+        }
+        let Ok(xml) = evolve_core::cryxml::xml_bytes(bytes, MAX_LAYER_BYTES) else {
+            continue;
+        };
+        let mut xml = quick_xml::Reader::from_reader(xml.as_ref());
+        let mut depth = 0usize;
+        let mut pending: Option<(usize, String, Option<String>, bool)> = None;
         loop {
-            let event=match xml.read_event() {
-                Ok(event)=>event,
-                Err(error)=>{warnings.push(format!("{name}: particle placement XML: {error}"));break;}
+            let event = match xml.read_event() {
+                Ok(event) => event,
+                Err(error) => {
+                    warnings.push(format!("{name}: particle placement XML: {error}"));
+                    break;
+                }
             };
-            let nested=matches!(&event,Event::Start(_));
+            let nested = matches!(&event, Event::Start(_));
             match event {
-                Event::Start(e)|Event::Empty(e)=>{
-                    if nested {depth+=1;}
-                    if depth>128 {warnings.push(format!("{name}: particle XML depth limit"));break;}
-                    let is_object=e.name().as_ref().eq_ignore_ascii_case(b"Object")
-                        ||e.name().as_ref().eq_ignore_ascii_case(b"Entity");
-                    if is_object && attr(&e,b"EntityClass")
-                        .or_else(||attr(&e,b"Class"))
-                        .is_some_and(|s|s.eq_ignore_ascii_case("ParticleEffect"))
+                Event::Start(e) | Event::Empty(e) => {
+                    if nested {
+                        depth += 1;
+                    }
+                    if depth > 128 {
+                        warnings.push(format!("{name}: particle XML depth limit"));
+                        break;
+                    }
+                    let is_object = e.name().as_ref().eq_ignore_ascii_case(b"Object")
+                        || e.name().as_ref().eq_ignore_ascii_case(b"Entity");
+                    if is_object
+                        && attr(&e, b"EntityClass")
+                            .or_else(|| attr(&e, b"Class"))
+                            .is_some_and(|s| s.eq_ignore_ascii_case("ParticleEffect"))
                     {
-                        if let Some(id)=attr(&e,b"Id").or_else(||attr(&e,b"EntityId")) {
-                            let effect=attr(&e,b"ParticleEffect");
-                            pending=Some((depth,id.to_ascii_lowercase(),effect,true));
+                        if let Some(id) = attr(&e, b"Id").or_else(|| attr(&e, b"EntityId")) {
+                            let effect = attr(&e, b"ParticleEffect");
+                            pending = Some((depth, id.to_ascii_lowercase(), effect, true));
                         }
-                    } else if let Some((owner_depth,_,effect,active))=pending.as_mut()
-                        && depth+usize::from(!nested) > *owner_depth
-                        && depth+usize::from(!nested) <= *owner_depth+7 {
-                        if let Some(source)=attr(&e,b"ParticleEffect") {
-                            *effect=Some(source);
+                    } else if let Some((owner_depth, _, effect, active)) = pending.as_mut()
+                        && depth + usize::from(!nested) > *owner_depth
+                        && depth + usize::from(!nested) <= *owner_depth + 7
+                    {
+                        if let Some(source) = attr(&e, b"ParticleEffect") {
+                            *effect = Some(source);
                         }
-                        if let Some(flag)=attr(&e,b"Active").or_else(||attr(&e,b"bActive")) {
-                            if flag=="0" || flag.eq_ignore_ascii_case("false") { *active=false; }
+                        if let Some(flag) = attr(&e, b"Active").or_else(|| attr(&e, b"bActive")) {
+                            if flag == "0" || flag.eq_ignore_ascii_case("false") {
+                                *active = false;
+                            }
                         }
                     }
-                    if !nested && is_object
-                        && pending.as_ref().is_some_and(|p|p.0==depth)
-                    {
-                        complete_particle(&mut pending,&placements,&mut found);
+                    if !nested && is_object && pending.as_ref().is_some_and(|p| p.0 == depth) {
+                        complete_particle(&mut pending, &placements, &mut found);
                     }
                 }
-                Event::End(_)=>{
-                    if pending.as_ref().is_some_and(|p|p.0==depth) {
-                        complete_particle(&mut pending,&placements,&mut found);
+                Event::End(_) => {
+                    if pending.as_ref().is_some_and(|p| p.0 == depth) {
+                        complete_particle(&mut pending, &placements, &mut found);
                     }
-                    depth=depth.saturating_sub(1);
+                    depth = depth.saturating_sub(1);
                 }
-                Event::Eof=>break,
-                Event::DocType(_)|Event::GeneralRef(_)=>{
+                Event::Eof => break,
+                Event::DocType(_) | Event::GeneralRef(_) => {
                     warnings.push(format!("{name}: unsafe particle XML"));
                     break;
                 }
-                _=>{},
+                _ => {}
             }
-            if found.len()>=2048 {
+            if found.len() >= 2048 {
                 warnings.push("Original map particle emitter inventory capped at 2048".into());
                 break;
             }
         }
     }
-    (found,warnings)
+    (found, warnings)
 }
 fn complete_particle(
-    pending:&mut Option<(usize,String,Option<String>,bool)>,
-    placed:&HashMap<&str,&evolve_core::PlacedObject>,
-    out:&mut Vec<ParticlePlacement>,
+    pending: &mut Option<(usize, String, Option<String>, bool)>,
+    placed: &HashMap<&str, &evolve_core::PlacedObject>,
+    out: &mut Vec<ParticlePlacement>,
 ) {
-    let Some((_,id,effect,active))=pending.take() else {return;};
-    if !active {return;}
-    let Some(effect)=effect.filter(|s|!s.trim().is_empty()) else {return;};
-    let Some(obj)=placed.get(id.as_str()) else {return;};
-    if !obj.world.position.iter().all(|v|v.is_finite()) {return;}
-    out.push(ParticlePlacement{
+    let Some((_, id, effect, active)) = pending.take() else {
+        return;
+    };
+    if !active {
+        return;
+    }
+    let Some(effect) = effect.filter(|s| !s.trim().is_empty()) else {
+        return;
+    };
+    let Some(obj) = placed.get(id.as_str()) else {
+        return;
+    };
+    if !obj.world.position.iter().all(|v| v.is_finite()) {
+        return;
+    }
+    out.push(ParticlePlacement {
         effect,
-        position:obj.world.position,
+        position: obj.world.position,
     });
 }
 
@@ -636,7 +663,7 @@ mod tests {
     use super::*;
     #[test]
     fn placed_particle_effect_uses_entity_class_and_original_guid() {
-        let xml=br#"<Objects>
+        let xml = br#"<Objects>
           <Object Id="fx-one" EntityClass="ParticleEffect" Pos="10,20,30">
             <Properties ParticleEffect="Smoke.Rising" Active="1"/>
           </Object>
@@ -644,17 +671,16 @@ mod tests {
             <Properties ParticleEffect="Dust.Disabled" Active="0"/>
           </Object>
         </Objects>"#;
-        let scene=evolve_core::parse_level_scene(&[("effects.lyr",xml.as_slice())]).unwrap();
-        assert_eq!(scene.objects[0].kind,"Object");
-        let (emissions,warnings)=particle_placements(
-            &[("effects.lyr".into(),xml.to_vec())],Some(&scene)
-        );
+        let scene = evolve_core::parse_level_scene(&[("effects.lyr", xml.as_slice())]).unwrap();
+        assert_eq!(scene.objects[0].kind, "Object");
+        let (emissions, warnings) =
+            particle_placements(&[("effects.lyr".into(), xml.to_vec())], Some(&scene));
         assert!(warnings.is_empty());
-        assert_eq!(emissions.len(),1);
-        assert_eq!(emissions[0].effect,"Smoke.Rising");
-        assert_eq!(emissions[0].position,[10.0,20.0,30.0]);
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].effect, "Smoke.Rising");
+        assert_eq!(emissions[0].position, [10.0, 20.0, 30.0]);
     }
-    
+
     #[test]
     fn source_sky_material_is_not_inferred() {
         assert!(sky_source(br#"<Environment><SkyBox Material="materials/sky/clouds.mtl" Angle="60"/></Environment>"#)

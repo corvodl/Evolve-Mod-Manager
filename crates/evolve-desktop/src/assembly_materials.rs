@@ -1693,9 +1693,17 @@ mod tests {
     #[test]
     fn original_light_beam_materials_are_not_opaque_world_meshes() {
         for name in [
-            "Lightbeam.LightBeam", "GeometryBeam", "TemplBeamProc",
-            "Particles", "ParticleImposter", "LightFlares.Flare",
-            "LensOptics.Enable", "VolumeObject", "ReferenceImage", "Sky", "SkyHDR",
+            "Lightbeam.LightBeam",
+            "GeometryBeam",
+            "TemplBeamProc",
+            "Particles",
+            "ParticleImposter",
+            "LightFlares.Flare",
+            "LensOptics.Enable",
+            "VolumeObject",
+            "ReferenceImage",
+            "Sky",
+            "SkyHDR",
         ] {
             let slot = evolve_core::parse_material(
                 format!("<Material Name=\"beam\" Shader=\"{name}\"/>").as_bytes(),
@@ -1703,13 +1711,7 @@ mod tests {
             .unwrap();
             assert!(is_original_beam_effect(&slot.slots[0]));
         }
-        for name in [
-            "Illum",
-            "Glass",
-            "Vegetation",
-            "NoDraw",
-            "Cloth",
-        ] {
+        for name in ["Illum", "Glass", "Vegetation", "NoDraw", "Cloth"] {
             let slot = evolve_core::parse_material(
                 format!("<Material Name=\"fixture\" Shader=\"{name}\"/>").as_bytes(),
             )
