@@ -765,6 +765,38 @@ impl AnimatedGlb {
     }
 }
 #[cfg(test)]
+mod wildcard_catalog_tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_anchors_character_paths_and_never_matches_neighbor() {
+        assert!(animation_wildcard_matches(
+            "characters/hunters/merc_bucket/animations/*.caf",
+            "characters/hunters/merc_bucket/animations/bucket_idle.caf"
+        ));
+        assert!(!animation_wildcard_matches(
+            "characters/hunters/merc_bucket/animations/*.caf",
+            "characters/hunters/merc_emet/animations/bucket_idle.caf"
+        ));
+        assert!(!animation_wildcard_matches(
+            "characters/hunters/merc_bucket/animations/*.caf",
+            "characters/hunters/merc_bucket/animations/3p/bucket_idle.caf"
+        ));
+    }
+
+    #[test]
+    fn parser_preserves_authored_wildcard_instead_of_losing_it() {
+        let refs = animation_references(br##"<Params><AnimationList>
+            <Animation name="#filepath" path="characters/hunters/merc_bucket/animations"/>
+            <Animation name="*" path="*.caf"/>
+        </AnimationList></Params>"##).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].kind, "caf_glob");
+        assert_eq!(refs[0].path, "characters/hunters/merc_bucket/animations/*.caf");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::animated_glb_preview::tests::preview_doc;
