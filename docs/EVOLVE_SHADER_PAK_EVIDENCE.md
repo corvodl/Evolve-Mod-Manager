@@ -35,3 +35,16 @@ Selected original `Config/CVarGroups` default profile values: `r_TexturesStreami
 ## CI and source-compatibility guardrails
 
 The source PAKs were inspected using the previously uploaded original **RSA public key** only, not an executable decompilation or external network service. No key bytes, exact shader declarations, HLSL/DXBC bytes, particle-library source XML, or private/proprietary assets are committed or distributed. The parser and static particle-mask preview use synthetic tests that encode only feature names and numeric masks, not shipped game code. The user should load these effects from **their own** verified game installation through the Asset Library. A static masked CGF is not equivalent to native animated particles, a true game-driven TRSBeam, or the engine's HDR renderer.
+
+
+## HDR + bloom rendering milestone
+
+The previous Model Viewer/Level Editor rendered directly to Iced's 8-bit swapchain. The scene was clipped or tone-mapped per object, so physically bright emissive/scene values could not contribute to a true bloom stage. The shared wgpu compositor now:
+
+1. Renders Model Viewer and Level Editor primitives (including map sky, terrain, materials and point-light previews) into **linear Rgba16Float** scene color with the existing Depth32Float buffer.
+2. Extracts radiance above a soft luminance threshold into a separate **quarter-resolution Rgba16Float** target; performs two Gaussian blur passes, with no unnecessary texture readbacks, no CPU work per pixel, and resize-only GPU allocation.
+3. Adds the blurred radiance to the original linear HDR scene, then applies one ACES-style filmic tone map when compositing the scissored viewport into Iced's original presentation format.
+4. Preserves the **Source RGB (unlit)** diagnostic by bypassing the filmic curve and bloom during map-color inspection. Outside the viewport, Iced's UI is untouched; alpha is forced opaque on composite.
+5. Leaves original source texture pixels, shader feature masks, source PAK provenance, material textures, depth and raw FBX exports unchanged. Emission remains linear and positive until the final compositing pass instead of being normalized into low dynamic range.
+
+This is **functional shared HDR/bloom**, not Evolve's native eye-adaptation, exposure-history, lens flare or proprietary shader implementation. The original shader PAKs and the high quality engine settings remain verification references, not redistributed runtime assets. Runtime acceptance still requires screenshots of the same Evolve effects in both viewers, along with GPU validation on Windows. Subsequent tasks are source-matched refraction/soft particle geometry and original particle simulation.
