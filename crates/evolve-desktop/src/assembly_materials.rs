@@ -909,11 +909,21 @@ pub(crate) fn load_world_model_surfaces(
         }
         validate_authored_subset_coverage(&part.subsets, part.mesh.indices.len())?;
         let (surfaces, part_warnings) = load_authored_subset_surfaces(
-            source, material, &document, &part.subsets,
-            inventory, imported, build, cache,
+            source,
+            material,
+            &document,
+            &part.subsets,
+            inventory,
+            imported,
+            build,
+            cache,
         )?;
         all.push(surfaces);
-        warnings.extend(part_warnings.into_iter().map(|w| format!("Mesh {part_index}: {w}")));
+        warnings.extend(
+            part_warnings
+                .into_iter()
+                .map(|w| format!("Mesh {part_index}: {w}")),
+        );
     }
     Ok((all, warnings))
 }
@@ -927,14 +937,11 @@ fn validate_authored_subset_coverage(
         return Err("empty or invalid source mesh index ranges".into());
     }
     for &(first, count, material) in ranges {
-        if first as usize != cursor
-            || count == 0
-            || !count.is_multiple_of(3)
-            || material > 255
-        {
+        if first as usize != cursor || count == 0 || !count.is_multiple_of(3) || material > 255 {
             return Err("noncontiguous or invalid source material subset ranges".into());
         }
-        cursor = cursor.checked_add(count as usize)
+        cursor = cursor
+            .checked_add(count as usize)
             .ok_or_else(|| "source material index range overflow".to_string())?;
         if cursor > index_count {
             return Err("source material subset extends beyond mesh".into());
