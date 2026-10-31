@@ -998,6 +998,7 @@ fn open_selected(
         match decoded.map_err(|err| err.to_string()) {
             Ok(atlas) => {
                 let dimensions = atlas.image.dimensions();
+                diagnostics.push(terrain_pixel_report(&atlas.image));
                 let mut applied = false;
                 if let (Some(assembled), Some((terrain_mesh, _))) =
                     (full_scene.as_mut(), terrain.as_ref())
@@ -1061,9 +1062,54 @@ fn open_selected(
     })
 }
 
+/// Diagnostic of original decoded atlas bytes, before shader lighting or
+/// the GPU sRGB conversion. Never recolor, gamma-adjust or rewrite source.
+fn terrain_pixel_report(img: &image::RgbaImage) -> String {
+    let (width, height) = img.dimensions();
+    if width == 0 || height == 0 {
+        return "baked RGB source empty".into();
+    }
+    let mut sums = [0u64; 3];
+    let mut count = 0u64;
+    let step_x = (width / 64).max(1);
+    let step_y = (height / 64).max(1);
+    for y in (0..height).step_by(step_y as usize) {
+        for x in (0..width).step_by(step_x as usize) {
+            let pixel = img.get_pixel(x, y);
+            for component in 0..3 {
+                sums[component] += u64::from(pixel[component]);
+            }
+            count += 1;
+        }
+    }
+    let avg = sums.map(|sum| sum / count);
+    let first = img.get_pixel(0, 0);
+    let center = img.get_pixel(width / 2, height / 2);
+    format!(
+        "Original decoded terrain RGB8 (pre-lighting/sRGB): sampled average [{},{},{}], corner [{},{},{}], center [{},{},{}]; no correction applied.",
+        avg[0],avg[1],avg[2],first[0],first[1],first[2],
+        center[0],center[1],center[2],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_color_diagnostic_reports_decoded_pixels_without_adjustment() {
+        let image = image::RgbaImage::from_fn(2, 2, |x, y| {
+            if x == 0 && y == 0 {
+                image::Rgba([20, 40, 60, 255])
+            } else {
+                image::Rgba([80, 100, 120, 255])
+            }
+        });
+        let text = terrain_pixel_report(&image);
+        assert!(text.contains("sampled average [65,85,105]"));
+        assert!(text.contains("corner [20,40,60]"));
+        assert!(text.contains("no correction applied"));
+    }
 
     #[test]
     fn baked_terrain_resources_use_exact_map_owner_not_a_global_filename() {
