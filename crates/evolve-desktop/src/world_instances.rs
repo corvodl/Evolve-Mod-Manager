@@ -1117,7 +1117,10 @@ impl Renderer {
             last_camera: None,
         }
     }
-    #[expect(clippy::too_many_arguments, reason = "Explicit GPU upload state keeps residency and mip tracking scoped to each renderer")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Explicit GPU upload state keeps residency and mip tracking scoped to each renderer"
+    )]
     fn group(
         &self,
         device: &wgpu::Device,
