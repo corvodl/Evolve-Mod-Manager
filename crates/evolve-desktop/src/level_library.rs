@@ -913,6 +913,7 @@ fn open_selected(
                     counts.len(), paint.layer_names.len()
                 ));
                 diagnostics.push(terrain_layer_material_report(&paint));
+                diagnostics.push(terrain_surface_type_report(&paint));
             }
             Ok(None) => diagnostics.push(
                 "This original heightmap contains no readable terrain layer-ID section.".into(),
@@ -1189,6 +1190,7 @@ mod tests {
                 layer(0, "materials/terrain/mud"),
                 layer(3, "materials/terrain/sand"),
             ],
+            surface_types: Vec::new(),
             ids: vec![0, 3, 255, 3],
         };
         let text = terrain_layer_material_report(&paint);
