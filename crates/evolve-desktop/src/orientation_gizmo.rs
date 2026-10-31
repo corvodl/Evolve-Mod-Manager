@@ -26,21 +26,20 @@ struct AxisPoint {
     preset: &'static str,
 }
 
-/// CryEngine 3 character geometry faces +Y. A true FRONT inspection camera
-/// must therefore look toward the origin from +Y (yaw 180), *not* from -Y.
-/// Returning only camera angles preserves original vertex positions, UVs,
-/// skinning, triangle winding, and exported rig basis.
-pub(crate) const FRONT_YAW: f32 = 180.0;
+/// In the Model Viewer yaw zero is a camera at +Y looking towards -Y.
+/// Its screen-right vector points towards source -X. The geometry stays
+/// untouched: viewer orbit, grid, and gizmo share this projection only.
+pub(crate) const FRONT_YAW: f32 = 0.0;
 
 pub(crate) fn model_camera_preset(preset: &str) -> Option<(f32, f32)> {
     match preset {
         "Front" => Some((FRONT_YAW, 0.0)),
-        "Back" => Some((0.0, 0.0)),
+        "Back" => Some((180.0, 0.0)),
         "Left" => Some((-90.0, 0.0)),
         "Right" => Some((90.0, 0.0)),
         "Top" => Some((FRONT_YAW, 89.5)),
         "Bottom" => Some((FRONT_YAW, -89.5)),
-        "Isometric" => Some((150.0, 14.0)),
+        "Isometric" => Some((-30.0, 14.0)),
         _ => None,
     }
 }
@@ -76,9 +75,9 @@ impl OrientationGizmo {
         ] {
             for direction in [-1.0, 1.0] {
                 let [x, y, z] = axis.map(|part| part * direction);
-                let horizontal = x * cy - y * sy;
-                let vertical = (x * sy + y * cy) * sp + z * cp;
-                let depth = (x * sy + y * cy) * cp - z * sp;
+                let horizontal = y * sy - x * cy;
+                let vertical = z * cp - (x * sy + y * cy) * sp;
+                let depth = (x * sy + y * cy) * cp + z * sp;
                 points.push(AxisPoint {
                     depth,
                     letter: if direction > 0.0 { letter } else { "" },
@@ -250,15 +249,21 @@ mod tests {
     #[test]
     fn cryengine_front_camera_sees_positive_y_and_keeps_right_left_consistent() {
         use std::f32::consts::PI;
-        assert_eq!(model_camera_preset("Front"), Some((180.0, 0.0)));
-        assert_eq!(model_camera_preset("Back"), Some((0.0, 0.0)));
+        assert_eq!(model_camera_preset("Front"), Some((0.0, 0.0)));
+        assert_eq!(model_camera_preset("Back"), Some((180.0, 0.0)));
         let theta = FRONT_YAW * PI / 180.0;
-        // From +Y looking toward the character, its local +X is camera-left.
-        let screen_x = theta.cos();
+        // From +Y looking toward -Y, the character's +X is camera-left.
+        let screen_x = -theta.cos();
         assert!(screen_x < -0.99);
-        let view = OrientationGizmo { yaw: FRONT_YAW, pitch: 0.0 };
-        let x_axis = view.axes(112.0, 112.0)
-            .into_iter().find(|axis| axis.preset == "Right").unwrap();
+        let view = OrientationGizmo {
+            yaw: FRONT_YAW,
+            pitch: 0.0,
+        };
+        let x_axis = view
+            .axes(112.0, 112.0)
+            .into_iter()
+            .find(|axis| axis.preset == "Right")
+            .unwrap();
         assert!(x_axis.point.x < 56.0);
         assert_eq!(model_camera_preset("Unknown"), None);
     }
@@ -272,7 +277,7 @@ mod tests {
         assert_eq!(view.axes(112.0, 112.0).len(), 6);
         assert_eq!(
             view.target(
-                Point::new(89.0, 56.0),
+                Point::new(23.0, 56.0),
                 Rectangle {
                     x: 0.0,
                     y: 0.0,
