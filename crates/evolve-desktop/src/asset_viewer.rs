@@ -1547,6 +1547,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 level_hour: 12.0,
                 level_full_textures: true,
                 viewer_full_textures: state.viewer_full_textures,
+                viewer_gpu_remaining: Some(state.viewer_gpu_remaining.clone()),
             })
             .width(Fill)
             .height(Fill)
