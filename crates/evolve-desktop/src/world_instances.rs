@@ -1149,14 +1149,9 @@ impl Renderer {
                 profile.preview_uniform(world.time_of_day.as_deref(), hour)
             });
             queue.write_buffer(&self.fog_uniform, 0, bytemuck::cast_slice(&fog));
-            let mut height = [[0.0_f32; 4]; 2];
-            if fog[1][0] > 0.5
-                && let Some(profile) = world.time_of_day.as_ref()
-                && let Some(source) = profile.height_fog(hour)
-            {
-                height[0] = source.gpu_uniform();
-                height[1][0] = 1.0;
-            }
+            let height = world.fog_profile.map_or([[0.0_f32; 4]; 2], |profile| {
+                profile.height_preview_uniform(world.time_of_day.as_deref(), hour)
+            });
             queue.write_buffer(&self.height_fog_uniform, 0, bytemuck::cast_slice(&height));
             self.last_lighting_hour = hour;
         }

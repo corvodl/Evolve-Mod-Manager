@@ -150,6 +150,8 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
 // this in the WORLD shader only leaves the separate Model Viewer unchanged.
 // Analytic integral of a vertically exponential density profile along the
 // camera-to-fragment ray. Horizontal rays have a stable Taylor-series path.
+// Zero-density endpoints are rejected by the source sampler; no fabricated
+// epsilon endpoint is uploaded to this analytic exponential profile.
 // Density scaling still uses PR #157's *preview* distance calibration: this
 // is NOT an implementation of the Evolve engine's source shader equation.
 fn height_fog_depth(input:Output, distance:f32)->f32 {

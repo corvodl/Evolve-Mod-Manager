@@ -333,6 +333,47 @@ impl TimeOfDay {
             .filter(|c| !c.color)
             .map(|c| c.sample(hour)[0])
     }
+    /// Report the original fog-named TimeOfDay controls without guessing
+    /// which of them Evolve actually feeds to its runtime fog shader.
+    /// This inventory is diagnostic only; it does not create new aliases.
+    pub fn fog_source_diagnostics(&self, hour: f32) -> String {
+        let hour = if hour.is_finite() {
+            hour.clamp(0.0, 24.0)
+        } else {
+            12.0
+        };
+        let mut total = 0usize;
+        let mut shown = Vec::new();
+        for (name, curve) in &self.curves {
+            if !name.contains("fog") {
+                continue;
+            }
+            total += 1;
+            if shown.len() >= 12 {
+                continue;
+            }
+            let safe_name = name.replace(char::is_control, " ");
+            let value = curve.sample(hour);
+            let sample = if !value.iter().all(|v| v.is_finite()) {
+                "non-finite (unused)".to_owned()
+            } else if curve.color {
+                format!("{:.3}/{:.3}/{:.3}", value[0], value[1], value[2])
+            } else {
+                format!("{:.4}", value[0])
+            };
+            shown.push(format!("{safe_name}={sample}"));
+        }
+        if total == 0 {
+            return "Source TimeOfDay has no fog-named variables. No native aliases inferred."
+                .to_owned();
+        }
+        format!(
+            "Original fog variables at {hour:.2}h ({total} found, {} shown): {}. Read-only source samples, not verified Evolve shader bindings.",
+            shown.len(),
+            shown.join("; ")
+        )
+    }
+
     pub fn count(&self) -> usize {
         self.curves.len()
     }
@@ -428,7 +469,10 @@ impl TimeOfDay {
             || top_height - bottom_height < 0.01
             || !(0.0..=1.0).contains(&bottom_density)
             || !(0.0..=1.0).contains(&top_density)
-            || (bottom_density == 0.0 && top_density == 0.0)
+            // An exponential cannot interpolate a finite zero endpoint.
+            // Do not invent a 1e-6 floor and label that synthetic value native.
+            || bottom_density <= 0.0
+            || top_density <= 0.0
         {
             return None;
         }
@@ -490,6 +534,25 @@ impl FogProfile {
             }
         }
         parsed.ok_or_else(|| "Environment.xml has no supported Fog definition".into())
+    }
+
+    /// Same prerequisites as the distance preview, but only enables a world
+    /// height profile if four supported and strictly positive source curves
+    /// are present. Keeping this in one place prevents the scene status and
+    /// GPU fog mode from diverging after a time-of-day change.
+    pub fn height_preview_uniform(
+        self,
+        tod: Option<&TimeOfDay>,
+        hour: f32,
+    ) -> [[f32; 4]; 2] {
+        let mut result = [[0.0_f32; 4]; 2];
+        if self.preview_uniform(tod, hour)[1][0] > 0.5
+            && let Some(profile) = tod.and_then(|tod| tod.height_fog(hour))
+        {
+            result[0] = profile.gpu_uniform();
+            result[1][0] = 1.0;
+        }
+        result
     }
 
     /// Deliberately non-native distance-only fog preview, never the original
@@ -616,6 +679,99 @@ mod tests {
         )
         .unwrap();
         assert!(reversed.height_fog(12.0).is_none());
+    }
+
+    #[test]
+    fn analytical_height_fog_matches_midpoint_quadrature() {
+        let profile = HeightFog {
+            bottom_height: -100.0,
+            top_height: 1100.0,
+            bottom_density: 0.8,
+            top_density: 0.06,
+        };
+        let (camera_z, target_z, distance) = (300.0_f32, 900.0_f32, 1800.0_f32);
+        let slope = (profile.top_density / profile.bottom_density).ln()
+            / (profile.top_height - profile.bottom_height);
+        let samples = 2048usize;
+        let midpoint = (0..samples)
+            .map(|i| {
+                let position = (i as f32 + 0.5) / samples as f32;
+                let z = camera_z + (target_z - camera_z) * position;
+                profile.bottom_density * (slope * (z - profile.bottom_height)).exp()
+            })
+            .sum::<f32>()
+            * distance
+            / samples as f32;
+        let analytic = profile.integrated_density(camera_z, target_z, distance);
+        assert!((analytic - midpoint).abs() < 0.2);
+        assert!(
+            (analytic - profile.integrated_density(target_z, camera_z, distance)).abs() < 0.2
+        );
+        let uniform = HeightFog {
+            bottom_height: 0.0,
+            top_height: 1000.0,
+            bottom_density: 0.25,
+            top_density: 0.25,
+        };
+        assert!((uniform.integrated_density(400.0, 400.0, 200.0) - 50.0).abs() < 0.001);
+        assert_eq!(uniform.integrated_density(0.0, f32::INFINITY, 100.0), 0.0);
+    }
+
+    #[test]
+    fn zero_endpoint_does_not_invent_exponential_density() {
+        for (bottom, top) in [(0.0, 0.3), (0.3, 0.0), (0.0, 0.0)] {
+            let xml = format!(
+                r#"<TimeOfDay>
+                    <Variable Name="Fog height (bottom)" Value="0"></Variable>
+                    <Variable Name="Fog height (top)" Value="1000"></Variable>
+                    <Variable Name="Fog density (bottom)" Value="{bottom}"></Variable>
+                    <Variable Name="Fog density (top)" Value="{top}"></Variable>
+                    <Variable Name="Fog color" Color="0.2,0.3,0.4"></Variable>
+                </TimeOfDay>"#
+            );
+            let tod = TimeOfDay::parse(xml.as_bytes()).unwrap();
+            assert!(tod.height_fog(12.0).is_none());
+            let fog = FogProfile {
+                view_distance: 1200.0,
+                ldr_density_multiplier: 2.0,
+            };
+            assert_eq!(fog.height_preview_uniform(Some(&tod), 12.0), [[0.0; 4]; 2]);
+            assert_eq!(fog.preview_uniform(Some(&tod), 12.0)[1][0], 1.0);
+        }
+    }
+
+    #[test]
+    fn height_fog_enable_requires_the_same_verified_color_and_environment_as_gpu() {
+        let tod = TimeOfDay::parse(
+            br#"<TimeOfDay>
+                <Variable Name="Fog height (bottom)" Value="20"></Variable>
+                <Variable Name="Fog height (top)" Value="1000"></Variable>
+                <Variable Name="Fog density (bottom)" Value="0.4"></Variable>
+                <Variable Name="Fog density (top)" Value="0.1"></Variable>
+                <Variable Name="Fog color" Color="0.1,0.3,0.5"></Variable>
+                <Variable Name="Sun intensity" Value="1000"></Variable>
+            </TimeOfDay>"#,
+        )
+        .unwrap();
+        let fog = FogProfile {
+            view_distance: 2000.0,
+            ldr_density_multiplier: 1.0,
+        };
+        assert_eq!(
+            fog.height_preview_uniform(Some(&tod), 12.0),
+            [[20.0, 1000.0, 0.4, 0.1], [1.0, 0.0, 0.0, 0.0]]
+        );
+        assert_eq!(fog.height_preview_uniform(None, 12.0), [[0.0; 4]; 2]);
+        assert!(tod.fog_source_diagnostics(12.0).contains("fog density (bottom)=0.4000"));
+        assert!(!tod.fog_source_diagnostics(12.0).contains("sun intensity"));
+        let zero_fog = FogProfile {
+            ldr_density_multiplier: 0.0,
+            ..fog
+        };
+        assert_eq!(
+            zero_fog.height_preview_uniform(Some(&tod), 12.0),
+            [[0.0; 4]; 2]
+        );
     }
 
     #[test]

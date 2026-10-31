@@ -486,15 +486,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text(state.level_world.as_ref().map_or_else(
                 || "Fog preview disabled: no verified map world.".to_owned(),
                 |world| match (world.fog_profile, world.time_of_day.as_deref()) {
-                    (Some(fog), Some(tod)) if tod.color("Fog color", state.level_time_of_day).is_some() && fog.ldr_density_multiplier > 0.0 => {
-                        if let Some(height) = tod.height_fog(state.level_time_of_day) {
+                    (Some(fog), Some(tod)) if fog.preview_uniform(Some(tod), state.level_time_of_day)[1][0] > 0.5 => {
+                        if fog.height_preview_uniform(Some(tod), state.level_time_of_day)[1][0] > 0.5 {
+                            let height = tod.height_fog(state.level_time_of_day).expect("height preview uniform requires valid source heights");
                             format!(
                                 "Source-backed analytical HEIGHT FOG PREVIEW: {:.0}–{:.0}m altitude, density {:.3}→{:.3}; TimeOfDay + Environment.xml. Not native Evolve fog, scattering, shadows, HDR or GI.",
                                 height.bottom_height, height.top_height, height.bottom_density, height.top_density
                             )
                         } else {
                             format!(
-                                "Distance-only fog PREVIEW: Environment.xml ViewDistance {:.0}m, LDR density multiplier {:.2}; no complete TimeOfDay height-density profile. Not native.",
+                                "Distance-only fog PREVIEW: Environment.xml ViewDistance {:.0}m, LDR density multiplier {:.2}; height-density source missing, invalid, or has a zero endpoint (unsupported by exponential model). Not native.",
                                 fog.view_distance, fog.ldr_density_multiplier
                             )
                         }
@@ -502,6 +503,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     (Some(_), Some(_)) => "Fog preview disabled: original TimeOfDay Fog color missing or density zero.".to_owned(),
                     _ => "Fog preview disabled: exact original Environment.xml and TimeOfDay.xml are both required.".to_owned(),
                 },
+            ))
+                .size(11)
+                .style(design::muted),
+            text(state.level_world.as_ref().and_then(|world| world.time_of_day.as_ref()).map_or_else(
+                || "No verified TimeOfDay fog-variable inventory.".to_owned(),
+                |tod| tod.fog_source_diagnostics(state.level_time_of_day),
             ))
                 .size(11)
                 .style(design::muted),
