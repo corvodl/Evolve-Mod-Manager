@@ -688,11 +688,11 @@ impl CameraGpu {
 /// vicinity; on-screen distant lights are favored over off-screen sources.
 /// Frustum uses the already-calculated camera basis and source sphere radius,
 /// not unverified emitter visibility flags or guessed map clipping ranges.
-fn select_visible_lights<'a>(
-    lights: &'a [super::level_atmosphere::LocalLight],
+fn select_visible_lights(
+    lights: &[super::level_atmosphere::LocalLight],
     camera: CameraGpu,
     limit: usize,
-) -> Vec<&'a super::level_atmosphere::LocalLight> {
+) -> Vec<&super::level_atmosphere::LocalLight> {
     let origin = &camera.origin[..3];
     let mut ranked = lights
         .iter()
