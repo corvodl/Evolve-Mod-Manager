@@ -21,11 +21,21 @@ const MAX_WORLD_DIFFUSE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TERRAIN_ATLAS_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FULL_TEXTURE_BYTES: u64 = u64::MAX;
 const MAX_SCENE_BALANCED_TEXTURE_BYTES: u64 = 384 * 1024 * 1024;
-// Residency target, not a full-resolution quality cap. Streams source images
-// as visible, retaining the complete originals in the CPU World. Conservative
-// until adapter-local free VRAM can be queried reliably.
-const WORLD_RESIDENT_TARGET_BYTES: u64 = 512 * 1024 * 1024;
+// Upload a bounded number of new groups each redraw. Once uploaded, GPU
+// meshes and textures remain resident until the level closes or a deliberate
+// quality/scene change rebuilds the renderer. In particular, camera movement
+// must never evict already-loaded groups.
 const MAX_NEW_GROUPS_PER_FRAME: usize = 2;
+
+fn residency_target_bytes(full_textures: bool) -> u64 {
+    if full_textures {
+        // Full quality is constrained by the GPU/driver, not an arbitrary
+        // software residency cap. Balanced mode retains its lower-memory cap.
+        u64::MAX
+    } else {
+        MAX_SCENE_BALANCED_TEXTURE_BYTES
+    }
+}
 const MAX_MIP_WRITE_BYTES_PER_FRAME: usize = 8 * 1024 * 1024;
 
 // Hash exact source pixel dimensions+bytes, not an Arc address. Distinct
@@ -496,30 +506,6 @@ fn resident_geometry_bytes(groups: &[Option<GpuGroup>]) -> u64 {
     groups.iter().flatten().fold(0u64, |total, group| {
         total.saturating_add(group.geometry_bytes)
     })
-}
-
-/// Evict only GPU handles for groups outside the current view. Original
-/// decoded images and mesh data remain owned by the immutable CPU World.
-fn evict_offscreen(
-    groups: &mut [Option<GpuGroup>],
-    visible: &[Vec<InstanceGpu>],
-    cache: &mut TextureCache,
-) -> usize {
-    let mut count = 0;
-    for (slot, instances) in groups.iter_mut().zip(visible) {
-        if instances.is_empty() && slot.take().is_some() {
-            count += 1;
-        }
-    }
-    if count > 0 {
-        let retained: HashSet<TextureKey> = groups
-            .iter()
-            .flatten()
-            .flat_map(|group| group.source_keys.iter().copied())
-            .collect();
-        cache.retain(|key, _| retained.contains(key));
-    }
-    count
 }
 
 fn is_ground(group: &ModelGroup) -> bool {
@@ -1530,15 +1516,12 @@ impl Renderer {
             .collect::<Vec<_>>();
         let mut cache = std::mem::take(&mut self.cache);
         let mut hashes = std::mem::take(&mut self.source_hashes);
-        let evicted = evict_offscreen(&mut self.groups, &visible_groups, &mut cache);
+        // Do not drop offscreen GPU resources: visibility only affects draw
+        // instance counts. Returning to an area must not trigger re-upload.
         self.pending_diffuse
             .retain(|key, _| cache.contains_key(key));
         self.mip_min_level.retain(|key, _| cache.contains_key(key));
-        let target_bytes = if full_textures {
-            WORLD_RESIDENT_TARGET_BYTES
-        } else {
-            MAX_SCENE_BALANCED_TEXTURE_BYTES
-        };
+        let target_bytes = residency_target_bytes(full_textures);
         let mut used_bytes = cache_bytes(&cache);
         let mut deferred = 0usize;
         let mut pending = 0usize;
@@ -1568,48 +1551,17 @@ impl Renderer {
                 &mut hashes,
                 device.limits().max_texture_dimension_2d,
             );
-            // Prefer near/ground geometry when visible groups collectively
-            // exceed the conservative residency target. Evict the farthest
-            // loaded group only if it is genuinely farther than this candidate,
-            // so repeated stream ticks cannot thrash the same two groups.
-            let distance = group_distance_sq(&world.groups[idx], camera);
-            while used_bytes
-                .saturating_add(resident_geometry_bytes(&self.groups))
-                .saturating_add(requested)
-                > target_bytes
-            {
-                let farthest = self
-                    .groups
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, group)| {
-                        group.is_some() && group_distance_sq(&world.groups[*i], camera) > distance
-                    })
-                    .max_by(|(left, _), (right, _)| {
-                        group_distance_sq(&world.groups[*left], camera)
-                            .total_cmp(&group_distance_sq(&world.groups[*right], camera))
-                    })
-                    .map(|(i, _)| i);
-                let Some(victim) = farthest else { break };
-                self.groups[victim].take();
-                let retained: HashSet<TextureKey> = self
-                    .groups
-                    .iter()
-                    .flatten()
-                    .flat_map(|group| group.source_keys.iter().copied())
-                    .collect();
-                cache.retain(|key, _| retained.contains(key));
-                pending_diffuse.retain(|key, _| cache.contains_key(key));
-                mip_min_level.retain(|key, _| cache.contains_key(key));
-                used_bytes = cache_bytes(&cache);
-            }
+            // Never evict previously loaded groups to make space for a new
+            // one. Full quality admits all visible groups (subject to physical
+            // GPU limits); Balanced defers new groups if its cap is reached.
+            // This prevents camera-motion thrashing and persistent pop-out.
             if used_bytes
                 .saturating_add(resident_geometry_bytes(&self.groups))
                 .saturating_add(requested)
                 > target_bytes
             {
-                // The requested resource remains available in source CPU
-                // memory and can be retried after camera movement/eviction.
+                // Balanced mode: source CPU data remains intact, and this
+                // not-yet-loaded group may be retried after a quality change.
                 deferred += 1;
                 continue;
             }
@@ -1700,7 +1652,7 @@ impl Renderer {
         if (uploaded != 0 || mip_uploads != 0)
             && (progress.loaded.load(Ordering::Relaxed) % 16 == 0
                 || (pending == 0 && self.pending_diffuse.is_empty())
-                || evicted > 0)
+                )
         {
             crate::crash_diagnostics::record(
                 "level_gpu_residency",
@@ -1716,7 +1668,7 @@ impl Renderer {
                 ),
             );
         }
-        if camera_changed || uploaded > 0 || evicted > 0 {
+        if camera_changed || uploaded > 0 {
             queue.write_buffer(&self.camera_uniform, 0, bytemuck::bytes_of(&uniform));
             for (gpu, culled) in self.groups.iter_mut().zip(&visible_groups) {
                 let Some(gpu) = gpu.as_mut() else { continue };
@@ -1826,7 +1778,11 @@ mod tests {
             Some((8192, 8192))
         );
         assert!(mip_chain_bytes(8192, 8192) > 340 * 1024 * 1024);
-        assert_eq!(WORLD_RESIDENT_TARGET_BYTES, 512 * 1024 * 1024);
+        assert_eq!(residency_target_bytes(true), u64::MAX);
+        assert_eq!(
+            residency_target_bytes(false),
+            MAX_SCENE_BALANCED_TEXTURE_BYTES
+        );
         assert_eq!(MAX_NEW_GROUPS_PER_FRAME, 2);
     }
 
