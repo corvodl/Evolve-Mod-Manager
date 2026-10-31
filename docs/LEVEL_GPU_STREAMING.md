@@ -8,10 +8,11 @@ remain read-only/unchanged.
 
 ## Implemented
 
-- The world renderer preflights visible groups before creating buffers or GPU
-  textures. Groups nearest the camera are prioritized, with original terrain
-  first. At most two new groups are uploaded per redraw; an on-demand UI timer
-  requests more redraws while visible uploads remain.
+- The world renderer preflights **all resolved scene groups**, not only groups
+  in the current view, before creating buffers or GPU textures. Terrain loads
+  first and other groups are prioritized by camera distance, independent of
+  camera direction. At most two new groups upload per redraw; an on-demand
+  UI timer requests more redraws while **any** scene uploads remain.
 - **Full quality** means original source dimensions (subject to GPU-supported
   texture size) and no manager-imposed 512 MiB scene-residency target.
   Already-uploaded groups stay GPU-resident while the scene stays loaded;
@@ -25,10 +26,14 @@ remain read-only/unchanged.
   Roles and ground sampler class are part of GPU cache identity. Cache
   lifetime is one World, not a globally persistent untrusted image reference.
 - Once GPU geometry and textures load, they remain resident across view
-  changes. Frustum culling only skips drawing instances outside the view; it
-  does not dispose of meshes or textures. Returning to a previously viewed
-  area does not require a second upload. Scene unloading and explicit quality
-  or scene replacement still release old GPU objects.
+  changes. **CPU frustum/distance instance culling is disabled**: every
+  resolved placement is uploaded once, remains present in the draw list,
+  and is clipped or depth-tested normally by the GPU. Camera rotation only
+  updates its camera uniform rather than re-uploading instance data.
+  Returning to a previously viewed area does not require a second upload.
+  Scene unloading and explicit quality or scene replacement still release
+  old GPU objects. Drawing the complete scene can increase vertex processing
+  and VRAM use, especially on lower-end hardware.
 - **Scene Settings** reports resident/queued/deferred group counts, current
   texture-mip and geometry byte estimates, and peak estimates. The bounded
   crash log records `level_gpu_residency` periodically. These are estimates,
@@ -85,8 +90,11 @@ remain read-only/unchanged.
 2. Observe `level_gpu_residency` and the Scene Settings resident/peak counters.
    Turn away from a loaded building, foliage patch and terrain, then turn back.
    All remain resident and should reappear immediately without GPU re-upload.
-   Moving around must never decrease resident-group counts for the same scene
-   and texture quality, unless a GPU/device error forces recovery.
+   Start the viewport pointed away from some imported props: all resolved
+   groups should still continue loading in the background. Turning or flying
+   must not change per-group GPU instance counts or decrease resident-group
+   counts for the same scene and texture quality, except after GPU/device
+   errors or deliberate scene replacement.
 3. Open Ice_Crashsite and a forest map. Check map responsiveness, deferred
    groups and failure handling with 4K source assets. A persistent deferred
    group is not considered successful full-quality coverage.
