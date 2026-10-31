@@ -249,9 +249,9 @@ fn imported_map_terrain(
         return Ok(None);
     };
     let library = imported_library(library_root).map_err(|error| error.to_string())?;
-    if selected.builds.len() > 1 {
-        return Err("Selected map belongs to multiple imported builds; choose a specific build before resolving terrain".into());
-    }
+    // Legacy registration labels may overlap the same physical source build.
+    // The exact Game directory and map owner below provide stronger source
+    // provenance than the number of historical labels attached to a PAK.
     let selected_build = selected.builds.first().map(String::as_str);
     let mut found: Vec<TerrainResource> = Vec::new();
     let mut matching_pak_details = Vec::new();
