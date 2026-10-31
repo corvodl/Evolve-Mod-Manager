@@ -245,25 +245,24 @@ fn idle_priority(name: &str) -> Option<(bool, bool, bool, String)> {
 /// AnimationsCAF manifests are metadata; each clip is independently verified
 /// by exact() when selected. Never walk arbitrary game directories or borrow
 /// a different build's animation by basename.
-fn matching_caf_paths(
-    pattern: &str,
+/// Collect source-declared CAF candidates only once per model-resource discovery.
+/// A character can declare many wildcards; rereading and parsing the same large
+/// AnimationsCAF.pak manifest for each wildcard makes every model open expensive.
+fn caf_catalog_paths(
     inv: &Inventory,
     imported: Option<&Path>,
     build: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    const MAX_MATCHES: usize = 12_000;
     const MAX_MANIFEST: u64 = 32 * 1024 * 1024;
     let mut paths = std::collections::BTreeMap::<String, String>::new();
     let mut consider = |path: &str| -> Result<(), String> {
         let normalized = path.replace('\\', "/");
-        if normalized.to_ascii_lowercase().ends_with(".caf")
-            && animation_wildcard_matches(pattern, &normalized)
-        {
+        if normalized.to_ascii_lowercase().ends_with(".caf") {
             paths
                 .entry(normalized.to_ascii_lowercase())
                 .or_insert(normalized);
-            if paths.len() > MAX_MATCHES {
-                return Err("Animation wildcard exceeds 12000 matching CAFs".into());
+            if paths.len() > 250_000 {
+                return Err("Animation catalog exceeds 250000 distinct CAFs".into());
             }
         }
         Ok(())
@@ -308,6 +307,22 @@ fn matching_caf_paths(
         }
     }
     Ok(paths.into_values().collect())
+}
+
+/// Expand an authored wildcard against the already verified exact-build
+/// candidates, not by rereading the source archive for each pattern.
+fn matching_caf_paths(pattern: &str, candidates: &[String]) -> Result<Vec<String>, String> {
+    const MAX_MATCHES: usize = 12_000;
+    let mut matches = Vec::new();
+    for path in candidates {
+        if animation_wildcard_matches(pattern, path) {
+            matches.push(path.clone());
+            if matches.len() > MAX_MATCHES {
+                return Err("Animation wildcard exceeds 12000 matching CAFs".into());
+            }
+        }
+    }
+    Ok(matches)
 }
 
 pub fn discover(
@@ -484,6 +499,8 @@ pub fn discover(
     // Keep the complete declared catalog in the browser (bounded by parser).
     // Only the best neutral idle is materialized from the imported library by
     // default; clicking a different clip resolves it on demand.
+    // Lazily decode the large animation archive manifest once for all CAF wildcards.
+    let mut caf_candidates: Option<Result<Vec<String>, String>> = None;
     let mut preferred: Vec<(usize, (bool, bool, bool, String))> = Vec::new();
     let mut declared_event_databases = 0;
     for r in &references {
@@ -521,7 +538,13 @@ pub fn discover(
             continue;
         }
         if r.kind == "caf_glob" {
-            match matching_caf_paths(&r.path, inv, imported, build) {
+            let candidates = caf_candidates
+                .get_or_insert_with(|| caf_catalog_paths(inv, imported, build));
+            match candidates
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|paths| matching_caf_paths(&r.path, paths))
+            {
                 Ok(paths) => {
                     for path in paths {
                         let label = path
@@ -638,13 +661,20 @@ mod tests {
         )
         .unwrap();
         let inv = scan_directory(dir.path()).unwrap();
+        let candidates = caf_catalog_paths(&inv, None, None).unwrap();
         let clips = matching_caf_paths(
             "characters/hunters/merc_bucket/animations/*.caf",
-            &inv,
-            None,
-            None,
+            &candidates,
         )
         .unwrap();
+        assert_eq!(
+            matching_caf_paths(
+                "characters/hunters/merc_emet/animations/*.caf",
+                &candidates
+            )
+            .unwrap(),
+            vec!["characters/hunters/merc_emet/animations/emet_idle.caf"]
+        );
         assert_eq!(
             clips,
             vec!["characters/hunters/merc_bucket/animations/bucket_idle.caf"]
