@@ -6,6 +6,7 @@ use crate::library_import::{
     LibraryBatchImportReport, LibraryImportFailure, LibraryImportPlan, MAX_LIBRARY_COLLECTION_PAKS,
     import_signed_library_pak_with_keys, scan_library_import_sources,
 };
+use crate::library_paths::{ordinary_path, source_path_key};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -99,12 +100,19 @@ fn real_directory(root: &Path) -> Result<PathBuf, String> {
     fs::canonicalize(root).map_err(|e| e.to_string())
 }
 
-fn build_identity(root: &Path) -> String {
+// Preserve the historical raw-path hash only to authenticate old snapshot
+// folders. New identities must ignore Windows verbatim transport prefixes.
+fn legacy_build_identity(root: &Path) -> String {
     let text = root
         .to_string_lossy()
         .replace('\\', "/")
         .to_ascii_lowercase();
-    format!("{:x}", Sha256::digest(text.as_bytes()))[..24].to_string()
+    format!("{:x}", Sha256::digest(text.as_bytes()))[..24].to_owned()
+}
+
+fn build_identity(root: &Path) -> String {
+    let key = source_path_key(&root.to_string_lossy());
+    format!("{:x}", Sha256::digest(key.as_bytes()))[..24].to_owned()
 }
 
 fn relative_name(root: &Path, file: &Path) -> Result<String, String> {
@@ -163,27 +171,14 @@ fn read_snapshot(path: &Path, id: &str, root: &Path) -> Result<BuildSnapshot, St
 }
 
 fn latest_snapshot(library: &Path, id: &str, root: &Path) -> Result<Option<BuildSnapshot>, String> {
-    let folder = snapshot_dir(library, id);
-    if !folder.exists() {
-        return Ok(None);
+    // Read across legacy snapshot directories with alternative spellings of
+    // the same Windows path. The newest recorded snapshot remains authoritative.
+    if build_identity(root) != id {
+        return Err("Selected game build identity changed".into());
     }
-    let folder = real_directory(&folder)?;
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(&folder).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.ends_with(".json") && name.starts_with("snapshot-") {
-            entries.push(entry.path());
-        }
-        if entries.len() > MAX_HISTORY_FILES {
-            return Err("Build snapshot history exceeds safe limit".into());
-        }
-    }
-    entries.sort_unstable();
-    entries
-        .last()
-        .map(|file| read_snapshot(file, id, root))
-        .transpose()
+    Ok(build_snapshots(library)?
+        .get(id)
+        .and_then(|entries| entries.last().cloned()))
 }
 
 fn bootstrap_from_library(
@@ -194,7 +189,10 @@ fn bootstrap_from_library(
     let mut found: BTreeMap<String, (u64, BuildMember)> = BTreeMap::new();
     for archive in catalog.archives {
         let source = PathBuf::from(&archive.source);
-        let Ok(relative) = source.strip_prefix(root) else {
+        let Ok(resolved) = fs::canonicalize(&source) else {
+            continue;
+        };
+        let Ok(relative) = resolved.strip_prefix(root) else {
             continue;
         };
         let Ok(rel) = relative_name(root, &root.join(relative)) else {
@@ -494,7 +492,7 @@ pub fn apply_library_build_updates(
     let snapshot = BuildSnapshot {
         version: 1,
         build_id: plan.build_id.clone(),
-        source_root: root.to_string_lossy().into_owned(),
+        source_root: ordinary_path(&root.to_string_lossy()),
         members,
         owned_extractions,
     };
@@ -527,6 +525,8 @@ pub fn apply_library_build_updates(
 pub struct ManagedLibraryBuild {
     pub id: String,
     pub source_root: String,
+    pub display_name: String,
+    pub aliases: usize,
     pub pak_count: usize,
     pub extracted_bytes: u64,
     /// Only extraction folders solely referenced by this group are eligible.
@@ -550,10 +550,12 @@ fn build_snapshots(library: &Path) -> Result<BTreeMap<String, Vec<BuildSnapshot>
         return Ok(BTreeMap::new());
     }
     let history = real_directory(&history)?;
-    let mut builds = BTreeMap::new();
+    let mut builds = BTreeMap::<String, Vec<(String, BuildSnapshot)>>::new();
+    let mut folders_seen = 0usize;
     for entry in fs::read_dir(&history).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
-        if builds.len() >= 128 {
+        folders_seen += 1;
+        if folders_seen > 128 {
             return Err("Too many managed game builds".into());
         }
         if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
@@ -592,23 +594,316 @@ fn build_snapshots(library: &Path) -> Result<BTreeMap<String, Vec<BuildSnapshot>
             let root = doc["source_root"]
                 .as_str()
                 .ok_or("Missing build source root")?;
-            if build_identity(Path::new(root)) != id {
+            if legacy_build_identity(Path::new(root)) != id && build_identity(Path::new(root)) != id
+            {
                 return Err("Build snapshot source identity differs from folder".into());
             }
-            let record = read_snapshot(&file, &id, Path::new(root))?;
+            let mut record = read_snapshot(&file, &id, Path::new(root))?;
+            record.build_id = build_identity(Path::new(root));
+            record.source_root = ordinary_path(root);
             if records
                 .first()
-                .is_some_and(|old: &BuildSnapshot| old.source_root != record.source_root)
+                .is_some_and(|old: &(String, BuildSnapshot)| {
+                    source_path_key(&old.1.source_root) != source_path_key(&record.source_root)
+                })
             {
                 return Err("Conflicting build roots within one snapshot history".into());
             }
-            records.push(record);
+            records.push((
+                file.file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                record,
+            ));
         }
-        if !records.is_empty() {
-            builds.insert(id, records);
+        for (stamp, record) in records {
+            builds
+                .entry(record.build_id.clone())
+                .or_default()
+                .push((stamp, record));
         }
     }
-    Ok(builds)
+    Ok(builds
+        .into_iter()
+        .map(|(id, mut entries)| {
+            // Snapshot files use zero-padded nanosecond timestamps, so sorting
+            // across old and new identity folders preserves update chronology.
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            (id, entries.into_iter().map(|(_, record)| record).collect())
+        })
+        .collect())
+}
+
+const LEGACY_COLLECTION_SOURCE: &str = "Legacy collection (installation path not recorded)";
+
+fn legacy_collection_document(library: &Path) -> Result<Option<serde_json::Value>, String> {
+    let path = library.join("build-collections.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() || meta.len() > MAX_LEDGER_BYTES {
+        return Err("Legacy collection registry is unsafe".into());
+    }
+    let data: serde_json::Value =
+        serde_json::from_reader(File::open(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    if data["version"].as_u64() != Some(1)
+        || !data["builds"].is_object()
+        || data["builds"]
+            .as_object()
+            .is_some_and(|map| map.len() > 128)
+    {
+        return Err("Unsupported legacy collection registry".into());
+    }
+    Ok(Some(data))
+}
+
+fn edit_legacy_collection(
+    library: &Path,
+    id: &str,
+    expected: &str,
+    rename: Option<&str>,
+) -> Result<(), String> {
+    if expected != LEGACY_COLLECTION_SOURCE {
+        return Err("Legacy collection changed; refresh build manager".into());
+    }
+    let mut data =
+        legacy_collection_document(library)?.ok_or("Legacy collections are no longer available")?;
+    let builds = data["builds"]
+        .as_object_mut()
+        .ok_or("Malformed legacy collections")?;
+    if id == "unassigned" {
+        return Err("Cannot manage unassigned manual archive imports".into());
+    }
+    if let Some(name) = rename {
+        let group = builds.get_mut(id).ok_or("Legacy build was removed")?;
+        if !group.is_object() {
+            return Err("Legacy build record is malformed".into());
+        }
+        group["label"] = serde_json::Value::String(name.into());
+    } else if builds.remove(id).is_none() {
+        return Err("Legacy build was removed".into());
+    }
+    let mut temp = tempfile::Builder::new()
+        .prefix(".build-collections-")
+        .tempfile_in(library)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(temp.as_file_mut(), &data).map_err(|e| e.to_string())?;
+    temp.as_file_mut()
+        .write_all(b"\n")
+        .map_err(|e| e.to_string())?;
+    temp.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+    temp.persist(library.join("build-collections.json"))
+        .map_err(|e| e.error.to_string())?;
+    Ok(())
+}
+
+/// Versioned registry is a non-destructive migration index. Existing
+/// snapshot histories and extracted data remain byte-for-byte untouched.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct BuildRegistration {
+    source_root: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    history_ids: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct BuildRegistry {
+    version: u32,
+    builds: BTreeMap<String, BuildRegistration>,
+}
+
+fn registry_path(library: &Path) -> PathBuf {
+    library.join("managed-builds.json")
+}
+
+fn read_registry(library: &Path) -> Result<BuildRegistry, String> {
+    let path = registry_path(library);
+    if !path.exists() {
+        return Ok(BuildRegistry {
+            version: 1,
+            builds: BTreeMap::new(),
+        });
+    }
+    let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() || meta.len() > MAX_LEDGER_BYTES {
+        return Err("Unsafe managed-build registry".into());
+    }
+    let data: BuildRegistry =
+        serde_json::from_reader(File::open(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("Cannot parse managed-build registry: {e}"))?;
+    if data.version != 1
+        || data.builds.len() > 128
+        || data.builds.iter().any(|(id, build)| {
+            id.len() != 24
+                || !id.bytes().all(|b| b.is_ascii_hexdigit())
+                || build_identity(Path::new(&build.source_root)) != *id
+                || build.display_name.len() > 120
+                || build.display_name.chars().any(char::is_control)
+                || build.history_ids.len() > 128
+                || build
+                    .history_ids
+                    .iter()
+                    .any(|alias| alias.len() != 24 || !alias.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
+    {
+        return Err("Managed-build registry identity or label is invalid".into());
+    }
+    Ok(data)
+}
+
+fn write_registry(library: &Path, registry: &BuildRegistry) -> Result<(), String> {
+    let mut temp = tempfile::Builder::new()
+        .prefix(".managed-builds-")
+        .tempfile_in(library)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(temp.as_file_mut(), registry).map_err(|e| e.to_string())?;
+    temp.as_file_mut()
+        .write_all(b"\n")
+        .map_err(|e| e.to_string())?;
+    temp.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+    temp.persist(registry_path(library))
+        .map_err(|e| e.error.to_string())?;
+    Ok(())
+}
+
+/// Read physical history folder IDs for a logical build. Every source record
+/// is revalidated against its original physical ID by read_snapshot.
+fn physical_history_ids(library: &Path, logical_id: &str) -> Result<BTreeSet<String>, String> {
+    let history = library.join("build-update-history");
+    if !history.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let history = real_directory(&history)?;
+    let mut result = BTreeSet::new();
+    for entry in fs::read_dir(&history).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            return Err("Unexpected build history entry".into());
+        }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if id.len() != 24 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("Invalid build history directory".into());
+        }
+        let mut files = fs::read_dir(entry.path())
+            .map_err(|e| e.to_string())?
+            .map(|f| f.map(|f| f.path()).map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        files.sort();
+        if let Some(file) = files.first() {
+            let metadata = fs::symlink_metadata(file).map_err(|e| e.to_string())?;
+            if !metadata.file_type().is_file() || metadata.len() > MAX_LEDGER_BYTES {
+                return Err("Unsafe legacy build snapshot during migration".into());
+            }
+            let value: serde_json::Value =
+                serde_json::from_reader(File::open(file).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            let root = value["source_root"]
+                .as_str()
+                .ok_or("History without source root")?;
+            let _ = read_snapshot(file, &id, Path::new(root))?;
+            if build_identity(Path::new(root)) == logical_id {
+                result.insert(id);
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Persist legacy extended-prefix IDs as aliases, without moving or deleting
+/// prior imported data. Called by explicit build-management operations.
+fn migrate_registry(
+    library: &Path,
+    all: &BTreeMap<String, Vec<BuildSnapshot>>,
+) -> Result<BuildRegistry, String> {
+    let mut registry = read_registry(library)?;
+    let before = registry.clone();
+    let mut next = BTreeMap::new();
+    for (id, records) in all {
+        let latest = records.last().ok_or("Empty managed build")?;
+        let previous = registry.builds.remove(id);
+        next.insert(
+            id.clone(),
+            BuildRegistration {
+                source_root: ordinary_path(&latest.source_root),
+                display_name: previous
+                    .as_ref()
+                    .map_or(String::new(), |row| row.display_name.clone()),
+                history_ids: physical_history_ids(library, id)?,
+            },
+        );
+    }
+    let updated = BuildRegistry {
+        version: 1,
+        builds: next,
+    };
+    if before != updated {
+        write_registry(library, &updated)?;
+    }
+    Ok(updated)
+}
+
+/// A rename affects only the manager's friendly label, never the installation
+/// path, build identity, PAK provenance, or source files.
+pub fn rename_managed_library_build(
+    library: &Path,
+    id: &str,
+    expected_source_root: &str,
+    label: &str,
+) -> Result<Vec<ManagedLibraryBuild>, String> {
+    let label = label.trim();
+    if label.is_empty()
+        || label.len() > 80
+        || label
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '/' | '\\'))
+    {
+        return Err("Build name must be 1-80 characters without slashes or controls".into());
+    }
+    let library = real_directory(library)?;
+    if let Some(legacy) = id.strip_prefix("legacy:") {
+        edit_legacy_collection(&library, legacy, expected_source_root, Some(label))?;
+        return managed_library_builds(&library);
+    }
+    let all = build_snapshots(&library)?;
+    let latest = all
+        .get(id)
+        .and_then(|rows| rows.last())
+        .ok_or("Selected managed build no longer exists")?;
+    if source_path_key(&latest.source_root) != source_path_key(expected_source_root) {
+        return Err("Managed build changed; refresh before renaming".into());
+    }
+    let mut registry = migrate_registry(&library, &all)?;
+    let record = registry
+        .builds
+        .get_mut(id)
+        .ok_or("Missing managed build registration")?;
+    record.display_name = label.to_owned();
+    write_registry(&library, &registry)?;
+    managed_library_builds(&library)
+}
+
+/// Optional friendly label used by the Asset Library's build-filter UI.
+pub(crate) fn registered_build_name(library: &Path, id: &str) -> Option<String> {
+    read_registry(library)
+        .ok()?
+        .builds
+        .get(id)
+        .map(|row| row.display_name.clone())
+        .filter(|label| !label.is_empty())
+}
+
+fn all_without_build(
+    all: &BTreeMap<String, Vec<BuildSnapshot>>,
+    id: &str,
+) -> BTreeMap<String, Vec<BuildSnapshot>> {
+    let mut next = all.clone();
+    next.remove(id);
+    next
 }
 
 fn legacy_references(library: &Path) -> Result<BTreeSet<String>, String> {
@@ -679,18 +974,29 @@ fn only_owned_extractions(
             continue;
         }
         let folder = Path::new(&archive.directory);
-        if folder.parent() != Some(library)
-            || !folder
-                .file_name()
-                .and_then(|s| s.to_str())
+        // imported_library exposes ordinary C:\\ paths, while real_directory
+        // and fs::canonicalize may return Windows \\\\?\\ paths. Compare
+        // lexical parents using the normalized path identity, but authorize
+        // removal only when the resolved directory is the direct child of
+        // the canonical Asset Library. A junction/reparse point elsewhere
+        // cannot satisfy the second (physical) check.
+        let Some(folder_name) = folder.file_name().filter(|name| {
+            name.to_str()
                 .is_some_and(|name| name == id || name.ends_with(&format!("__{id}")))
-        {
+        }) else {
+            retained_shared += 1;
+            continue;
+        };
+        if !folder.parent().is_some_and(|parent| {
+            source_path_key(&parent.to_string_lossy())
+                == source_path_key(&library.to_string_lossy())
+        }) {
             retained_shared += 1;
             continue;
         }
         let meta = fs::symlink_metadata(folder).map_err(|e| e.to_string())?;
         if !meta.file_type().is_dir()
-            || fs::canonicalize(folder).map_err(|e| e.to_string())? != folder
+            || fs::canonicalize(folder).map_err(|e| e.to_string())? != library.join(folder_name)
         {
             retained_shared += 1;
             continue;
@@ -725,8 +1031,37 @@ fn only_owned_extractions(
 pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>, String> {
     let library = real_directory(library)?;
     let all = build_snapshots(&library)?;
+    let registrations = migrate_registry(&library, &all)?;
     let catalog = imported_library(&library).map_err(|e| e.to_string())?;
     let mut builds = Vec::new();
+    if let Some(legacy) = legacy_collection_document(&library)?
+        && let Some(groups) = legacy["builds"].as_object()
+    {
+        for (id, group) in groups {
+            if id == "unassigned" {
+                continue;
+            }
+            let Some(members) = group["members"].as_object() else {
+                continue;
+            };
+            let ids = members.keys().collect::<BTreeSet<_>>();
+            let size = catalog
+                .archives
+                .iter()
+                .filter(|a| ids.contains(&a.id))
+                .fold(0u64, |sum, a| sum.saturating_add(a.extracted_bytes));
+            builds.push(ManagedLibraryBuild {
+                id: format!("legacy:{id}"),
+                source_root: LEGACY_COLLECTION_SOURCE.into(),
+                display_name: group["label"].as_str().unwrap_or(id).to_owned(),
+                aliases: 0,
+                pak_count: members.len(),
+                extracted_bytes: size,
+                reclaimable_paks: 0,
+                reclaimable_bytes: 0,
+            });
+        }
+    }
     for (id, snapshots) in &all {
         let latest = snapshots.last().ok_or("Empty build history")?;
         let mut other = all.clone();
@@ -744,7 +1079,15 @@ pub fn managed_library_builds(library: &Path) -> Result<Vec<ManagedLibraryBuild>
             .fold(0u64, |sum, a| sum.saturating_add(a.extracted_bytes));
         builds.push(ManagedLibraryBuild {
             id: id.clone(),
-            source_root: latest.source_root.clone(),
+            source_root: ordinary_path(&latest.source_root),
+            display_name: registrations
+                .builds
+                .get(id)
+                .map_or(String::new(), |r| r.display_name.clone()),
+            aliases: registrations
+                .builds
+                .get(id)
+                .map_or(0, |r| r.history_ids.len()),
             pak_count: latest.members.len(),
             extracted_bytes,
             reclaimable_paks: reclaim.len(),
@@ -765,6 +1108,17 @@ pub fn remove_managed_library_build(
     expected_source_root: &str,
 ) -> Result<LibraryBuildRemovalReport, String> {
     let library = real_directory(library)?;
+    if let Some(legacy) = id.strip_prefix("legacy:") {
+        edit_legacy_collection(&library, legacy, expected_source_root, None)?;
+        return Ok(LibraryBuildRemovalReport {
+            source_root: expected_source_root.into(),
+            deleted_snapshots: 0,
+            removed_archives: 0,
+            reclaimed_bytes: 0,
+            retained_shared: 0,
+            failed_cleanup: Vec::new(),
+        });
+    }
     if id.len() != 24 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Invalid selected game build".into());
     }
@@ -773,20 +1127,29 @@ pub fn remove_managed_library_build(
         .remove(id)
         .ok_or("Managed build is no longer available")?;
     let latest = snapshots.last().ok_or("Selected build has no snapshots")?;
-    if latest.source_root != expected_source_root {
+    if source_path_key(&latest.source_root) != source_path_key(expected_source_root) {
         return Err("Selected build changed; refresh build management".into());
     }
     let (unused, retained_shared) = only_owned_extractions(&library, &snapshots, &all)?;
-    let history = snapshot_dir(&library, id);
-    if history.parent() != Some(library.join("build-update-history").as_path())
-        || !fs::symlink_metadata(&history)
-            .map_err(|e| e.to_string())?
-            .file_type()
-            .is_dir()
-    {
-        return Err("Unsafe build history path".into());
+    let aliases = physical_history_ids(&library, id)?;
+    if aliases.is_empty() {
+        return Err("No source snapshot history for selected build".into());
     }
-    fs::remove_dir_all(&history).map_err(|e| format!("Cannot remove build snapshot: {e}"))?;
+    // Every physical alias has already been validated by build_snapshots and
+    // physical_history_ids. Remove history only, never original game folders.
+    for alias in aliases {
+        let history = snapshot_dir(&library, &alias);
+        if history.parent() != Some(library.join("build-update-history").as_path())
+            || !fs::symlink_metadata(&history)
+                .map_err(|e| e.to_string())?
+                .file_type()
+                .is_dir()
+        {
+            return Err("Unsafe build history path".into());
+        }
+        fs::remove_dir_all(&history).map_err(|e| format!("Cannot remove build snapshot: {e}"))?;
+    }
+    migrate_registry(&library, &all_without_build(&all, id))?;
     let mut removed_archives = 0;
     let mut reclaimed_bytes = 0u64;
     let mut failed_cleanup = Vec::new();
@@ -1007,7 +1370,9 @@ mod tests {
         assert_eq!(snapshot.len(), 2);
         let old_build = snapshot
             .iter()
-            .find(|entry| entry.source_root == real_directory(&old).unwrap().to_string_lossy())
+            .find(|entry| {
+                entry.source_root == ordinary_path(&real_directory(&old).unwrap().to_string_lossy())
+            })
             .unwrap();
         assert_eq!(old_build.reclaimable_paks, 1);
         assert!(remove_managed_library_build(&library, &old_build.id, "wrong").is_err());
@@ -1061,6 +1426,132 @@ mod tests {
                 .iter()
                 .any(|archive| archive.id == manually_imported.id)
         );
+    }
+
+    #[test]
+    fn path_alias_snapshots_migrate_non_destructively_and_remain_renameable() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let history = library.join("build-update-history");
+        fs::create_dir_all(&history).unwrap();
+        let old_root = r"\\?\C:\Games\ModdedEvolve\EvolveGame\Game";
+        let plain_root = r"C:\Games\ModdedEvolve\EvolveGame\Game";
+        let old_id = legacy_build_identity(Path::new(old_root));
+        let canonical_id = build_identity(Path::new(plain_root));
+        assert_ne!(old_id, canonical_id);
+        assert_eq!(build_identity(Path::new(old_root)), canonical_id);
+        for (id, root, stamp, number) in [
+            (&old_id, old_root, 1u32, 1u8),
+            (&canonical_id, plain_root, 2u32, 2u8),
+        ] {
+            let folder = history.join(id);
+            fs::create_dir_all(&folder).unwrap();
+            let record = BuildSnapshot {
+                version: 1,
+                build_id: id.clone(),
+                source_root: root.into(),
+                members: BTreeMap::from([(
+                    "Game/example.pak".into(),
+                    BuildMember {
+                        sha256: format!("{number:064x}"),
+                        archive_id: format!("{number:020x}"),
+                    },
+                )]),
+                owned_extractions: BTreeSet::new(),
+            };
+            fs::write(
+                folder.join(format!("snapshot-{stamp:025}.json")),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+        }
+        let previous = fs::read(
+            history
+                .join(&old_id)
+                .join(format!("snapshot-{:025}.json", 1)),
+        )
+        .unwrap();
+        let builds = managed_library_builds(&library).unwrap();
+        assert_eq!(builds.len(), 1);
+        assert_eq!(builds[0].id, canonical_id);
+        assert_eq!(builds[0].aliases, 2);
+        assert_eq!(builds[0].source_root, plain_root);
+        assert!(registry_path(&library).exists());
+        assert_eq!(build_snapshots(&library).unwrap()[&canonical_id].len(), 2);
+        assert_eq!(
+            latest_snapshot(&library, &canonical_id, Path::new(plain_root))
+                .unwrap()
+                .unwrap()
+                .members["Game/example.pak"]
+                .sha256,
+            format!("{:064x}", 2)
+        );
+        let renamed =
+            rename_managed_library_build(&library, &canonical_id, plain_root, "Stage 2 Production")
+                .unwrap();
+        assert_eq!(renamed[0].display_name, "Stage 2 Production");
+        assert_eq!(
+            managed_library_builds(&library).unwrap()[0].display_name,
+            "Stage 2 Production"
+        );
+        assert_eq!(
+            fs::read(
+                history
+                    .join(&old_id)
+                    .join(format!("snapshot-{:025}.json", 1))
+            )
+            .unwrap(),
+            previous
+        );
+        assert!(remove_managed_library_build(&library, &canonical_id, "wrong").is_err());
+        let removal = remove_managed_library_build(&library, &canonical_id, plain_root).unwrap();
+        assert_eq!(removal.deleted_snapshots, 2);
+        assert!(!history.join(old_id).exists());
+        assert!(!history.join(canonical_id).exists());
+    }
+
+    #[test]
+    fn legacy_collections_can_be_renamed_and_unlinked_without_deleting_archive_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(&library).unwrap();
+        let marker = library.join("keep-original-extraction.dat");
+        fs::write(&marker, b"preserve").unwrap();
+        fs::write(
+            library.join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "builds": {
+                    "legacy-2012": {"label": "Legacy", "members": {}},
+                    "unassigned": {"label": "Unassigned", "members": {}}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let builds = managed_library_builds(&library).unwrap();
+        assert_eq!(builds.len(), 1);
+        assert_eq!(builds[0].id, "legacy:legacy-2012");
+        rename_managed_library_build(
+            &library,
+            &builds[0].id,
+            &builds[0].source_root,
+            "Legacy 2012",
+        )
+        .unwrap();
+        assert_eq!(
+            managed_library_builds(&library).unwrap()[0].display_name,
+            "Legacy 2012"
+        );
+        let report =
+            remove_managed_library_build(&library, &builds[0].id, &builds[0].source_root).unwrap();
+        assert_eq!(report.removed_archives, 0);
+        assert_eq!(fs::read(&marker).unwrap(), b"preserve");
+        assert!(
+            legacy_collection_document(&library).unwrap().unwrap()["builds"]["unassigned"]
+                .is_object()
+        );
+        assert!(managed_library_builds(&library).unwrap().is_empty());
     }
 
     #[test]
