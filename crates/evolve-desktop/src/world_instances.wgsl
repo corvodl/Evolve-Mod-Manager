@@ -47,6 +47,32 @@ struct HeightFogPreview {
 // Linear UNORM, not sRGB: the original authored high-pass neutral is RGB 128.
 // Non-terrain meshes bind alpha=0 and remain completely unaffected.
 @group(0) @binding(12) var terrain_detail: texture_2d<f32>;
+
+struct SourceLight {
+  position_radius:vec4<f32>,
+  direction_cone:vec4<f32>,
+  color_strength:vec4<f32>,
+}
+struct SourceLights {
+  count:vec4<f32>,
+  data:array<SourceLight,24>,
+}
+@group(0) @binding(13) var<uniform> local_lights:SourceLights;
+// Source TimeOfDay scene key, exposure envelope, film curve whitepoint and
+// saturation mapped to a bounded linear-radiance ACES preview. This does
+// NOT reproduce Evolve's eye-adaptation history or bloom framebuffer.
+@group(0) @binding(14) var<uniform> hdr:vec4<f32>;
+fn tonemap(color:vec3<f32>)->vec3<f32> {
+  let v=max(color*hdr.x,vec3<f32>(0.0));
+  let balanced=v*(1.0+0.05*hdr.y);
+  let mapped=clamp(
+    (balanced*(2.51*balanced+0.03))/
+    (balanced*(2.43*balanced+0.59)+0.14),
+    vec3<f32>(0.0),vec3<f32>(1.0));
+  let luma=dot(mapped,vec3<f32>(0.2126,0.7152,0.0722));
+  return clamp(mix(vec3<f32>(luma),mapped,hdr.z),vec3<f32>(0.0),vec3<f32>(1.0));
+}
+
 struct Output {
   @builtin(position) clip: vec4<f32>,
   @location(0) uv: vec2<f32>,
@@ -167,13 +193,41 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   let exponent=mix(8.0,120.0,clamp(gloss,0.0,1.0));
   let highlight=pow(max(dot(n,half_direction),0.0),exponent);
   let specular=reflectance*light.sun_color.rgb*(light.sun.w*0.6*highlight);
+  var local_radiance=vec3<f32>(0.0);
+  let sources=u32(clamp(local_lights.count.x,0.0,24.0));
+  for (var i=0u;i<24u;i=i+1u) {
+    if (i>=sources) { break; }
+    let source=local_lights.data[i];
+    let delta=source.position_radius.xyz-input.world;
+    let radius=max(source.position_radius.w,0.001);
+    let dist=length(delta);
+    if (dist>=radius || dist<0.00001) {continue;}
+    let incoming=delta/dist;
+    var attenuation=pow(1.0-clamp(dist/radius,0.0,1.0),2.0);
+    // A projector only affects the authored forward cone, with a bounded
+    // penumbra preview (cookie and dynamic shadows require engine support).
+    if (source.direction_cone.w>=0.0) {
+      let projector=dot(-incoming,normalize(source.direction_cone.xyz));
+      attenuation*=smoothstep(
+         source.direction_cone.w,
+         min(source.direction_cone.w+0.08,1.0),
+         projector);
+    }
+    let diffuse=max(dot(n,incoming),0.0);
+    let local_half=normalize(incoming+view_direction);
+    let spec=reflectance*
+       pow(max(dot(n,local_half),0.0),exponent)*0.15;
+    local_radiance+=(base.rgb*diffuse+spec)*
+      source.color_strength.rgb*
+      source.color_strength.w*attenuation;
+  }
   // A bounded viewport preview only: original GlowAmount is not modified,
   // and this is not a claim of matching native bloom / HDR.
   let emission=textureSample(emissive_map,tex_sampler,input.uv).rgb;
   let glow=emission*(authored_cutoff.y/3.0)*0.45;
   let glow_peak=max(max(glow.r,glow.g),glow.b);
   let preview_glow=glow/(1.0+glow_peak);
-  return vec4<f32>(base.rgb*(light.ambient.rgb+sun)+specular+preview_glow,base.a);
+  return vec4<f32>(base.rgb*(light.ambient.rgb+sun)+specular+local_radiance+preview_glow,base.a);
 }
 
 // A visually bounded preview heuristic, not an Evolve fog equation. Applying
@@ -226,7 +280,7 @@ fn fs_opaque(input:Output)->@location(0) vec4<f32> {
   // desktop or Activity window behind it, even over the opaque backdrop.
   let color=shade(input,true);
   let fogged=distance_fog(input,color);
-  return vec4<f32>(fogged.rgb,1.0);
+  return vec4<f32>(tonemap(fogged.rgb),1.0);
 }
 
 @fragment
@@ -239,7 +293,7 @@ fn fs_foliage(input:Output)->@location(0) vec4<f32> {
   if (leaf_alpha < authored_cutoff.x) { discard; }
   let color=shade(input,false);
   let fogged=distance_fog(input,color);
-  return vec4<f32>(fogged.rgb,1.0);
+  return vec4<f32>(tonemap(fogged.rgb),1.0);
 }
 
 @fragment
@@ -250,5 +304,5 @@ fn fs_main(input:Output)->@location(0) vec4<f32> {
   let color=shade(input,false);
   let fogged=distance_fog(input,color);
   let alpha=textureSample(authored_opacity,tex_sampler,input.uv).r;
-  return vec4<f32>(fogged.rgb,color.a*alpha);
+  return vec4<f32>(tonemap(fogged.rgb),color.a*alpha);
 }
