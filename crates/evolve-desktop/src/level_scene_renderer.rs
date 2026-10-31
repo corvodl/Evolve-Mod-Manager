@@ -5,10 +5,10 @@
 //! game build. All loads run in the existing blocking Operation worker.
 use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface, world_instances};
 use evolve_core::{
-    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform,
+    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform, WorldModelPart,
     begin_imported_lookup_session, begin_imported_lookup_session_for_source,
     imported_archive_files, imported_archive_preview_inventory, imported_library,
-    read_world_model_parts,
+    read_world_model_parts_with_subsets,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -157,14 +157,14 @@ fn relevant_asset(path: &str) -> bool {
 ///
 /// Never search by basename, choose an ambiguous archive arbitrarily, or
 /// treat missing geometry as an invented proxy mesh.
-fn decodable_render_source<L, D>(
+fn decodable_render_source<L, D, T>(
     model: &str,
     mut lookup: L,
     mut decode: D,
-) -> Result<(AssetLocation, Vec<RenderMesh>, Option<String>), Vec<String>>
+) -> Result<(AssetLocation, Vec<T>, Option<String>), Vec<String>>
 where
     L: FnMut(&str) -> Result<Option<AssetLocation>, String>,
-    D: FnMut(&Path) -> Result<Vec<RenderMesh>, String>,
+    D: FnMut(&Path) -> Result<Vec<T>, String>,
 {
     let mut reasons = Vec::new();
     let candidates = render_candidates(model);
@@ -725,7 +725,7 @@ pub(super) fn assemble(
                 let (source, meshes, fallback_note) = match decodable_render_source(
                     &object.model,
                     |candidate| sources.lookup(candidate).map(|found| found.cloned()),
-                    |path| read_world_model_parts(path).map_err(|error| error.to_string()),
+                    |path| read_world_model_parts_with_subsets(path).map_err(|error| error.to_string()),
                 ) {
                     Ok(loaded) => loaded,
                     Err(reasons) => {
@@ -757,7 +757,7 @@ pub(super) fn assemble(
                     break;
                 }
                 let original_inventory = sources.inventories.get(&source.archive);
-                let mut material_ranges = Vec::new();
+                let mut per_mesh_materials: Vec<Vec<Surface>> = Vec::new();
                 // Preserve the actual resolver/decoder reason for every
                 // material pair lacking diffuse pixels. The summary counter
                 // cannot distinguish missing MTL, missing DDS, unsupported
@@ -794,37 +794,27 @@ pub(super) fn assemble(
                         sources.build.as_deref(),
                     ) {
                         Ok(Some(material)) => {
-                            let full = (meshes.len() == 1).then(|| {
-                                assembly_materials::load_model(
-                                    &source.path,
-                                    &material,
-                                    inventory,
-                                    sources.library_root.as_deref(),
-                                    sources.build.as_deref(),
-                                    cache,
-                                )
-                            });
-                            let full_error = full
-                                .as_ref()
-                                .and_then(|outcome| outcome.as_ref().err())
-                                .map(ToString::to_string);
-                            let resolved = match full {
-                                Some(Ok(data)) => Ok(data),
-                                _ => assembly_materials::original_single_leaf_surface(
-                                    &material,
-                                    inventory,
-                                    sources.library_root.as_deref(),
-                                    sources.build.as_deref(),
-                                    cache,
-                                )
-                                .map(|(surface, warnings)| (vec![surface], warnings)),
-                            };
+                            // Each MeshChunk's referenced SUBSETS table is
+                            // preserved by the world decoder. No material
+                            // leaf may be guessed from mesh order or the
+                            // number of extracted mesh nodes.
+                            let resolved = assembly_materials::load_world_model_surfaces(
+                                &source.path,
+                                &material,
+                                &meshes,
+                                inventory,
+                                sources.library_root.as_deref(),
+                                sources.build.as_deref(),
+                                cache,
+                            );
                             match resolved {
                                 Ok((parts, warnings)) => {
-                                    let has_diffuse =
-                                        parts.iter().any(|part| part.diffuse.is_some());
+                                    let has_diffuse = parts.iter().flatten()
+                                        .any(|part| part.diffuse.is_some());
                                     report.textured += usize::from(has_diffuse);
-                                    let missing_sections = missing_diffuse_sections(&parts);
+                                    let missing_sections = parts.iter()
+                                        .map(|mesh_parts| missing_diffuse_sections(mesh_parts))
+                                        .sum::<usize>();
                                     if has_diffuse && missing_sections > 0 {
                                         crate::crash_diagnostics::record(
                                             "level_partially_missing_diffuse",
@@ -834,7 +824,7 @@ pub(super) fn assemble(
                                                 object.material,
                                                 source.archive,
                                                 missing_sections,
-                                                parts.len(),
+                                                parts.iter().map(Vec::len).sum::<usize>(),
                                                 warnings
                                                     .iter()
                                                     .take(3)
@@ -845,11 +835,6 @@ pub(super) fn assemble(
                                         );
                                     }
                                     if !has_diffuse {
-                                        if let Some(reason) = full_error.as_deref() {
-                                            diffuse_reasons.push(format!(
-                                                "Model material assignment: {reason}"
-                                            ));
-                                        }
                                         diffuse_reasons.extend(
                                             warnings
                                                 .iter()
@@ -863,16 +848,13 @@ pub(super) fn assemble(
                                                 .cloned(),
                                         );
                                     }
-                                    material_ranges = parts;
+                                    per_mesh_materials = parts;
                                     for note in warnings.into_iter().take(2) {
                                         report.note(format!("{}: {note}", object.name));
                                     }
                                 }
                                 Err(error) => {
                                     diffuse_reasons.push(error.to_string());
-                                    if let Some(reason) = full_error {
-                                        diffuse_reasons.push(reason);
-                                    }
                                     report.note(format!(
                                         "{}: source material {} cannot be assigned to {} mesh sections: {error}",
                                         object.name,
@@ -910,7 +892,7 @@ pub(super) fn assemble(
                 // successfully decoded meshes whose materials were missing,
                 // ambiguous, unsupported or lacked an authored diffuse.
                 // Count each resource pair once, not its thousands of instances.
-                if !material_ranges.iter().any(|part| part.diffuse.is_some()) {
+                if !per_mesh_materials.iter().flatten().any(|part| part.diffuse.is_some()) {
                     report.without_diffuse += 1;
                     if diffuse_reasons.is_empty() {
                         diffuse_reasons
@@ -929,17 +911,12 @@ pub(super) fn assemble(
                     );
                 }
                 let mut indices = Vec::with_capacity(meshes.len());
-                for mesh in meshes {
+                for (part_index, part) in meshes.into_iter().enumerate() {
+                    let mesh = part.mesh;
                     let radius = world_instances::radius(&mesh);
-                    let parts = if material_ranges.is_empty() {
+                    let parts = per_mesh_materials.get(part_index).cloned().unwrap_or_else(|| {
                         vec![neutral(0, mesh.indices.len() as u32)]
-                    } else if material_ranges.len() == 1 && material_ranges[0].index_count == 0 {
-                        let mut original = material_ranges[0].clone();
-                        original.index_count = mesh.indices.len() as u32;
-                        vec![original]
-                    } else {
-                        material_ranges.clone()
-                    };
+                    });
                     let geometry = (mesh.positions.len() * 32
                         + mesh.indices.len() * 4
                         + object.model.len()) as u64;
