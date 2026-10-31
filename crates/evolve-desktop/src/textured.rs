@@ -16,6 +16,10 @@ use std::sync::Arc;
 // (actual available VRAM and GPU allocation limits still apply).
 pub(crate) const MAX_GPU_PREVIEW_TEXTURE_BYTES: usize = 256 * 1024 * 1024;
 
+fn viewer_material_batch_size(streaming: bool) -> usize {
+    if streaming { 1 } else { usize::MAX }
+}
+
 fn preview_budget(full: bool) -> usize {
     if full {
         usize::MAX
@@ -1258,15 +1262,24 @@ impl Pipeline {
                 || surface.index_count == 0
                 || surface.index_count % 3 != 0
             {
+                if let Some(progress) = progress {
+                    progress.store(0, Ordering::Relaxed);
+                }
                 return;
             }
             let Some(end) = cursor.checked_add(surface.index_count) else {
+                if let Some(progress) = progress {
+                    progress.store(0, Ordering::Relaxed);
+                }
                 return;
             };
             if usize::try_from(end)
                 .ok()
                 .is_none_or(|end| end > index_count)
             {
+                if let Some(progress) = progress {
+                    progress.store(0, Ordering::Relaxed);
+                }
                 return;
             }
             cursor = end;
@@ -1276,6 +1289,9 @@ impl Pipeline {
                 "gpu_material_coverage_invalid",
                 &format!("{} source indices, {} covered", index_count, cursor),
             );
+            if let Some(progress) = progress {
+                progress.store(0, Ordering::Relaxed);
+            }
             return;
         }
         self.surface_table_valid = true;
@@ -1303,7 +1319,7 @@ impl Pipeline {
         // One expensive material section per redraw in Model Viewer.
         // Level Editor retains its synchronous legacy pipeline because its
         // own streaming world renderer has a separate upload scheduler.
-        let batch_size = if progress.is_some() { 1 } else { usize::MAX };
+        let batch_size = viewer_material_batch_size(progress.is_some());
         for (part_index, part) in surfaces.iter().enumerate().skip(self.surface_upload_cursor) {
             if processed >= batch_size {
                 break;
@@ -1504,8 +1520,9 @@ impl Pipeline {
         super::crash_diagnostics::record(
             "gpu_material_upload_complete",
             &format!(
-                "{} visible sections, {} unique GPU maps, {} bytes, {} budget omissions",
-                self.gpu_surfaces.len(),
+                "{} of {} source sections uploaded, {} unique GPU maps, {} bytes, {} budget omissions",
+                self.surface_upload_cursor,
+                surfaces.len(),
                 self._surface_textures.len(),
                 used_bytes,
                 omitted_count
@@ -2081,6 +2098,12 @@ mod tests {
         let shader = include_str!("textured.wgsl");
         assert!(shader.contains("input.uv * emissive_uv.xy + emissive_uv.zw"));
         assert!(shader.contains("textureSample(diffuse, material_sampler, input.uv)"));
+    }
+
+    #[test]
+    fn model_viewer_sections_stream_one_at_a_time_while_world_rendering_keeps_existing_mode() {
+        assert_eq!(viewer_material_batch_size(true), 1);
+        assert_eq!(viewer_material_batch_size(false), usize::MAX);
     }
 
     #[test]
