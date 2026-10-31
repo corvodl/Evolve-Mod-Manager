@@ -385,6 +385,8 @@ pub(super) struct World {
     pub fog_profile: Option<super::level_environment::FogProfile>,
     pub source_resources: super::level_environment::ResourceSummary,
     pub gpu_progress: Arc<GpuProgress>,
+    // Prehashed by the existing map assembly worker, never by the UI thread.
+    source_pixel_hashes: Arc<SourceKeys>,
 }
 impl std::fmt::Debug for World {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -496,6 +498,27 @@ impl CameraGpu {
     }
 }
 impl World {
+    /// Compute exact content identities on the import worker before the GPU
+    /// viewport starts. Avoid hashing multi-megabyte source textures on the
+    /// rendering thread, where it would produce the very stalls we are fixing.
+    pub fn precompute_gpu_source_hashes(&mut self) {
+        let mut hashes = SourceKeys::new();
+        for group in &self.groups {
+            for surface in &group.surfaces {
+                for source in [
+                    surface.diffuse.as_ref(), surface.opacity.as_ref(),
+                    surface.normal.as_ref(), surface.specular.as_ref(),
+                    surface.gloss.as_ref(), surface.emissive.as_ref(),
+                ] {
+                    if source.is_some() {
+                        let _ = texture_key(source, 0, false, &mut hashes);
+                    }
+                }
+            }
+        }
+        self.source_pixel_hashes = Arc::new(hashes);
+    }
+
     /// Update only authored placement transforms in an editor-owned scene copy.
     /// GPU mesh buffers and original CryPAK file bytes remain immutable.
     pub fn updated(&self, scene: &evolve_core::LevelScene) -> Self {
@@ -1254,7 +1277,7 @@ impl Renderer {
             // Full decoded source assets remain on World, not in this cache.
             self.groups = std::iter::repeat_with(|| None).take(world.groups.len()).collect();
             self.cache.clear();
-            self.source_hashes.clear();
+            self.source_hashes = (*world.source_pixel_hashes).clone();
             self.peak_gpu_bytes = 0;
             self.world_identity = key;
             self.last_full_textures = full_textures;
