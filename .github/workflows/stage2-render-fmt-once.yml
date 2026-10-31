@@ -1,0 +1,27 @@
+name: One-time stage 2 render formatting
+on:
+  push:
+    branches: [feature/shared-refraction-particles-volumetric-20261031]
+    paths: [.github/workflows/stage2-render-fmt-once.yml]
+permissions:
+  contents: write
+jobs:
+  format:
+    if: github.repository == 'corvodl/Evolve-Mod-Manager'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/shared-refraction-particles-volumetric-20261031
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format particle core and spotlight renderer, then self-remove
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git rm .github/workflows/stage2-render-fmt-once.yml
+          git -c user.name='Rendering CI' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -am 'Format bounded particle simulator and source spotlight previews'
+          git push origin HEAD:feature/shared-refraction-particles-volumetric-20261031
