@@ -16,8 +16,8 @@ use std::sync::{Arc, atomic::{AtomicU64, AtomicUsize, Ordering}};
 // 4096×4096 RGBA8 (64 MiB), which must NOT silently fall back to gray.
 const MAX_WORLD_DIFFUSE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TERRAIN_ATLAS_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_FULL_TEXTURE_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_SCENE_FULL_TEXTURE_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_FULL_TEXTURE_BYTES: u64 = u64::MAX;
+const MAX_SCENE_FULL_TEXTURE_BYTES: u64 = u64::MAX;
 const MAX_SCENE_BALANCED_TEXTURE_BYTES: u64 = 384 * 1024 * 1024;
 // Residency target, not a full-resolution quality cap. Streams source images
 // as visible, retaining the complete originals in the CPU World. Conservative
@@ -129,10 +129,10 @@ fn full_quality_dimensions(
     if width == 0 || height == 0 || gpu_max == 0 || remaining < 4 {
         return None;
     }
-    let cap = if ground {
-        MAX_TERRAIN_ATLAS_BYTES
-    } else if full {
+    let cap = if full {
         MAX_FULL_TEXTURE_BYTES
+    } else if ground {
+        MAX_TERRAIN_ATLAS_BYTES
     } else {
         MAX_WORLD_DIFFUSE_BYTES
     }
@@ -292,6 +292,62 @@ fn auxiliary_map(
     *used_bytes = used_bytes.saturating_add(bytes);
     cache.insert(key, (texture.clone(), view.clone(), bytes));
     (texture, view)
+}
+
+// Preflight the next visible GPU group before making any wgpu allocations.
+// This counts exact decoded content identities, not repeated Arc pointers,
+// and includes every mip. Limits control residency, never original resolution.
+fn group_new_bytes(
+    group: &ModelGroup,
+    cache: &TextureCache,
+    hashes: &mut SourceKeys,
+) -> u64 {
+    let mut seen = HashSet::new();
+    let mut bytes = (group.mesh.positions.len() * std::mem::size_of::<Vertex>()
+        + group.mesh.indices.len() * std::mem::size_of::<u32>()
+        + group.instances.len().max(1) * std::mem::size_of::<InstanceGpu>()
+        + group.surfaces.len() * 16) as u64;
+    for surface in group.surfaces.iter().filter(|s| s.visible && s.index_count > 0) {
+        for (role, ground, source) in [
+            (0, is_ground(group), surface.diffuse.as_ref()),
+            (1, false, surface.opacity.as_ref()),
+            (2, false, surface.normal.as_ref()),
+            (3, false, surface.specular.as_ref()),
+            (4, false, surface.gloss.as_ref()),
+            (5, false, surface.emissive.as_ref()),
+        ] {
+            let key = texture_key(source, role, ground, hashes);
+            if !cache.contains_key(&key) && seen.insert(key) {
+                bytes = bytes.saturating_add(source.map_or(4, |img| mip_chain_bytes(img.width(), img.height())));
+            }
+        }
+    }
+    bytes
+}
+
+fn resident_geometry_bytes(groups: &[Option<GpuGroup>]) -> u64 {
+    groups.iter().flatten().fold(0u64, |total, group| total.saturating_add(group.geometry_bytes))
+}
+
+/// Evict only GPU handles for groups outside the current view. Original
+/// decoded images and mesh data remain owned by the immutable CPU World.
+fn evict_offscreen(
+    groups: &mut [Option<GpuGroup>],
+    visible: &[Vec<InstanceGpu>],
+    cache: &mut TextureCache,
+) -> usize {
+    let mut count = 0;
+    for (slot, instances) in groups.iter_mut().zip(visible) {
+        if instances.is_empty() && slot.take().is_some() {
+            count += 1;
+        }
+    }
+    if count > 0 {
+        let retained: HashSet<TextureKey> = groups.iter().flatten()
+            .flat_map(|group| group.source_keys.iter().copied()).collect();
+        cache.retain(|key, _| retained.contains(key));
+    }
+    count
 }
 
 fn is_ground(group: &ModelGroup) -> bool {
