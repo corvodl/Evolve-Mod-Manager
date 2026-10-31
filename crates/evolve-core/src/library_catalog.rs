@@ -1041,17 +1041,20 @@ mod tests {
             LibraryReferenceStatus::Ambiguous(_)
         ));
         for invalid in [
-            "x.dds.20", "x.dds.00", "x.dds.01", "x.dds.foo", "x.dds.-1",
-            "x.dds.1ab", "x.dds.20a", "x.mtl",
+            "x.dds.20",
+            "x.dds.00",
+            "x.dds.01",
+            "x.dds.foo",
+            "x.dds.-1",
+            "x.dds.1ab",
+            "x.dds.20a",
+            "x.mtl",
         ] {
             assert!(!is_cooked_dds_member(invalid), "{invalid}");
         }
         assert!(matches!(
             resolve_verified_duplicate_textures(
-                vec![
-                    hit("a", "x.dds.1", &first),
-                    hit("b", "y.dds.1", &first),
-                ],
+                vec![hit("a", "x.dds.1", &first), hit("b", "y.dds.1", &first),],
                 true,
             ),
             LibraryReferenceStatus::Ambiguous(_)
