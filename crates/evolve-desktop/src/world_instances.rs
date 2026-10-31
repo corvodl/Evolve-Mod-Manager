@@ -1483,6 +1483,11 @@ impl Renderer {
         let mut deferred = 0usize;
         let mut pending = 0usize;
         let mut uploaded = 0usize;
+        // Group creation borrows the pipeline layouts from &self. Keep the
+        // mutable streaming tables local until all groups are built to avoid
+        // aliasing the immutable Renderer borrow with mutable fields.
+        let mut pending_diffuse = std::mem::take(&mut self.pending_diffuse);
+        let mut mip_min_level = std::mem::take(&mut self.mip_min_level);
         // Ground first, then visible model groups ordered by camera proximity.
         // One prepare pass never builds the entire world's GPU resources.
         let mut candidates = (0..world.groups.len())
@@ -1522,8 +1527,8 @@ impl Renderer {
                 let retained: HashSet<TextureKey> = self.groups.iter().flatten()
                     .flat_map(|group| group.source_keys.iter().copied()).collect();
                 cache.retain(|key, _| retained.contains(key));
-                self.pending_diffuse.retain(|key, _| cache.contains_key(key));
-                self.mip_min_level.retain(|key, _| cache.contains_key(key));
+                pending_diffuse.retain(|key, _| cache.contains_key(key));
+                mip_min_level.retain(|key, _| cache.contains_key(key));
                 used_bytes = cache_bytes(&cache);
             }
             if used_bytes
@@ -1537,12 +1542,14 @@ impl Renderer {
             }
             let gpu = self.group(
                 device, queue, &world.groups[idx], full_textures,
-                &mut cache, &mut hashes, &mut self.pending_diffuse,
-                &mut self.mip_min_level, &mut used_bytes,
+                &mut cache, &mut hashes, &mut pending_diffuse,
+                &mut mip_min_level, &mut used_bytes,
             );
             self.groups[idx] = Some(gpu);
             uploaded += 1;
         }
+        self.pending_diffuse = pending_diffuse;
+        self.mip_min_level = mip_min_level;
         // Advance one independent diffuse mip each redraw. Existing materials
         // keep sampling their previously uploaded coarser mip until this write
         // is submitted, so no undefined/uninitialized GPU texture reads occur.
