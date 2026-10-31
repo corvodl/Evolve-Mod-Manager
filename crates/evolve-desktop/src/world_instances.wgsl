@@ -224,9 +224,11 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // A bounded viewport preview only: original GlowAmount is not modified,
   // and this is not a claim of matching native bloom / HDR.
   let emission=textureSample(emissive_map,tex_sampler,input.uv).rgb;
-  let glow=emission*(authored_cutoff.y/3.0)*0.45;
-  let glow_peak=max(max(glow.r,glow.g),glow.b);
-  let preview_glow=glow/(1.0+glow_peak);
+  // Source GlowAmount is the strength of verified emissive/Emittance
+  // channels. Do not divide it by three and normalize it away before HDR;
+  // the filmic output pass bounds highlights, while true bloom remains a
+  // separate post-processing feature. No guessed emission for plain Illum.
+  let preview_glow=emission*max(authored_cutoff.y,0.0)*0.65;
   return vec4<f32>(base.rgb*(light.ambient.rgb+sun)+specular+local_radiance+preview_glow,base.a);
 }
 
