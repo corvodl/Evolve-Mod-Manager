@@ -607,6 +607,8 @@ fn painted_neighbors(paint: &TerrainPaintMap, uv: [f32; 2]) -> [Option<(u8, f32)
     neighbors
 }
 
+type TerrainPixelSample<'a> = (&'a DetailLayer, [f32; 3], Option<f32>, f32);
+
 fn compose_detail(
     paint: &TerrainPaintMap,
     atlas_size: (u32, u32),
@@ -627,7 +629,7 @@ fn compose_detail(
             let neighbors = painted_neighbors(paint, uv);
             // Fixed-size stack storage avoids millions of per-pixel Vec
             // allocations when processing full-resolution terrain tiles.
-            let mut samples: [Option<(&DetailLayer, [f32; 3], Option<f32>, f32)>; 4] = [None; 4];
+            let mut samples: [Option<TerrainPixelSample<'_>>; 4] = [None; 4];
             let mut sample_count = 0usize;
             for (id, original_weight) in neighbors.into_iter().flatten() {
                 let Some(layer) = layers.get(&id) else {
@@ -653,17 +655,15 @@ fn compose_detail(
                 let transition = sample_count > 1;
                 let mut total = 0.0;
                 for (layer, _, height, weight) in samples.iter_mut().flatten() {
-                    if transition {
-                        if let Some(height) = height {
-                            // FreeSDK documents height-assisted layer
-                            // transitions but does not expose Evolve's
-                            // exact material-mask equation. This bounded
-                            // proxy uses the authored factor and falloff.
-                            let displacement = (*height - 0.5)
-                                * (layer.blend_factor / 16.0)
-                                * (layer.blend_falloff / 2.0).clamp(0.0, 4.0);
-                            *weight = (*weight + displacement * *weight * (1.0 - *weight)).max(0.0);
-                        }
+                    if transition && let Some(height) = height {
+                        // FreeSDK documents height-assisted layer
+                        // transitions but does not expose Evolve's
+                        // exact material-mask equation. This bounded
+                        // proxy uses the authored factor and falloff.
+                        let displacement = (*height - 0.5)
+                            * (layer.blend_factor / 16.0)
+                            * (layer.blend_falloff / 2.0).clamp(0.0, 4.0);
+                        *weight = (*weight + displacement * *weight * (1.0 - *weight)).max(0.0);
                     }
                     total += *weight;
                 }
@@ -709,10 +709,10 @@ pub(super) fn compose(
     let active: BTreeSet<u8> = paint.ids.iter().copied().collect();
     let mut matches = HashMap::<u8, BTreeSet<String>>::new();
     for layer in &paint.layers {
-        if active.contains(&layer.id) {
-            if let Some(path) = material_path(&layer.surface_type) {
-                matches.entry(layer.id).or_default().insert(path);
-            }
+        if active.contains(&layer.id)
+            && let Some(path) = material_path(&layer.surface_type)
+        {
+            matches.entry(layer.id).or_default().insert(path);
         }
     }
     let mut layers = HashMap::new();
