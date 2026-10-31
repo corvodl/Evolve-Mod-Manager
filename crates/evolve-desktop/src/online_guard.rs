@@ -87,7 +87,20 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
             }
             return Ok(true);
         }
-        // No rules matched. Locale-specific output is not used for detection.
+        // Never interpret a failed query as proof that the rule is absent.
+        // A permissions or firewall-service failure must not silently turn
+        // online policy into an apparently successful operation.
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            return Err(format!(
+                "Cannot verify manager firewall rule {name} (exit {}). {} {}",
+                out.status,
+                stderr.chars().take(240).collect::<String>(),
+                stdout.chars().take(240).collect::<String>()
+            ));
+        }
+        // A successful query that did not return this named rule is absent.
         Ok(false)
     }
     fn run(args: &[String], verb: &str) -> Result<(), String> {
