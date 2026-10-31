@@ -5,5 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[build-dependencies]
+winres = "0.1"
+
 [lints]
 workspace = true
