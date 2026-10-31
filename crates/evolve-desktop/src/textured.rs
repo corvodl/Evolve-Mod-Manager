@@ -427,6 +427,7 @@ struct GpuSurface {
 
 pub struct Pipeline {
     opaque_viewport_background: wgpu::RenderPipeline,
+    hdr: super::viewport_hdr::ViewportHdr,
     world_renderer: super::world_instances::Renderer,
     render_pipeline: wgpu::RenderPipeline,
     masked_pipeline: wgpu::RenderPipeline,
@@ -671,6 +672,10 @@ impl Pipeline {
         (texture, view)
     }
     fn new_impl(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        // Render source materials in linear half-float. The original Iced
+        // surface format is only used by the final bloom/tonemap compositor.
+        let hdr = super::viewport_hdr::ViewportHdr::new(device, format);
+        let format = super::viewport_hdr::SCENE_FORMAT;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Evolve scene diffuse bind layout"),
             entries: &[
@@ -1155,6 +1160,7 @@ impl Pipeline {
         let depth = Self::depth_view(device, (1, 1));
         Self {
             opaque_viewport_background,
+            hdr,
             world_renderer: super::world_instances::Renderer::new(device, queue, format),
             render_pipeline,
             masked_pipeline,
@@ -1548,6 +1554,9 @@ impl Pipeline {
             self.depth = Self::depth_view(device, size);
             self.depth_dimensions = size;
         }
+        self.hdr.resize(device, size);
+        self.hdr
+            .set_source_unlit(queue, primitive.level_terrain_unlit);
         self.world_renderer.prepare(
             device,
             queue,
@@ -1748,13 +1757,13 @@ impl Pipeline {
             return;
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Evolve source DDS mesh render pass"),
+            label: Some("Evolve linear HDR source DDS mesh render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
+                view: self.hdr.scene(),
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -1823,6 +1832,13 @@ impl Pipeline {
             }
         }
         self.world_renderer.draw(&mut pass);
+        // Authored point-source corona preview is a separate depth-tested,
+        // additive pass; it never increases local-light influence radius.
+        self.world_renderer.draw_light_points(&mut pass);
+        drop(pass);
+        // Apply bloom and ACES only after all opaque, transparent, sky and
+        // depth-tested light-source contributions exist in linear HDR.
+        self.hdr.composite(encoder, target, clip);
     }
 }
 impl shader::Pipeline for Pipeline {
@@ -2080,8 +2096,9 @@ mod tests {
         let unrelated = super::emission_uniform_values(3.0, 1.0, None);
         assert!((unrelated[0] * unrelated[1] * unrelated[2] - 100.0).abs() < 0.0001);
         let shader = include_str!("textured.wgsl");
-        assert!(shader.contains("let viewport_glow = calibrated_glow / (1.0 + peak)"));
-        assert!(shader.contains("calibrated_glow / (1.0 + peak)"));
+        assert!(shader.contains("let viewport_glow = min(calibrated_glow * 0.06"));
+        assert!(shader.contains("let armor_viewport = min(armor_calibrated * 0.06"));
+        assert!(!shader.contains("calibrated_glow / (1.0 + peak)"));
         assert!(shader.contains("armor_glow * emission_params.y"));
     }
 

@@ -62,15 +62,12 @@ struct SourceLights {
 // saturation mapped to a bounded linear-radiance ACES preview. This does
 // NOT reproduce Evolve's eye-adaptation history or bloom framebuffer.
 @group(0) @binding(14) var<uniform> hdr:vec4<f32>;
-fn tonemap(color:vec3<f32>)->vec3<f32> {
-  let v=max(color*hdr.x,vec3<f32>(0.0));
-  let balanced=v*(1.0+0.05*hdr.y);
-  let mapped=clamp(
-    (balanced*(2.51*balanced+0.03))/
-    (balanced*(2.43*balanced+0.59)+0.14),
-    vec3<f32>(0.0),vec3<f32>(1.0));
-  let luma=dot(mapped,vec3<f32>(0.2126,0.7152,0.0722));
-  return clamp(mix(vec3<f32>(luma),mapped,hdr.z),vec3<f32>(0.0),vec3<f32>(1.0));
+fn authored_scene_linear(color:vec3<f32>)->vec3<f32> {
+  // Preserve source TimeOfDay exposure and saturation in linear light.
+  // The shared HDR compositor performs the only ACES tone mapping pass.
+  let balanced=max(color*hdr.x*(1.0+0.05*hdr.y),vec3<f32>(0.0));
+  let luma=dot(balanced,vec3<f32>(0.2126,0.7152,0.0722));
+  return max(mix(vec3<f32>(luma),balanced,clamp(hdr.z,0.0,2.0)),vec3<f32>(0.0));
 }
 
 struct Output {
@@ -224,9 +221,11 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // A bounded viewport preview only: original GlowAmount is not modified,
   // and this is not a claim of matching native bloom / HDR.
   let emission=textureSample(emissive_map,tex_sampler,input.uv).rgb;
-  let glow=emission*(authored_cutoff.y/3.0)*0.45;
-  let glow_peak=max(max(glow.r,glow.g),glow.b);
-  let preview_glow=glow/(1.0+glow_peak);
+  // Source GlowAmount is the strength of verified emissive/Emittance
+  // channels. Do not divide it by three and normalize it away before HDR;
+  // the filmic output pass bounds highlights, while true bloom remains a
+  // separate post-processing feature. No guessed emission for plain Illum.
+  let preview_glow=emission*max(authored_cutoff.y,0.0)*0.65;
   return vec4<f32>(base.rgb*(light.ambient.rgb+sun)+specular+local_radiance+preview_glow,base.a);
 }
 
@@ -280,7 +279,7 @@ fn fs_opaque(input:Output)->@location(0) vec4<f32> {
   // desktop or Activity window behind it, even over the opaque backdrop.
   let color=shade(input,true);
   let fogged=distance_fog(input,color);
-  return vec4<f32>(tonemap(fogged.rgb),1.0);
+  return vec4<f32>(authored_scene_linear(fogged.rgb),1.0);
 }
 
 @fragment
@@ -293,7 +292,7 @@ fn fs_foliage(input:Output)->@location(0) vec4<f32> {
   if (leaf_alpha < authored_cutoff.x) { discard; }
   let color=shade(input,false);
   let fogged=distance_fog(input,color);
-  return vec4<f32>(tonemap(fogged.rgb),1.0);
+  return vec4<f32>(authored_scene_linear(fogged.rgb),1.0);
 }
 
 @fragment
@@ -304,5 +303,5 @@ fn fs_main(input:Output)->@location(0) vec4<f32> {
   let color=shade(input,false);
   let fogged=distance_fog(input,color);
   let alpha=textureSample(authored_opacity,tex_sampler,input.uv).r;
-  return vec4<f32>(tonemap(fogged.rgb),color.a*alpha);
+  return vec4<f32>(authored_scene_linear(fogged.rgb),color.a*alpha);
 }

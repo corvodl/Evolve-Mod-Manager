@@ -737,6 +737,159 @@ fn is_translucent_shader(slot: &evolve_core::MaterialSlot) -> bool {
     matches!(slot.shader.to_ascii_lowercase().as_str(), "glass" | "water")
 }
 
+/// Original CryEngine effect-only shaders use dedicated GPU passes,
+/// not a depth-writing Illum mesh. Displaying them as a plain CGF surface
+/// creates opaque white cylinders at projector lights. Hide ONLY the exact
+/// unsupported beam-effect material leaves in the world editor; retain the
+/// light entity and all ordinary lamp/fixture material spans. The Model Viewer
+/// still renders its own source geometry independently.
+fn is_original_beam_effect(slot: &evolve_core::MaterialSlot) -> bool {
+    matches!(
+        slot.shader.to_ascii_lowercase().as_str(),
+        "lightbeam.lightbeam"
+            | "geometrybeam"
+            | "templbeamproc"
+            | "particles"
+            | "particleimposter"
+            | "lightflares.flare"
+            | "lensoptics.enable"
+            | "volumeobject"
+            | "referenceimage"
+            | "sky"
+            | "skyhdr"
+    )
+}
+
+/// Source-authored effect CGF preview in the Level Editor and Model Viewer. This renders
+/// a verified textured polygon using its own alpha and GlowAmount; it does
+/// NOT synthesize an emitter, projector beam, sprite lifetime, or particles.
+fn mesh_effect_preview(slot: &evolve_core::MaterialSlot) -> bool {
+    matches!(
+        slot.shader.to_ascii_lowercase().as_str(),
+        "particles" | "electricity" | "trsbeam"
+    )
+}
+fn authored_particle_mask(
+    slot: &evolve_core::MaterialSlot,
+    material_source: &Path,
+    material_binding: &str,
+    lookup: MaterialLookup<'_>,
+    cache: &SharedCache,
+) -> Result<Option<Arc<image::RgbaImage>>, String> {
+    // Original shaders.pak/Particles.ext: 0x200 is %MASK_TEXTURE and
+    // explicitly samples the Decal map. Treat this GenMask only for Particles.
+    if !slot.shader.eq_ignore_ascii_case("Particles")
+        || !slot.shader_gen_mask.is_some_and(|mask| mask & 0x200 != 0)
+    {
+        return Ok(None);
+    }
+    let decals = slot
+        .maps
+        .iter()
+        .filter(|map| map.role == "decal")
+        .collect::<Vec<_>>();
+    if decals.len() != 1 {
+        return Err("Particles %MASK_TEXTURE needs one unambiguous authored Decal texture".into());
+    }
+    let (path, virtual_path) = authored_texture(
+        &decals[0].path,
+        material_source,
+        material_binding,
+        lookup.inventory,
+        lookup.imported,
+        lookup.build,
+    )?;
+    let (_, image) = decoded_dds_indexed(
+        cache,
+        &path,
+        &virtual_path,
+        lookup.inventory,
+        lookup.imported,
+        lookup.build,
+    )?;
+    if image.as_raw().len() > 64 * 1024 * 1024 {
+        return Err("Particle mask source exceeds 64 MiB bounded preview".into());
+    }
+    Ok(Some(image))
+}
+
+fn apply_effect_mesh_preview(
+    slot: &evolve_core::MaterialSlot,
+    surface: &mut Surface,
+    warnings: &mut Vec<String>,
+    model_viewer: bool,
+    particle_mask: Option<&image::RgbaImage>,
+) {
+    if !mesh_effect_preview(slot) {
+        return;
+    }
+    let Some(diffuse) = surface.diffuse.as_ref() else {
+        surface.visible = false;
+        warnings.push(format!(
+            "{} effect requires an exact cooked diffuse texture; no white proxy drawn",
+            slot.shader
+        ));
+        return;
+    };
+    let scalar = slot.opacity.unwrap_or(1.0).clamp(0.0, 1.0);
+    // shaders.pak/TRSBeam.ext: 0x20 is GLOSS_DIFFUSEALPHA, 0x2000
+    // is ALPHAGLOW. Neither flag means transparency. Do not show a
+    // white/translucent proxy when the only alpha is really gloss or glow.
+    let beam_aux_alpha = slot.shader.eq_ignore_ascii_case("TRSBeam")
+        && slot
+            .shader_gen_mask
+            .is_some_and(|flags| flags & (0x20 | 0x2000) != 0);
+    let has_alpha = !beam_aux_alpha && diffuse.pixels().any(|pixel| pixel[3] < 255);
+    let has_mask = particle_mask.is_some();
+    if !has_alpha && scalar >= 0.999 && !has_mask {
+        surface.visible = false;
+        warnings.push(format!(
+            "{} has no verified source opacity; native additive/refraction shader required, not a solid mesh",
+            slot.shader
+        ));
+        return;
+    }
+    let needs_pixels = has_alpha || has_mask;
+    let mask = if needs_pixels {
+        let mut image = image::RgbaImage::new(diffuse.width(), diffuse.height());
+        for (x, y, target) in image.enumerate_pixels_mut() {
+            let alpha = if model_viewer && has_alpha {
+                f32::from(diffuse.get_pixel(x, y)[3]) / 255.0
+            } else {
+                1.0
+            };
+            let source_mask = particle_mask.map_or(1.0, |source| {
+                // Source Decal mask uses authored UV0 in this static preview.
+                // Exact particle sprite-sheet and TexMod animation is pending.
+                let mx =
+                    (u64::from(x) * u64::from(source.width()) / u64::from(diffuse.width())) as u32;
+                let my = (u64::from(y) * u64::from(source.height()) / u64::from(diffuse.height()))
+                    as u32;
+                f32::from(
+                    source.get_pixel(mx.min(source.width() - 1), my.min(source.height() - 1))[0],
+                ) / 255.0
+            });
+            let value = (255.0 * alpha * source_mask * scalar).round() as u8;
+            *target = image::Rgba([value, value, value, 255]);
+        }
+        Arc::new(image)
+    } else {
+        let value = (scalar * 255.0).round() as u8;
+        Arc::new(image::RgbaImage::from_pixel(
+            1,
+            1,
+            image::Rgba([value, value, value, 255]),
+        ))
+    };
+    surface.opacity = Some(mask);
+    surface.transparent = true;
+    surface.foliage_cutout = false;
+    if surface.emissive.is_none() && slot.glow_amount.is_some_and(|n| n > 0.0) {
+        surface.emissive = surface.diffuse.clone();
+    }
+    warnings.push(format!("{} source diffuse-alpha and GlowAmount preview; native additive particle simulation unavailable",slot.shader));
+}
+
 fn needs_alpha_blending(slot: &evolve_core::MaterialSlot) -> bool {
     // An explicit opacity IMAGE on a solid CryEngine material is an alpha
     // TEST, not evidence the entire body is translucent. Blend only for
@@ -823,6 +976,7 @@ pub fn load_model(
             build,
         },
         cache,
+        true,
     )
 }
 
@@ -859,6 +1013,7 @@ pub(crate) fn load_world_model_surfaces(
                 build,
             },
             cache,
+            false,
         )?;
         all.push(surfaces);
         warnings.extend(
@@ -902,6 +1057,7 @@ fn load_authored_subset_surfaces(
     ranges: &[(u32, u32, u32)],
     lookup: MaterialLookup<'_>,
     cache: &SharedCache,
+    model_viewer: bool,
 ) -> Result<(Vec<Surface>, Vec<String>), String> {
     let mut result = Vec::with_capacity(ranges.len());
     let mut warnings = Vec::new();
@@ -939,8 +1095,18 @@ fn load_authored_subset_surfaces(
                     document.slots.len()
                 )
             })?;
-            if leaf.shader.eq_ignore_ascii_case("NoDraw") {
+            if leaf.shader.eq_ignore_ascii_case("NoDraw")
+                || (is_original_beam_effect(leaf) && !mesh_effect_preview(leaf))
+            {
+                // An effect-only beam needs an additive/volumetric shader.
+                // Do not turn that source volume into an opaque solid tube.
                 surface.visible = false;
+                if is_original_beam_effect(leaf) {
+                    warnings.push(format!(
+                        "Original material slot {} ({}) uses {}: suppressing the unsupported opaque beam mesh; nearby authored point/spot light still renders",
+                        material_slot, leaf.name, leaf.shader
+                    ));
+                }
             } else {
                 match authored_maps(
                     document,
@@ -984,6 +1150,26 @@ fn load_authored_subset_surfaces(
                         surface.transparent = !surface.foliage_cutout
                             && needs_alpha_blending(leaf)
                             && surface.opacity.is_some();
+                        let particle_mask = authored_particle_mask(
+                            leaf,
+                            material,
+                            &source.to_string_lossy(),
+                            lookup,
+                            cache,
+                        );
+                        match particle_mask {
+                            Ok(mask) => apply_effect_mesh_preview(
+                                leaf,
+                                &mut surface,
+                                &mut warnings,
+                                model_viewer,
+                                mask.as_deref(),
+                            ),
+                            Err(error) => {
+                                surface.visible = false;
+                                warnings.push(format!("{}: {}", leaf.shader, error));
+                            }
+                        }
                     }
                     Err(error) => warnings.push(format!(
                         "Original material slot {} ({}): {}",
@@ -1342,6 +1528,30 @@ pub fn load_with_progress(
             };
             surface.transparent =
                 !surface.foliage_cutout && needs_alpha_blending(leaf) && surface.opacity.is_some();
+            let particle_mask = authored_particle_mask(
+                leaf,
+                &path,
+                &part.binding,
+                MaterialLookup {
+                    inventory,
+                    imported,
+                    build,
+                },
+                cache,
+            );
+            match particle_mask {
+                Ok(mask) => apply_effect_mesh_preview(
+                    leaf,
+                    &mut surface,
+                    &mut warnings,
+                    true,
+                    mask.as_deref(),
+                ),
+                Err(error) => {
+                    surface.visible = false;
+                    warnings.push(format!("{}: {}", leaf.shader, error));
+                }
+            }
             Ok(())
         })();
         if let Err(error) = result {
@@ -1494,6 +1704,7 @@ mod tests {
             alpha_test: None,
             glow_amount: Some(3.0),
             alpha_glow: true,
+            shader_gen_mask: None,
             diffuse_tint: None,
             decal_tex_mod: None,
         };
@@ -1660,6 +1871,108 @@ mod tests {
     }
 
     #[test]
+    fn source_particle_mask_is_multiplied_not_misread_as_emissive() {
+        let doc = evolve_core::parse_material(br#"<Material Shader="Particles" GenMask="200"
+            Opacity="1"><Textures><Texture Map="Diffuse" File="textures/particle/fire/fire_explosioncurl01_anim64.tif"/>
+            <Texture Map="Decal" File="textures/particle/misc/fx_scrolltiled01_8x8_p.tif"/></Textures></Material>"#).unwrap();
+        assert_eq!(doc.slots[0].shader_gen_mask, Some(0x200));
+        let mut surface = Surface {
+            first_index: 0,
+            index_count: 3,
+            visible: true,
+            transparent: false,
+            foliage_cutout: false,
+            alpha_cutoff: 0.5,
+            diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
+                2,
+                2,
+                image::Rgba([50, 100, 200, 128]),
+            ))),
+            normal: None,
+            emissive: None,
+            armor_emissive: None,
+            emission_strength: 1.0,
+            kala_emission_state: None,
+            emissive_uv: None,
+            specular: None,
+            gloss: None,
+            opacity: None,
+        };
+        let mask = image::RgbaImage::from_pixel(2, 2, image::Rgba([128, 0, 0, 255]));
+        let mut log = Vec::new();
+        apply_effect_mesh_preview(&doc.slots[0], &mut surface, &mut log, true, Some(&mask));
+        assert!(surface.visible && surface.transparent);
+        assert_eq!(surface.opacity.unwrap().get_pixel(0, 0)[0], 64);
+    }
+
+    #[test]
+    fn particle_cgf_preview_respects_original_texture_alpha_and_glow() {
+        let doc=evolve_core::parse_material(br#"<Material Shader="Particles" Opacity="1" GlowAmount="2">
+          <Textures><Texture Map="Diffuse" File="objects/effects/abilities/grounder/fx_01_p.tif"/></Textures>
+          </Material>"#).unwrap();
+        let leaf = &doc.slots[0];
+        assert!(mesh_effect_preview(leaf));
+        let mut surface = Surface {
+            first_index: 0,
+            index_count: 3,
+            visible: true,
+            transparent: false,
+            foliage_cutout: false,
+            alpha_cutoff: 0.5,
+            diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
+                2,
+                2,
+                image::Rgba([40, 80, 150, 57]),
+            ))),
+            normal: None,
+            emissive: None,
+            armor_emissive: None,
+            emission_strength: 2.0,
+            kala_emission_state: None,
+            emissive_uv: None,
+            specular: None,
+            gloss: None,
+            opacity: None,
+        };
+        let mut warnings = Vec::new();
+        apply_effect_mesh_preview(leaf, &mut surface, &mut warnings, true, None);
+        assert!(surface.visible && surface.transparent);
+        assert_eq!(surface.opacity.as_ref().unwrap().get_pixel(0, 0)[0], 57);
+        assert!(surface.emissive.is_some());
+        assert!(!warnings.is_empty());
+    }
+
+    #[test]
+    fn original_light_beam_materials_are_not_opaque_world_meshes() {
+        for name in [
+            "Lightbeam.LightBeam",
+            "GeometryBeam",
+            "TemplBeamProc",
+            "Particles",
+            "ParticleImposter",
+            "LightFlares.Flare",
+            "LensOptics.Enable",
+            "VolumeObject",
+            "ReferenceImage",
+            "Sky",
+            "SkyHDR",
+        ] {
+            let slot = evolve_core::parse_material(
+                format!("<Material Name=\"beam\" Shader=\"{name}\"/>").as_bytes(),
+            )
+            .unwrap();
+            assert!(is_original_beam_effect(&slot.slots[0]));
+        }
+        for name in ["Illum", "Glass", "Vegetation", "NoDraw", "Cloth"] {
+            let slot = evolve_core::parse_material(
+                format!("<Material Name=\"fixture\" Shader=\"{name}\"/>").as_bytes(),
+            )
+            .unwrap();
+            assert!(!is_original_beam_effect(&slot.slots[0]));
+        }
+    }
+
+    #[test]
     fn vegetation_shader_diffuse_alpha_is_cutout_not_foliage_transmittance() {
         let doc = evolve_core::parse_material(
             br#"<Material Name="Leaves" Shader="Vegetation" Opacity="1">
@@ -1698,6 +2011,7 @@ mod tests {
             alpha_test: None,
             glow_amount: None,
             alpha_glow: false,
+            shader_gen_mask: None,
             diffuse_tint: None,
             decal_tex_mod: None,
             maps: if with_mask {
@@ -2328,6 +2642,7 @@ mod tests {
             alpha_test: None,
             glow_amount: None,
             alpha_glow: false,
+            shader_gen_mask: None,
             diffuse_tint: None,
             decal_tex_mod: None,
         };

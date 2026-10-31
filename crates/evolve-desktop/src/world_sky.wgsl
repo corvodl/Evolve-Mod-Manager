@@ -129,5 +129,7 @@ fn fs_sky(input:SkyVertex)->@location(0) vec4<f32> {
   if (sky.params[1].w>0.5) {
     linear=static_sky(direction);
   }
-  return vec4<f32>(aces_tone(linear),1.0);
+  // Sky is written to the linear HDR render target; one final filmic
+  // transform follows after bloom, never per-source double tonemapping.
+  return vec4<f32>(linear,1.0);
 }
