@@ -900,6 +900,7 @@ fn open_selected(
     let terrain_xml = terrain_xml.ok().flatten();
     let terrain_pak = terrain_pak.ok().flatten();
 
+    let mut terrain_paint: Option<TerrainPaintMap> = None;
     let terrain = if let Some(relative) = &chosen.terrain {
         let exact = verified_source(&root, relative, 512 * 1024 * 1024)?;
         match read_terrain_paint(&exact) {
@@ -915,6 +916,7 @@ fn open_selected(
                 diagnostics.push(terrain_layer_material_report(&paint));
                 diagnostics.push(terrain_surface_type_report(&paint));
                 diagnostics.extend(crate::terrain_material_probe::audit(&archive, &paint));
+                terrain_paint = Some(paint);
             }
             Ok(None) => diagnostics.push(
                 "This original heightmap contains no readable terrain layer-ID section.".into(),
@@ -1025,6 +1027,22 @@ fn open_selected(
                     {
                         material.diffuse = Some(diffuse);
                         applied = true;
+                        if let Some(paint) = terrain_paint.as_ref() {
+                            match crate::terrain_material_probe::compose(
+                                &archive, paint, dimensions, terrain_mesh.info.unit,
+                            ) {
+                                Ok(Some((highpass, report))) => {
+                                    world.terrain_detail = Some(std::sync::Arc::new(highpass));
+                                    diagnostics.push(report);
+                                }
+                                Ok(None) => diagnostics.push(
+                                    "Terrain high-pass detail unavailable: no exact complete, explicitly high-pass material DDS streams for painted layer IDs; preserving original RGB atlas.".into()
+                                ),
+                                Err(error) => diagnostics.push(format!(
+                                    "Terrain high-pass detail unavailable: {error}; original RGB atlas remains intact."
+                                )),
+                            }
+                        }
                     }
                     assembled.world = std::sync::Arc::new(world);
                 }
