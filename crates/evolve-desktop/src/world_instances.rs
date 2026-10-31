@@ -1236,17 +1236,17 @@ impl Renderer {
         };
         let key = Arc::as_ptr(world) as usize;
         if key != self.world_identity || self.last_full_textures != full_textures {
-            let mut cache = TextureCache::new();
-            let mut used_bytes = 0u64;
-            self.groups = world
-                .groups
-                .iter()
-                .map(|g| self.group(device, queue, g, full_textures, &mut cache, &mut used_bytes))
-                .collect();
+            // Drop the former GPU scene before creating any new allocations.
+            // Full decoded source assets remain on World, not in this cache.
+            self.groups = std::iter::repeat_with(|| None).take(world.groups.len()).collect();
+            self.cache.clear();
+            self.source_hashes.clear();
+            self.peak_gpu_bytes = 0;
             self.world_identity = key;
             self.last_full_textures = full_textures;
             self.last_camera = None;
             self.last_lighting_hour = f32::NAN;
+            world.gpu_progress.pending.store(1, Ordering::Relaxed);
         }
         let hour = if hour.is_finite() {
             hour.clamp(0.0, 24.0)
@@ -1274,19 +1274,99 @@ impl Renderer {
             return;
         };
         let uniform = CameraGpu::make(camera, yaw, pitch, aspect, zoom);
-        if self.last_camera == Some(uniform) {
-            return;
+        let camera_changed = self.last_camera != Some(uniform);
+        let visible_groups = world.groups.iter()
+            .map(|group| visible(group, camera, yaw, pitch, aspect, zoom))
+            .collect::<Vec<_>>();
+        let mut cache = std::mem::take(&mut self.cache);
+        let mut hashes = std::mem::take(&mut self.source_hashes);
+        let evicted = evict_offscreen(&mut self.groups, &visible_groups, &mut cache);
+        let target_bytes = if full_textures {
+            WORLD_RESIDENT_TARGET_BYTES
+        } else {
+            MAX_SCENE_BALANCED_TEXTURE_BYTES
+        };
+        let mut used_bytes = cache_bytes(&cache);
+        let mut deferred = 0usize;
+        let mut pending = 0usize;
+        let mut uploaded = 0usize;
+        // Ground first, then visible model groups ordered by camera proximity.
+        // One prepare pass never builds the entire world's GPU resources.
+        let mut candidates = (0..world.groups.len())
+            .filter(|&idx| !visible_groups[idx].is_empty() && self.groups[idx].is_none())
+            .collect::<Vec<_>>();
+        candidates.sort_by(|&left, &right| {
+            let priority = |i: usize| -> f32 {
+                if is_ground(&world.groups[i]) {
+                    return -1.0;
+                }
+                world.groups[i].instances.iter()
+                    .map(|instance| instance.transform.position.iter()
+                        .zip(camera.position).map(|(p,c)| (p-c)*(p-c)).sum::<f32>())
+                    .filter(|distance| distance.is_finite())
+                    .fold(f32::INFINITY, f32::min)
+            };
+            priority(left).total_cmp(&priority(right))
+        });
+        for idx in candidates {
+            if uploaded == MAX_NEW_GROUPS_PER_FRAME {
+                pending += 1;
+                continue;
+            }
+            let requested = group_new_bytes(&world.groups[idx], &cache, &mut hashes);
+            let current = used_bytes.saturating_add(resident_geometry_bytes(&self.groups));
+            if current.saturating_add(requested) > target_bytes {
+                // No GPU allocation occurs here. The camera can later evict
+                // offscreen groups and retry at the full original resolution.
+                deferred += 1;
+                continue;
+            }
+            let gpu = self.group(
+                device, queue, &world.groups[idx], full_textures,
+                &mut cache, &mut hashes, &mut used_bytes,
+            );
+            self.groups[idx] = Some(gpu);
+            uploaded += 1;
         }
-        queue.write_buffer(&self.camera_uniform, 0, bytemuck::bytes_of(&uniform));
-        for (gpu, group) in self.groups.iter_mut().zip(&world.groups) {
-            let culled = visible(group, camera, yaw, pitch, aspect, zoom);
-            gpu.visible = culled.len().min(gpu.capacity) as u32;
-            if !culled.is_empty() {
-                queue.write_buffer(
-                    &gpu.instances,
-                    0,
-                    bytemuck::cast_slice(&culled[..gpu.visible as usize]),
-                );
+        let texture_bytes = cache_bytes(&cache);
+        let geometry_bytes = resident_geometry_bytes(&self.groups);
+        let resident = texture_bytes.saturating_add(geometry_bytes);
+        self.peak_gpu_bytes = self.peak_gpu_bytes.max(resident);
+        let progress = &world.gpu_progress;
+        progress.pending.store(pending, Ordering::Relaxed);
+        progress.deferred.store(deferred, Ordering::Relaxed);
+        progress.loaded.store(self.groups.iter().flatten().count(), Ordering::Relaxed);
+        progress.textures.store(texture_bytes, Ordering::Relaxed);
+        progress.geometry.store(geometry_bytes, Ordering::Relaxed);
+        progress.peak.store(self.peak_gpu_bytes, Ordering::Relaxed);
+        self.cache = cache;
+        self.source_hashes = hashes;
+        if uploaded != 0 && (uploaded >= MAX_NEW_GROUPS_PER_FRAME || pending == 0) {
+            crate::crash_diagnostics::record(
+                "level_gpu_residency",
+                &format!(
+                    "{} / {} resident groups, {} MiB texture mips, {} MiB geometry, peak {} MiB, {} queued, {} deferred; adapter free VRAM unknown",
+                    progress.loaded.load(Ordering::Relaxed),
+                    world.groups.len(),
+                    texture_bytes / 1048576,
+                    geometry_bytes / 1048576,
+                    self.peak_gpu_bytes / 1048576,
+                    pending, deferred,
+                ),
+            );
+        }
+        if camera_changed || uploaded > 0 || evicted > 0 {
+            queue.write_buffer(&self.camera_uniform, 0, bytemuck::bytes_of(&uniform));
+            for (gpu, culled) in self.groups.iter_mut().zip(&visible_groups) {
+                let Some(gpu) = gpu.as_mut() else { continue };
+                gpu.visible = culled.len().min(gpu.capacity) as u32;
+                if !culled.is_empty() {
+                    queue.write_buffer(
+                        &gpu.instances,
+                        0,
+                        bytemuck::cast_slice(&culled[..gpu.visible as usize]),
+                    );
+                }
             }
         }
         self.last_camera = Some(uniform);
@@ -1300,7 +1380,7 @@ impl Renderer {
                 1 => &self.foliage_cutout,
                 _ => &self.transparent,
             });
-            for group in &self.groups {
+            for group in self.groups.iter().flatten() {
                 if group.visible == 0 {
                     continue;
                 }
