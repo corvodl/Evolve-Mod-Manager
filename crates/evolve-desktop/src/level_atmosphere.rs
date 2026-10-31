@@ -339,7 +339,10 @@ pub(super) fn atmosphere_uniform(
                 .or_else(|| tod.color("Sun color", hour))
         })
         .unwrap_or([1.0, 0.94, 0.85]);
-    let skybox_multiplier = scalar("Skybox multiplier", if static_available { 1.0 } else { 0.0 });
+    let skybox_multiplier = scalar(
+        "Skybox multiplier",
+        if static_available { 1.0 } else { 0.0 },
+    );
     let intensity = scalar("Sky light sun intensity multiplier", 1.0);
     let rayleigh = scalar("Rayleigh scattering", 2.0);
     let mie = scalar("Mie scattering", 4.8);
