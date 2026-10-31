@@ -227,6 +227,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 world: state.level_world.clone(),
                 level_hour: state.level_time_of_day,
                 level_full_textures: state.level_full_textures,
+                level_terrain_unlit: state.level_terrain_unlit,
                 viewer_full_textures: state.level_full_textures,
                 viewer_gpu_remaining: None,
             },
@@ -477,6 +478,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 "Textures: Balanced"
             })
             .on_press(Message::LevelFullTexturesToggled),
+            design::button(if state.level_terrain_unlit {
+                "Terrain: Source RGB (unlit)"
+            } else {
+                "Terrain: Lit preview"
+            })
+            .on_press(Message::LevelTerrainSourceColorToggled),
             text(state.level_world.as_ref().map_or_else(
                 || "No world GPU resources loaded.".to_owned(),
                 |world| {
