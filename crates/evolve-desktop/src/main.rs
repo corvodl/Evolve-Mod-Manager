@@ -14481,9 +14481,12 @@ impl Desktop {
         };
         let level_gpu_stream = if self.level_id.is_some()
             && self.state.level_world.as_ref().is_some_and(|world| {
-                world.gpu_progress.pending.load(std::sync::atomic::Ordering::Relaxed) > 0
-            })
-        {
+                world
+                    .gpu_progress
+                    .pending
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    > 0
+            }) {
             iced::time::every(Duration::from_millis(65)).map(|_| Message::LevelGpuStreamTick)
         } else {
             Subscription::none()

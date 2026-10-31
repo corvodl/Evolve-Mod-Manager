@@ -1101,9 +1101,19 @@ fn terrain_pixel_report(img: &image::RgbaImage) -> String {
     let lower_right = sample(width.saturating_mul(3) / 4, height.saturating_mul(3) / 4);
     format!(
         "Original decoded terrain RGB8 (pre-lighting/sRGB): sampled average [{},{},{}], corner [{},{},{}], center [{},{},{}]; atlas quadrants TL={} TR={} BL={} BR={}; no correction applied.",
-        avg[0],avg[1],avg[2],first[0],first[1],first[2],
-        center[0],center[1],center[2],
-        upper_left,upper_right,lower_left,lower_right,
+        avg[0],
+        avg[1],
+        avg[2],
+        first[0],
+        first[1],
+        first[2],
+        center[0],
+        center[1],
+        center[2],
+        upper_left,
+        upper_right,
+        lower_left,
+        lower_right,
     )
 }
 

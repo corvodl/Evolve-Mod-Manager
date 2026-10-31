@@ -577,8 +577,10 @@ pub fn begin_imported_lookup_session(
 fn game_root_from_source(source: &str) -> Option<PathBuf> {
     Path::new(source)
         .ancestors()
-        .find(|path| path.file_name().is_some_and(|name|
-            name.to_string_lossy().eq_ignore_ascii_case("Game")))
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Game"))
+        })
         .and_then(|path| fs::canonicalize(path).ok())
 }
 
@@ -589,8 +591,7 @@ pub fn begin_imported_lookup_session_for_source(
     root: &Path,
     selected_source: &str,
 ) -> Result<(String, ImportedLookupGuard), LibraryError> {
-    let selected_game =
-        game_root_from_source(selected_source).ok_or(LibraryError::InvalidRoot)?;
+    let selected_game = game_root_from_source(selected_source).ok_or(LibraryError::InvalidRoot)?;
     let key = selected_game.to_string_lossy().to_ascii_lowercase();
     let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
     let build_token = format!("source-game-{}", &digest[..24]);
@@ -936,8 +937,14 @@ mod tests {
         let b = first.join("materials_basic.pak");
         let other = second.join("levels_tutorial.pak");
         let canonical = game_root_from_source(&a.to_string_lossy()).unwrap();
-        assert_eq!(canonical, game_root_from_source(&b.to_string_lossy()).unwrap());
-        assert_ne!(canonical, game_root_from_source(&other.to_string_lossy()).unwrap());
+        assert_eq!(
+            canonical,
+            game_root_from_source(&b.to_string_lossy()).unwrap()
+        );
+        assert_ne!(
+            canonical,
+            game_root_from_source(&other.to_string_lossy()).unwrap()
+        );
     }
 
     #[test]

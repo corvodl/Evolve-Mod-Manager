@@ -7,14 +7,14 @@ use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface, wor
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform,
     begin_imported_lookup_session, begin_imported_lookup_session_for_source,
-    imported_archive_files, imported_archive_preview_inventory,
-    imported_library, read_world_model_parts,
+    imported_archive_files, imported_archive_preview_inventory, imported_library,
+    read_world_model_parts,
 };
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 const MAX_ARCHIVES: usize = 1_024;
@@ -196,8 +196,10 @@ where
 fn source_game_directory(pak: &ImportedPak) -> Option<PathBuf> {
     Path::new(&pak.source)
         .ancestors()
-        .find(|p| p.file_name().is_some_and(|name|
-            name.to_string_lossy().eq_ignore_ascii_case("Game")))
+        .find(|p| {
+            p.file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Game"))
+        })
         .and_then(|path| fs::canonicalize(path).ok())
 }
 
@@ -221,12 +223,16 @@ fn identical_verified_sources(assets: &[AssetLocation]) -> Result<bool, String> 
         let mut buffer = [0u8; 64 * 1024];
         loop {
             let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
-            if count == 0 { break; }
+            if count == 0 {
+                break;
+            }
             digest.update(&buffer[..count]);
         }
         let current = (metadata.len(), digest.finalize().into());
         if let Some(previous) = first {
-            if previous != current { return Ok(false); }
+            if previous != current {
+                return Ok(false);
+            }
         } else {
             first = Some(current);
         }
@@ -256,15 +262,25 @@ impl Index {
         if let Some(root) = &index.library_root {
             if let Some(source_game) = source_game_directory(selected) {
                 let library = imported_library(root).map_err(|e| e.to_string())?;
-                for pak in library.archives.into_iter().filter(|pak| {
-                    pak.id != selected.id
-                        && source_game_directory(pak).as_ref() == Some(&source_game)
-                }).take(MAX_ARCHIVES - 1) {
+                for pak in library
+                    .archives
+                    .into_iter()
+                    .filter(|pak| {
+                        pak.id != selected.id
+                            && source_game_directory(pak).as_ref() == Some(&source_game)
+                    })
+                    .take(MAX_ARCHIVES - 1)
+                {
                     archives.push(pak);
                 }
-                report.note("Resolving exact asset paths within the selected installed Game directory.".into());
+                report.note(
+                    "Resolving exact asset paths within the selected installed Game directory."
+                        .into(),
+                );
             } else {
-                report.note("Installed Game directory unverified; cross-PAK dependencies disabled.".into());
+                report.note(
+                    "Installed Game directory unverified; cross-PAK dependencies disabled.".into(),
+                );
             }
         }
         if archives.len() == MAX_ARCHIVES {
@@ -302,7 +318,10 @@ impl Index {
             // comparing that against a persisted C:\ path rejects valid
             // imports even though both paths identify the same file.
             let Ok(canonical_root) = fs::canonicalize(&root) else {
-                report.note(format!("Imported extraction folder not accessible: {}", pak.name));
+                report.note(format!(
+                    "Imported extraction folder not accessible: {}",
+                    pak.name
+                ));
                 continue;
             };
             let mut matched = false;
@@ -522,7 +541,9 @@ fn rgba_mip_footprint(width: u32, height: u32) -> u64 {
     let (mut w, mut h) = (width.max(1), height.max(1));
     loop {
         total = total.saturating_add(u64::from(w) * u64::from(h) * 4);
-        if w == 1 && h == 1 { break; }
+        if w == 1 && h == 1 {
+            break;
+        }
         w = (w / 2).max(1);
         h = (h / 2).max(1);
     }
@@ -531,18 +552,23 @@ fn rgba_mip_footprint(width: u32, height: u32) -> u64 {
 
 fn surface_gpu_estimate(surface: &Surface) -> u64 {
     [
-        surface.diffuse.as_ref(), surface.opacity.as_ref(),
-        surface.normal.as_ref(), surface.specular.as_ref(),
-        surface.gloss.as_ref(), surface.emissive.as_ref(),
-    ].into_iter().map(|source| source.map_or(4, |image| {
-        rgba_mip_footprint(image.width(), image.height())
-    })).sum()
+        surface.diffuse.as_ref(),
+        surface.opacity.as_ref(),
+        surface.normal.as_ref(),
+        surface.specular.as_ref(),
+        surface.gloss.as_ref(),
+        surface.emissive.as_ref(),
+    ]
+    .into_iter()
+    .map(|source| source.map_or(4, |image| rgba_mip_footprint(image.width(), image.height())))
+    .sum()
 }
 
 fn surface_batch_ranges(costs: &[u64], geometry: u64) -> Vec<std::ops::Range<usize>> {
-    if costs.is_empty() { return vec![0..0]; }
-    if geometry.saturating_add(costs.iter().copied().sum::<u64>())
-        <= WORLD_RESIDENCY_TARGET {
+    if costs.is_empty() {
+        return vec![0..0];
+    }
+    if geometry.saturating_add(costs.iter().copied().sum::<u64>()) <= WORLD_RESIDENCY_TARGET {
         return vec![0..costs.len()];
     }
     let mut result = Vec::new();
@@ -643,7 +669,9 @@ pub(super) fn assemble(
                 sources.build = Some(label);
                 Some(guard)
             } else {
-                sources.build.as_deref()
+                sources
+                    .build
+                    .as_deref()
                     .map(|build| begin_imported_lookup_session(root, build))
                     .transpose()
                     .map_err(|error| error.to_string())?
@@ -694,8 +722,12 @@ pub(super) fn assemble(
                         report.unresolved += 1;
                         crate::crash_diagnostics::record(
                             "level_unresolved_geometry",
-                            &format!("model={} material={} reasons={}",
-                                object.model, object.material, reasons.join("; ")),
+                            &format!(
+                                "model={} material={} reasons={}",
+                                object.model,
+                                object.material,
+                                reasons.join("; ")
+                            ),
                         );
                         report.note(format!(
                             "Cannot resolve/decode {}: {}",
@@ -810,8 +842,13 @@ pub(super) fn assemble(
                     report.without_diffuse += 1;
                     crate::crash_diagnostics::record(
                         "level_missing_verified_diffuse",
-                        &format!("model={} material={} source={} sections={}",
-                            object.model, object.material, source.archive, meshes.len()),
+                        &format!(
+                            "model={} material={} source={} sections={}",
+                            object.model,
+                            object.material,
+                            source.archive,
+                            meshes.len()
+                        ),
                     );
                 }
                 let mut indices = Vec::with_capacity(meshes.len());
@@ -839,7 +876,8 @@ pub(super) fn assemble(
                     if batches.len() > 1 {
                         report.note(format!(
                             "Split {} into {} independent GPU material-residency groups",
-                            object.model, batches.len(),
+                            object.model,
+                            batches.len(),
                         ));
                     }
                     for batch in batches {
@@ -853,7 +891,9 @@ pub(super) fn assemble(
                     }
                     report.geometries += 1;
                 }
-                if budget_hit { break; }
+                if budget_hit {
+                    break;
+                }
                 resolved.insert(key, indices.clone());
                 indices
             };
@@ -968,16 +1008,16 @@ mod tests {
     fn multi_material_group_splits_before_exceeding_residency_target() {
         let mb = 1024 * 1024u64;
         assert_eq!(
-            surface_batch_ranges(&[230*mb, 230*mb, 230*mb], 4*mb),
+            surface_batch_ranges(&[230 * mb, 230 * mb, 230 * mb], 4 * mb),
             vec![0..2, 2..3],
         );
         assert_eq!(
-            surface_batch_ranges(&[100*mb, 100*mb, 100*mb], 4*mb),
+            surface_batch_ranges(&[100 * mb, 100 * mb, 100 * mb], 4 * mb),
             vec![0..3],
         );
         // A single oversized source remains unaltered for later sparse-GPU
         // work rather than being silently downscaled or omitted.
-        assert_eq!(surface_batch_ranges(&[800*mb], 4*mb), vec![0..1]);
+        assert_eq!(surface_batch_ranges(&[800 * mb], 4 * mb), vec![0..1]);
     }
 
     #[test]
@@ -987,8 +1027,14 @@ mod tests {
         let b = dir.path().join("b.cgf");
         std::fs::write(&a, b"exact-verified-geometry").unwrap();
         std::fs::write(&b, b"exact-verified-geometry").unwrap();
-        let original = AssetLocation {archive: "A".into(), path: a};
-        let candidate = AssetLocation {archive: "B".into(), path: b.clone()};
+        let original = AssetLocation {
+            archive: "A".into(),
+            path: a,
+        };
+        let candidate = AssetLocation {
+            archive: "B".into(),
+            path: b.clone(),
+        };
         assert!(identical_verified_sources(&[original.clone(), candidate.clone()]).unwrap());
         std::fs::write(&b, b"conflicting-geometry").unwrap();
         assert!(!identical_verified_sources(&[original, candidate]).unwrap());

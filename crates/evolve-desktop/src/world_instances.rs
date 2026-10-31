@@ -5,10 +5,13 @@ use crate::{level_camera, textured::Surface};
 use evolve_core::{RenderMesh, Transform};
 use iced::wgpu;
 use iced::wgpu::util::DeviceExt;
-use std::borrow::Cow;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, atomic::{AtomicU64, AtomicUsize, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+};
 
 // Ordinary world-model diffuse textures are limited to 32 MiB so one map
 // cannot flood GPU memory with hundreds of oversized props. Baked ground
@@ -34,7 +37,12 @@ type TextureKey = ([u8; 32], u8, bool);
 type TextureCache = HashMap<TextureKey, (wgpu::Texture, wgpu::TextureView, u64)>;
 type SourceKeys = HashMap<usize, [u8; 32]>;
 
-fn texture_key(image: Option<&Arc<image::RgbaImage>>, role: u8, ground: bool, hashes: &mut SourceKeys) -> TextureKey {
+fn texture_key(
+    image: Option<&Arc<image::RgbaImage>>,
+    role: u8,
+    ground: bool,
+    hashes: &mut SourceKeys,
+) -> TextureKey {
     let Some(image) = image else {
         return ([0; 32], role, ground);
     };
@@ -50,7 +58,9 @@ fn texture_key(image: Option<&Arc<image::RgbaImage>>, role: u8, ground: bool, ha
 }
 
 fn cache_bytes(cache: &TextureCache) -> u64 {
-    cache.values().fold(0u64, |sum, (_, _, bytes)| sum.saturating_add(*bytes))
+    cache
+        .values()
+        .fold(0u64, |sum, (_, _, bytes)| sum.saturating_add(*bytes))
 }
 
 /// Atomic GPU estimates shared with the UI; not an OS/driver VRAM query.
@@ -307,7 +317,8 @@ fn create_streaming_diffuse(
     });
     let smallest = count - 1;
     let coarse = image::imageops::resize(
-        source, (source.width() >> smallest).max(1),
+        source,
+        (source.width() >> smallest).max(1),
         (source.height() >> smallest).max(1),
         image::imageops::FilterType::Triangle,
     );
@@ -426,7 +437,11 @@ fn group_new_bytes(
         + group.mesh.indices.len() * std::mem::size_of::<u32>()
         + group.instances.len().max(1) * std::mem::size_of::<InstanceGpu>()
         + group.surfaces.len() * 16) as u64;
-    for surface in group.surfaces.iter().filter(|s| s.visible && s.index_count > 0) {
+    for surface in group
+        .surfaces
+        .iter()
+        .filter(|s| s.visible && s.index_count > 0)
+    {
         for (role, ground, source) in [
             (0, is_ground(group), surface.diffuse.as_ref()),
             (1, false, surface.opacity.as_ref()),
@@ -439,8 +454,14 @@ fn group_new_bytes(
             if !cache.contains_key(&key) && seen.insert(key) {
                 let footprint = source.map_or(4, |img| {
                     let (width, height) = full_quality_dimensions(
-                        img.width(), img.height(), ground, gpu_max_dimension, true, u64::MAX,
-                    ).unwrap_or((1, 1));
+                        img.width(),
+                        img.height(),
+                        ground,
+                        gpu_max_dimension,
+                        true,
+                        u64::MAX,
+                    )
+                    .unwrap_or((1, 1));
                     mip_chain_bytes(width, height)
                 });
                 bytes = bytes.saturating_add(footprint);
@@ -454,15 +475,26 @@ fn group_distance_sq(group: &ModelGroup, camera: level_camera::Camera) -> f32 {
     if is_ground(group) {
         return -1.0;
     }
-    group.instances.iter()
-        .map(|instance| instance.transform.position.iter().zip(camera.position)
-            .map(|(point, origin)| (point - origin) * (point - origin)).sum::<f32>())
+    group
+        .instances
+        .iter()
+        .map(|instance| {
+            instance
+                .transform
+                .position
+                .iter()
+                .zip(camera.position)
+                .map(|(point, origin)| (point - origin) * (point - origin))
+                .sum::<f32>()
+        })
         .filter(|distance| distance.is_finite())
         .fold(f32::INFINITY, f32::min)
 }
 
 fn resident_geometry_bytes(groups: &[Option<GpuGroup>]) -> u64 {
-    groups.iter().flatten().fold(0u64, |total, group| total.saturating_add(group.geometry_bytes))
+    groups.iter().flatten().fold(0u64, |total, group| {
+        total.saturating_add(group.geometry_bytes)
+    })
 }
 
 /// Evict only GPU handles for groups outside the current view. Original
@@ -479,8 +511,11 @@ fn evict_offscreen(
         }
     }
     if count > 0 {
-        let retained: HashSet<TextureKey> = groups.iter().flatten()
-            .flat_map(|group| group.source_keys.iter().copied()).collect();
+        let retained: HashSet<TextureKey> = groups
+            .iter()
+            .flatten()
+            .flat_map(|group| group.source_keys.iter().copied())
+            .collect();
         cache.retain(|key, _| retained.contains(key));
     }
     count
@@ -631,9 +666,12 @@ impl World {
         for group in &self.groups {
             for surface in &group.surfaces {
                 for source in [
-                    surface.diffuse.as_ref(), surface.opacity.as_ref(),
-                    surface.normal.as_ref(), surface.specular.as_ref(),
-                    surface.gloss.as_ref(), surface.emissive.as_ref(),
+                    surface.diffuse.as_ref(),
+                    surface.opacity.as_ref(),
+                    surface.normal.as_ref(),
+                    surface.specular.as_ref(),
+                    surface.gloss.as_ref(),
+                    surface.emissive.as_ref(),
                 ] {
                     if source.is_some() {
                         let _ = texture_key(source, 0, false, &mut hashes);
@@ -1169,24 +1207,39 @@ impl Renderer {
                 let (w, h) = source.as_ref().map_or((1, 1), |img| img.dimensions());
                 let (tex, view) = if let Some(ref selected) = source {
                     let original = match selected {
-                        Cow::Borrowed(_) if surf.diffuse.as_ref().is_some_and(|img| img.dimensions() == (w, h)) =>
-                            surf.diffuse.as_ref().expect("borrowed diffuse source").clone(),
+                        Cow::Borrowed(_)
+                            if surf
+                                .diffuse
+                                .as_ref()
+                                .is_some_and(|img| img.dimensions() == (w, h)) =>
+                        {
+                            surf.diffuse
+                                .as_ref()
+                                .expect("borrowed diffuse source")
+                                .clone()
+                        }
                         _ => Arc::new(selected.as_ref().clone()),
                     };
                     let (tex, view, lowest) = create_streaming_diffuse(device, queue, &original);
                     mip_min_level.insert(key, lowest);
                     if lowest > 0 {
-                        pending_diffuse.insert(key, PendingDiffuseMip {
-                            source: original,
-                            next_level: lowest - 1,
-                            next_row: 0,
-                            prepared: None,
-                        });
+                        pending_diffuse.insert(
+                            key,
+                            PendingDiffuseMip {
+                                source: original,
+                                next_level: lowest - 1,
+                                next_row: 0,
+                                prepared: None,
+                            },
+                        );
                     }
                     (tex, view)
                 } else {
                     upload_rgba_mips(
-                        device, queue, None, fallback,
+                        device,
+                        queue,
+                        None,
+                        fallback,
                         wgpu::TextureFormat::Rgba8UnormSrgb,
                         "Missing source diffuse (neutral)",
                     )
@@ -1424,7 +1477,9 @@ impl Renderer {
         if key != self.world_identity || self.last_full_textures != full_textures {
             // Drop the former GPU scene before creating any new allocations.
             // Full decoded source assets remain on World, not in this cache.
-            self.groups = std::iter::repeat_with(|| None).take(world.groups.len()).collect();
+            self.groups = std::iter::repeat_with(|| None)
+                .take(world.groups.len())
+                .collect();
             self.cache.clear();
             self.source_hashes = (*world.source_pixel_hashes).clone();
             self.pending_diffuse.clear();
@@ -1463,13 +1518,16 @@ impl Renderer {
         };
         let uniform = CameraGpu::make(camera, yaw, pitch, aspect, zoom);
         let camera_changed = self.last_camera != Some(uniform);
-        let visible_groups = world.groups.iter()
+        let visible_groups = world
+            .groups
+            .iter()
             .map(|group| visible(group, camera, yaw, pitch, aspect, zoom))
             .collect::<Vec<_>>();
         let mut cache = std::mem::take(&mut self.cache);
         let mut hashes = std::mem::take(&mut self.source_hashes);
         let evicted = evict_offscreen(&mut self.groups, &visible_groups, &mut cache);
-        self.pending_diffuse.retain(|key, _| cache.contains_key(key));
+        self.pending_diffuse
+            .retain(|key, _| cache.contains_key(key));
         self.mip_min_level.retain(|key, _| cache.contains_key(key));
         let target_bytes = if full_textures {
             WORLD_RESIDENT_TARGET_BYTES
@@ -1500,7 +1558,9 @@ impl Renderer {
                 continue;
             }
             let requested = group_new_bytes(
-                &world.groups[idx], &cache, &mut hashes,
+                &world.groups[idx],
+                &cache,
+                &mut hashes,
                 device.limits().max_texture_dimension_2d,
             );
             // Prefer near/ground geometry when visible groups collectively
@@ -1510,19 +1570,29 @@ impl Renderer {
             let distance = group_distance_sq(&world.groups[idx], camera);
             while used_bytes
                 .saturating_add(resident_geometry_bytes(&self.groups))
-                .saturating_add(requested) > target_bytes
+                .saturating_add(requested)
+                > target_bytes
             {
-                let farthest = self.groups.iter().enumerate()
-                    .filter(|(i, group)| group.is_some()
-                        && group_distance_sq(&world.groups[*i], camera) > distance)
+                let farthest = self
+                    .groups
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, group)| {
+                        group.is_some() && group_distance_sq(&world.groups[*i], camera) > distance
+                    })
                     .max_by(|(left, _), (right, _)| {
                         group_distance_sq(&world.groups[*left], camera)
                             .total_cmp(&group_distance_sq(&world.groups[*right], camera))
-                    }).map(|(i, _)| i);
+                    })
+                    .map(|(i, _)| i);
                 let Some(victim) = farthest else { break };
                 self.groups[victim].take();
-                let retained: HashSet<TextureKey> = self.groups.iter().flatten()
-                    .flat_map(|group| group.source_keys.iter().copied()).collect();
+                let retained: HashSet<TextureKey> = self
+                    .groups
+                    .iter()
+                    .flatten()
+                    .flat_map(|group| group.source_keys.iter().copied())
+                    .collect();
                 cache.retain(|key, _| retained.contains(key));
                 pending_diffuse.retain(|key, _| cache.contains_key(key));
                 mip_min_level.retain(|key, _| cache.contains_key(key));
@@ -1530,7 +1600,8 @@ impl Renderer {
             }
             if used_bytes
                 .saturating_add(resident_geometry_bytes(&self.groups))
-                .saturating_add(requested) > target_bytes
+                .saturating_add(requested)
+                > target_bytes
             {
                 // The requested resource remains available in source CPU
                 // memory and can be retried after camera movement/eviction.
@@ -1538,9 +1609,15 @@ impl Renderer {
                 continue;
             }
             let gpu = self.group(
-                device, queue, &world.groups[idx], full_textures,
-                &mut cache, &mut hashes, &mut pending_diffuse,
-                &mut mip_min_level, &mut used_bytes,
+                device,
+                queue,
+                &world.groups[idx],
+                full_textures,
+                &mut cache,
+                &mut hashes,
+                &mut pending_diffuse,
+                &mut mip_min_level,
+                &mut used_bytes,
             );
             self.groups[idx] = Some(gpu);
             uploaded += 1;
@@ -1550,7 +1627,9 @@ impl Renderer {
         // Advance one independent diffuse mip each redraw. Existing materials
         // keep sampling their previously uploaded coarser mip until this write
         // is submitted, so no undefined/uninitialized GPU texture reads occur.
-        let next_key = self.pending_diffuse.keys()
+        let next_key = self
+            .pending_diffuse
+            .keys()
             .copied()
             .find(|key| cache.contains_key(key));
         let mut mip_uploads = 0usize;
@@ -1563,9 +1642,9 @@ impl Renderer {
             let mip = if level == 0 {
                 &*pending.source
             } else {
-                pending.prepared.get_or_insert_with(|| {
-                    next_diffuse_mip(&pending.source, level)
-                })
+                pending
+                    .prepared
+                    .get_or_insert_with(|| next_diffuse_mip(&pending.source, level))
             };
             let row = write_mip_rows(queue, texture, mip, level, pending.next_row);
             let completed = row == mip.height();
@@ -1577,7 +1656,8 @@ impl Renderer {
                     for surface in &gpu.surfaces {
                         if surface.diffuse_key == key {
                             queue.write_buffer(
-                                &surface._alpha_uniform, 12,
+                                &surface._alpha_uniform,
+                                12,
                                 bytemuck::bytes_of(&(level as f32)),
                             );
                         }
@@ -1600,9 +1680,13 @@ impl Renderer {
         let resident = texture_bytes.saturating_add(geometry_bytes);
         self.peak_gpu_bytes = self.peak_gpu_bytes.max(resident);
         let progress = &world.gpu_progress;
-        progress.pending.store(pending + self.pending_diffuse.len(), Ordering::Relaxed);
+        progress
+            .pending
+            .store(pending + self.pending_diffuse.len(), Ordering::Relaxed);
         progress.deferred.store(deferred, Ordering::Relaxed);
-        progress.loaded.store(self.groups.iter().flatten().count(), Ordering::Relaxed);
+        progress
+            .loaded
+            .store(self.groups.iter().flatten().count(), Ordering::Relaxed);
         progress.textures.store(texture_bytes, Ordering::Relaxed);
         progress.geometry.store(geometry_bytes, Ordering::Relaxed);
         progress.peak.store(self.peak_gpu_bytes, Ordering::Relaxed);
@@ -1610,7 +1694,8 @@ impl Renderer {
         self.source_hashes = hashes;
         if (uploaded != 0 || mip_uploads != 0)
             && (progress.loaded.load(Ordering::Relaxed) % 16 == 0
-                || (pending == 0 && self.pending_diffuse.is_empty()) || evicted > 0)
+                || (pending == 0 && self.pending_diffuse.is_empty())
+                || evicted > 0)
         {
             crate::crash_diagnostics::record(
                 "level_gpu_residency",
@@ -1621,7 +1706,8 @@ impl Renderer {
                     texture_bytes / 1048576,
                     geometry_bytes / 1048576,
                     self.peak_gpu_bytes / 1048576,
-                    pending + self.pending_diffuse.len(), deferred,
+                    pending + self.pending_diffuse.len(),
+                    deferred,
                 ),
             );
         }
@@ -1704,11 +1790,15 @@ mod tests {
     #[test]
     fn content_identity_deduplicates_independent_imported_rgba_buffers() {
         let original = Arc::new(image::RgbaImage::from_pixel(
-            8, 8, image::Rgba([20, 40, 60, 255]),
+            8,
+            8,
+            image::Rgba([20, 40, 60, 255]),
         ));
         let duplicate = Arc::new((*original).clone());
         let changed = Arc::new(image::RgbaImage::from_pixel(
-            8, 8, image::Rgba([20, 40, 61, 255]),
+            8,
+            8,
+            image::Rgba([20, 40, 61, 255]),
         ));
         assert!(!Arc::ptr_eq(&original, &duplicate));
         let mut hashes = SourceKeys::new();
@@ -1809,8 +1899,7 @@ mod tests {
         let shader = include_str!("world_instances.wgsl");
         assert!(shader.contains("fn height_fog_depth"));
         assert!(shader.contains("if (height_fog.control.x > 0.5)"));
-        let module =
-            naga::front::wgsl::parse_str(shader).expect("source-backed height fog WGSL");
+        let module = naga::front::wgsl::parse_str(shader).expect("source-backed height fog WGSL");
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
