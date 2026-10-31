@@ -1505,9 +1505,7 @@ impl Renderer {
         // No camera-facing/frustum test may exclude a group from streaming:
         // every resolved scene placement is loaded in bounded GPU batches.
         let mut candidates = (0..world.groups.len())
-            .filter(|&idx| {
-                !world.groups[idx].instances.is_empty() && self.groups[idx].is_none()
-            })
+            .filter(|&idx| !world.groups[idx].instances.is_empty() && self.groups[idx].is_none())
             .collect::<Vec<_>>();
         candidates.sort_by(|&left, &right| {
             group_distance_sq(&world.groups[left], camera)
