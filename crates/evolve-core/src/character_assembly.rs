@@ -696,7 +696,8 @@ mod tests {
         // A HiddenWhenWeaponSelected set is an exclusion list, not an
         // alternate complete model. Bucket/Emet-style arm equipment must not
         // vanish merely because it is named in that exclusion metadata.
-        let cdf = crate::cdf::parse_cdf(br#"<CharacterDefinition>
+        let cdf = crate::cdf::parse_cdf(
+            br#"<CharacterDefinition>
           <Model File="characters/hunters/merc_bucket/bucket_skeleton.chr"/>
           <AttachmentList>
             <Attachment AName="body" Type="CA_SKIN"
@@ -710,7 +711,9 @@ mod tests {
               <skin name="equipment_arm"/>
             </SkinSet>
           </SkinSets>
-        </CharacterDefinition>"#).unwrap();
+        </CharacterDefinition>"#,
+        )
+        .unwrap();
         let (variant, selected) = select_attachments(&cdf).unwrap();
         assert_eq!(variant.as_deref(), Some("default"));
         assert_eq!(selected, vec!["body", "equipment_arm"]);
