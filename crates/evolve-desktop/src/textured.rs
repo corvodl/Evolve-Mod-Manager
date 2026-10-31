@@ -443,6 +443,12 @@ pub struct Pipeline {
     last_emissive_gain: f32,
     last_emissive_time: f32,
     gpu_surfaces: Vec<GpuSurface>,
+    surface_upload_cursor: usize,
+    surface_uploaded_views: HashMap<(usize, usize), wgpu::TextureView>,
+    surface_uploaded_bytes: usize,
+    surface_remaining_diffuse: usize,
+    surface_remaining_unique_diffuse: usize,
+    surface_can_fit_all_diffuse: bool,
     // Own every unique GPU source allocation while its bind groups exist.
     _surface_textures: Vec<wgpu::Texture>,
     surface_table_valid: bool,
@@ -1165,6 +1171,12 @@ impl Pipeline {
             last_emissive_gain: f32::NAN,
             last_emissive_time: f32::NAN,
             gpu_surfaces: Vec::new(),
+            surface_upload_cursor: 0,
+            surface_uploaded_views: HashMap::new(),
+            surface_uploaded_bytes: 0,
+            surface_remaining_diffuse: 0,
+            surface_remaining_unique_diffuse: 0,
+            surface_can_fit_all_diffuse: true,
             _surface_textures: Vec::new(),
             surface_table_valid: false,
             specular_texture,
@@ -1196,24 +1208,44 @@ impl Pipeline {
         surfaces: Option<&Arc<Vec<Surface>>>,
         index_count: usize,
         full_textures: bool,
+        progress: Option<&Arc<std::sync::atomic::AtomicUsize>>,
     ) {
+        use std::sync::atomic::Ordering;
         let identity = surfaces.map_or(0, |parts| Arc::as_ptr(parts) as usize);
-        if identity == self.last_surfaces_identity
-            && full_textures == self.last_viewer_full_textures
-        {
+        let changed = identity != self.last_surfaces_identity
+            || full_textures != self.last_viewer_full_textures;
+        if !changed && surfaces.is_none_or(|parts| self.surface_upload_cursor >= parts.len()) {
+            if let Some(progress) = progress {
+                progress.store(0, Ordering::Relaxed);
+            }
             return;
         }
-        self.last_surfaces_identity = identity;
-        self.last_viewer_full_textures = full_textures;
+        if changed {
+            self.last_surfaces_identity = identity;
+            self.last_viewer_full_textures = full_textures;
+            self.surface_upload_cursor = 0;
+            self.surface_uploaded_views.clear();
+            self.surface_uploaded_bytes = 0;
+            self.surface_remaining_diffuse = 0;
+            self.surface_remaining_unique_diffuse = 0;
+            self.surface_can_fit_all_diffuse = true;
+        }
         let budget = preview_budget(full_textures);
         // New bind groups require fresh gain uploads even if the slider did
         // not move. Reuse the already-decoded images on subsequent slider drags.
         self.last_emissive_gain = f32::NAN;
         self.last_emissive_time = f32::NAN;
-        self.gpu_surfaces.clear();
-        self._surface_textures.clear();
-        self.surface_table_valid = false;
-        let Some(surfaces) = surfaces else { return };
+        if changed {
+            self.gpu_surfaces.clear();
+            self._surface_textures.clear();
+            self.surface_table_valid = false;
+        }
+        let Some(surfaces) = surfaces else {
+            if let Some(progress) = progress {
+                progress.store(0, Ordering::Relaxed);
+            }
+            return;
+        };
         super::crash_diagnostics::record(
             "gpu_material_upload_begin",
             &format!("{} sections, {} indices", surfaces.len(), index_count),
@@ -1247,22 +1279,37 @@ impl Pipeline {
             return;
         }
         self.surface_table_valid = true;
-        let mut uploaded: HashMap<(usize, usize), wgpu::TextureView> = HashMap::new();
-        let mut used_bytes = 0usize;
+        let mut uploaded = std::mem::take(&mut self.surface_uploaded_views);
+        let mut used_bytes = self.surface_uploaded_bytes;
         let mut omitted_count = 0usize;
-        let mut unique_diffuse = HashSet::new();
-        let mut remaining_diffuse = 0usize;
-        for part in surfaces.iter().filter(|part| part.visible) {
-            if let Some(diffuse) = part.diffuse.as_ref()
-                && unique_diffuse.insert(Arc::as_ptr(diffuse) as usize)
-            {
-                remaining_diffuse = remaining_diffuse.saturating_add(diffuse.as_raw().len());
+        if changed {
+            let mut unique_diffuse = HashSet::new();
+            for part in surfaces.iter().filter(|part| part.visible) {
+                if let Some(diffuse) = part.diffuse.as_ref()
+                    && unique_diffuse.insert(Arc::as_ptr(diffuse) as usize)
+                {
+                    self.surface_remaining_diffuse = self
+                        .surface_remaining_diffuse
+                        .saturating_add(diffuse.as_raw().len());
+                }
             }
+            self.surface_can_fit_all_diffuse = self.surface_remaining_diffuse <= budget;
+            self.surface_remaining_unique_diffuse = unique_diffuse.len();
         }
-        let can_fit_all_diffuse = remaining_diffuse <= budget;
-        let mut remaining_unique_diffuse = unique_diffuse.len();
-        for part in surfaces.iter() {
+        let can_fit_all_diffuse = self.surface_can_fit_all_diffuse;
+        let mut remaining_diffuse = self.surface_remaining_diffuse;
+        let mut remaining_unique_diffuse = self.surface_remaining_unique_diffuse;
+        let mut processed = 0usize;
+        // One expensive material section per redraw in Model Viewer.
+        // Level Editor retains its synchronous legacy pipeline because its
+        // own streaming world renderer has a separate upload scheduler.
+        let batch_size = if progress.is_some() { 1 } else { usize::MAX };
+        for (part_index, part) in surfaces.iter().enumerate().skip(self.surface_upload_cursor) {
+            if processed >= batch_size {
+                break;
+            }
             if !part.visible {
+                self.surface_upload_cursor = part_index + 1;
                 continue;
             }
             let inputs = [
@@ -1441,6 +1488,18 @@ impl Pipeline {
                 kala_emission_state: part.kala_emission_state,
                 emissive_uv: part.emissive_uv,
             });
+            self.surface_upload_cursor = part_index + 1;
+            processed += 1;
+        }
+        self.surface_uploaded_views = uploaded;
+        self.surface_uploaded_bytes = used_bytes;
+        self.surface_remaining_diffuse = remaining_diffuse;
+        self.surface_remaining_unique_diffuse = remaining_unique_diffuse;
+        if let Some(progress) = progress {
+            progress.store(
+                surfaces.len().saturating_sub(self.surface_upload_cursor),
+                Ordering::Relaxed,
+            );
         }
         super::crash_diagnostics::record(
             "gpu_material_upload_complete",
@@ -1497,6 +1556,7 @@ impl Pipeline {
             primitive.surfaces.as_ref(),
             primitive.indices.len(),
             primitive.viewer_full_textures,
+            primitive.viewer_gpu_remaining.as_ref(),
         );
         if self.last_emissive_time.to_bits() != primitive.emissive_time.to_bits() {
             self.last_emissive_time = primitive.emissive_time;
