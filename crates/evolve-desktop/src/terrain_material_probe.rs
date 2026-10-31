@@ -265,7 +265,7 @@ pub(super) fn audit(selected: &ImportedPak, paint: &TerrainPaintMap) -> Vec<Stri
         }
     }
     messages.push(format!(
-        "Same-install terrain material audit: {loaded}/{} declared .mtl definitions loaded; {decoded} cooked DDS references have complete verified mip chains; {absent} missing definitions, {ambiguous} ambiguous definitions, {} missing and {} invalid/ambiguous texture references. Sources remain original imported PAK files; shaders are NOT yet blended into the ground.",
+        "Same-install terrain material audit: {loaded}/{} declared .mtl definitions loaded; {decoded} cooked DDS heads pass header inspection (full mip decoding is checked separately); {absent} missing definitions, {ambiguous} ambiguous definitions, {} missing and {} invalid/ambiguous texture references. Sources remain original imported PAK files; shaders are NOT yet blended into the ground.",
         paths.len(), missing_textures.len(), broken_textures.len(),
     ));
     if !mismatched_shaders.is_empty() {
@@ -374,7 +374,6 @@ struct DetailLayer {
 }
 #[derive(Default)]
 struct AuthoredDetail {
-    diffuse: Option<String>,
     height: Option<String>,
     tile: [f32; 2],
     strength: f32,
@@ -417,18 +416,13 @@ fn authored_detail(bytes: &[u8]) -> Result<AuthoredDetail, String> {
             Event::Start(e) if e.name().as_ref() == b"Texture" => {
                 let role = attr(&e, b"Map").unwrap_or_default();
                 diffuse_open = role.eq_ignore_ascii_case("Diffuse");
-                if diffuse_open {
-                    parsed.diffuse = attr(&e, b"File");
-                }
                 if role.eq_ignore_ascii_case("Heightmap") {
                     parsed.height = attr(&e, b"File");
                 }
             }
             Event::Empty(e) if e.name().as_ref() == b"Texture" => {
                 let role = attr(&e, b"Map").unwrap_or_default();
-                if role.eq_ignore_ascii_case("Diffuse") {
-                    parsed.diffuse = attr(&e, b"File");
-                } else if role.eq_ignore_ascii_case("Heightmap") {
+                if role.eq_ignore_ascii_case("Heightmap") {
                     parsed.height = attr(&e, b"File");
                 }
             }
@@ -851,6 +845,46 @@ mod composition_tests {
             ids: vec![1, 2, 1, 2],
         }
     }
+    #[test]
+    fn terrain_diffuse_comes_from_verified_nested_mtl_leaf_not_optional_xml_scan() {
+        let doc = evolve_core::parse_material(
+            br#"<Material Name="Outer"><SubMaterials>
+                <Material Name="Dirt" Shader="Terrain.Layer"><Textures>
+                  <Texture Map="Diffuse" File="Materials/Terrain/Clay_Dirt_B_Highpass.tif"/>
+                  <Texture Map="Bumpmap" File="Materials/Terrain/clay_ddn.tif"/>
+                </Textures></Material>
+            </SubMaterials></Material>"#,
+        ).unwrap();
+        assert_eq!(
+            terrain_layer_diffuse(&doc).unwrap().as_deref(),
+            Some("materials/terrain/clay_dirt_b_highpass.tif"),
+        );
+    }
+
+    #[test]
+    fn missing_and_ambiguous_diffuse_remain_explicit_not_silent() {
+        let no_diffuse = evolve_core::parse_material(
+            br#"<Material Shader="Terrain.Layer"><Textures>
+            <Texture Map="Bumpmap" File="materials/terrain/dirt_ddn.tif"/>
+            </Textures></Material>"#,
+        ).unwrap();
+        assert!(terrain_layer_diffuse(&no_diffuse).unwrap().is_none());
+        let competing = evolve_core::parse_material(
+            br#"<Material><SubMaterials>
+              <Material Shader="Terrain.Layer"><Textures><Texture Map="Diffuse" File="Materials/Terrain/A.tif"/></Textures></Material>
+              <Material Shader="Terrain.Layer"><Textures><Texture Map="Diffuse" File="Materials/Terrain/B.tif"/></Textures></Material>
+            </SubMaterials></Material>"#,
+        ).unwrap();
+        assert!(terrain_layer_diffuse(&competing).is_err());
+    }
+
+    #[test]
+    fn default_terrain_material_is_included_without_indexing_unrelated_assets() {
+        assert!(is_terrain_dependency("materials/universal/default/material_terrain_default.mtl"));
+        assert!(!is_terrain_dependency("materials/universal/default/unrelated.dds.0"));
+        assert!(!is_terrain_dependency("characters/hunters/markov/materials/body.mtl"));
+    }
+
     #[test]
     fn authored_texmod_strength_and_height_params_are_retained() {
         let xml = br#"<Material Shader="Terrain.Layer"><Textures>
