@@ -10,7 +10,7 @@ use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
     imported_archive_preview_inventory, imported_library, parse_level_scene,
     parse_level_scene_read_only, read_terrain, read_terrain_paint, read_terrain_rgb24_tiles,
-    read_terrain_texture_atlas, read_terrain_texture_header, scan_directory,
+    read_terrain_texture_atlas, read_terrain_texture_header, scan_directory, TerrainPaintMap,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -911,6 +911,7 @@ fn open_selected(
                     "Original terrain layer bitmap decoded: {} used layer IDs; {} authored names. Original baked terrain tile textures are separate.",
                     counts.len(), paint.layer_names.len()
                 ));
+                diagnostics.push(terrain_layer_material_report(&paint));
             }
             Ok(None) => diagnostics.push(
                 "This original heightmap contains no readable terrain layer-ID section.".into(),
@@ -1066,6 +1067,48 @@ fn open_selected(
     })
 }
 
+/// Audit every map's actual Heightmap.dat material references. The baked
+/// RGB atlas supplies macro color; CryEngine also draws source surface
+/// materials through its native terrain shader. This is a read-only source
+/// inventory, not a synthetic color/tint substitute.
+fn terrain_layer_material_report(paint: &TerrainPaintMap) -> String {
+    use std::collections::{BTreeMap, BTreeSet};
+    let used = paint.ids.iter().copied().collect::<BTreeSet<_>>();
+    let mut by_id = BTreeMap::<u8, BTreeSet<&str>>::new();
+    for layer in &paint.layers {
+        if !layer.surface_type.is_empty() {
+            by_id
+                .entry(layer.id)
+                .or_default()
+                .insert(layer.surface_type.as_str());
+        }
+    }
+    let covered = used.iter().filter(|id| by_id.contains_key(id)).count();
+    let missing = used
+        .iter()
+        .filter(|id| !by_id.contains_key(id))
+        .take(12)
+        .map(u8::to_string)
+        .collect::<Vec<_>>();
+    let ambiguous = by_id.values().filter(|paths| paths.len() > 1).count();
+    let examples = paint
+        .layers
+        .iter()
+        .filter(|layer| !layer.surface_type.is_empty())
+        .take(4)
+        .map(|layer| format!("{}:{}", layer.id, layer.surface_type))
+        .collect::<Vec<_>>();
+    format!(
+        "Source terrain detail materials: {} authored layer entries, {} distinct material paths, {covered}/{} used bitmap IDs with a declared material, {} duplicate-ID material conflicts. Examples: [{}]. Unmapped/special IDs (first 12): [{}]. Original layer tint/brightness/tiling metadata decoded but native detail-material blending is NOT rendered; this baked color atlas alone cannot reproduce every terrain surface.",
+        paint.layers.len(),
+        by_id.values().flat_map(|paths| paths.iter()).collect::<BTreeSet<_>>().len(),
+        used.len(),
+        ambiguous,
+        examples.join(", "),
+        missing.join(", "),
+    )
+}
+
 /// Diagnostic of original decoded atlas bytes, before shader lighting or
 /// the GPU sRGB conversion. Never recolor, gamma-adjust or rewrite source.
 fn terrain_pixel_report(img: &image::RgbaImage) -> String {
@@ -1120,6 +1163,36 @@ fn terrain_pixel_report(img: &image::RgbaImage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_missing_and_duplicate_source_terrain_layer_mappings_generically() {
+        use evolve_core::TerrainLayerDefinition;
+        let layer = |id, path: &str| TerrainLayerDefinition {
+            id,
+            name: format!("Layer {id}"),
+            surface_type: path.into(),
+            filter_color: Some([0.8, 0.7, 0.6]),
+            brightness: Some(0.5),
+            tiling: Some(1.0),
+        };
+        let paint = TerrainPaintMap {
+            width: 2,
+            height: 2,
+            layer_names: [(0, "Default".into()), (3, "Rock".into())].into(),
+            layers: vec![
+                layer(0, "materials/terrain/rock"),
+                layer(0, "materials/terrain/mud"),
+                layer(3, "materials/terrain/sand"),
+            ],
+            ids: vec![0, 3, 255, 3],
+        };
+        let text = terrain_layer_material_report(&paint);
+        assert!(text.contains("3 authored layer entries"));
+        assert!(text.contains("2/3 used bitmap IDs"));
+        assert!(text.contains("1 duplicate-ID material conflicts"));
+        assert!(text.contains("[255]"));
+        assert!(text.contains("native detail-material blending is NOT rendered"));
+    }
 
     #[test]
     fn terrain_color_diagnostic_reports_decoded_pixels_without_adjustment() {
