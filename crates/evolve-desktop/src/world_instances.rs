@@ -495,20 +495,19 @@ fn group_new_bytes(
     bytes
 }
 
-fn group_distance_sq(
-    group: &ModelGroup,
-    visible_instances: &[InstanceGpu],
-    camera: level_camera::Camera,
-) -> f32 {
+fn group_distance_sq(group: &ModelGroup, camera: level_camera::Camera) -> f32 {
     if is_ground(group) {
         return -1.0;
     }
-    // When a model has placements all over a map, its nearest *offscreen*
-    // placement must not win upload priority over a model actually nearby.
-    visible_instances
+    // Camera position only determines load order. Camera direction must never
+    // prevent a source group from becoming GPU-resident in the Level Editor.
+    group
+        .instances
         .iter()
         .map(|instance| {
-            instance.cols[3][..3]
+            instance
+                .transform
+                .position
                 .iter()
                 .zip(camera.position)
                 .map(|(point, origin)| (point - origin) * (point - origin))
@@ -770,50 +769,13 @@ pub(super) fn radius(mesh: &RenderMesh) -> f32 {
         .filter(|r| r.is_finite())
         .fold(0.0f32, f32::max)
 }
-/// Coarse conservative frustum culling before instance-buffer uploads.
-/// Does not make distant vegetation disappear arbitrarily by count.
-fn visible(
-    group: &ModelGroup,
-    camera: level_camera::Camera,
-    yaw: f32,
-    pitch: f32,
-    aspect: f32,
-    zoom: f32,
-) -> Vec<InstanceGpu> {
-    let (f, r, u) = level_camera::basis(yaw, pitch);
-    let tangent =
-        (camera.fov_degrees.clamp(25.0, 110.0).to_radians() * 0.5).tan() / zoom.clamp(0.2, 80.0);
+/// Instance transformations are static within a particular World identity.
+/// Upload every placement once, irrespective of camera yaw, pitch or frustum.
+fn all_group_instances(group: &ModelGroup) -> Vec<InstanceGpu> {
     group
         .instances
         .iter()
-        .filter_map(|instance| {
-            let p = instance.transform.position;
-            let delta = [
-                p[0] - camera.position[0],
-                p[1] - camera.position[1],
-                p[2] - camera.position[2],
-            ];
-            let dot = |v: [f32; 3]| delta.iter().zip(v).map(|(a, b)| a * b).sum::<f32>();
-            let d = dot(f);
-            let scale = instance
-                .transform
-                .scale
-                .iter()
-                .copied()
-                .map(f32::abs)
-                .fold(0.0, f32::max);
-            let radius = group.radius * scale;
-            if !d.is_finite()
-                || !radius.is_finite()
-                || d + radius < 0.1
-                || d - radius > 50000.0
-                || dot(r).abs() > d.max(0.0) * tangent * aspect.max(0.01) + radius * 1.5
-                || dot(u).abs() > d.max(0.0) * tangent + radius * 1.5
-            {
-                return None;
-            }
-            Some(InstanceGpu::from_transform(instance.transform))
-        })
+        .map(|instance| InstanceGpu::from_transform(instance.transform))
         .collect()
 }
 struct GpuSurface {
@@ -835,7 +797,6 @@ struct GpuGroup {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     instances: wgpu::Buffer,
-    capacity: usize,
     visible: u32,
     surfaces: Vec<GpuSurface>,
     geometry_bytes: u64,
@@ -1176,11 +1137,15 @@ impl Renderer {
         });
         let capacity = model.instances.len().max(1);
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Visible world-placement transforms"),
+            label: Some("All persistent world-placement transforms"),
             size: (capacity * std::mem::size_of::<InstanceGpu>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let placements = all_group_instances(model);
+        if !placements.is_empty() {
+            queue.write_buffer(&instances, 0, bytemuck::cast_slice(&placements));
+        }
         let mut surfaces = Vec::new();
         let fallback = [210u8, 205, 205, 255];
         let terrain = is_ground(model);
@@ -1439,8 +1404,7 @@ impl Renderer {
             vertices,
             indices,
             instances,
-            capacity,
-            visible: 0,
+            visible: model.instances.len().min(u32::MAX as usize) as u32,
             surfaces,
             geometry_bytes: (vert.len() * std::mem::size_of::<Vertex>()
                 + model.mesh.indices.len() * std::mem::size_of::<u32>()
@@ -1520,15 +1484,10 @@ impl Renderer {
         };
         let uniform = CameraGpu::make(camera, yaw, pitch, aspect, zoom);
         let camera_changed = self.last_camera != Some(uniform);
-        let visible_groups = world
-            .groups
-            .iter()
-            .map(|group| visible(group, camera, yaw, pitch, aspect, zoom))
-            .collect::<Vec<_>>();
         let mut cache = std::mem::take(&mut self.cache);
         let mut hashes = std::mem::take(&mut self.source_hashes);
-        // Do not drop offscreen GPU resources: visibility only affects draw
-        // instance counts. Returning to an area must not trigger re-upload.
+        // Loaded GPU groups and all of their transforms remain resident until
+        // an explicit world/quality reset; camera motion changes neither.
         self.pending_diffuse
             .retain(|key, _| cache.contains_key(key));
         self.mip_min_level.retain(|key, _| cache.contains_key(key));
@@ -1542,15 +1501,17 @@ impl Renderer {
         // aliasing the immutable Renderer borrow with mutable fields.
         let mut pending_diffuse = std::mem::take(&mut self.pending_diffuse);
         let mut mip_min_level = std::mem::take(&mut self.mip_min_level);
-        // Ground first, then visible model groups ordered by camera proximity.
-        // One prepare pass never builds the entire world's GPU resources.
+        // Ground first, then all unresolved source groups by camera distance.
+        // No camera-facing/frustum test may exclude a group from streaming:
+        // every resolved scene placement is loaded in bounded GPU batches.
         let mut candidates = (0..world.groups.len())
-            .filter(|&idx| !visible_groups[idx].is_empty() && self.groups[idx].is_none())
+            .filter(|&idx| {
+                !world.groups[idx].instances.is_empty() && self.groups[idx].is_none()
+            })
             .collect::<Vec<_>>();
         candidates.sort_by(|&left, &right| {
-            group_distance_sq(&world.groups[left], &visible_groups[left], camera).total_cmp(
-                &group_distance_sq(&world.groups[right], &visible_groups[right], camera),
-            )
+            group_distance_sq(&world.groups[left], camera)
+                .total_cmp(&group_distance_sq(&world.groups[right], camera))
         });
         for idx in candidates {
             if uploaded == MAX_NEW_GROUPS_PER_FRAME {
@@ -1564,7 +1525,7 @@ impl Renderer {
                 device.limits().max_texture_dimension_2d,
             );
             // Never evict previously loaded groups to make space for a new
-            // one. Full quality admits all visible groups (subject to physical
+            // one. Full quality admits all resolved groups (subject to physical
             // GPU limits); Balanced defers new groups if its cap is reached.
             // This prevents camera-motion thrashing and persistent pop-out.
             if used_bytes
@@ -1692,18 +1653,9 @@ impl Renderer {
             );
         }
         if camera_changed || uploaded > 0 {
+            // The GPU clips primitives outside the viewport; there is no
+            // per-camera CPU culling or repeated instance-buffer upload.
             queue.write_buffer(&self.camera_uniform, 0, bytemuck::bytes_of(&uniform));
-            for (gpu, culled) in self.groups.iter_mut().zip(&visible_groups) {
-                let Some(gpu) = gpu.as_mut() else { continue };
-                gpu.visible = culled.len().min(gpu.capacity) as u32;
-                if !culled.is_empty() {
-                    queue.write_buffer(
-                        &gpu.instances,
-                        0,
-                        bytemuck::cast_slice(&culled[..gpu.visible as usize]),
-                    );
-                }
-            }
         }
         self.last_camera = Some(uniform);
     }
@@ -1741,7 +1693,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn visible_group_priority_ignores_offscreen_placements_of_same_model() {
+    fn group_loading_priority_uses_position_not_camera_direction() {
         let dummy_mesh = Arc::new(RenderMesh {
             info: evolve_core::ModelInfo {
                 format: "test".into(),
@@ -1776,10 +1728,16 @@ mod tests {
             position: [100.0, 0.0, 0.0],
             ..Transform::default()
         };
-        let visible = [InstanceGpu::from_transform(distant_visible)];
+        let mut group = group;
+        group.instances[0].transform = distant_visible;
+        group.instances[1].transform = distant_visible;
         let camera = level_camera::Camera::default();
-        assert_eq!(group_distance_sq(&group, &visible, camera), 10000.0);
-        assert_eq!(group_distance_sq(&group, &[], camera), f32::INFINITY);
+        assert_eq!(group_distance_sq(&group, camera), 10000.0);
+        assert_eq!(all_group_instances(&group).len(), 2);
+        let mut opposite_camera = camera;
+        opposite_camera.position = [200.0, 0.0, 0.0];
+        assert_eq!(group_distance_sq(&group, opposite_camera), 10000.0);
+        assert_eq!(all_group_instances(&group).len(), 2);
     }
 
     #[test]
