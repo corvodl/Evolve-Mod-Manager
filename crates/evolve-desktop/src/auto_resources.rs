@@ -538,8 +538,8 @@ pub fn discover(
             continue;
         }
         if r.kind == "caf_glob" {
-            let candidates = caf_candidates
-                .get_or_insert_with(|| caf_catalog_paths(inv, imported, build));
+            let candidates =
+                caf_candidates.get_or_insert_with(|| caf_catalog_paths(inv, imported, build));
             match candidates
                 .as_ref()
                 .map_err(Clone::clone)
@@ -668,11 +668,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            matching_caf_paths(
-                "characters/hunters/merc_emet/animations/*.caf",
-                &candidates
-            )
-            .unwrap(),
+            matching_caf_paths("characters/hunters/merc_emet/animations/*.caf", &candidates)
+                .unwrap(),
             vec!["characters/hunters/merc_emet/animations/emet_idle.caf"]
         );
         assert_eq!(
