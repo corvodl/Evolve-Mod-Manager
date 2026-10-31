@@ -96,8 +96,7 @@ impl PendingLight {
                 b"LightRadius",
                 b"fAttenuationBulbSize",
             ],
-        )
-            && (0.1..=100000.0).contains(&radius)
+        ) && (0.1..=100000.0).contains(&radius)
         {
             self.radius = Some(radius);
         }
@@ -109,8 +108,7 @@ impl PendingLight {
                 b"LightIntensity",
                 b"Intensity",
             ],
-        )
-            && (0.0..=1000000.0).contains(&intensity)
+        ) && (0.0..=1000000.0).contains(&intensity)
         {
             self.intensity = Some(intensity);
         }
@@ -199,21 +197,22 @@ pub(super) fn lights(
                         ) || (kind == "light" && class.is_empty()))
                             && let Some(id) = attr(&e, b"Id").or_else(|| attr(&e, b"EntityId"))
                         {
-                                pending = Some(PendingLight {
-                                    id: id.to_ascii_lowercase(),
-                                    depth,
-                                    radius: None,
-                                    intensity: None,
-                                    color: None,
-                                    cone: None,
-                                    enabled: true,
-                                });
-                                if let Some(ref mut p) = pending {
-                                    p.props(&e);
-                                }
+                            pending = Some(PendingLight {
+                                id: id.to_ascii_lowercase(),
+                                depth,
+                                radius: None,
+                                intensity: None,
+                                color: None,
+                                cone: None,
+                                enabled: true,
+                            });
+                            if let Some(ref mut p) = pending {
+                                p.props(&e);
+                            }
                         }
                     } else if let Some(ref mut p) = pending
-                        && depth > p.depth && depth <= p.depth + 7
+                        && depth > p.depth
+                        && depth <= p.depth + 7
                     {
                         p.props(&e);
                     }
