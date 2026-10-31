@@ -263,14 +263,11 @@ fn auxiliary_map(
     full_textures: bool,
     device_limit: u32,
     cache: &mut TextureCache,
+    hashes: &mut SourceKeys,
     used_bytes: &mut u64,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let key = (
-        source.map_or(0, |img| Arc::as_ptr(img) as usize),
-        role,
-        false,
-    );
-    if let Some((texture, view)) = cache.get(&key) {
+    let key = texture_key(source, role, false, hashes);
+    if let Some((texture, view, _)) = cache.get(&key) {
         return (texture.clone(), view.clone());
     }
     let remaining = (if full_textures {
@@ -291,10 +288,9 @@ fn auxiliary_map(
     let (w, h) = selected.as_ref().map_or((1, 1), |img| img.dimensions());
     let (texture, view) =
         upload_rgba_mips(device, queue, selected.as_deref(), fallback, format, label);
-    if selected.is_some() {
-        *used_bytes = used_bytes.saturating_add(mip_chain_bytes(w, h));
-    }
-    cache.insert(key, (texture.clone(), view.clone()));
+    let bytes = mip_chain_bytes(w, h);
+    *used_bytes = used_bytes.saturating_add(bytes);
+    cache.insert(key, (texture.clone(), view.clone(), bytes));
     (texture, view)
 }
 
@@ -585,6 +581,8 @@ struct GpuGroup {
     capacity: usize,
     visible: u32,
     surfaces: Vec<GpuSurface>,
+    source_keys: HashSet<TextureKey>,
+    geometry_bytes: u64,
 }
 pub(super) struct Renderer {
     solid: wgpu::RenderPipeline,
@@ -600,7 +598,10 @@ pub(super) struct Renderer {
     terrain_sampler: wgpu::Sampler,
     world_identity: usize,
     last_full_textures: bool,
-    groups: Vec<GpuGroup>,
+    groups: Vec<Option<GpuGroup>>,
+    cache: TextureCache,
+    source_hashes: SourceKeys,
+    peak_gpu_bytes: u64,
     last_camera: Option<CameraGpu>,
 }
 impl Renderer {
@@ -853,6 +854,9 @@ impl Renderer {
             world_identity: 0,
             last_full_textures: true,
             groups: Vec::new(),
+            cache: TextureCache::new(),
+            source_hashes: SourceKeys::new(),
+            peak_gpu_bytes: 0,
             last_camera: None,
         }
     }
@@ -863,6 +867,7 @@ impl Renderer {
         model: &ModelGroup,
         full_textures: bool,
         cache: &mut TextureCache,
+        hashes: &mut SourceKeys,
         used_bytes: &mut u64,
     ) -> GpuGroup {
         let vert: Vec<Vertex> = model
@@ -909,6 +914,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let mut surfaces = Vec::new();
+        let mut source_keys = HashSet::new();
         let fallback = [210u8, 205, 205, 255];
         let terrain = is_ground(model);
         let limit_2d = device.limits().max_texture_dimension_2d;
@@ -919,15 +925,10 @@ impl Renderer {
             {
                 continue;
             }
-            let key = (
-                surf.diffuse
-                    .as_ref()
-                    .map_or(0, |img| Arc::as_ptr(img) as usize),
-                0,
-                terrain,
-            );
-            let (tex, view, diffuse_uploaded) = if let Some((tex, view)) = cache.get(&key) {
-                (tex.clone(), view.clone(), key.0 != 0)
+            let key = texture_key(surf.diffuse.as_ref(), 0, terrain, hashes);
+            source_keys.insert(key);
+            let (tex, view, diffuse_uploaded) = if let Some((tex, view, _)) = cache.get(&key) {
+                (tex.clone(), view.clone(), surf.diffuse.is_some())
             } else {
                 let remaining = (if full_textures {
                     MAX_SCENE_FULL_TEXTURE_BYTES
@@ -953,23 +954,17 @@ impl Renderer {
                     wgpu::TextureFormat::Rgba8UnormSrgb,
                     "Original diffuse / baked ground atlas",
                 );
-                if source.is_some() {
-                    *used_bytes = used_bytes.saturating_add(mip_chain_bytes(w, h));
-                }
-                cache.insert(key, (tex.clone(), view.clone()));
+                let bytes = mip_chain_bytes(w, h);
+                *used_bytes = used_bytes.saturating_add(bytes);
+                cache.insert(key, (tex.clone(), view.clone(), bytes));
                 (tex, view, source.is_some())
             };
             // A distinct authored opacity texture must control foliage
             // cutouts. Never misinterpret a packed diffuse alpha channel
             // (which may be gloss or specular) as vegetation coverage.
-            let mask_key = (
-                surf.opacity
-                    .as_ref()
-                    .map_or(0, |img| Arc::as_ptr(img) as usize),
-                1,
-                false,
-            );
-            let (opacity_tex, opacity_view) = if let Some((tex, view)) = cache.get(&mask_key) {
+            let mask_key = texture_key(surf.opacity.as_ref(), 1, false, hashes);
+            source_keys.insert(mask_key);
+            let (opacity_tex, opacity_view) = if let Some((tex, view, _)) = cache.get(&mask_key) {
                 (tex.clone(), view.clone())
             } else {
                 let opaque = [255u8, 255, 255, 255];
@@ -997,12 +992,12 @@ impl Renderer {
                     wgpu::TextureFormat::Rgba8Unorm,
                     "Original authored opacity mask",
                 );
-                if mask.is_some() {
-                    *used_bytes = used_bytes.saturating_add(mip_chain_bytes(mw, mh));
-                }
-                cache.insert(mask_key, (opacity_tex.clone(), view.clone()));
+                let bytes = mip_chain_bytes(mw, mh);
+                *used_bytes = used_bytes.saturating_add(bytes);
+                cache.insert(mask_key, (opacity_tex.clone(), view.clone(), bytes));
                 (opacity_tex, view)
             };
+            source_keys.insert(texture_key(surf.normal.as_ref(), 2, false, hashes));
             let (normal_tex, normal_view) = auxiliary_map(
                 device,
                 queue,
@@ -1014,8 +1009,10 @@ impl Renderer {
                 full_textures,
                 limit_2d,
                 cache,
+                hashes,
                 used_bytes,
             );
+            source_keys.insert(texture_key(surf.specular.as_ref(), 3, false, hashes));
             let (specular_tex, specular_view) = auxiliary_map(
                 device,
                 queue,
@@ -1027,8 +1024,10 @@ impl Renderer {
                 full_textures,
                 limit_2d,
                 cache,
+                hashes,
                 used_bytes,
             );
+            source_keys.insert(texture_key(surf.gloss.as_ref(), 4, false, hashes));
             let (gloss_tex, gloss_view) = auxiliary_map(
                 device,
                 queue,
@@ -1040,8 +1039,10 @@ impl Renderer {
                 full_textures,
                 limit_2d,
                 cache,
+                hashes,
                 used_bytes,
             );
+            source_keys.insert(texture_key(surf.emissive.as_ref(), 5, false, hashes));
             let (emissive_tex, emissive_view) = auxiliary_map(
                 device,
                 queue,
@@ -1053,6 +1054,7 @@ impl Renderer {
                 full_textures,
                 limit_2d,
                 cache,
+                hashes,
                 used_bytes,
             );
             let alpha_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1149,6 +1151,11 @@ impl Renderer {
             capacity,
             visible: 0,
             surfaces,
+            source_keys,
+            geometry_bytes: (vert.len() * std::mem::size_of::<Vertex>()
+                + model.mesh.indices.len() * std::mem::size_of::<u32>()
+                + capacity * std::mem::size_of::<InstanceGpu>()
+                + 16 * model.surfaces.len()) as u64,
         }
     }
     #[allow(clippy::too_many_arguments)] // Upload needs device, queue, world and camera projection parameters.
