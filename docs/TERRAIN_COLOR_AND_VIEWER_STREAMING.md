@@ -41,12 +41,14 @@ groups are retained and reused by source Arc/role identity. A 65 ms GUI
 streaming tick runs only while queued sections remain, and the viewer
 displays the remaining count.
 
-Ordinary camera orbit, zoom and material ticks no longer rewrite an
-unchanged mesh's entire vertex stream to the GPU. A model change, GPU
-buffer reallocation, or quality change still uploads/rebuilds the
-necessary objects. Full quality retains the source texture dimensions
-subject to device limits, without quietly substituting lower-quality
-files; Balanced retains its existing reduced budget.
+Model Viewer positions are still **CPU-projected** to clip coordinates
+during camera orbit, pan, zoom and animation. Therefore the vertex stream
+is still updated as needed every frame; skipping that write merely because
+the mesh source pointer was unchanged would freeze camera movement.
+Only material uploads have been made incremental in this PR. Moving the
+projection into GPU camera uniforms is a separate future optimization.
+Full quality retains source texture dimensions subject to device limits;
+Balanced retains its existing reduced budget.
 
 ### Known limitations
 
