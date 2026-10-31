@@ -109,48 +109,6 @@ fn parse_metadata(xml: &[u8]) -> Result<(u32, u32, f32, f32), TerrainError> {
                 result = Some((w, h, unit, height));
                 break;
             }
-            Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"SurfaceType" => {
-                let mut id = None;
-                let mut name = String::new();
-                let mut detail_material = String::new();
-                let mut detail_texture = String::new();
-                let mut project_axis = None;
-                let mut scale_x = None;
-                let mut scale_y = None;
-                for attr in e.attributes() {
-                    let attr = attr.map_err(|e| TerrainError::Format(e.to_string()))?;
-                    let value = attr
-                        .unescape_value()
-                        .map_err(|e| TerrainError::Format(e.to_string()))?;
-                    match attr.key.as_ref() {
-                        b"SurfaceTypeID" => id = value.parse::<u8>().ok(),
-                        b"Name" if value.len() <= 512 => name = value.to_string(),
-                        b"DetailMaterial" if value.len() <= 512 => {
-                            detail_material = value.to_string();
-                        }
-                        b"DetailTexture" if value.len() <= 512 => {
-                            detail_texture = value.to_string();
-                        }
-                        b"ProjectAxis" => project_axis = value.parse::<u8>().ok(),
-                        b"DetailScaleX" => scale_x = finite_terrain_factor(&value),
-                        b"DetailScaleY" => scale_y = finite_terrain_factor(&value),
-                        _ => {}
-                    }
-                }
-                if let Some(id) = id {
-                    surface_types.push(TerrainSurfaceType {
-                        id,
-                        name,
-                        detail_material,
-                        detail_texture,
-                        project_axis,
-                        detail_scale: scale_x.zip(scale_y).map(|(x, y)| [x, y]),
-                    });
-                }
-                if surface_types.len() > 256 {
-                    return Err(TerrainError::Limits);
-                }
-            }
             Event::DocType(_) | Event::GeneralRef(_) => {
                 return Err(TerrainError::Format("unsafe XML document".into()));
             }
@@ -459,6 +417,48 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
                     });
                 }
                 if layers.len() > 256 {
+                    return Err(TerrainError::Limits);
+                }
+            }
+            Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"SurfaceType" => {
+                let mut id = None;
+                let mut name = String::new();
+                let mut detail_material = String::new();
+                let mut detail_texture = String::new();
+                let mut project_axis = None;
+                let mut scale_x = None;
+                let mut scale_y = None;
+                for attr in e.attributes() {
+                    let attr = attr.map_err(|e| TerrainError::Format(e.to_string()))?;
+                    let value = attr
+                        .unescape_value()
+                        .map_err(|e| TerrainError::Format(e.to_string()))?;
+                    match attr.key.as_ref() {
+                        b"SurfaceTypeID" => id = value.parse::<u8>().ok(),
+                        b"Name" if value.len() <= 512 => name = value.to_string(),
+                        b"DetailMaterial" if value.len() <= 512 => {
+                            detail_material = value.to_string();
+                        }
+                        b"DetailTexture" if value.len() <= 512 => {
+                            detail_texture = value.to_string();
+                        }
+                        b"ProjectAxis" => project_axis = value.parse::<u8>().ok(),
+                        b"DetailScaleX" => scale_x = finite_terrain_factor(&value),
+                        b"DetailScaleY" => scale_y = finite_terrain_factor(&value),
+                        _ => {}
+                    }
+                }
+                if let Some(id) = id {
+                    surface_types.push(TerrainSurfaceType {
+                        id,
+                        name,
+                        detail_material,
+                        detail_texture,
+                        project_axis,
+                        detail_scale: scale_x.zip(scale_y).map(|(x, y)| [x, y]),
+                    });
+                }
+                if surface_types.len() > 256 {
                     return Err(TerrainError::Limits);
                 }
             }
