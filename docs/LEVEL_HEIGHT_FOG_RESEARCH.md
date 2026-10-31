@@ -22,8 +22,13 @@ and a fallback distance-only fog preview.
   unaffected.
 - Preserve the existing distance-only fog heuristic when native height
   curves are absent. Scene Settings shows which mode is currently active.
-- Include synthetic XML and height-ray reference tests and Naga WGSL syntax
-  checks. No SDK runtime, proprietary file or user installation is required.
+- Include synthetic XML and height-ray reference tests and Naga WGSL
+  semantic validation. Zero-density height endpoints do not produce
+  invented exponential profiles: those profiles use the labelled distance
+  fallback. Source fog variable names and their selected-hour values are
+  shown read-only in Scene Settings for Evolve-specific schema investigation,
+  without promoting unfamiliar names into runtime aliases. No SDK runtime,
+  proprietary file or user installation is required.
 
 ## What this is *not*
 

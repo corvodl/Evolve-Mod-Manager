@@ -540,11 +540,7 @@ impl FogProfile {
     /// height profile if four supported and strictly positive source curves
     /// are present. Keeping this in one place prevents the scene status and
     /// GPU fog mode from diverging after a time-of-day change.
-    pub fn height_preview_uniform(
-        self,
-        tod: Option<&TimeOfDay>,
-        hour: f32,
-    ) -> [[f32; 4]; 2] {
+    pub fn height_preview_uniform(self, tod: Option<&TimeOfDay>, hour: f32) -> [[f32; 4]; 2] {
         let mut result = [[0.0_f32; 4]; 2];
         if self.preview_uniform(tod, hour)[1][0] > 0.5
             && let Some(profile) = tod.and_then(|tod| tod.height_fog(hour))
@@ -704,9 +700,7 @@ mod tests {
             / samples as f32;
         let analytic = profile.integrated_density(camera_z, target_z, distance);
         assert!((analytic - midpoint).abs() < 0.2);
-        assert!(
-            (analytic - profile.integrated_density(target_z, camera_z, distance)).abs() < 0.2
-        );
+        assert!((analytic - profile.integrated_density(target_z, camera_z, distance)).abs() < 0.2);
         let uniform = HeightFog {
             bottom_height: 0.0,
             top_height: 1000.0,
@@ -762,7 +756,10 @@ mod tests {
             [[20.0, 1000.0, 0.4, 0.1], [1.0, 0.0, 0.0, 0.0]]
         );
         assert_eq!(fog.height_preview_uniform(None, 12.0), [[0.0; 4]; 2]);
-        assert!(tod.fog_source_diagnostics(12.0).contains("fog density (bottom)=0.4000"));
+        assert!(
+            tod.fog_source_diagnostics(12.0)
+                .contains("fog density (bottom)=0.4000")
+        );
         assert!(!tod.fog_source_diagnostics(12.0).contains("sun intensity"));
         let zero_fog = FogProfile {
             ldr_density_multiplier: 0.0,

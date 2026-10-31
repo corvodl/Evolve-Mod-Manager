@@ -1283,7 +1283,14 @@ mod tests {
         let shader = include_str!("world_instances.wgsl");
         assert!(shader.contains("fn height_fog_depth"));
         assert!(shader.contains("if (height_fog.control.x > 0.5)"));
-        naga::front::wgsl::parse_str(shader).expect("source-backed height fog WGSL");
+        let module =
+            naga::front::wgsl::parse_str(shader).expect("source-backed height fog WGSL");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("analytical height fog shader must pass full Naga validation");
     }
 
     #[test]
