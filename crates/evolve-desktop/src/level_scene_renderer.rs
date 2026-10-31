@@ -398,6 +398,16 @@ impl Index {
     }
 }
 
+// A model can have one good diffuse and several missing authored material
+// sections. The existing per-pair "without_diffuse" counter only catches
+// fully untextured models, so log mixed-quality materials separately.
+fn missing_diffuse_sections(parts: &[Surface]) -> usize {
+    parts
+        .iter()
+        .filter(|part| part.visible && part.index_count > 0 && part.diffuse.is_none())
+        .count()
+}
+
 fn neutral(first_index: u32, index_count: u32) -> Surface {
     Surface {
         first_index,
@@ -814,6 +824,21 @@ pub(super) fn assemble(
                                     let has_diffuse =
                                         parts.iter().any(|part| part.diffuse.is_some());
                                     report.textured += usize::from(has_diffuse);
+                                    let missing_sections = missing_diffuse_sections(&parts);
+                                    if has_diffuse && missing_sections > 0 {
+                                        crate::crash_diagnostics::record(
+                                            "level_partially_missing_diffuse",
+                                            &format!(
+                                                "model={} material={} source={} missing_sections={} total_sections={} warnings={}",
+                                                object.model,
+                                                object.material,
+                                                source.archive,
+                                                missing_sections,
+                                                parts.len(),
+                                                warnings.iter().take(3).cloned().collect::<Vec<_>>().join(" | "),
+                                            ),
+                                        );
+                                    }
                                     if !has_diffuse {
                                         if let Some(reason) = full_error.as_deref() {
                                             diffuse_reasons.push(format!(
@@ -1238,6 +1263,18 @@ mod tests {
             assert!(safe_virtual(path).is_none());
         }
     }
+    #[test]
+    fn partial_material_failures_count_untextured_visible_sections() {
+        let mut solid = neutral(0, 3);
+        let mut untextured = neutral(3, 6);
+        assert_eq!(missing_diffuse_sections(&[solid.clone(), untextured.clone()]), 2);
+        solid.diffuse = Some(std::sync::Arc::new(image::RgbaImage::new(2, 2)));
+        assert_eq!(missing_diffuse_sections(&[solid, untextured.clone()]), 1);
+        untextured.visible = false;
+        assert_eq!(missing_diffuse_sections(&[untextured]), 0);
+        assert_eq!(missing_diffuse_sections(&[neutral(0, 0)]), 0);
+    }
+
     #[test]
     fn material_diagnostics_do_not_conflate_untextured_with_missing_mesh() {
         let report = Report {
