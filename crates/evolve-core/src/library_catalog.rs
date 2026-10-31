@@ -819,6 +819,21 @@ fn resolve_imported_reference_scoped(
 mod tests {
     use super::*;
     #[test]
+    fn source_game_identity_never_crosses_independent_installations() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first").join("Game");
+        let second = root.path().join("second").join("Game");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let a = first.join("levels_tutorial.pak");
+        let b = first.join("materials_basic.pak");
+        let other = second.join("levels_tutorial.pak");
+        let canonical = game_root_from_source(&a.to_string_lossy()).unwrap();
+        assert_eq!(canonical, game_root_from_source(&b.to_string_lossy()).unwrap());
+        assert_ne!(canonical, game_root_from_source(&other.to_string_lossy()).unwrap());
+    }
+
+    #[test]
     fn archive_labels_are_inferred_from_names() {
         let (group, description) = describe_archive("characters_hunters_merc_emet_ts.pak");
         assert_eq!(group, "Hunters • Merc Emet");
