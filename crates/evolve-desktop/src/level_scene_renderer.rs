@@ -835,7 +835,12 @@ pub(super) fn assemble(
                                                 source.archive,
                                                 missing_sections,
                                                 parts.len(),
-                                                warnings.iter().take(3).cloned().collect::<Vec<_>>().join(" | "),
+                                                warnings
+                                                    .iter()
+                                                    .take(3)
+                                                    .cloned()
+                                                    .collect::<Vec<_>>()
+                                                    .join(" | "),
                                             ),
                                         );
                                     }
@@ -1267,7 +1272,10 @@ mod tests {
     fn partial_material_failures_count_untextured_visible_sections() {
         let mut solid = neutral(0, 3);
         let mut untextured = neutral(3, 6);
-        assert_eq!(missing_diffuse_sections(&[solid.clone(), untextured.clone()]), 2);
+        assert_eq!(
+            missing_diffuse_sections(&[solid.clone(), untextured.clone()]),
+            2
+        );
         solid.diffuse = Some(std::sync::Arc::new(image::RgbaImage::new(2, 2)));
         assert_eq!(missing_diffuse_sections(&[solid, untextured.clone()]), 1);
         untextured.visible = false;
