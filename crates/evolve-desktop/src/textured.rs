@@ -1615,11 +1615,11 @@ impl Pipeline {
                 });
                 self.vertex_capacity = vertex_bytes.len();
             }
-            // Camera drags, lighting changes and streaming ticks must not
-            // resend the entire same mesh's vertices on every redraw.
-            if mesh_changed || vertex_reallocated {
-                queue.write_buffer(&self.vertex, 0, vertex_bytes);
-            }
+            // Model Viewer vertices are CPU-projected for camera orbit, pan,
+            // zoom and animation. Even for the same source mesh identity,
+            // their clip coordinates can change every redraw, so keep the
+            // vertex upload until projection is moved into a GPU uniform.
+            queue.write_buffer(&self.vertex, 0, vertex_bytes);
             self.index_count = primitive.indices.len() as u32;
             if mesh_changed {
                 let bytes = bytemuck::cast_slice(&primitive.indices);
