@@ -722,6 +722,26 @@ fn indexed_reference(
     })
 }
 
+// Numbered cooked DDS fragments are independent source files. Stage 2 can
+// contain the same .dds.1/.dds.2 high-mip payload in multiple imported PAKs;
+// their original bytes are safe to share ONLY if their full virtual paths and
+// verified SHA-256 digests agree. Preserve the 20-fragment/alpha limits of
+// decoded_dds_indexed; do not accept arbitrary numbered sidecars or MTL files.
+fn is_cooked_dds_member(path: &str) -> bool {
+    let name = path.to_ascii_lowercase();
+    if name.ends_with(".dds") {
+        return true;
+    }
+    let Some((_, suffix)) = name.rsplit_once(".dds.") else {
+        return false;
+    };
+    let digits = suffix.strip_suffix('a').unwrap_or(suffix);
+    let Ok(index) = digits.parse::<u8>() else {
+        return false;
+    };
+    index <= 19 && digits == index.to_string()
+}
+
 /// Keep exact selected-build provenance: only byte-identical instances of
 /// the same authored cooked DDS may be treated as one asset. The fast cached
 /// lookup and the normal imported resolver use identical conflict semantics.
@@ -742,7 +762,7 @@ fn resolve_verified_duplicate_textures(
     // even byte-identical files must remain ambiguous in that case.
     if !selected_build
         || hits.len() > MAX_IDENTICAL_TEXTURE_COPIES
-        || !(path.ends_with(".dds") || path.ends_with(".dds.0"))
+        || !is_cooked_dds_member(&path)
         || !hits
             .iter()
             .all(|hit| hit.relative_path.eq_ignore_ascii_case(&path))
@@ -978,6 +998,65 @@ mod tests {
         fs::remove_file(&b).unwrap();
         assert!(matches!(
             resolve_verified_duplicate_textures(vec![x, y], true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+    }
+
+    #[test]
+    fn identical_high_mip_and_alpha_fragments_are_source_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.fragment");
+        let second = dir.path().join("second.fragment");
+        fs::write(&first, b"verified high-mip content").unwrap();
+        fs::write(&second, b"verified high-mip content").unwrap();
+        let hit = |id: &str, name: &str, file: &Path| LibraryReference {
+            archive_id: id.to_owned(),
+            archive_name: format!("{id}.pak"),
+            relative_path: name.to_owned(),
+            absolute_path: file.to_string_lossy().into_owned(),
+        };
+        for suffix in [".dds.1", ".dds.2", ".dds.19", ".dds.0a", ".dds.1a"] {
+            let name = format!("characters/creatures/shared/textures/carcass_diff{suffix}");
+            assert!(is_cooked_dds_member(&name));
+            let hits = vec![hit("b", &name, &second), hit("a", &name, &first)];
+            assert!(matches!(
+                resolve_verified_duplicate_textures(hits, true),
+                LibraryReferenceStatus::Found(found) if found.archive_id == "a"
+            ));
+        }
+        let name = "characters/creatures/shared/textures/carcass_diff.dds.1";
+        fs::write(&second, b"different revision").unwrap();
+        assert!(matches!(
+            resolve_verified_duplicate_textures(
+                vec![hit("a", name, &first), hit("b", name, &second)],
+                true,
+            ),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        assert!(matches!(
+            resolve_verified_duplicate_textures(
+                vec![hit("a", name, &first), hit("b", name, &first)],
+                false,
+            ),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        for invalid in [
+            "x.dds.20",
+            "x.dds.00",
+            "x.dds.01",
+            "x.dds.foo",
+            "x.dds.-1",
+            "x.dds.1ab",
+            "x.dds.20a",
+            "x.mtl",
+        ] {
+            assert!(!is_cooked_dds_member(invalid), "{invalid}");
+        }
+        assert!(matches!(
+            resolve_verified_duplicate_textures(
+                vec![hit("a", "x.dds.1", &first), hit("b", "y.dds.1", &first),],
+                true,
+            ),
             LibraryReferenceStatus::Ambiguous(_)
         ));
     }

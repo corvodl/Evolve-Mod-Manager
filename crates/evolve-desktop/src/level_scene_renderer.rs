@@ -398,6 +398,16 @@ impl Index {
     }
 }
 
+// A model can have one good diffuse and several missing authored material
+// sections. The existing per-pair "without_diffuse" counter only catches
+// fully untextured models, so log mixed-quality materials separately.
+fn missing_diffuse_sections(parts: &[Surface]) -> usize {
+    parts
+        .iter()
+        .filter(|part| part.visible && part.index_count > 0 && part.diffuse.is_none())
+        .count()
+}
+
 fn neutral(first_index: u32, index_count: u32) -> Surface {
     Surface {
         first_index,
@@ -748,6 +758,11 @@ pub(super) fn assemble(
                 }
                 let original_inventory = sources.inventories.get(&source.archive);
                 let mut material_ranges = Vec::new();
+                // Preserve the actual resolver/decoder reason for every
+                // material pair lacking diffuse pixels. The summary counter
+                // cannot distinguish missing MTL, missing DDS, unsupported
+                // format or an ambiguous high-mip fragment.
+                let mut diffuse_reasons = Vec::<String>::new();
                 if let Some(inventory) = original_inventory {
                     // A world model may declare MtlName in its compiled mesh,
                     // even when there is NO same-stem .mtl. Reuse the Model
@@ -789,6 +804,10 @@ pub(super) fn assemble(
                                     cache,
                                 )
                             });
+                            let full_error = full
+                                .as_ref()
+                                .and_then(|outcome| outcome.as_ref().err())
+                                .map(ToString::to_string);
                             let resolved = match full {
                                 Some(Ok(data)) => Ok(data),
                                 _ => assembly_materials::original_single_leaf_surface(
@@ -802,33 +821,86 @@ pub(super) fn assemble(
                             };
                             match resolved {
                                 Ok((parts, warnings)) => {
-                                    report.textured += usize::from(
-                                        parts.iter().any(|part| part.diffuse.is_some()),
-                                    );
+                                    let has_diffuse =
+                                        parts.iter().any(|part| part.diffuse.is_some());
+                                    report.textured += usize::from(has_diffuse);
+                                    let missing_sections = missing_diffuse_sections(&parts);
+                                    if has_diffuse && missing_sections > 0 {
+                                        crate::crash_diagnostics::record(
+                                            "level_partially_missing_diffuse",
+                                            &format!(
+                                                "model={} material={} source={} missing_sections={} total_sections={} warnings={}",
+                                                object.model,
+                                                object.material,
+                                                source.archive,
+                                                missing_sections,
+                                                parts.len(),
+                                                warnings
+                                                    .iter()
+                                                    .take(3)
+                                                    .cloned()
+                                                    .collect::<Vec<_>>()
+                                                    .join(" | "),
+                                            ),
+                                        );
+                                    }
+                                    if !has_diffuse {
+                                        if let Some(reason) = full_error.as_deref() {
+                                            diffuse_reasons.push(format!(
+                                                "Model material assignment: {reason}"
+                                            ));
+                                        }
+                                        diffuse_reasons.extend(
+                                            warnings
+                                                .iter()
+                                                .filter(|warning| {
+                                                    let lower = warning.to_ascii_lowercase();
+                                                    lower.contains("diffuse")
+                                                        || lower.contains("dds")
+                                                        || lower.contains("texture")
+                                                })
+                                                .take(3)
+                                                .cloned(),
+                                        );
+                                    }
                                     material_ranges = parts;
                                     for note in warnings.into_iter().take(2) {
                                         report.note(format!("{}: {note}", object.name));
                                     }
                                 }
-                                Err(error) => report.note(format!(
-                                    "{}: source material {} cannot be assigned to {} mesh sections: {error}",
-                                    object.name,
-                                    material.display(),
-                                    meshes.len()
-                                )),
+                                Err(error) => {
+                                    diffuse_reasons.push(error.to_string());
+                                    if let Some(reason) = full_error {
+                                        diffuse_reasons.push(reason);
+                                    }
+                                    report.note(format!(
+                                        "{}: source material {} cannot be assigned to {} mesh sections: {error}",
+                                        object.name,
+                                        material.display(),
+                                        meshes.len()
+                                    ));
+                                }
                             }
                         }
-                        Ok(None) => report.note(format!(
-                            "No verified original MTL reference for {} ({source_virtual}; {} mesh sections)",
-                            object.name,
-                            meshes.len()
-                        )),
-                        Err(error) => report.note(format!(
-                            "{}: exact source material resolution failed: {error}",
-                            object.name
-                        )),
+                        Ok(None) => {
+                            diffuse_reasons
+                                .push(format!("No verified original MTL for {source_virtual}"));
+                            report.note(format!(
+                                "No verified original MTL reference for {} ({source_virtual}; {} mesh sections)",
+                                object.name,
+                                meshes.len()
+                            ));
+                        }
+                        Err(error) => {
+                            diffuse_reasons.push(format!("MTL lookup: {error}"));
+                            report.note(format!(
+                                "{}: exact source material resolution failed: {error}",
+                                object.name
+                            ));
+                        }
                     }
                 } else {
+                    diffuse_reasons.push("Source PAK inventory unavailable".into());
                     report.note(format!(
                         "{}: source PAK inventory unavailable for texture resolution",
                         object.name
@@ -840,14 +912,19 @@ pub(super) fn assemble(
                 // Count each resource pair once, not its thousands of instances.
                 if !material_ranges.iter().any(|part| part.diffuse.is_some()) {
                     report.without_diffuse += 1;
+                    if diffuse_reasons.is_empty() {
+                        diffuse_reasons
+                            .push("No verified diffuse assigned by original material slots".into());
+                    }
                     crate::crash_diagnostics::record(
                         "level_missing_verified_diffuse",
                         &format!(
-                            "model={} material={} source={} sections={}",
+                            "model={} material={} source={} sections={} reason={}",
                             object.model,
                             object.material,
                             source.archive,
-                            meshes.len()
+                            meshes.len(),
+                            diffuse_reasons.join(" | "),
                         ),
                     );
                 }
@@ -1191,6 +1268,21 @@ mod tests {
             assert!(safe_virtual(path).is_none());
         }
     }
+    #[test]
+    fn partial_material_failures_count_untextured_visible_sections() {
+        let mut solid = neutral(0, 3);
+        let mut untextured = neutral(3, 6);
+        assert_eq!(
+            missing_diffuse_sections(&[solid.clone(), untextured.clone()]),
+            2
+        );
+        solid.diffuse = Some(std::sync::Arc::new(image::RgbaImage::new(2, 2)));
+        assert_eq!(missing_diffuse_sections(&[solid, untextured.clone()]), 1);
+        untextured.visible = false;
+        assert_eq!(missing_diffuse_sections(&[untextured]), 0);
+        assert_eq!(missing_diffuse_sections(&[neutral(0, 0)]), 0);
+    }
+
     #[test]
     fn material_diagnostics_do_not_conflate_untextured_with_missing_mesh() {
         let report = Report {
