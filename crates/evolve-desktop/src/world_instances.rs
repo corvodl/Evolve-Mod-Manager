@@ -1405,6 +1405,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn content_identity_deduplicates_independent_imported_rgba_buffers() {
+        let original = Arc::new(image::RgbaImage::from_pixel(
+            8, 8, image::Rgba([20, 40, 60, 255]),
+        ));
+        let duplicate = Arc::new((*original).clone());
+        let changed = Arc::new(image::RgbaImage::from_pixel(
+            8, 8, image::Rgba([20, 40, 61, 255]),
+        ));
+        assert!(!Arc::ptr_eq(&original, &duplicate));
+        let mut hashes = SourceKeys::new();
+        let key = texture_key(Some(&original), 0, false, &mut hashes);
+        assert_eq!(key, texture_key(Some(&duplicate), 0, false, &mut hashes));
+        assert_ne!(key, texture_key(Some(&changed), 0, false, &mut hashes));
+        assert_ne!(key, texture_key(Some(&duplicate), 2, false, &mut hashes));
+        assert_ne!(key, texture_key(Some(&duplicate), 0, true, &mut hashes));
+        assert_eq!(hashes.len(), 3);
+    }
+
+    #[test]
+    fn full_source_mips_and_residency_budget_are_distinct() {
+        assert_eq!(
+            full_quality_dimensions(8192, 8192, false, 16384, true, u64::MAX),
+            Some((8192, 8192))
+        );
+        assert_eq!(
+            full_quality_dimensions(8192, 8192, true, 16384, true, u64::MAX),
+            Some((8192, 8192))
+        );
+        assert!(mip_chain_bytes(8192, 8192) > 340 * 1024 * 1024);
+        assert_eq!(WORLD_RESIDENT_TARGET_BYTES, 512 * 1024 * 1024);
+        assert_eq!(MAX_NEW_GROUPS_PER_FRAME, 2);
+    }
+
+    #[test]
     fn world_camera_binding_allows_fragment_shading() {
         // Both editors initialize the shared world renderer even in model-only views.
         let shader = include_str!("world_instances.wgsl");
