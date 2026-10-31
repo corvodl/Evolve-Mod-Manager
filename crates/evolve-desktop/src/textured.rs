@@ -2096,8 +2096,9 @@ mod tests {
         let unrelated = super::emission_uniform_values(3.0, 1.0, None);
         assert!((unrelated[0] * unrelated[1] * unrelated[2] - 100.0).abs() < 0.0001);
         let shader = include_str!("textured.wgsl");
-        assert!(shader.contains("let viewport_glow = calibrated_glow / (1.0 + peak)"));
-        assert!(shader.contains("calibrated_glow / (1.0 + peak)"));
+        assert!(shader.contains("let viewport_glow = min(calibrated_glow * 0.06"));
+        assert!(shader.contains("let armor_viewport = min(armor_calibrated * 0.06"));
+        assert!(!shader.contains("calibrated_glow / (1.0 + peak)"));
         assert!(shader.contains("armor_glow * emission_params.y"));
     }
 
