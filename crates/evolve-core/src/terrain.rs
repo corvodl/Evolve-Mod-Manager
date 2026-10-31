@@ -641,6 +641,47 @@ mod tests {
     }
 
     #[test]
+    fn retains_source_layer_materials_and_duplicate_ids_without_tutorial_overrides() {
+        // Generic synthetic v2 heightmap; no original game content is stored.
+        let sample = sample_data();
+        let xml_size = usize::from(u16::from_le_bytes([sample[1], sample[2]]));
+        let xml = br#"<Heightmap Width="16" Height="16" UnitSize="2" MaxHeight="100">
+            <Layers>
+                <Layer Name="Default" LayerId="0" SurfaceType="materials/default"
+                       FilterColor="1,1,1" LayerBrightness="0.5" LayerTiling="1"/>
+                <Layer Name="Wet Stone" LayerId="0" SurfaceType="materials/terrain/wet_stone"
+                       FilterColor="0.2,0.5,0.7" LayerBrightness="0.4" LayerTiling="4"/>
+                <Layer Name="Dry Mud" LayerId="12" SurfaceType="materials/terrain/dry_mud"
+                       FilterColor="0.8,0.6,0.4" LayerBrightness="0.8" LayerTiling="2"/>
+            </Layers>
+        </Heightmap>"#;
+        let mut data = vec![0xff];
+        data.extend_from_slice(&(xml.len() as u16).to_le_bytes());
+        data.extend_from_slice(xml);
+        data.extend_from_slice(&sample[3 + xml_size..]);
+        data.extend_from_slice(&256u32.to_le_bytes());
+        data.extend_from_slice(&256u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend((0..256).map(|i| if i % 3 == 0 { 12 } else { 0 }));
+        let paint = decode_terrain_paint_bytes(&data).unwrap().unwrap();
+        assert_eq!(paint.layers.len(), 3);
+        assert_eq!(paint.layers[1].id, 0);
+        assert_eq!(paint.layers[1].surface_type, "materials/terrain/wet_stone");
+        assert_eq!(paint.layers[1].filter_color, Some([0.2, 0.5, 0.7]));
+        assert_eq!(paint.layers[1].brightness, Some(0.4));
+        assert_eq!(paint.layers[1].tiling, Some(4.0));
+        assert_eq!(paint.layers[2].id, 12);
+        assert_eq!(paint.id_at(0, 0), Some(12));
+        assert_eq!(paint.id_at(1, 0), Some(0));
+        // The original duplicate LayerId entries remain distinguishable.
+        assert_eq!(paint.layers.iter().filter(|layer| layer.id == 0).count(), 2);
+        assert_eq!(paint.layer_names.get(&0).unwrap(), "Wet Stone");
+        assert_eq!(terrain_filter_color("NaN,1,1"), None);
+        assert_eq!(terrain_filter_color("1,2"), None);
+        assert_eq!(finite_terrain_factor("-1"), None);
+    }
+
+    #[test]
     fn validates_original_baked_terrain_texture_layer_descriptors() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("terraintexture.pak");
