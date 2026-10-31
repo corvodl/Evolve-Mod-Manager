@@ -127,8 +127,10 @@ fn shade(input: Output) -> vec4<f32> {
     // in the 8-bit preview; it does not invent bloom outside the mesh.
     let source_glow = glow * emission_params.x * emission_params.y;
     let calibrated_glow = source_glow * emission_params.z;
-    let peak = max(max(calibrated_glow.r, calibrated_glow.g), calibrated_glow.b);
-    let viewport_glow = calibrated_glow / (1.0 + peak);
+    // Preserve physically positive emissive energy through the half-float
+    // render target. The final bloom/ACES pass bounds the display value;
+    // do not normalize each pixel to white before extracting highlights.
+    let viewport_glow = min(calibrated_glow * 0.06, vec3<f32>(32.0));
 
     // Optional Stage 2 armor-glow overlay has no authored GlowAmount.
     // Treat it as a separate neutral one-unit source using the same 3=>100
@@ -136,8 +138,7 @@ fn shade(input: Output) -> vec4<f32> {
     // state multiplier. Disabled overlays stay black.
     let armor_source = armor_glow * emission_params.y;
     let armor_calibrated = armor_source * (100.0 / 3.0);
-    let armor_peak = max(max(armor_calibrated.r, armor_calibrated.g), armor_calibrated.b);
-    let armor_viewport = armor_calibrated / (1.0 + armor_peak);
+    let armor_viewport = min(armor_calibrated * 0.06, vec3<f32>(32.0));
     return vec4<f32>(base.rgb * irradiance * exposure
         + viewport_glow
         + armor_viewport + specular_light, base.a);
