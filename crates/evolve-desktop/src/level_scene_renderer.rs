@@ -566,10 +566,10 @@ fn surface_gpu_estimate(surface: &Surface) -> u64 {
 
 fn surface_batch_ranges(costs: &[u64], geometry: u64) -> Vec<std::ops::Range<usize>> {
     if costs.is_empty() {
-        return Vec::from([0..0]);
+        return std::iter::once(0..0).collect();
     }
     if geometry.saturating_add(costs.iter().copied().sum::<u64>()) <= WORLD_RESIDENCY_TARGET {
-        return Vec::from([0..costs.len()]);
+        return std::iter::once(0..costs.len()).collect();
     }
     let mut result = Vec::new();
     let mut from = 0;
