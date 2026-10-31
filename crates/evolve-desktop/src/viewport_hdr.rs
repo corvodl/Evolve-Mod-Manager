@@ -441,6 +441,15 @@ mod tests {
         assert!(hdr.contains("aces_fitted"));
     }
     #[test]
+    fn masked_scene_refraction_shader_parses_without_original_game_shaders() {
+        let shader=include_str!("viewport_refraction.wgsl");
+        naga::front::wgsl::parse_str(shader).expect("depth-aware scene refraction shader parses");
+        assert!(shader.contains("textureLoad(source_depth"));
+        assert!(shader.contains("textureSampleLevel(authored_normal"));
+        assert!(shader.contains("coverage.a*permitted"));
+    }
+
+    #[test]
     fn hdr_frame_format_is_floating_point() {
         assert_eq!(super::SCENE_FORMAT, wgpu::TextureFormat::Rgba16Float);
         assert_eq!(super::BLOOM_DIVISOR, 4);
