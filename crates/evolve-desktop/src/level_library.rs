@@ -914,6 +914,7 @@ fn open_selected(
                 ));
                 diagnostics.push(terrain_layer_material_report(&paint));
                 diagnostics.push(terrain_surface_type_report(&paint));
+                diagnostics.extend(crate::terrain_material_probe::audit(&archive, &paint));
             }
             Ok(None) => diagnostics.push(
                 "This original heightmap contains no readable terrain layer-ID section.".into(),
