@@ -12,6 +12,9 @@ struct Camera {
 @group(0) @binding(3) var authored_opacity: texture_2d<f32>;
 // Material-authored AlphaTest normalized to 0..1. The default 0.5 is
 // supplied only if the selected original MTL did not specify a threshold.
+// The fourth alpha uniform component is the minimum fully uploaded mip
+// level for a progressive diffuse; fragment sampling must not access a
+// not-yet-populated higher-resolution GPU mip.
 @group(0) @binding(4) var<uniform> authored_cutoff: vec4<f32>;
 // Viewport-only time-of-day lighting. Never reads or edits game engine state.
 struct TimeOfDayLight {
@@ -82,11 +85,24 @@ fn vs_main(
   out.world=world;
   return out;
 }
+// Match ordinary implicit mip LOD while clamping to the source levels that
+// have actually arrived on the GPU. Once streaming reaches level zero this
+// reproduces normal trilinear level selection, not a permanently blurry mip.
+fn sample_source_albedo(uv:vec2<f32>)->vec4<f32> {
+  let size=vec2<f32>(textureDimensions(albedo,0));
+  let dx=dpdx(uv)*size;
+  let dy=dpdy(uv)*size;
+  let area=max(max(dot(dx,dx),dot(dy,dy)),0.000001);
+  let implicit_lod=max(0.0,0.5*log2(area));
+  let safe_lod=max(implicit_lod, authored_cutoff.w);
+  return textureSampleLevel(albedo,tex_sampler,uv,safe_lod);
+}
+
 // Shared lighting, preserving the original source alpha only for materials
 // explicitly routed through the transparent pipeline. CryEngine can store
 // gloss, masks and other non-opacity data in a diffuse texture's alpha.
 fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
-  let base=textureSample(albedo,tex_sampler,input.uv);
+  let base=sample_source_albedo(input.uv);
   if (use_opacity_mask) {
     let coverage=textureSample(authored_opacity,tex_sampler,input.uv).r;
     if (coverage < 0.5) { discard; }
@@ -196,7 +212,7 @@ fn fs_foliage(input:Output)->@location(0) vec4<f32> {
   // AlphaTest). The separate Opacity map is leaf thickness/transmittance.
   // Discarded fragments neither write depth nor reveal the desktop; surviving
   // fragments write opaque window alpha and regular world depth.
-  let leaf_alpha=textureSample(albedo,tex_sampler,input.uv).a;
+  let leaf_alpha=sample_source_albedo(input.uv).a;
   if (leaf_alpha < authored_cutoff.x) { discard; }
   let color=shade(input,false);
   let fogged=distance_fog(input,color);
