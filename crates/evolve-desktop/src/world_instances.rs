@@ -1241,6 +1241,9 @@ impl Renderer {
     ) {
         let Some(world) = world else {
             self.groups.clear();
+            self.cache.clear();
+            self.source_hashes.clear();
+            self.peak_gpu_bytes = 0;
             self.world_identity = 0;
             self.last_camera = None;
             return;
@@ -1368,7 +1371,9 @@ impl Renderer {
         progress.peak.store(self.peak_gpu_bytes, Ordering::Relaxed);
         self.cache = cache;
         self.source_hashes = hashes;
-        if uploaded != 0 && (uploaded >= MAX_NEW_GROUPS_PER_FRAME || pending == 0) {
+        if uploaded != 0
+            && (progress.loaded.load(Ordering::Relaxed) % 16 == 0 || pending == 0 || evicted > 0)
+        {
             crate::crash_diagnostics::record(
                 "level_gpu_residency",
                 &format!(
