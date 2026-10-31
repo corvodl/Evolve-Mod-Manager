@@ -575,7 +575,7 @@ fn bilinear_wrap(image: &image::RgbaImage, uv: [f32; 2]) -> [f32; 3] {
     result
 }
 
-fn painted_neighbors(paint: &TerrainPaintMap, uv: [f32; 2]) -> Vec<(u8, f32)> {
+fn painted_neighbors(paint: &TerrainPaintMap, uv: [f32; 2]) -> [Option<(u8, f32)>; 4] {
     let x = uv[0].clamp(0.0, 1.0) * (paint.width - 1) as f32;
     let y = uv[1].clamp(0.0, 1.0) * (paint.height - 1) as f32;
     let x0 = x.floor() as u32;
@@ -584,20 +584,20 @@ fn painted_neighbors(paint: &TerrainPaintMap, uv: [f32; 2]) -> Vec<(u8, f32)> {
     let y1 = (y0 + 1).min(paint.height - 1);
     let u = x - x0 as f32;
     let v = y - y0 as f32;
-    let mut neighbors = Vec::<(u8, f32)>::new();
+    let mut neighbors = [None; 4];
     for (ix, iy, weight) in [
         (x0, y0, (1.0 - u) * (1.0 - v)),
         (x1, y0, u * (1.0 - v)),
         (x0, y1, (1.0 - u) * v),
         (x1, y1, u * v),
     ] {
-        let Some(id) = paint.id_at(ix, iy) else {
-            continue;
-        };
-        if let Some((_, accumulated)) = neighbors.iter_mut().find(|(existing, _)| *existing == id) {
+        let Some(id) = paint.id_at(ix, iy) else { continue };
+        if let Some((_, accumulated)) = neighbors.iter_mut().flatten()
+            .find(|(other, _)| *other == id)
+        {
             *accumulated += weight;
-        } else {
-            neighbors.push((id, weight));
+        } else if let Some(slot) = neighbors.iter_mut().find(|item| item.is_none()) {
+            *slot = Some((id, weight));
         }
     }
     neighbors
@@ -621,10 +621,12 @@ fn compose_detail(
             let mut mixed = [0f32; 3];
             let mut coverage = 0.0f32;
             let neighbors = painted_neighbors(paint, uv);
-            // If a source displacement exists, use it to bias *only*
-            // transitions; no fake heightmap is synthesized.
-            let mut samples = Vec::new();
-            for (id, original_weight) in neighbors {
+            // Fixed-size stack storage avoids millions of per-pixel Vec
+            // allocations when processing full-resolution terrain tiles.
+            let mut samples: [Option<(&DetailLayer, [f32; 3], Option<f32>, f32)>; 4] =
+                [None; 4];
+            let mut sample_count = 0usize;
+            for (id, original_weight) in neighbors.into_iter().flatten() {
                 let Some(layer) = layers.get(&id) else {
                     continue;
                 };
@@ -641,12 +643,13 @@ fn compose_detail(
                 // Original layer IDs are categorical. Preserve the authored
                 // fractional coverage of resolved neighbors at boundaries.
                 coverage += original_weight;
-                samples.push((layer, detail, height, original_weight));
+                samples[sample_count] = Some((layer, detail, height, original_weight));
+                sample_count += 1;
             }
-            if !samples.is_empty() {
-                let transition = samples.len() > 1;
+            if sample_count > 0 {
+                let transition = sample_count > 1;
                 let mut total = 0.0;
-                for (layer, _, height, weight) in &mut samples {
+                for (layer, _, height, weight) in samples.iter_mut().flatten() {
                     if transition {
                         if let Some(height) = height {
                             // FreeSDK documents height-assisted layer
@@ -662,7 +665,7 @@ fn compose_detail(
                     total += *weight;
                 }
                 if total > 0.0 {
-                    for (layer, color, _, weight) in samples {
+                    for (layer, color, _, weight) in samples.into_iter().flatten() {
                         let w = weight / total;
                         for c in 0..3 {
                             mixed[c] += (color[c] - neutral) * layer.strength * w;
@@ -812,7 +815,8 @@ mod composition_tests {
         let paint = fixture();
         assert_eq!(paint.id_at(0, 0), Some(1));
         assert_eq!(paint.id_at(0, 1), Some(2));
-        let adjacent = painted_neighbors(&paint, [0.5, 0.5]);
+        let adjacent: Vec<_> = painted_neighbors(&paint, [0.5, 0.5])
+            .into_iter().flatten().collect();
         assert_eq!(adjacent.len(), 2);
         assert!(adjacent.iter().all(|(_, w)| (*w - 0.5).abs() < 0.0001));
     }
