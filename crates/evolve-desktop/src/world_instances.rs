@@ -127,7 +127,7 @@ fn full_quality_dimensions(
     full: bool,
     remaining: u64,
 ) -> Option<(u32, u32)> {
-    if width == 0 || height == 0 || gpu_max == 0 || remaining < 4 {
+    if width == 0 || height == 0 || gpu_max == 0 || (!full && remaining < 4) {
         return None;
     }
     let cap = if full {
@@ -389,12 +389,11 @@ fn auxiliary_map(
     if let Some((texture, view, _)) = cache.get(&key) {
         return (texture.clone(), view.clone());
     }
-    let remaining = (if full_textures {
-        MAX_SCENE_FULL_TEXTURE_BYTES
+    let remaining = if full_textures {
+        u64::MAX
     } else {
-        MAX_SCENE_BALANCED_TEXTURE_BYTES
-    })
-    .saturating_sub(*used_bytes);
+        MAX_SCENE_BALANCED_TEXTURE_BYTES.saturating_sub(*used_bytes)
+    };
     let selected = source.and_then(|img| {
         gpu_diffuse_quality(
             img,
@@ -1153,12 +1152,11 @@ impl Renderer {
             let (tex, view, diffuse_uploaded) = if let Some((tex, view, _)) = cache.get(&key) {
                 (tex.clone(), view.clone(), surf.diffuse.is_some())
             } else {
-                let remaining = (if full_textures {
-                    MAX_SCENE_FULL_TEXTURE_BYTES
+                let remaining = if full_textures {
+                    u64::MAX
                 } else {
-                    MAX_SCENE_BALANCED_TEXTURE_BYTES
-                })
-                .saturating_sub(*used_bytes);
+                    MAX_SCENE_BALANCED_TEXTURE_BYTES.saturating_sub(*used_bytes)
+                };
                 let source = surf.diffuse.as_ref().and_then(|img| {
                     gpu_diffuse_quality(
                         img,
@@ -1207,12 +1205,11 @@ impl Renderer {
                 (tex.clone(), view.clone())
             } else {
                 let opaque = [255u8, 255, 255, 255];
-                let remaining = (if full_textures {
-                    MAX_SCENE_FULL_TEXTURE_BYTES
+                let remaining = if full_textures {
+                    u64::MAX
                 } else {
-                    MAX_SCENE_BALANCED_TEXTURE_BYTES
-                })
-                .saturating_sub(*used_bytes);
+                    MAX_SCENE_BALANCED_TEXTURE_BYTES.saturating_sub(*used_bytes)
+                };
                 let mask = surf.opacity.as_ref().and_then(|img| {
                     gpu_diffuse_quality(
                         img,
@@ -1899,7 +1896,7 @@ mod tests {
     }
 
     #[test]
-    fn full_quality_retains_original_4096_model_textures_and_bounds_scene_budget() {
+    fn full_quality_retains_original_4096_model_textures_without_manager_budget() {
         assert_eq!(
             full_quality_dimensions(4096, 4096, false, 8192, true, 256 * 1024 * 1024),
             Some((4096, 4096))
@@ -1910,13 +1907,16 @@ mod tests {
         );
         assert_eq!(
             full_quality_dimensions(4096, 4096, false, 8192, true, 4 * 1024 * 1024),
-            Some((1024, 1024))
+            Some((4096, 4096))
         );
         assert_eq!(
             full_quality_dimensions(4096, 4096, false, 2048, true, 256 * 1024 * 1024),
             Some((2048, 2048))
         );
-        assert!(full_quality_dimensions(4096, 4096, false, 8192, true, 0).is_none());
+        assert_eq!(
+            full_quality_dimensions(4096, 4096, false, 8192, true, 0),
+            Some((4096, 4096))
+        );
     }
 
     #[test]
