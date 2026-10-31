@@ -1006,7 +1006,7 @@ fn open_selected(
                 let dimensions = atlas.image.dimensions();
                 diagnostics.push(terrain_pixel_report(&atlas.image));
                 let mut applied = false;
-                if let (Some(assembled), Some((terrain_mesh, _))) =
+                if let (Some(assembled), Some((terrain_mesh, terrain_info))) =
                     (full_scene.as_mut(), terrain.as_ref())
                     && let Some(surface) = assembled.surfaces.first_mut()
                     && surface.first_index == 0
@@ -1029,7 +1029,7 @@ fn open_selected(
                         applied = true;
                         if let Some(paint) = terrain_paint.as_ref() {
                             match crate::terrain_material_probe::compose(
-                                &archive, paint, dimensions, terrain_mesh.info.unit,
+                                &archive, paint, dimensions, terrain_info.unit,
                             ) {
                                 Ok(Some((highpass, report))) => {
                                     world.terrain_detail = Some(std::sync::Arc::new(highpass));
