@@ -77,6 +77,7 @@ mod standard_user_launch;
 mod storage_usage;
 mod system_health;
 mod text_asset_editor;
+mod terrain_material_probe;
 mod textured;
 mod updater;
 mod updater_apply;
