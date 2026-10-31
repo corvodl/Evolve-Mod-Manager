@@ -737,7 +737,7 @@ fn is_translucent_shader(slot: &evolve_core::MaterialSlot) -> bool {
     matches!(slot.shader.to_ascii_lowercase().as_str(), "glass" | "water")
 }
 
-/// Original CryEngine beam shaders use special additive/volumetric passes,
+/// Original CryEngine effect-only shaders use dedicated GPU passes,
 /// not a depth-writing Illum mesh. Displaying them as a plain CGF surface
 /// creates opaque white cylinders at projector lights. Hide ONLY the exact
 /// unsupported beam-effect material leaves in the world editor; retain the
@@ -746,7 +746,17 @@ fn is_translucent_shader(slot: &evolve_core::MaterialSlot) -> bool {
 fn is_original_beam_effect(slot: &evolve_core::MaterialSlot) -> bool {
     matches!(
         slot.shader.to_ascii_lowercase().as_str(),
-        "lightbeam.lightbeam" | "geometrybeam" | "templbeamproc"
+        "lightbeam.lightbeam"
+            | "geometrybeam"
+            | "templbeamproc"
+            | "particles"
+            | "particleimposter"
+            | "lightflares.flare"
+            | "lensoptics.enable"
+            | "volumeobject"
+            | "referenceimage"
+            | "sky"
+            | "skyhdr"
     )
 }
 
@@ -1682,7 +1692,11 @@ mod tests {
 
     #[test]
     fn original_light_beam_materials_are_not_opaque_world_meshes() {
-        for name in ["Lightbeam.LightBeam", "GeometryBeam", "TemplBeamProc"] {
+        for name in [
+            "Lightbeam.LightBeam", "GeometryBeam", "TemplBeamProc",
+            "Particles", "ParticleImposter", "LightFlares.Flare",
+            "LensOptics.Enable", "VolumeObject", "ReferenceImage", "Sky", "SkyHDR",
+        ] {
             let slot = evolve_core::parse_material(
                 format!("<Material Name=\"beam\" Shader=\"{name}\"/>").as_bytes(),
             )
@@ -1694,7 +1708,7 @@ mod tests {
             "Glass",
             "Vegetation",
             "NoDraw",
-            "LightFlares.Flare",
+            "Cloth",
         ] {
             let slot = evolve_core::parse_material(
                 format!("<Material Name=\"fixture\" Shader=\"{name}\"/>").as_bytes(),
