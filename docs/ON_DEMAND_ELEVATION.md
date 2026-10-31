@@ -68,14 +68,15 @@ is derived from the canonical game executable by `online_guard.rs`.
 
 ## Implemented worker foundation and limitations
 
-- `crates/evolve-desktop/src/bin/evolve-privileged-worker.rs` is a standalone
+- `crates/evolve-privileged-worker/src/main.rs` is an independent Cargo-package
   binary with a closed argument parser. It cannot execute caller-supplied
   programs/scripts, copy files, restore backups, or accept a journal path.
   The firewall commands call only `online_guard::apply`, after rejecting
   relative or linked game paths. The health command returns a read-only JSON
   snapshot on stdout.
 - The worker currently has **no GUI UAC launcher, authenticated output channel
-  or installer packaging contract**. The GUI must **not** invoke an arbitrary
+  or installer packaging contract**. Its separate crate prevents inheriting
+  the GUI's `requireAdministrator` manifest through `winres`. The GUI must **not** invoke an arbitrary
   sibling worker from a user-writable portable folder: that would allow
   replacement of the elevated executable. A future broker must verify a
   protected installation and implement an authenticated reply, cancellation,
