@@ -96,10 +96,10 @@ impl PendingLight {
                 b"LightRadius",
                 b"fAttenuationBulbSize",
             ],
-        ) {
-            if (0.1..=100000.0).contains(&radius) {
-                self.radius = Some(radius);
-            }
+        )
+            && (0.1..=100000.0).contains(&radius)
+        {
+            self.radius = Some(radius);
         }
         if let Some(intensity) = val(
             e,
@@ -109,10 +109,10 @@ impl PendingLight {
                 b"LightIntensity",
                 b"Intensity",
             ],
-        ) {
-            if (0.0..=1000000.0).contains(&intensity) {
-                self.intensity = Some(intensity);
-            }
+        )
+            && (0.0..=1000000.0).contains(&intensity)
+        {
+            self.intensity = Some(intensity);
         }
         if let Some(color) = [
             b"DiffuseColor".as_slice(),
@@ -126,15 +126,15 @@ impl PendingLight {
         {
             self.color = Some(color);
         }
-        if let Some(fov) = val(e, &[b"ProjectorFov", b"fProjectorFov", b"FOV", b"fFov"]) {
-            if (1.0..179.0).contains(&fov) {
-                self.cone = Some((0.5 * fov.to_radians()).cos());
-            }
+        if let Some(fov) = val(e, &[b"ProjectorFov", b"fProjectorFov", b"FOV", b"fFov"])
+            && (1.0..179.0).contains(&fov)
+        {
+            self.cone = Some((0.5 * fov.to_radians()).cos());
         }
-        if let Some(active) = attr(e, b"bActive").or_else(|| attr(e, b"Active")) {
-            if active == "0" || active.eq_ignore_ascii_case("false") {
-                self.enabled = false;
-            }
+        if let Some(active) = attr(e, b"bActive").or_else(|| attr(e, b"Active"))
+            && (active == "0" || active.eq_ignore_ascii_case("false"))
+        {
+            self.enabled = false;
         }
     }
 }
@@ -193,12 +193,12 @@ pub(super) fn lights(
                             .unwrap_or_default()
                             .to_ascii_lowercase();
                         let kind = attr(&e, b"Type").unwrap_or_default().to_ascii_lowercase();
-                        if matches!(
+                        if (matches!(
                             class.as_str(),
                             "light" | "lightentity" | "pointlight" | "spotlight"
-                        ) || (kind == "light" && class.is_empty())
+                        ) || (kind == "light" && class.is_empty()))
+                            && let Some(id) = attr(&e, b"Id").or_else(|| attr(&e, b"EntityId"))
                         {
-                            if let Some(id) = attr(&e, b"Id").or_else(|| attr(&e, b"EntityId")) {
                                 pending = Some(PendingLight {
                                     id: id.to_ascii_lowercase(),
                                     depth,
@@ -211,17 +211,14 @@ pub(super) fn lights(
                                 if let Some(ref mut p) = pending {
                                     p.props(&e);
                                 }
-                            }
                         }
-                    } else if let Some(ref mut p) = pending {
-                        if depth > p.depth && depth <= p.depth + 7 {
-                            p.props(&e);
-                        }
+                    } else if let Some(ref mut p) = pending
+                        && depth > p.depth && depth <= p.depth + 7
+                    {
+                        p.props(&e);
                     }
-                    if !nested {
-                        if pending.as_ref().is_some_and(|p| p.depth == depth) {
-                            finalize(&mut pending, &objects, &mut result);
-                        }
+                    if !nested && pending.as_ref().is_some_and(|p| p.depth == depth) {
+                        finalize(&mut pending, &objects, &mut result);
                     }
                 }
                 Event::End(_) => {
@@ -412,8 +409,6 @@ pub(super) fn atmosphere_uniform(
 #[derive(Clone, Debug)]
 pub(super) struct StaticSky {
     pub images: [std::sync::Arc<image::RgbaImage>; 3],
-    pub angle: f32,
-    pub stretching: f32,
 }
 fn indexed_source(
     root: &std::path::Path,
@@ -517,8 +512,6 @@ pub(super) fn load_static_sky(
             std::sync::Arc::new(b),
             std::sync::Arc::new(top),
         ],
-        angle: sky.angle_degrees.to_radians(),
-        stretching: sky.stretching,
     }))
 }
 
