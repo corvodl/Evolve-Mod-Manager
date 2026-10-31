@@ -452,6 +452,7 @@ fn auxiliary_map(
 // and includes every mip. Limits control residency, never original resolution.
 fn group_new_bytes(
     group: &ModelGroup,
+    terrain_detail: Option<&Arc<image::RgbaImage>>,
     cache: &TextureCache,
     hashes: &mut SourceKeys,
     gpu_max_dimension: u32,
@@ -490,6 +491,16 @@ fn group_new_bytes(
                 });
                 bytes = bytes.saturating_add(footprint);
             }
+        }
+    }
+    if is_ground(group) {
+        let key = texture_key(terrain_detail, 6, false, hashes);
+        if !cache.contains_key(&key) && seen.insert(key) {
+            bytes = bytes.saturating_add(terrain_detail.map_or(4, |img| {
+                let (w,h)=full_quality_dimensions(img.width(),img.height(),false,
+                    gpu_max_dimension,true,u64::MAX).unwrap_or((1,1));
+                mip_chain_bytes(w,h)
+            }));
         }
     }
     bytes
@@ -1569,6 +1580,7 @@ impl Renderer {
             }
             let requested = group_new_bytes(
                 &world.groups[idx],
+                if is_ground(&world.groups[idx]) { world.terrain_detail.as_ref() } else { None },
                 &cache,
                 &mut hashes,
                 device.limits().max_texture_dimension_2d,
