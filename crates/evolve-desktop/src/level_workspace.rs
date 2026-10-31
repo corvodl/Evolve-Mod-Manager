@@ -489,7 +489,29 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     )
                 },
             )).size(11).style(design::muted),
-            text("Full: no manager GPU texture ceiling; requires sufficient VRAM, and GPU texture dimension limits still apply. Balanced: lower memory usage.")
+            text(state.level_world.as_ref().map_or_else(
+                || "Source diffuse coverage: no world loaded.".to_owned(),
+                |world| {
+                    let (resolved, unresolved) = world
+                        .groups
+                        .iter()
+                        .flat_map(|group| &group.surfaces)
+                        .filter(|surface| surface.visible && surface.index_count > 0)
+                        .fold((0usize, 0usize), |(resolved, unresolved), surface| {
+                            if surface.diffuse.is_some() {
+                                (resolved + 1, unresolved)
+                            } else {
+                                (resolved, unresolved + 1)
+                            }
+                        });
+                    format!(
+                        "Source diffuse maps: {resolved} resolved material spans, {unresolved} without verified diffuse. Unresolved source assets cannot be fixed by GPU streaming alone."
+                    )
+                },
+            ))
+            .size(11)
+            .style(design::muted),
+            text("Full: loaded assets remain on the GPU even when offscreen; no manager GPU residency cap. Balanced: new groups may be deferred at its memory target, but loaded assets are never evicted. Hardware VRAM limits still apply.")
                 .size(11)
                 .style(design::muted),
             text(if let Some(source) = state.level_world.as_ref()

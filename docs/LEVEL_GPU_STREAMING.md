@@ -1,30 +1,39 @@
 # Level Editor GPU streaming and source-color diagnostics (PR #158)
 
-This is a **first bounded-residency implementation**, not a claim that source
-textures, native CryEngine material appearance, or Evolve GPU parity are complete.
+This is a progressive-upload renderer with **persistent per-scene GPU
+residency**, not a claim that source textures, native CryEngine materials, or
+Evolve visual parity are complete.
 The source PAKs, imported files, level XML and full-resolution decoded CPU images
 remain read-only/unchanged.
 
 ## Implemented
 
-- The world renderer preflights visible groups before creating buffers or GPU
-  textures. Groups nearest the camera are prioritized, with original terrain
-  first. At most two new groups are uploaded per redraw; an on-demand UI timer
-  requests more redraws while visible uploads remain.
-- **Full quality** means original source dimensions (subject to the GPU's
-  maximum supported texture size), rather than an arbitrary 2K/4K cap.
-  A conservative **512 MiB estimated world-residency target** constrains
-  simultaneous material + geometry allocations, not the original source data.
-  If a group cannot fit, it is deferred instead of risking a wgpu OOM panic.
-  Moving the camera can free offscreen GPU handles and retry its source files.
+- The world renderer preflights **all resolved scene groups**, not only groups
+  in the current view, before creating buffers or GPU textures. Terrain loads
+  first and other groups are prioritized by camera distance, independent of
+  camera direction. At most two new groups upload per redraw; an on-demand
+  UI timer requests more redraws while **any** scene uploads remain.
+- **Full quality** means original source dimensions (subject to GPU-supported
+  texture size) and no manager-imposed 512 MiB scene-residency target.
+  Already-uploaded groups stay GPU-resident while the scene stays loaded;
+  camera movement does not evict them. Actual VRAM constraints can still
+  trigger device loss or OOM when a scene exceeds the GPU's capacity.
+  **Balanced** retains an estimated 384 MiB target and defers *new* assets
+  rather than deleting ones already loaded.
 - Identical decoded RGBA images are deduplicated across independent Arc
   allocations using a SHA-256 of dimensions + pixel bytes. The hash is
   precomputed in the existing map-import worker, not during GPU redraw.
   Roles and ground sampler class are part of GPU cache identity. Cache
   lifetime is one World, not a globally persistent untrusted image reference.
-- Shader/renderer source images retain full resolution on the CPU while GPU
-  cache resources for offscreen groups are released. Visible nearer groups may
-  replace farther resident groups only if closer, avoiding ping-pong residency.
+- Once GPU geometry and textures load, they remain resident across view
+  changes. **CPU frustum/distance instance culling is disabled**: every
+  resolved placement is uploaded once, remains present in the draw list,
+  and is clipped or depth-tested normally by the GPU. Camera rotation only
+  updates its camera uniform rather than re-uploading instance data.
+  Returning to a previously viewed area does not require a second upload.
+  Scene unloading and explicit quality or scene replacement still release
+  old GPU objects. Drawing the complete scene can increase vertex processing
+  and VRAM use, especially on lower-end hardware.
 - **Scene Settings** reports resident/queued/deferred group counts, current
   texture-mip and geometry byte estimates, and peak estimates. The bounded
   crash log records `level_gpu_residency` periodically. These are estimates,
@@ -38,10 +47,13 @@ remain read-only/unchanged.
 
 ## Not yet implemented or verified
 
-- Diffuse textures now stream their mip images independently, starting with
-  the coarsest valid source mip. Each redraw uploads at most **8 MiB** of
-  texture rows, and a per-material GPU LOD floor prevents sampling uninitialized
-  mip levels. Source-resolution mips remain available as the queue progresses.
+- Diffuse textures stream their mip images independently. To avoid a flat
+  1×1 average color covering newly loaded objects, each source initializes a
+  useful **up-to-128px mip** plus all coarser levels immediately; the shader's
+  LOD floor prevents sampling uninitialized larger mips. Subsequent uploads
+  rotate fairly across resident textures, writing at most **8 MiB** of rows
+  per redraw. Original full-resolution mips remain available as streaming
+  progresses.
   Auxiliary normal/specular/gloss/emissive/opacity maps still upload all their
   mips during GPU group admission; **full all-role independent mip streaming
   remains outstanding**. A CPU mip resize can still pause a frame, so an
@@ -52,10 +64,10 @@ remain read-only/unchanged.
   GPU material-residency batches, reusing the same CPU mesh and authored
   placements. This may duplicate some GPU geometry but avoids deferring the
   entire mesh when several independent materials exceed the target together.
-  An individually oversized material or a single texture greater than the
-  512 MiB conservative target is still **reported as deferred**, not silently
-  downsampled. True sparse/tiled GPU textures and hardware VRAM capability
-  checks remain outstanding.
+  Full mode no longer rejects otherwise valid materials solely because they
+  exceed a 512 MiB *software* target; hardware limits still apply.
+  Balanced can defer oversized groups. Sparse/tiled GPU textures and reliable
+  driver free-VRAM checks remain outstanding.
 - Exact Evolve baked terrain color, sRGB/linear conversion, layer blending,
   vegetation transmittance and engine HDR. No guessed color swap or tint has
   been added. Tutorial's four verified 1024² RGB24 tiles supply only a
@@ -76,8 +88,13 @@ remain read-only/unchanged.
 1. Open Tutorial and confirm the geometry/terrain resolve from the selected
    build only, with no cross-build asset mixing.
 2. Observe `level_gpu_residency` and the Scene Settings resident/peak counters.
-   Turning the camera away should release offscreen residency; returning should
-   reload the exact original source images, not fabricated neutral maps.
+   Turn away from a loaded building, foliage patch and terrain, then turn back.
+   All remain resident and should reappear immediately without GPU re-upload.
+   Start the viewport pointed away from some imported props: all resolved
+   groups should still continue loading in the background. Turning or flying
+   must not change per-group GPU instance counts or decrease resident-group
+   counts for the same scene and texture quality, except after GPU/device
+   errors or deliberate scene replacement.
 3. Open Ice_Crashsite and a forest map. Check map responsiveness, deferred
    groups and failure handling with 4K source assets. A persistent deferred
    group is not considered successful full-quality coverage.

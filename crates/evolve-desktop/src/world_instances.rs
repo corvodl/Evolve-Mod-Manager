@@ -21,11 +21,21 @@ const MAX_WORLD_DIFFUSE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TERRAIN_ATLAS_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FULL_TEXTURE_BYTES: u64 = u64::MAX;
 const MAX_SCENE_BALANCED_TEXTURE_BYTES: u64 = 384 * 1024 * 1024;
-// Residency target, not a full-resolution quality cap. Streams source images
-// as visible, retaining the complete originals in the CPU World. Conservative
-// until adapter-local free VRAM can be queried reliably.
-const WORLD_RESIDENT_TARGET_BYTES: u64 = 512 * 1024 * 1024;
+// Upload a bounded number of new groups each redraw. Once uploaded, GPU
+// meshes and textures remain resident until the level closes or a deliberate
+// quality/scene change rebuilds the renderer. In particular, camera movement
+// must never evict already-loaded groups.
 const MAX_NEW_GROUPS_PER_FRAME: usize = 2;
+
+fn residency_target_bytes(full_textures: bool) -> u64 {
+    if full_textures {
+        // Full quality is constrained by the GPU/driver, not an arbitrary
+        // software residency cap. Balanced mode retains its lower-memory cap.
+        u64::MAX
+    } else {
+        MAX_SCENE_BALANCED_TEXTURE_BYTES
+    }
+}
 const MAX_MIP_WRITE_BYTES_PER_FRAME: usize = 8 * 1024 * 1024;
 
 // Hash exact source pixel dimensions+bytes, not an Arc address. Distinct
@@ -296,6 +306,22 @@ fn write_rgba_level(
     );
 }
 
+// Upload useful low-resolution imagery immediately instead of leaving new
+// geometry painted with a single 1x1 average-color pixel for many ticks.
+// Every coarser level is also populated, because distant GPU samples may
+// legally request LODs larger than the first valid texture level.
+const INITIAL_DIFFUSE_MAX_DIMENSION: u32 = 128;
+fn initial_diffuse_mip(source_width: u32, source_height: u32) -> u32 {
+    let largest = source_width.max(source_height).max(1);
+    let count = largest.ilog2() + 1;
+    (0..count)
+        .find(|level| {
+            (source_width >> level).max(1) <= INITIAL_DIFFUSE_MAX_DIMENSION
+                && (source_height >> level).max(1) <= INITIAL_DIFFUSE_MAX_DIMENSION
+        })
+        .unwrap_or(count - 1)
+}
+
 fn create_streaming_diffuse(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -316,16 +342,13 @@ fn create_streaming_diffuse(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let smallest = count - 1;
-    let coarse = image::imageops::resize(
-        source,
-        (source.width() >> smallest).max(1),
-        (source.height() >> smallest).max(1),
-        image::imageops::FilterType::Triangle,
-    );
-    write_rgba_level(queue, &tex, &coarse, smallest);
+    let first_valid = initial_diffuse_mip(source.width(), source.height());
+    for level in first_valid..count {
+        let coarse = next_diffuse_mip(source, level);
+        write_rgba_level(queue, &tex, &coarse, level);
+    }
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-    (tex, view, smallest)
+    (tex, view, first_valid)
 }
 
 // Queue writes are striped so a single original 8K image cannot enqueue a
@@ -476,6 +499,8 @@ fn group_distance_sq(group: &ModelGroup, camera: level_camera::Camera) -> f32 {
     if is_ground(group) {
         return -1.0;
     }
+    // Camera position only determines load order. Camera direction must never
+    // prevent a source group from becoming GPU-resident in the Level Editor.
     group
         .instances
         .iter()
@@ -496,30 +521,6 @@ fn resident_geometry_bytes(groups: &[Option<GpuGroup>]) -> u64 {
     groups.iter().flatten().fold(0u64, |total, group| {
         total.saturating_add(group.geometry_bytes)
     })
-}
-
-/// Evict only GPU handles for groups outside the current view. Original
-/// decoded images and mesh data remain owned by the immutable CPU World.
-fn evict_offscreen(
-    groups: &mut [Option<GpuGroup>],
-    visible: &[Vec<InstanceGpu>],
-    cache: &mut TextureCache,
-) -> usize {
-    let mut count = 0;
-    for (slot, instances) in groups.iter_mut().zip(visible) {
-        if instances.is_empty() && slot.take().is_some() {
-            count += 1;
-        }
-    }
-    if count > 0 {
-        let retained: HashSet<TextureKey> = groups
-            .iter()
-            .flatten()
-            .flat_map(|group| group.source_keys.iter().copied())
-            .collect();
-        cache.retain(|key, _| retained.contains(key));
-    }
-    count
 }
 
 fn is_ground(group: &ModelGroup) -> bool {
@@ -768,50 +769,13 @@ pub(super) fn radius(mesh: &RenderMesh) -> f32 {
         .filter(|r| r.is_finite())
         .fold(0.0f32, f32::max)
 }
-/// Coarse conservative frustum culling before instance-buffer uploads.
-/// Does not make distant vegetation disappear arbitrarily by count.
-fn visible(
-    group: &ModelGroup,
-    camera: level_camera::Camera,
-    yaw: f32,
-    pitch: f32,
-    aspect: f32,
-    zoom: f32,
-) -> Vec<InstanceGpu> {
-    let (f, r, u) = level_camera::basis(yaw, pitch);
-    let tangent =
-        (camera.fov_degrees.clamp(25.0, 110.0).to_radians() * 0.5).tan() / zoom.clamp(0.2, 80.0);
+/// Instance transformations are static within a particular World identity.
+/// Upload every placement once, irrespective of camera yaw, pitch or frustum.
+fn all_group_instances(group: &ModelGroup) -> Vec<InstanceGpu> {
     group
         .instances
         .iter()
-        .filter_map(|instance| {
-            let p = instance.transform.position;
-            let delta = [
-                p[0] - camera.position[0],
-                p[1] - camera.position[1],
-                p[2] - camera.position[2],
-            ];
-            let dot = |v: [f32; 3]| delta.iter().zip(v).map(|(a, b)| a * b).sum::<f32>();
-            let d = dot(f);
-            let scale = instance
-                .transform
-                .scale
-                .iter()
-                .copied()
-                .map(f32::abs)
-                .fold(0.0, f32::max);
-            let radius = group.radius * scale;
-            if !d.is_finite()
-                || !radius.is_finite()
-                || d + radius < 0.1
-                || d - radius > 50000.0
-                || dot(r).abs() > d.max(0.0) * tangent * aspect.max(0.01) + radius * 1.5
-                || dot(u).abs() > d.max(0.0) * tangent + radius * 1.5
-            {
-                return None;
-            }
-            Some(InstanceGpu::from_transform(instance.transform))
-        })
+        .map(|instance| InstanceGpu::from_transform(instance.transform))
         .collect()
 }
 struct GpuSurface {
@@ -833,10 +797,8 @@ struct GpuGroup {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     instances: wgpu::Buffer,
-    capacity: usize,
     visible: u32,
     surfaces: Vec<GpuSurface>,
-    source_keys: HashSet<TextureKey>,
     geometry_bytes: u64,
 }
 pub(super) struct Renderer {
@@ -858,6 +820,7 @@ pub(super) struct Renderer {
     source_hashes: SourceKeys,
     pending_diffuse: HashMap<TextureKey, PendingDiffuseMip>,
     mip_min_level: HashMap<TextureKey, u32>,
+    mip_round_robin_cursor: usize,
     peak_gpu_bytes: u64,
     last_camera: Option<CameraGpu>,
 }
@@ -1115,6 +1078,7 @@ impl Renderer {
             source_hashes: SourceKeys::new(),
             pending_diffuse: HashMap::new(),
             mip_min_level: HashMap::new(),
+            mip_round_robin_cursor: 0,
             peak_gpu_bytes: 0,
             last_camera: None,
         }
@@ -1173,13 +1137,16 @@ impl Renderer {
         });
         let capacity = model.instances.len().max(1);
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Visible world-placement transforms"),
+            label: Some("All persistent world-placement transforms"),
             size: (capacity * std::mem::size_of::<InstanceGpu>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let placements = all_group_instances(model);
+        if !placements.is_empty() {
+            queue.write_buffer(&instances, 0, bytemuck::cast_slice(&placements));
+        }
         let mut surfaces = Vec::new();
-        let mut source_keys = HashSet::new();
         let fallback = [210u8, 205, 205, 255];
         let terrain = is_ground(model);
         let limit_2d = device.limits().max_texture_dimension_2d;
@@ -1191,7 +1158,6 @@ impl Renderer {
                 continue;
             }
             let key = texture_key(surf.diffuse.as_ref(), 0, terrain, hashes);
-            source_keys.insert(key);
             let (tex, view, diffuse_uploaded) = if let Some((tex, view, _)) = cache.get(&key) {
                 (tex.clone(), view.clone(), surf.diffuse.is_some())
             } else {
@@ -1258,7 +1224,6 @@ impl Renderer {
             // cutouts. Never misinterpret a packed diffuse alpha channel
             // (which may be gloss or specular) as vegetation coverage.
             let mask_key = texture_key(surf.opacity.as_ref(), 1, false, hashes);
-            source_keys.insert(mask_key);
             let (opacity_tex, opacity_view) = if let Some((tex, view, _)) = cache.get(&mask_key) {
                 (tex.clone(), view.clone())
             } else {
@@ -1291,7 +1256,6 @@ impl Renderer {
                 cache.insert(mask_key, (opacity_tex.clone(), view.clone(), bytes));
                 (opacity_tex, view)
             };
-            source_keys.insert(texture_key(surf.normal.as_ref(), 2, false, hashes));
             let (normal_tex, normal_view) = auxiliary_map(
                 device,
                 queue,
@@ -1306,7 +1270,6 @@ impl Renderer {
                 hashes,
                 used_bytes,
             );
-            source_keys.insert(texture_key(surf.specular.as_ref(), 3, false, hashes));
             let (specular_tex, specular_view) = auxiliary_map(
                 device,
                 queue,
@@ -1321,7 +1284,6 @@ impl Renderer {
                 hashes,
                 used_bytes,
             );
-            source_keys.insert(texture_key(surf.gloss.as_ref(), 4, false, hashes));
             let (gloss_tex, gloss_view) = auxiliary_map(
                 device,
                 queue,
@@ -1336,7 +1298,6 @@ impl Renderer {
                 hashes,
                 used_bytes,
             );
-            source_keys.insert(texture_key(surf.emissive.as_ref(), 5, false, hashes));
             let (emissive_tex, emissive_view) = auxiliary_map(
                 device,
                 queue,
@@ -1443,10 +1404,8 @@ impl Renderer {
             vertices,
             indices,
             instances,
-            capacity,
-            visible: 0,
+            visible: model.instances.len().min(u32::MAX as usize) as u32,
             surfaces,
-            source_keys,
             geometry_bytes: (vert.len() * std::mem::size_of::<Vertex>()
                 + model.mesh.indices.len() * std::mem::size_of::<u32>()
                 + capacity * std::mem::size_of::<InstanceGpu>()
@@ -1473,6 +1432,7 @@ impl Renderer {
             self.source_hashes.clear();
             self.pending_diffuse.clear();
             self.mip_min_level.clear();
+            self.mip_round_robin_cursor = 0;
             self.peak_gpu_bytes = 0;
             self.world_identity = 0;
             self.last_camera = None;
@@ -1489,6 +1449,7 @@ impl Renderer {
             self.source_hashes = (*world.source_pixel_hashes).clone();
             self.pending_diffuse.clear();
             self.mip_min_level.clear();
+            self.mip_round_robin_cursor = 0;
             self.peak_gpu_bytes = 0;
             self.world_identity = key;
             self.last_full_textures = full_textures;
@@ -1523,22 +1484,14 @@ impl Renderer {
         };
         let uniform = CameraGpu::make(camera, yaw, pitch, aspect, zoom);
         let camera_changed = self.last_camera != Some(uniform);
-        let visible_groups = world
-            .groups
-            .iter()
-            .map(|group| visible(group, camera, yaw, pitch, aspect, zoom))
-            .collect::<Vec<_>>();
         let mut cache = std::mem::take(&mut self.cache);
         let mut hashes = std::mem::take(&mut self.source_hashes);
-        let evicted = evict_offscreen(&mut self.groups, &visible_groups, &mut cache);
+        // Loaded GPU groups and all of their transforms remain resident until
+        // an explicit world/quality reset; camera motion changes neither.
         self.pending_diffuse
             .retain(|key, _| cache.contains_key(key));
         self.mip_min_level.retain(|key, _| cache.contains_key(key));
-        let target_bytes = if full_textures {
-            WORLD_RESIDENT_TARGET_BYTES
-        } else {
-            MAX_SCENE_BALANCED_TEXTURE_BYTES
-        };
+        let target_bytes = residency_target_bytes(full_textures);
         let mut used_bytes = cache_bytes(&cache);
         let mut deferred = 0usize;
         let mut pending = 0usize;
@@ -1548,10 +1501,11 @@ impl Renderer {
         // aliasing the immutable Renderer borrow with mutable fields.
         let mut pending_diffuse = std::mem::take(&mut self.pending_diffuse);
         let mut mip_min_level = std::mem::take(&mut self.mip_min_level);
-        // Ground first, then visible model groups ordered by camera proximity.
-        // One prepare pass never builds the entire world's GPU resources.
+        // Ground first, then all unresolved source groups by camera distance.
+        // No camera-facing/frustum test may exclude a group from streaming:
+        // every resolved scene placement is loaded in bounded GPU batches.
         let mut candidates = (0..world.groups.len())
-            .filter(|&idx| !visible_groups[idx].is_empty() && self.groups[idx].is_none())
+            .filter(|&idx| !world.groups[idx].instances.is_empty() && self.groups[idx].is_none())
             .collect::<Vec<_>>();
         candidates.sort_by(|&left, &right| {
             group_distance_sq(&world.groups[left], camera)
@@ -1568,48 +1522,17 @@ impl Renderer {
                 &mut hashes,
                 device.limits().max_texture_dimension_2d,
             );
-            // Prefer near/ground geometry when visible groups collectively
-            // exceed the conservative residency target. Evict the farthest
-            // loaded group only if it is genuinely farther than this candidate,
-            // so repeated stream ticks cannot thrash the same two groups.
-            let distance = group_distance_sq(&world.groups[idx], camera);
-            while used_bytes
-                .saturating_add(resident_geometry_bytes(&self.groups))
-                .saturating_add(requested)
-                > target_bytes
-            {
-                let farthest = self
-                    .groups
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, group)| {
-                        group.is_some() && group_distance_sq(&world.groups[*i], camera) > distance
-                    })
-                    .max_by(|(left, _), (right, _)| {
-                        group_distance_sq(&world.groups[*left], camera)
-                            .total_cmp(&group_distance_sq(&world.groups[*right], camera))
-                    })
-                    .map(|(i, _)| i);
-                let Some(victim) = farthest else { break };
-                self.groups[victim].take();
-                let retained: HashSet<TextureKey> = self
-                    .groups
-                    .iter()
-                    .flatten()
-                    .flat_map(|group| group.source_keys.iter().copied())
-                    .collect();
-                cache.retain(|key, _| retained.contains(key));
-                pending_diffuse.retain(|key, _| cache.contains_key(key));
-                mip_min_level.retain(|key, _| cache.contains_key(key));
-                used_bytes = cache_bytes(&cache);
-            }
+            // Never evict previously loaded groups to make space for a new
+            // one. Full quality admits all resolved groups (subject to physical
+            // GPU limits); Balanced defers new groups if its cap is reached.
+            // This prevents camera-motion thrashing and persistent pop-out.
             if used_bytes
                 .saturating_add(resident_geometry_bytes(&self.groups))
                 .saturating_add(requested)
                 > target_bytes
             {
-                // The requested resource remains available in source CPU
-                // memory and can be retried after camera movement/eviction.
+                // Balanced mode: source CPU data remains intact, and this
+                // not-yet-loaded group may be retried after a quality change.
                 deferred += 1;
                 continue;
             }
@@ -1632,11 +1555,23 @@ impl Renderer {
         // Advance one independent diffuse mip each redraw. Existing materials
         // keep sampling their previously uploaded coarser mip until this write
         // is submitted, so no undefined/uninitialized GPU texture reads occur.
-        let next_key = self
+        // A HashMap's first key is stable enough to starve all other mip
+        // chains until a giant texture completes. Rotate across every
+        // verified, resident diffuse so surfaces refine together.
+        let mut mip_keys = self
             .pending_diffuse
             .keys()
             .copied()
-            .find(|key| cache.contains_key(key));
+            .filter(|key| cache.contains_key(key))
+            .collect::<Vec<_>>();
+        mip_keys.sort_unstable();
+        let next_key = if mip_keys.is_empty() {
+            None
+        } else {
+            let key = mip_keys[self.mip_round_robin_cursor % mip_keys.len()];
+            self.mip_round_robin_cursor = self.mip_round_robin_cursor.wrapping_add(1);
+            Some(key)
+        };
         let mut mip_uploads = 0usize;
         let mut finished_key = None;
         if let Some(key) = next_key
@@ -1699,8 +1634,7 @@ impl Renderer {
         self.source_hashes = hashes;
         if (uploaded != 0 || mip_uploads != 0)
             && (progress.loaded.load(Ordering::Relaxed) % 16 == 0
-                || (pending == 0 && self.pending_diffuse.is_empty())
-                || evicted > 0)
+                || (pending == 0 && self.pending_diffuse.is_empty()))
         {
             crate::crash_diagnostics::record(
                 "level_gpu_residency",
@@ -1716,19 +1650,10 @@ impl Renderer {
                 ),
             );
         }
-        if camera_changed || uploaded > 0 || evicted > 0 {
+        if camera_changed || uploaded > 0 {
+            // The GPU clips primitives outside the viewport; there is no
+            // per-camera CPU culling or repeated instance-buffer upload.
             queue.write_buffer(&self.camera_uniform, 0, bytemuck::bytes_of(&uniform));
-            for (gpu, culled) in self.groups.iter_mut().zip(&visible_groups) {
-                let Some(gpu) = gpu.as_mut() else { continue };
-                gpu.visible = culled.len().min(gpu.capacity) as u32;
-                if !culled.is_empty() {
-                    queue.write_buffer(
-                        &gpu.instances,
-                        0,
-                        bytemuck::cast_slice(&culled[..gpu.visible as usize]),
-                    );
-                }
-            }
         }
         self.last_camera = Some(uniform);
     }
@@ -1766,6 +1691,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn group_loading_priority_uses_position_not_camera_direction() {
+        let dummy_mesh = Arc::new(RenderMesh {
+            info: evolve_core::ModelInfo {
+                format: "test".into(),
+                version: 1,
+                chunk_count: 0,
+                vertex_count: 0,
+                triangle_count: 0,
+                original_uv0: true,
+                original_normals: true,
+            },
+            positions: Vec::new(),
+            indices: Vec::new(),
+            uv0: None,
+            normals: None,
+        });
+        let group = ModelGroup {
+            mesh: dummy_mesh,
+            surfaces: Vec::new(),
+            instances: vec![
+                Instance {
+                    object_index: 1,
+                    transform: Transform::default(),
+                },
+                Instance {
+                    object_index: 2,
+                    transform: Transform::default(),
+                },
+            ],
+            radius: 1.0,
+        };
+        let distant_visible = Transform {
+            position: [100.0, 0.0, 0.0],
+            ..Transform::default()
+        };
+        let mut group = group;
+        group.instances[0].transform = distant_visible;
+        group.instances[1].transform = distant_visible;
+        let camera = level_camera::Camera::default();
+        assert_eq!(group_distance_sq(&group, camera), 10000.0);
+        assert_eq!(all_group_instances(&group).len(), 2);
+        let mut opposite_camera = camera;
+        opposite_camera.position = [200.0, 0.0, 0.0];
+        assert_eq!(group_distance_sq(&group, opposite_camera), 10000.0);
+        assert_eq!(all_group_instances(&group).len(), 2);
+    }
+
+    #[test]
     fn streamed_mip_writes_are_bounded_independently_of_full_resolution() {
         assert_eq!(MAX_MIP_WRITE_BYTES_PER_FRAME, 8 * 1024 * 1024);
         let rows_8k = (MAX_MIP_WRITE_BYTES_PER_FRAME / (8192 * 4)).max(1);
@@ -1781,6 +1754,16 @@ mod tests {
         assert!(shader.contains("let leaf_alpha=sample_source_albedo(input.uv).a;"));
         assert!(shader.contains("let base=sample_source_albedo(input.uv);"));
         naga::front::wgsl::parse_str(shader).expect("streamed diffuse shader must parse");
+    }
+
+    #[test]
+    fn initial_diffuse_upload_shows_detail_and_allows_valid_coarser_mips() {
+        assert_eq!(initial_diffuse_mip(8192, 8192), 6);
+        assert_eq!(initial_diffuse_mip(4096, 4096), 5);
+        assert_eq!(initial_diffuse_mip(1000, 500), 3);
+        assert_eq!(initial_diffuse_mip(128, 64), 0);
+        assert_eq!(initial_diffuse_mip(1, 1), 0);
+        assert!((8192 >> initial_diffuse_mip(8192, 8192)) <= INITIAL_DIFFUSE_MAX_DIMENSION);
     }
 
     #[test]
@@ -1826,7 +1809,11 @@ mod tests {
             Some((8192, 8192))
         );
         assert!(mip_chain_bytes(8192, 8192) > 340 * 1024 * 1024);
-        assert_eq!(WORLD_RESIDENT_TARGET_BYTES, 512 * 1024 * 1024);
+        assert_eq!(residency_target_bytes(true), u64::MAX);
+        assert_eq!(
+            residency_target_bytes(false),
+            MAX_SCENE_BALANCED_TEXTURE_BYTES
+        );
         assert_eq!(MAX_NEW_GROUPS_PER_FRAME, 2);
     }
 
