@@ -613,7 +613,10 @@ pub fn read_static_cdf_assembly_with_kala_state(
         // weights always uses native deformation; never rigidly double-mount.
         let socket_mounted = matches!(attachment.kind, AttachmentKind::Bone)
             || (!verified_skin_weights
-                && matches!(attachment.kind, AttachmentKind::Skin | AttachmentKind::UniqueSkin)
+                && matches!(
+                    attachment.kind,
+                    AttachmentKind::Skin | AttachmentKind::UniqueSkin
+                )
                 && attachment.bone_name.is_some());
         if socket_mounted {
             let Some(verified) = skeleton.as_ref() else {
