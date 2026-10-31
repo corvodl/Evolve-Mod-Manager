@@ -710,8 +710,14 @@ mod editing_tests {
 
     #[test]
     fn level_inspector_defaults_to_actors_instead_of_verbose_scene_diagnostics() {
-        assert_eq!(super::super::LevelSidebarTab::default(), super::super::LevelSidebarTab::Actors);
-        assert_ne!(super::super::LevelSidebarTab::default(), super::super::LevelSidebarTab::Diagnostics);
+        assert_eq!(
+            super::super::LevelSidebarTab::default(),
+            super::super::LevelSidebarTab::Actors
+        );
+        assert_ne!(
+            super::super::LevelSidebarTab::default(),
+            super::super::LevelSidebarTab::Diagnostics
+        );
     }
 
     #[test]
