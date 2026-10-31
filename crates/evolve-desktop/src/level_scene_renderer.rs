@@ -725,7 +725,9 @@ pub(super) fn assemble(
                 let (source, meshes, fallback_note) = match decodable_render_source(
                     &object.model,
                     |candidate| sources.lookup(candidate).map(|found| found.cloned()),
-                    |path| read_world_model_parts_with_subsets(path).map_err(|error| error.to_string()),
+                    |path| {
+                        read_world_model_parts_with_subsets(path).map_err(|error| error.to_string())
+                    },
                 ) {
                     Ok(loaded) => loaded,
                     Err(reasons) => {
@@ -809,10 +811,11 @@ pub(super) fn assemble(
                             );
                             match resolved {
                                 Ok((parts, warnings)) => {
-                                    let has_diffuse = parts.iter().flatten()
-                                        .any(|part| part.diffuse.is_some());
+                                    let has_diffuse =
+                                        parts.iter().flatten().any(|part| part.diffuse.is_some());
                                     report.textured += usize::from(has_diffuse);
-                                    let missing_sections = parts.iter()
+                                    let missing_sections = parts
+                                        .iter()
                                         .map(|mesh_parts| missing_diffuse_sections(mesh_parts))
                                         .sum::<usize>();
                                     if has_diffuse && missing_sections > 0 {
@@ -892,7 +895,11 @@ pub(super) fn assemble(
                 // successfully decoded meshes whose materials were missing,
                 // ambiguous, unsupported or lacked an authored diffuse.
                 // Count each resource pair once, not its thousands of instances.
-                if !per_mesh_materials.iter().flatten().any(|part| part.diffuse.is_some()) {
+                if !per_mesh_materials
+                    .iter()
+                    .flatten()
+                    .any(|part| part.diffuse.is_some())
+                {
                     report.without_diffuse += 1;
                     if diffuse_reasons.is_empty() {
                         diffuse_reasons
@@ -914,9 +921,10 @@ pub(super) fn assemble(
                 for (part_index, part) in meshes.into_iter().enumerate() {
                     let mesh = part.mesh;
                     let radius = world_instances::radius(&mesh);
-                    let parts = per_mesh_materials.get(part_index).cloned().unwrap_or_else(|| {
-                        vec![neutral(0, mesh.indices.len() as u32)]
-                    });
+                    let parts = per_mesh_materials
+                        .get(part_index)
+                        .cloned()
+                        .unwrap_or_else(|| vec![neutral(0, mesh.indices.len() as u32)]);
                     let geometry = (mesh.positions.len() * 32
                         + mesh.indices.len() * 4
                         + object.model.len()) as u64;
