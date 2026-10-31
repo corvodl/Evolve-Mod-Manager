@@ -6,11 +6,14 @@
 use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface, world_instances};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform,
-    begin_imported_lookup_session, imported_archive_files, imported_archive_preview_inventory,
-    imported_library, read_world_model_parts,
+    begin_imported_lookup_session, begin_imported_lookup_session_for_source,
+    imported_archive_files, imported_archive_preview_inventory, imported_library,
+    read_world_model_parts,
 };
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -188,8 +191,8 @@ where
     Err(reasons)
 }
 
-/// Canonical on-disk installation identity, independent of the spelling of
-/// a recorded manifest source path. This never authorizes another game root.
+/// Source installation identity rather than mutable label/version spelling.
+/// Never includes arbitrary assets from a different installed Game directory.
 fn source_game_directory(pak: &ImportedPak) -> Option<PathBuf> {
     Path::new(&pak.source)
         .ancestors()
@@ -198,6 +201,43 @@ fn source_game_directory(pak: &ImportedPak) -> Option<PathBuf> {
                 .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Game"))
         })
         .and_then(|path| fs::canonicalize(path).ok())
+}
+
+// An exact virtual asset in several PAKs is only unambiguous when the
+// decoded *source files* themselves have identical bytes. Avoid selecting the
+// first matching basename or assuming Stage 2 and Legacy PAKs interoperate.
+fn identical_verified_sources(assets: &[AssetLocation]) -> Result<bool, String> {
+    if assets.len() <= 1 {
+        return Ok(true);
+    }
+    let mut first: Option<(u64, [u8; 32])> = None;
+    for asset in assets {
+        let metadata = fs::symlink_metadata(&asset.path)
+            .map_err(|error| format!("Cannot inspect duplicate source: {error}"))?;
+        if !metadata.file_type().is_file() || metadata.len() > 128 * 1024 * 1024 {
+            return Ok(false);
+        }
+        let mut file = fs::File::open(&asset.path)
+            .map_err(|error| format!("Cannot read duplicate source: {error}"))?;
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&buffer[..count]);
+        }
+        let current = (metadata.len(), digest.finalize().into());
+        if let Some(previous) = first {
+            if previous != current {
+                return Ok(false);
+            }
+        } else {
+            first = Some(current);
+        }
+    }
+    Ok(true)
 }
 
 impl Index {
@@ -220,26 +260,26 @@ impl Index {
         };
         let mut archives = vec![selected.clone()];
         if let Some(root) = &index.library_root {
-            // Snapshot labels can be duplicated by historical \\?\ path spellings.
-            // Bind dependencies to the actual Game directory of the selected
-            // original PAK instead, never to a similarly named other build.
             if let Some(source_game) = source_game_directory(selected) {
                 let library = imported_library(root).map_err(|e| e.to_string())?;
-                let others = library.archives.into_iter().filter(|pak| {
-                    pak.id != selected.id
-                        && source_game_directory(pak).as_ref() == Some(&source_game)
-                });
-                for pak in others.take(MAX_ARCHIVES - 1) {
+                for pak in library
+                    .archives
+                    .into_iter()
+                    .filter(|pak| {
+                        pak.id != selected.id
+                            && source_game_directory(pak).as_ref() == Some(&source_game)
+                    })
+                    .take(MAX_ARCHIVES - 1)
+                {
                     archives.push(pak);
                 }
                 report.note(
-                    "Using exact virtual asset paths from the selected installed Game directory."
+                    "Resolving exact asset paths within the selected installed Game directory."
                         .into(),
                 );
             } else {
                 report.note(
-                    "Original game directory is unavailable; cross-PAK resources are disabled."
-                        .into(),
+                    "Installed Game directory unverified; cross-PAK dependencies disabled.".into(),
                 );
             }
         }
@@ -273,6 +313,17 @@ impl Index {
                 }
             };
             let root = PathBuf::from(&inventory.root);
+            // Canonicalize both sides for containment checks. Windows may
+            // introduce a \\?\ transport prefix only on the canonical side;
+            // comparing that against a persisted C:\ path rejects valid
+            // imports even though both paths identify the same file.
+            let Ok(canonical_root) = fs::canonicalize(&root) else {
+                report.note(format!(
+                    "Imported extraction folder not accessible: {}",
+                    pak.name
+                ));
+                continue;
+            };
             let mut matched = false;
             for asset in &inventory.entries {
                 let Some(key) = safe_virtual(&asset.relative_path) else {
@@ -292,14 +343,17 @@ impl Index {
                     let Ok(canonical) = fs::canonicalize(&path) else {
                         continue;
                     };
-                    if !canonical.starts_with(&root) {
+                    if !canonical.starts_with(&canonical_root) {
                         continue;
                     }
                     accepted += 1;
                     matched = true;
                     index.files.entry(key).or_default().push(AssetLocation {
                         archive: pak.id.clone(),
-                        path: canonical,
+                        // Retain an ordinary Windows path for downstream
+                        // decoders. The resolved canonical path above is
+                        // used only to verify containment, never persisted.
+                        path,
                     });
                 }
             }
@@ -331,11 +385,13 @@ impl Index {
         if let Some(selected) = found.iter().find(|a| a.archive == self.selected_id) {
             return Ok(Some(selected));
         }
-        if found.len() == 1 {
+        if found.len() == 1 || identical_verified_sources(found)? {
+            // Multiple identical verified files are equivalent. The selected
+            // archive still takes precedence. Never collapse changed bytes.
             Ok(found.first())
         } else {
             Err(format!(
-                "Ambiguous imported asset {raw} appears in {} PAKs",
+                "Ambiguous imported asset {raw} differs across {} PAKs",
                 found.len()
             ))
         }
@@ -474,6 +530,62 @@ fn append(
     true
 }
 
+// One GPU group can have dozens of independently textured material spans.
+// Split oversized *multi-material* groups before GPU upload; each sub-group
+// shares the exact source CPU mesh and authored instances but retains only its
+// own material spans. A single larger-than-target source still requires sparse
+// GPU texture residency and remains explicitly reported as deferred.
+const WORLD_RESIDENCY_TARGET: u64 = 512 * 1024 * 1024;
+fn rgba_mip_footprint(width: u32, height: u32) -> u64 {
+    let mut total = 0u64;
+    let (mut w, mut h) = (width.max(1), height.max(1));
+    loop {
+        total = total.saturating_add(u64::from(w) * u64::from(h) * 4);
+        if w == 1 && h == 1 {
+            break;
+        }
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+    }
+    total
+}
+
+fn surface_gpu_estimate(surface: &Surface) -> u64 {
+    [
+        surface.diffuse.as_ref(),
+        surface.opacity.as_ref(),
+        surface.normal.as_ref(),
+        surface.specular.as_ref(),
+        surface.gloss.as_ref(),
+        surface.emissive.as_ref(),
+    ]
+    .into_iter()
+    .map(|source| source.map_or(4, |image| rgba_mip_footprint(image.width(), image.height())))
+    .sum()
+}
+
+fn surface_batch_ranges(costs: &[u64], geometry: u64) -> Vec<std::ops::Range<usize>> {
+    if costs.is_empty() {
+        return std::iter::once(0..0).collect();
+    }
+    if geometry.saturating_add(costs.iter().copied().sum::<u64>()) <= WORLD_RESIDENCY_TARGET {
+        return std::iter::once(0..costs.len()).collect();
+    }
+    let mut result = Vec::new();
+    let mut from = 0;
+    let mut used = geometry;
+    for (index, cost) in costs.iter().copied().enumerate() {
+        if index > from && used.saturating_add(cost) > WORLD_RESIDENCY_TARGET {
+            result.push(from..index);
+            from = index;
+            used = geometry;
+        }
+        used = used.saturating_add(cost);
+    }
+    result.push(from..costs.len());
+    result
+}
+
 pub(super) fn assemble(
     archive: &ImportedPak,
     scene: Option<&LevelScene>,
@@ -544,19 +656,29 @@ pub(super) fn assemble(
                 }
             }
         }
-        let sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
-        // This scope caches all matching-build manifest paths for the duration
-        // of assembly. Every material/texture hit still rechecks its actual
-        // file size and canonical containment, but no dependency triggers a
-        // fresh enumeration of the entire Asset Library.
+        let mut sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
+        // Scope material/DDS resolution to the same real installed Game
+        // directory as geometry. Historical labels can be duplicated, so a
+        // single old build label is not strong enough provenance by itself.
         let lookup_started = Instant::now();
-        let _scoped_lookup = sources
-            .library_root
-            .as_deref()
-            .zip(sources.build.as_deref())
-            .map(|(root, build)| begin_imported_lookup_session(root, build))
-            .transpose()
-            .map_err(|error| error.to_string())?;
+        let _scoped_lookup = if let Some(root) = sources.library_root.as_deref() {
+            if source_game_directory(archive).is_some() {
+                let (label, guard) =
+                    begin_imported_lookup_session_for_source(root, &archive.source)
+                        .map_err(|error| error.to_string())?;
+                sources.build = Some(label);
+                Some(guard)
+            } else {
+                sources
+                    .build
+                    .as_deref()
+                    .map(|build| begin_imported_lookup_session(root, build))
+                    .transpose()
+                    .map_err(|error| error.to_string())?
+            }
+        } else {
+            None
+        };
         report.note(format!(
             "Exact-build material lookup index initialized in {} ms.",
             lookup_started.elapsed().as_millis()
@@ -598,6 +720,15 @@ pub(super) fn assemble(
                     Ok(loaded) => loaded,
                     Err(reasons) => {
                         report.unresolved += 1;
+                        crate::crash_diagnostics::record(
+                            "level_unresolved_geometry",
+                            &format!(
+                                "model={} material={} reasons={}",
+                                object.model,
+                                object.material,
+                                reasons.join("; ")
+                            ),
+                        );
                         report.note(format!(
                             "Cannot resolve/decode {}: {}",
                             object.model,
@@ -709,6 +840,16 @@ pub(super) fn assemble(
                 // Count each resource pair once, not its thousands of instances.
                 if !material_ranges.iter().any(|part| part.diffuse.is_some()) {
                     report.without_diffuse += 1;
+                    crate::crash_diagnostics::record(
+                        "level_missing_verified_diffuse",
+                        &format!(
+                            "model={} material={} source={} sections={}",
+                            object.model,
+                            object.material,
+                            source.archive,
+                            meshes.len()
+                        ),
+                    );
                 }
                 let mut indices = Vec::with_capacity(meshes.len());
                 for mesh in meshes {
@@ -722,14 +863,36 @@ pub(super) fn assemble(
                     } else {
                         material_ranges.clone()
                     };
-                    indices.push(models.len());
-                    models.push(world_instances::ModelGroup {
-                        mesh: std::sync::Arc::new(mesh),
-                        surfaces: parts,
-                        instances: Vec::new(),
-                        radius,
-                    });
+                    let geometry = (mesh.positions.len() * 32
+                        + mesh.indices.len() * 4
+                        + object.model.len()) as u64;
+                    let costs = parts.iter().map(surface_gpu_estimate).collect::<Vec<_>>();
+                    let batches = surface_batch_ranges(&costs, geometry);
+                    if models.len().saturating_add(batches.len()) > MAX_MODELS {
+                        budget_hit = true;
+                        break;
+                    }
+                    let shared = std::sync::Arc::new(mesh);
+                    if batches.len() > 1 {
+                        report.note(format!(
+                            "Split {} into {} independent GPU material-residency groups",
+                            object.model,
+                            batches.len(),
+                        ));
+                    }
+                    for batch in batches {
+                        indices.push(models.len());
+                        models.push(world_instances::ModelGroup {
+                            mesh: shared.clone(),
+                            surfaces: parts[batch].to_vec(),
+                            instances: Vec::new(),
+                            radius,
+                        });
+                    }
                     report.geometries += 1;
+                }
+                if budget_hit {
+                    break;
                 }
                 resolved.insert(key, indices.clone());
                 indices
@@ -840,6 +1003,42 @@ pub(super) fn reproject_after_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multi_material_group_splits_before_exceeding_residency_target() {
+        let mb = 1024 * 1024u64;
+        assert_eq!(
+            surface_batch_ranges(&[230 * mb, 230 * mb, 230 * mb], 4 * mb),
+            vec![0..2, 2..3],
+        );
+        assert_eq!(
+            surface_batch_ranges(&[100 * mb, 100 * mb, 100 * mb], 4 * mb),
+            vec![0..3],
+        );
+        // A single oversized source remains unaltered for later sparse-GPU
+        // work rather than being silently downscaled or omitted.
+        assert_eq!(surface_batch_ranges(&[800 * mb], 4 * mb), vec![0..1]);
+    }
+
+    #[test]
+    fn matching_byte_identical_cgf_assets_are_not_falsely_ambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.cgf");
+        let b = dir.path().join("b.cgf");
+        std::fs::write(&a, b"exact-verified-geometry").unwrap();
+        std::fs::write(&b, b"exact-verified-geometry").unwrap();
+        let original = AssetLocation {
+            archive: "A".into(),
+            path: a,
+        };
+        let candidate = AssetLocation {
+            archive: "B".into(),
+            path: b.clone(),
+        };
+        assert!(identical_verified_sources(&[original.clone(), candidate.clone()]).unwrap());
+        std::fs::write(&b, b"conflicting-geometry").unwrap();
+        assert!(!identical_verified_sources(&[original, candidate]).unwrap());
+    }
 
     #[test]
     fn exact_static_mesh_companions_do_not_search_other_folders() {

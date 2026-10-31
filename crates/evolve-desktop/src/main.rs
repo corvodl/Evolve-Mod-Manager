@@ -2093,6 +2093,7 @@ enum Message {
     LevelCameraKey(window::Id, char, bool),
     LevelCameraWindowFocus(window::Id, bool),
     LevelCameraTick,
+    LevelGpuStreamTick,
     ViewerSearchChanged(String),
     ViewerPreviousPage,
     ViewerNextPage,
@@ -7894,6 +7895,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_keys.remove(&key);
                 }
             }
+        }
+        Message::LevelGpuStreamTick => {
+            // Redraw the Level Editor so the shader can upload its next bounded
+            // batch. The subscription stops when no visible uploads remain.
         }
         Message::LevelCameraTick => {
             if !state.level_window_focused
@@ -14529,6 +14534,18 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let level_gpu_stream = if self.level_id.is_some()
+            && self.state.level_world.as_ref().is_some_and(|world| {
+                world
+                    .gpu_progress
+                    .pending
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    > 0
+            }) {
+            iced::time::every(Duration::from_millis(65)).map(|_| Message::LevelGpuStreamTick)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             iced::time::every(Duration::from_secs(8)).map(|_| Message::DiscordPresenceTick),
             dev_overlay_input,
@@ -14539,6 +14556,7 @@ impl Desktop {
             playback,
             sidebar_animation,
             level_camera_tick,
+            level_gpu_stream,
             startup,
             scan_progress,
             wheel,

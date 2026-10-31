@@ -474,6 +474,21 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 "Textures: Balanced"
             })
             .on_press(Message::LevelFullTexturesToggled),
+            text(state.level_world.as_ref().map_or_else(
+                || "GPU residency: no world loaded.".to_owned(),
+                |world| {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    let p = &world.gpu_progress;
+                    let mib = 1_048_576_f64;
+                    format!(
+                        "GPU streaming: {} of {} resident groups; {} pending, {} deferred. Textures {:.1} MiB, geometry {:.1} MiB, peak {:.1} MiB (estimated). Full source resolution retained; available VRAM not exposed by wgpu.",
+                        p.loaded.load(Relaxed), world.groups.len(), p.pending.load(Relaxed),
+                        p.deferred.load(Relaxed), p.textures.load(Relaxed) as f64 / mib,
+                        p.geometry.load(Relaxed) as f64 / mib,
+                        p.peak.load(Relaxed) as f64 / mib,
+                    )
+                },
+            )).size(11).style(design::muted),
             text("Full: no manager GPU texture ceiling; requires sufficient VRAM, and GPU texture dimension limits still apply. Balanced: lower memory usage.")
                 .size(11)
                 .style(design::muted),
@@ -489,13 +504,29 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text(state.level_world.as_ref().map_or_else(
                 || "Fog preview disabled: no verified map world.".to_owned(),
                 |world| match (world.fog_profile, world.time_of_day.as_deref()) {
-                    (Some(fog), Some(tod)) if tod.color("Fog color", state.level_time_of_day).is_some() && fog.ldr_density_multiplier > 0.0 => format!(
-                        "Distance-only fog PREVIEW: Environment.xml ViewDistance {:.0}m, LDR density multiplier {:.2}, TimeOfDay Fog color. NOT native height/volumetric fog, shadows, HDR or GI.",
-                        fog.view_distance, fog.ldr_density_multiplier
-                    ),
+                    (Some(fog), Some(tod)) if fog.preview_uniform(Some(tod), state.level_time_of_day)[1][0] > 0.5 => {
+                        if fog.height_preview_uniform(Some(tod), state.level_time_of_day)[1][0] > 0.5 {
+                            let height = tod.height_fog(state.level_time_of_day).expect("height preview uniform requires valid source heights");
+                            format!(
+                                "Source-backed analytical HEIGHT FOG PREVIEW: {:.0}–{:.0}m altitude, density {:.3}→{:.3}; TimeOfDay + Environment.xml. Not native Evolve fog, scattering, shadows, HDR or GI.",
+                                height.bottom_height, height.top_height, height.bottom_density, height.top_density
+                            )
+                        } else {
+                            format!(
+                                "Distance-only fog PREVIEW: Environment.xml ViewDistance {:.0}m, LDR density multiplier {:.2}; height-density source missing, invalid, or has a zero endpoint (unsupported by exponential model). Not native.",
+                                fog.view_distance, fog.ldr_density_multiplier
+                            )
+                        }
+                    },
                     (Some(_), Some(_)) => "Fog preview disabled: original TimeOfDay Fog color missing or density zero.".to_owned(),
                     _ => "Fog preview disabled: exact original Environment.xml and TimeOfDay.xml are both required.".to_owned(),
                 },
+            ))
+                .size(11)
+                .style(design::muted),
+            text(state.level_world.as_ref().and_then(|world| world.time_of_day.as_ref()).map_or_else(
+                || "No verified TimeOfDay fog-variable inventory.".to_owned(),
+                |tod| tod.fog_source_diagnostics(state.level_time_of_day),
             ))
                 .size(11)
                 .style(design::muted),

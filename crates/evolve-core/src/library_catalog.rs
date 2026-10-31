@@ -569,17 +569,50 @@ pub fn begin_imported_lookup_session(
     root: &Path,
     build_label: &str,
 ) -> Result<ImportedLookupGuard, LibraryError> {
+    begin_indexed_lookup_session(root, build_label, |archive| {
+        archive.builds.iter().any(|label| label == build_label)
+    })
+}
+
+fn game_root_from_source(source: &str) -> Option<PathBuf> {
+    Path::new(source)
+        .ancestors()
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Game"))
+        })
+        .and_then(|path| fs::canonicalize(path).ok())
+}
+
+/// Exact-installation material indexing, independent of migrated historical
+/// build labels. Other game directories never become candidates, even if an
+/// unrelated archive happens to share the same virtual resource filename.
+pub fn begin_imported_lookup_session_for_source(
+    root: &Path,
+    selected_source: &str,
+) -> Result<(String, ImportedLookupGuard), LibraryError> {
+    let selected_game = game_root_from_source(selected_source).ok_or(LibraryError::InvalidRoot)?;
+    let key = selected_game.to_string_lossy().to_ascii_lowercase();
+    let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
+    let build_token = format!("source-game-{}", &digest[..24]);
+    let guard = begin_indexed_lookup_session(root, &build_token, |archive| {
+        game_root_from_source(&archive.source).as_ref() == Some(&selected_game)
+    })?;
+    Ok((build_token, guard))
+}
+
+fn begin_indexed_lookup_session(
+    root: &Path,
+    build_label: &str,
+    mut include: impl FnMut(&ImportedPak) -> bool,
+) -> Result<ImportedLookupGuard, LibraryError> {
     if build_label.trim().is_empty() {
         return Err(LibraryError::UnsafeArchive);
     }
     let library = imported_library(root)?;
     let mut members = HashMap::<String, Vec<IndexedMember>>::new();
     let mut total = 0usize;
-    for archive in library
-        .archives
-        .iter()
-        .filter(|archive| archive.builds.iter().any(|label| label == build_label))
-    {
+    for archive in library.archives.iter().filter(|archive| include(archive)) {
         let folder = Path::new(&archive.directory);
         let manifest: Manifest = serde_json::from_slice(&read_bounded(
             &folder.join("asset-library.json"),
@@ -893,6 +926,27 @@ fn resolve_imported_reference_scoped(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_game_identity_never_crosses_independent_installations() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first").join("Game");
+        let second = root.path().join("second").join("Game");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let a = first.join("levels_tutorial.pak");
+        let b = first.join("materials_basic.pak");
+        let other = second.join("levels_tutorial.pak");
+        let canonical = game_root_from_source(&a.to_string_lossy()).unwrap();
+        assert_eq!(
+            canonical,
+            game_root_from_source(&b.to_string_lossy()).unwrap()
+        );
+        assert_ne!(
+            canonical,
+            game_root_from_source(&other.to_string_lossy()).unwrap()
+        );
+    }
+
     #[test]
     fn exact_identical_cooked_dds_from_two_paks_is_not_ambiguous() {
         let dir = tempfile::tempdir().unwrap();
