@@ -67,10 +67,8 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
     use std::process::{Command, Output, Stdio};
 
     fn command(args: &[String]) -> Result<Output, String> {
-        let root = std::env::var_os("WINDIR")
-            .or_else(|| std::env::var_os("SystemRoot"))
-            .unwrap_or_else(|| r"C:\Windows".into());
-        Command::new(PathBuf::from(root).join("System32").join("netsh.exe"))
+        let netsh = crate::windows_system32::executable("netsh.exe")?;
+        Command::new(netsh)
             .args(["advfirewall", "firewall"])
             .args(args)
             .stdin(Stdio::null())
