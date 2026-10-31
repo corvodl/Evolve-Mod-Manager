@@ -39,6 +39,7 @@ pub mod model;
 pub mod native_caf;
 pub mod native_dba;
 pub mod native_offline_launch;
+pub mod particle_preview;
 pub mod policy;
 pub mod profiles;
 pub mod rig;
@@ -49,6 +50,10 @@ pub mod staging;
 pub mod terrain;
 mod terrain_tiles;
 
+pub use particle_preview::{
+    ParticleEmitter, ParticlePreview, ParticlePreviewSimulation, decode_particle_library,
+    MAX_LIVE_PARTICLES,
+};
 pub use animation::{
     AnimatedGlb, AnimationError, AnimationReference, CafInspection, MotionClip, PoseSample,
     animation_references, animation_wildcard_matches, inspect_caf_bytes, inspect_caf_file,
