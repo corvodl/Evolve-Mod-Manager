@@ -7819,24 +7819,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::ViewerResetCamera => {
-            state.yaw = 0.0;
+            // CryEngine characters face +Y: the correct FRONT camera is at +Y.
+            state.yaw = orientation_gizmo::FRONT_YAW;
             state.pitch = 0.0;
             state.zoom = 1.0;
             state.pan_x = 0.0;
             state.pan_y = 0.0;
         }
         Message::ViewerCameraPreset(preset) => {
-            // Match the private viewer's Blender-style axis directions.
-            let orientation = match preset {
-                "Front" => Some((0.0, 0.0)),
-                "Back" => Some((180.0, 0.0)),
-                "Left" => Some((-90.0, 0.0)),
-                "Right" => Some((90.0, 0.0)),
-                "Top" => Some((0.0, 89.5)),
-                "Bottom" => Some((0.0, -89.5)),
-                "Isometric" => Some((-30.0, 14.0)),
-                _ => None,
-            };
+            // Only the camera rotates. Source skeleton transforms, winding,
+            // export coordinate basis and UVs are never reflected.
+            let orientation = orientation_gizmo::model_camera_preset(preset);
             if let Some((yaw, pitch)) = orientation {
                 state.yaw = yaw;
                 state.pitch = pitch;
@@ -13967,6 +13960,7 @@ fn view(state: &State) -> Element<'_, Message> {
 fn initial_state() -> State {
     let mut result = State {
         docs_expanded: HashSet::from([private_pages::DocsSection::GettingStarted]),
+        yaw: orientation_gizmo::FRONT_YAW,
         zoom: 1.0,
         playback_speed: 1.0,
         export_rigged: true,
@@ -13994,7 +13988,16 @@ fn initial_state() -> State {
                 result.light_strength = saved.light_strength;
                 result.playback_speed = saved.animation_speed;
                 result.playback_loop = saved.animation_loop;
-                result.yaw = saved.saved_yaw;
+                // Previous builds persisted 0° as the default "Front",
+                // but it actually looked from -Y (the character's back).
+                // Migrate only that legacy default to the correct +Y view.
+                result.yaw = if saved.saved_yaw.abs() < 0.001
+                    && saved.saved_pitch.abs() < 0.001
+                {
+                    orientation_gizmo::FRONT_YAW
+                } else {
+                    saved.saved_yaw
+                };
                 result.pitch = saved.saved_pitch;
                 result.zoom = saved.saved_zoom;
                 result.preferences = saved;
