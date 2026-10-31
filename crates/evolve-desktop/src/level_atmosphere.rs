@@ -101,9 +101,9 @@ pub(super) fn lights(sources: &[(String, Vec<u8>)],scene: Option<&LevelScene>) -
             let event=match reader.read_event() {
                 Ok(v)=>v, Err(err)=>{warnings.push(format!("{name}: original light XML: {err}"));break}
             };
+            let nested=matches!(&event,Event::Start(_));
             match event {
                 Event::Start(e) | Event::Empty(e) => {
-                    let nested=matches!(event,Event::Start(_));
                     if nested {depth+=1;}
                     if depth>128 {warnings.push(format!("{name}: light XML nesting limit"));break}
                     let tag=e.name();
@@ -237,6 +237,92 @@ pub(super) fn atmosphere_uniform(
         [night_horizon[0],night_horizon[1],night_horizon[2],scalar("Night sky horizon color multiplier",1.).clamp(0.,10.)],
         [exposure,white,scalar("Saturation",1.).clamp(0.,2.),hour],
     ]
+}
+
+
+
+/// Verified authored static sky: CryEngine's Sky material packs four sides
+/// in _12 and _34, and the zenith in _5. No sky image is generated when
+/// one of the three original cooked textures is absent.
+#[derive(Clone,Debug)]
+pub(super) struct StaticSky {
+    pub images: [std::sync::Arc<image::RgbaImage>;3],
+    pub angle: f32,
+    pub stretching: f32,
+}
+fn indexed_source(
+    root:&std::path::Path, build:&str, virtual_name:&str
+)->Result<Option<std::path::PathBuf>,String>{
+    match evolve_core::resolve_imported_reference(root,virtual_name,Some(build))
+        .map_err(|e|e.to_string())? {
+        evolve_core::LibraryReferenceStatus::Found(item)=>Ok(Some(item.absolute_path.into())),
+        evolve_core::LibraryReferenceStatus::Missing=>Ok(None),
+        evolve_core::LibraryReferenceStatus::Ambiguous(_)=>
+            Err(format!("Ambiguous sky asset {virtual_name}; no arbitrary source choice")),
+    }
+}
+fn sky_texture(
+    root:&std::path::Path,build:&str,material:&str,authored:&str
+)->Result<image::RgbaImage,String> {
+    for cooked in evolve_core::scoped_texture_candidates(authored,material)? {
+        let Some(source)=indexed_source(root,build,&cooked)? else {continue};
+        let (info,rgba)=if cooked.to_ascii_lowercase().ends_with(".dds.0") {
+            let stem=cooked.strip_suffix(".0").ok_or("Bad cooked sky DDS path")?;
+            let mut parts=Vec::new();
+            for i in 1..20 {
+                if let Some(path)=indexed_source(root,build,&format!("{stem}.{i}"))? {
+                    parts.push(path);
+                }
+            }
+            evolve_core::decode_dds_rgba_with_parts(&source,&parts)
+                .map_err(|e|e.to_string())?
+        } else {
+            evolve_core::decode_dds_rgba(&source).map_err(|e|e.to_string())?
+        };
+        if info.width>4096 || info.height>4096 || info.width<2 || info.height<2 {
+            return Err("Authored sky texture dimensions unsupported".into());
+        }
+        return Ok(rgba);
+    }
+    Err(format!("No same-install cooked texture for original sky {authored}"))
+}
+pub(super) fn load_static_sky(
+    archive:&evolve_core::ImportedPak,
+    sky:&SkySource,
+)->Result<Option<StaticSky>,String>{
+    let Some(material)=sky.material.as_deref() else {return Ok(None)};
+    let root=std::path::Path::new(&archive.directory).parent()
+        .ok_or("Original imported sky library unavailable")?;
+    let (build,_guard)=evolve_core::begin_imported_lookup_session_for_source(root,&archive.source)
+        .map_err(|e|e.to_string())?;
+    let material=if material.to_ascii_lowercase().ends_with(".mtl"){
+        material.to_owned()
+    } else {format!("{material}.mtl")};
+    let path=indexed_source(root,&build,&material)?
+        .ok_or_else(||format!("Original SkyBox material missing: {material}"))?;
+    let doc=evolve_core::read_material(&path).map_err(|e|e.to_string())?;
+    if doc.slots.iter().any(|slot|slot.shader.eq_ignore_ascii_case("SkyHDR")) {
+        // SkyHDR is the dynamic atmospheric shader, not a static cube.
+        return Ok(None);
+    }
+    let diffuse=doc.slots.iter()
+        .filter(|slot|slot.shader.eq_ignore_ascii_case("Sky"))
+        .flat_map(|slot|slot.maps.iter())
+        .find(|texture|texture.role=="diffuse")
+        .map(|texture|texture.path.as_str())
+        .ok_or("SkyBox material has no authored Sky diffuse reference")?;
+    let base=diffuse.rsplit_once('.').map(|(b,_)|b).unwrap_or(diffuse);
+    let prefix=base.strip_suffix("_12").or_else(||base.strip_suffix("_34"))
+        .or_else(||base.strip_suffix("_5"))
+        .ok_or("Original static Sky texture is not CryEngine _12/_34/_5 layout")?;
+    let extension=diffuse.rsplit_once('.').map(|(_,ext)|ext).unwrap_or("tif");
+    let a=sky_texture(root,&build,&material,&format!("{prefix}_12.{extension}"))?;
+    let b=sky_texture(root,&build,&material,&format!("{prefix}_34.{extension}"))?;
+    let top=sky_texture(root,&build,&material,&format!("{prefix}_5.{extension}"))?;
+    Ok(Some(StaticSky {
+        images:[std::sync::Arc::new(a),std::sync::Arc::new(b),std::sync::Arc::new(top)],
+        angle:sky.angle_degrees.to_radians(),stretching:sky.stretching,
+    }))
 }
 
 #[cfg(test)]
