@@ -6,8 +6,9 @@ use evolve_core::{RenderMesh, Transform};
 use iced::wgpu;
 use iced::wgpu::util::DeviceExt;
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::sync::Arc;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, atomic::{AtomicU64, AtomicUsize, Ordering}};
 
 // Ordinary world-model diffuse textures are limited to 32 MiB so one map
 // cannot flood GPU memory with hundreds of oversized props. Baked ground
@@ -18,11 +19,61 @@ const MAX_TERRAIN_ATLAS_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FULL_TEXTURE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SCENE_FULL_TEXTURE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_SCENE_BALANCED_TEXTURE_BYTES: u64 = 384 * 1024 * 1024;
+// Residency target, not a full-resolution quality cap. Streams source images
+// as visible, retaining the complete originals in the CPU World. Conservative
+// until adapter-local free VRAM can be queried reliably.
+const WORLD_RESIDENT_TARGET_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_NEW_GROUPS_PER_FRAME: usize = 2;
 
-// A shared source Arc must produce only one GPU texture per role, even when
-// dozens of original meshes/material slots use it. Cache lifetime is one
-// imported scene; never retain a source pointer beyond that scene.
-type TextureCache = HashMap<(usize, u8, bool), (wgpu::Texture, wgpu::TextureView)>;
+// Hash exact source pixel dimensions+bytes, not an Arc address. Distinct
+// imported PAK entries containing identical decoded pixels deduplicate while
+// their roles and GPU formats remain separate. The pointer memo is scoped to
+// the current scene; it never persists across a different World.
+type TextureKey = ([u8; 32], u8, bool);
+type TextureCache = HashMap<TextureKey, (wgpu::Texture, wgpu::TextureView, u64)>;
+type SourceKeys = HashMap<usize, [u8; 32]>;
+
+fn texture_key(image: Option<&Arc<image::RgbaImage>>, role: u8, ground: bool, hashes: &mut SourceKeys) -> TextureKey {
+    let Some(image) = image else {
+        return ([0; 32], role, ground);
+    };
+    let address = Arc::as_ptr(image) as usize;
+    let digest = *hashes.entry(address).or_insert_with(|| {
+        let mut hash = Sha256::new();
+        hash.update(image.width().to_le_bytes());
+        hash.update(image.height().to_le_bytes());
+        hash.update(image.as_raw());
+        hash.finalize().into()
+    });
+    (digest, role, ground)
+}
+
+fn cache_bytes(cache: &TextureCache) -> u64 {
+    cache.values().fold(0u64, |sum, (_, _, bytes)| sum.saturating_add(*bytes))
+}
+
+/// Atomic GPU estimates shared with the UI; not an OS/driver VRAM query.
+#[derive(Debug)]
+pub(super) struct GpuProgress {
+    pub pending: AtomicUsize,
+    pub loaded: AtomicUsize,
+    pub textures: AtomicU64,
+    pub geometry: AtomicU64,
+    pub peak: AtomicU64,
+    pub deferred: AtomicUsize,
+}
+impl Default for GpuProgress {
+    fn default() -> Self {
+        Self {
+            pending: AtomicUsize::new(1),
+            loaded: AtomicUsize::new(0),
+            textures: AtomicU64::new(0),
+            geometry: AtomicU64::new(0),
+            peak: AtomicU64::new(0),
+            deferred: AtomicUsize::new(0),
+        }
+    }
+}
 
 /// Choose a size within the device and the per-material upload budget.
 /// Non-terrain 4K DDS assets must retain their colors and alpha mask; a
@@ -270,6 +321,7 @@ pub(super) struct World {
     pub time_of_day: Option<Arc<super::level_environment::TimeOfDay>>,
     pub fog_profile: Option<super::level_environment::FogProfile>,
     pub source_resources: super::level_environment::ResourceSummary,
+    pub gpu_progress: Arc<GpuProgress>,
 }
 impl std::fmt::Debug for World {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
