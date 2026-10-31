@@ -900,6 +900,13 @@ fn open_selected(
             )),
         }
     }
+    let (particle_placements, particle_warnings) =
+        crate::level_atmosphere::particle_placements(&sources, scene.as_ref());
+    diagnostics.push(format!(
+        "Original map particle placements: {} active named ParticleEffect entities with exact GUID/world transforms. Source particle library assets and sprite simulation are separate; placement alone does not render particles.",
+        particle_placements.len()
+    ));
+    diagnostics.extend(particle_warnings.into_iter().take(5));
     let (local_lights, light_warnings) = crate::level_atmosphere::lights(&sources, scene.as_ref());
     diagnostics.push(format!("Original map light entities with verified authored color, radius and strength: {}. GPU viewport uses nearby point/spot preview lighting; authored shadow maps and projector textures require separate verification.",local_lights.len()));
     diagnostics.extend(light_warnings.into_iter().take(5));
@@ -1099,7 +1106,8 @@ fn open_selected(
             )),
         }
     }
-    let resources = authored_fx_catalog(&root, &inventory, scene.as_ref());
+    let mut resources = authored_fx_catalog(&root, &inventory, scene.as_ref());
+    resources.emitters = particle_placements.len();
     diagnostics.push(resources.description());
     if let Some(assembled) = full_scene.as_mut() {
         let mut world = (*assembled.world).clone();
