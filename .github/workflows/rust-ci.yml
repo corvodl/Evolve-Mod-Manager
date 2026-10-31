@@ -115,7 +115,7 @@ jobs:
         run: |
           $output = "dist/EvolveModManager-Rust-Preview"
           New-Item -ItemType Directory -Path $output -Force | Out-Null
-          foreach ($binary in @("evolve-mod-manager.exe", "evolve-cli.exe", "evolve-teleport-overlay.exe")) {
+          foreach ($binary in @("evolve-mod-manager.exe", "evolve-cli.exe", "evolve-teleport-overlay.exe", "evolve-privileged-worker.exe")) {
             $source = Join-Path "target/release" $binary
             if (!(Test-Path $source)) { throw "Missing required binary: $binary" }
             Copy-Item $source (Join-Path $output $binary)
