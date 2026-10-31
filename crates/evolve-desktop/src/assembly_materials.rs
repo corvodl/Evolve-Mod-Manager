@@ -1685,13 +1685,21 @@ mod tests {
         for name in ["Lightbeam.LightBeam", "GeometryBeam", "TemplBeamProc"] {
             let slot = evolve_core::parse_material(
                 format!("<Material Name=\"beam\" Shader=\"{name}\"/>").as_bytes(),
-            ).unwrap();
+            )
+            .unwrap();
             assert!(is_original_beam_effect(&slot.slots[0]));
         }
-        for name in ["Illum", "Glass", "Vegetation", "NoDraw", "LightFlares.Flare"] {
+        for name in [
+            "Illum",
+            "Glass",
+            "Vegetation",
+            "NoDraw",
+            "LightFlares.Flare",
+        ] {
             let slot = evolve_core::parse_material(
                 format!("<Material Name=\"fixture\" Shader=\"{name}\"/>").as_bytes(),
-            ).unwrap();
+            )
+            .unwrap();
             assert!(!is_original_beam_effect(&slot.slots[0]));
         }
     }
