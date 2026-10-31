@@ -14011,9 +14011,7 @@ fn initial_state() -> State {
                 // Previous builds persisted 0° as the default "Front",
                 // but it actually looked from -Y (the character's back).
                 // Migrate only that legacy default to the correct +Y view.
-                result.yaw = if saved.saved_yaw.abs() < 0.001
-                    && saved.saved_pitch.abs() < 0.001
-                {
+                result.yaw = if saved.saved_yaw.abs() < 0.001 && saved.saved_pitch.abs() < 0.001 {
                     orientation_gizmo::FRONT_YAW
                 } else {
                     saved.saved_yaw
