@@ -188,6 +188,16 @@ where
     Err(reasons)
 }
 
+/// Source installation identity rather than mutable label/version spelling.
+/// Never includes arbitrary assets from a different installed Game directory.
+fn source_game_directory(pak: &ImportedPak) -> Option<PathBuf> {
+    Path::new(&pak.source)
+        .ancestors()
+        .find(|p| p.file_name().is_some_and(|name|
+            name.to_string_lossy().eq_ignore_ascii_case("Game")))
+        .and_then(|path| fs::canonicalize(path).ok())
+}
+
 impl Index {
     fn new(
         selected: &ImportedPak,
@@ -207,18 +217,19 @@ impl Index {
             selected_id: selected.id.clone(),
         };
         let mut archives = vec![selected.clone()];
-        if let (Some(root), Some(label)) = (&index.library_root, &index.build) {
-            let library = imported_library(root).map_err(|e| e.to_string())?;
-            let others = library
-                .archives
-                .into_iter()
-                .filter(|pak| pak.id != selected.id && pak.builds.iter().any(|b| b == label));
-            for pak in others.take(MAX_ARCHIVES - 1) {
-                archives.push(pak);
+        if let Some(root) = &index.library_root {
+            if let Some(source_game) = source_game_directory(selected) {
+                let library = imported_library(root).map_err(|e| e.to_string())?;
+                for pak in library.archives.into_iter().filter(|pak| {
+                    pak.id != selected.id
+                        && source_game_directory(pak).as_ref() == Some(&source_game)
+                }).take(MAX_ARCHIVES - 1) {
+                    archives.push(pak);
+                }
+                report.note("Resolving exact asset paths within the selected installed Game directory.".into());
+            } else {
+                report.note("Installed Game directory unverified; cross-PAK dependencies disabled.".into());
             }
-            report.note("Using exact virtual asset paths from the selected imported build.".into());
-        } else {
-            report.note("Build provenance is ambiguous; cross-PAK resources are disabled.".into());
         }
         if archives.len() == MAX_ARCHIVES {
             report.note(
