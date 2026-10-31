@@ -2143,6 +2143,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn authored_sky_and_local_lighting_shaders_parse() {
+        let sky = include_str!("world_sky.wgsl");
+        let world = include_str!("world_instances.wgsl");
+        naga::front::wgsl::parse_str(sky).expect("sky shader parses");
+        naga::front::wgsl::parse_str(world).expect("light and HDR shader parses");
+        assert!(sky.contains("fn dynamic_sky("));
+        assert!(sky.contains("fn static_sky("));
+        assert!(world.contains("@group(0) @binding(13) var<uniform> local_lights"));
+        assert!(world.contains("@group(0) @binding(14) var<uniform> hdr"));
+    }
+
+    #[test]
     fn raw_terrain_shader_does_not_apply_lighting_or_fog_to_original_pixels() {
         let shader = include_str!("world_instances.wgsl");
         let entry = shader
