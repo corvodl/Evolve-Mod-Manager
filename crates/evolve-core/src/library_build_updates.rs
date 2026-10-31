@@ -996,8 +996,7 @@ fn only_owned_extractions(
         }
         let meta = fs::symlink_metadata(folder).map_err(|e| e.to_string())?;
         if !meta.file_type().is_dir()
-            || fs::canonicalize(folder).map_err(|e| e.to_string())?
-                != library.join(folder_name)
+            || fs::canonicalize(folder).map_err(|e| e.to_string())? != library.join(folder_name)
         {
             retained_shared += 1;
             continue;
