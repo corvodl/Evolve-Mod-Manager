@@ -1,9 +1,14 @@
 # On-demand elevation boundary
 
-Status: security design plus a read-only health-query correction; the GUI still
-embeds `requireAdministrator` and on-demand elevation is not implemented yet.
-Do not change its manifest until the privileged operations below have a working,
-tested path. This is a security-boundary change, separate from the UI redesign.
+Status: a restricted one-shot worker executable has been added with only
+`firewall-block`, `firewall-allow`, and read-only `health` commands. The worker
+checks the selected game root for links/reparse points, parent traversal and a
+regular Evolve.exe before any firewall changes. Windows system tools are
+resolved through GetSystemDirectoryW rather than caller-controlled environment
+variables. These are **foundations**, not a completed elevation handoff: the
+GUI still embeds `requireAdministrator` and never invokes the new worker.
+Do not change its manifest until protected actions and recovery use an audited,
+tested boundary. This is separate from the UI redesign.
 
 ## Contract
 
@@ -60,6 +65,25 @@ hashes and unexpected phases **before** the first write, including recovery.
 Do not accept a caller-supplied game root without validating it against the
 recorded stage and installed executable. The current manager-owned rule name
 is derived from the canonical game executable by `online_guard.rs`.
+
+## Implemented worker foundation and limitations
+
+- `crates/evolve-desktop/src/bin/evolve-privileged-worker.rs` is a standalone
+  binary with a closed argument parser. It cannot execute caller-supplied
+  programs/scripts, copy files, restore backups, or accept a journal path.
+  The firewall commands call only `online_guard::apply`, after rejecting
+  relative or linked game paths. The health command returns a read-only JSON
+  snapshot on stdout.
+- The worker currently has **no GUI UAC launcher, authenticated output channel
+  or installer packaging contract**. The GUI must **not** invoke an arbitrary
+  sibling worker from a user-writable portable folder: that would allow
+  replacement of the elevated executable. A future broker must verify a
+  protected installation and implement an authenticated reply, cancellation,
+  process lifetime and status handling. A DLL/resource manifest inspection
+  must establish the actual worker and overlay integrity levels before release.
+- This worker does not yet offer signing, PAK swap, journal recovery, updater,
+  or GFX write operations. Do not enable these through a generic command.
+  They require independent path and asset validation before privileged writes.
 
 ## Acceptance gates
 
