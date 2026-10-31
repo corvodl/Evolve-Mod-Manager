@@ -623,6 +623,11 @@ pub(super) fn assemble(
                     Ok(loaded) => loaded,
                     Err(reasons) => {
                         report.unresolved += 1;
+                        crate::crash_diagnostics::record(
+                            "level_unresolved_geometry",
+                            &format!("model={} material={} reasons={}",
+                                object.model, object.material, reasons.join("; ")),
+                        );
                         report.note(format!(
                             "Cannot resolve/decode {}: {}",
                             object.model,
@@ -734,6 +739,11 @@ pub(super) fn assemble(
                 // Count each resource pair once, not its thousands of instances.
                 if !material_ranges.iter().any(|part| part.diffuse.is_some()) {
                     report.without_diffuse += 1;
+                    crate::crash_diagnostics::record(
+                        "level_missing_verified_diffuse",
+                        &format!("model={} material={} source={} sections={}",
+                            object.model, object.material, source.archive, meshes.len()),
+                    );
                 }
                 let mut indices = Vec::with_capacity(meshes.len());
                 for mesh in meshes {
