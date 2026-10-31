@@ -2594,7 +2594,9 @@ mod tests {
         assert!(shader.contains("let color=shade(input,false);"));
         // Explicitly transparent materials still use authored coverage.
         assert!(shader.contains("fn fs_main(input:Output)"));
-        assert!(shader.contains("return vec4<f32>(authored_scene_linear(fogged.rgb),color.a*alpha);"));
+        assert!(
+            shader.contains("return vec4<f32>(authored_scene_linear(fogged.rgb),color.a*alpha);")
+        );
         let pipeline_source = include_str!("world_instances.rs");
         // Search only production code; searching this entire file would let
         // the assertion's own string literal create a false positive.
