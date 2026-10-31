@@ -1151,7 +1151,7 @@ impl Pipeline {
         let depth = Self::depth_view(device, (1, 1));
         Self {
             opaque_viewport_background,
-            world_renderer: super::world_instances::Renderer::new(device, format),
+            world_renderer: super::world_instances::Renderer::new(device, queue, format),
             render_pipeline,
             masked_pipeline,
             foliage_pipeline,
@@ -1776,6 +1776,9 @@ impl Pipeline {
         pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
         pass.set_pipeline(&self.opaque_viewport_background);
         pass.draw(0..3, 0..1);
+        // Background sky writes opaque window color with no depth; all real
+        // terrain and geometry remain depth-tested in front of it.
+        self.world_renderer.draw_sky(&mut pass);
         if self.ground_count > 0 {
             pass.set_pipeline(&self.ground_pipeline);
             pass.set_vertex_buffer(0, self.ground_vertex.slice(..));
