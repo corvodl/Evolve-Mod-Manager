@@ -2068,21 +2068,40 @@ mod tests {
         assert_eq!(surfaces.len(), 2);
         assert!(!surfaces[0][0].visible, "NoDraw leaf ID 2 must be hidden");
         assert!(surfaces[1][0].visible, "leaf ID 1 is not NoDraw");
-        assert_eq!((surfaces[1][0].first_index, surfaces[1][0].index_count), (0, 3));
+        assert_eq!(
+            (surfaces[1][0].first_index, surfaces[1][0].index_count),
+            (0, 3)
+        );
 
         let mut missing_table = parts.clone();
         missing_table[0].has_subset_table = false;
-        assert!(load_world_model_surfaces(
-            &source, &material, &missing_table,
-            &inventory, None, None, &SharedCache::default(),
-        ).is_err());
+        assert!(
+            load_world_model_surfaces(
+                &source,
+                &material,
+                &missing_table,
+                &inventory,
+                None,
+                None,
+                &SharedCache::default(),
+            )
+            .is_err()
+        );
 
         let mut unknown_slot = parts.clone();
         unknown_slot[0].subsets[0].2 = 11;
-        assert!(load_world_model_surfaces(
-            &source, &material, &unknown_slot,
-            &inventory, None, None, &SharedCache::default(),
-        ).is_err());
+        assert!(
+            load_world_model_surfaces(
+                &source,
+                &material,
+                &unknown_slot,
+                &inventory,
+                None,
+                None,
+                &SharedCache::default(),
+            )
+            .is_err()
+        );
     }
 
     fn compiled_material_fixture(with_subsets: bool) -> Vec<u8> {
