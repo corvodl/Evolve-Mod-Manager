@@ -1120,6 +1120,7 @@ fn open_selected(
     let mut resources = authored_fx_catalog(&root, &inventory, scene.as_ref());
     resources.emitters = particle_placements.len();
     diagnostics.push(resources.description());
+    diagnostics.extend(crate::level_effect_sources::shared_effect_sources(&archive));
     if let Some(assembled) = full_scene.as_mut() {
         let mut world = (*assembled.world).clone();
         world.sky_source = sky_source;
