@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import re
 import struct
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 BANNER = ROOT / "assets" / "default_loading.dds"
 EXPECTED_SHA256 = "2f02f19b085dc7edc5f88b730121ca511bf499b2c3ef1045f4ebe020da3fff5a"
+
+
+def wallpaper_alpha(code: str, function: str) -> float:
+    """Return the translucent wallpaper alpha declared by a Home panel helper."""
+    start = code.index(f"fn {function}")
+    segment = code[start:].split("\nfn ", 1)[0]
+    match = re.search(
+        r"backdrop\.a = if wallpaper \{ ([0-9]*\.[0-9]+) \} else \{ 1\.0 \}",
+        segment,
+    )
+    if match is None:
+        raise AssertionError(f"{function} no longer declares a wallpaper backdrop alpha")
+    return float(match.group(1))
 
 
 class HomeBannerAssetTests(unittest.TestCase):
@@ -55,7 +69,14 @@ class HomeBannerAssetTests(unittest.TestCase):
         self.assertIn("stack![background, shade, content]", home)
         self.assertIn("home_play_surface(quick, wallpaper)", home)
         self.assertIn("wallpaper.then(home_banner).flatten()", home)
-        self.assertIn(".spacing(13)", home)
+        self.assertRegex(
+            home,
+            re.compile(
+                r"scrollable\(\s*column!\[.*?\]\s*\.spacing\(16\)\s*\.padding\(20\)",
+                re.DOTALL,
+            ),
+            "Home content column should keep the 16/20 spacing/padding rhythm",
+        )
         self.assertIn("paths_selected", home)
         self.assertIn("Create your first mod", home)
         self.assertNotIn("Length::Fixed(280.0)", home)
@@ -68,15 +89,31 @@ class HomeBannerAssetTests(unittest.TestCase):
         self.assertRegex(news, r"\.image_urls\s*\.iter\(\)")
         self.assertIn(".find(|url| crate::whats_new::allowed_image_url(url))", news)
         self.assertIn("row![details, preview]", news)
-        self.assertIn("Length::Fixed(190.0)", news)
+        self.assertIn("Length::Fixed(112.0)", news)
         self.assertIn(".content_fit(iced::ContentFit::Cover)", news)
         self.assertIn("Message::OpenNewsLink(url.clone())", news)
         self.assertNotIn("Length::Fixed(125.0)", news)
         self.assertNotIn("Length::Fixed(340.0)", news)
         self.assertIn('Page::WhatsNew', news)
         self.assertIn("as u16 * 59 / 100", code)
-        self.assertIn("backdrop.a = if wallpaper { 0.88 } else { 1.0 }", code)
-        self.assertIn("backdrop.a = if wallpaper { 0.91 } else { 1.0 }", code)
+        # Wallpaper panels stay translucent but near-opaque: the art remains
+        # visible while text keeps contrast. Check the intent and allow a
+        # small tuning window instead of pinning an exact literal.
+        expected_alphas = {"home_surface": 0.96, "home_play_surface": 0.94}
+        for function, expected in expected_alphas.items():
+            alpha = wallpaper_alpha(code, function)
+            self.assertGreaterEqual(
+                alpha, 0.9, f"{function} backdrop is too transparent over the art"
+            )
+            self.assertLess(
+                alpha, 1.0, f"{function} backdrop should stay translucent with wallpaper"
+            )
+            self.assertAlmostEqual(
+                alpha,
+                expected,
+                delta=0.02,
+                msg=f"{function} backdrop alpha drifted from the current design",
+            )
 
     def test_portable_nightly_includes_banner(self):
         source = (ROOT / ".github/workflows/nightly.yml").read_text()

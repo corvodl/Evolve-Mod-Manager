@@ -13341,28 +13341,47 @@ fn download_action(state: &State) -> Element<'_, Message> {
 
 fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
-    // Collapse to icon-only navigation by default; labels appear once the
-    // hover-driven width animation has enough room to show them in full.
-    let labels_visible =
-        state.sidebar_reveal >= 0.88 || state.preferences.reduce_motion && state.sidebar_hovered;
-    let navigation = Page::ALL
-        .into_iter()
-        .fold(column![].spacing(7), |items, item| {
+    // Modern navigation keeps labels visible: no hover-dependent page names
+    // or viewport shift. Legacy retains its original expanding icon rail.
+    let legacy_nav = state.preferences.ui_theme == "Evolve Legacy";
+    let labels_visible = !legacy_nav
+        || state.sidebar_reveal >= 0.88
+        || state.preferences.reduce_motion && state.sidebar_hovered;
+    let navigation = Page::ALL.into_iter().fold(
+        column![].spacing(if legacy_nav { 7 } else { 4 }),
+        |items, item| {
             let active = page == item;
-            let mut contents = row![svg(item.icon()).style(design::icon).width(20).height(20),]
-                .spacing(12)
-                .align_y(iced::Center);
+            let indicator =
+                container(space().width(3).height(20)).style(move |theme| container::Style {
+                    background: if active && !design::is_legacy(theme) {
+                        Some(iced::Background::Color(theme.palette().primary))
+                    } else {
+                        None
+                    },
+                    ..container::Style::default()
+                });
+            let mut contents = row![].spacing(12).align_y(iced::Center);
+            if !legacy_nav {
+                contents = contents.push(indicator);
+            }
+            contents = contents.push(
+                svg(item.icon())
+                    .style(design::icon)
+                    .width(if legacy_nav { 20 } else { 18 })
+                    .height(if legacy_nav { 20 } else { 18 }),
+            );
             if labels_visible {
-                contents = contents.push(text(item.title()).size(13));
+                contents = contents.push(text(item.title()).size(if legacy_nav { 13 } else { 14 }));
             }
             let nav = design::button(contents)
                 .width(Fill)
-                .height(40)
-                .padding([8, 11])
+                .height(if legacy_nav { 40 } else { 36 })
+                .padding(if legacy_nav { [8, 11] } else { [8, 12] })
                 .style(move |theme, status| design::rail(theme, status, active))
                 .on_press(Message::Navigate(item));
             items.push(nav)
-        });
+        },
+    );
     let play_mods_icon = svg(svg::Handle::from_memory(
         include_bytes!("../../../assets/nav/play-mods.svg").to_vec(),
     ))
@@ -13373,45 +13392,80 @@ fn view(state: &State) -> Element<'_, Message> {
     ))
     .width(20)
     .height(20);
-    let mut play_mods_row = row![play_mods_icon].spacing(11).align_y(iced::Center);
-    let mut play_clean_row = row![play_clean_icon].spacing(11).align_y(iced::Center);
-    let mut settings_row = row![
+    let mut play_mods_row = row![play_mods_icon].spacing(12).align_y(iced::Center);
+    let mut play_clean_row = row![play_clean_icon].spacing(12).align_y(iced::Center);
+    let mut settings_row = row![].spacing(12).align_y(iced::Center);
+    if !legacy_nav {
+        settings_row = settings_row.push(container(space().width(3).height(20)).style(
+            move |theme: &iced::Theme| {
+                container::Style {
+                    background: (page == Page::Settings)
+                        .then_some(iced::Background::Color(theme.palette().primary)),
+                    ..container::Style::default()
+                }
+            },
+        ));
+    }
+    settings_row = settings_row.push(
         svg(Page::Settings.icon())
             .style(design::icon)
             .width(20)
             .height(20),
-    ]
-    .spacing(11)
-    .align_y(iced::Center);
+    );
     if labels_visible {
-        play_mods_row = play_mods_row.push(text("Play with Mods").size(12));
-        play_clean_row = play_clean_row.push(text("Play").size(12));
-        settings_row = settings_row.push(text("Settings").size(13));
+        play_mods_row = play_mods_row.push(
+            text(if legacy_nav {
+                "Play with Mods"
+            } else {
+                "Play with mods"
+            })
+            .size(if legacy_nav { 12 } else { 14 }),
+        );
+        play_clean_row = play_clean_row.push(
+            text(if legacy_nav {
+                "Play"
+            } else {
+                "Play without mods"
+            })
+            .size(if legacy_nav { 12 } else { 14 }),
+        );
+        settings_row = settings_row.push(text("Settings").size(if legacy_nav { 13 } else { 14 }));
     }
     let lower = column![
         design::button(play_mods_row)
             .width(Fill)
-            .height(40)
+            .height(if legacy_nav { 40 } else { 36 })
             .on_press(Message::PlayWithMods),
         design::button(play_clean_row)
             .width(Fill)
-            .height(40)
+            .height(if legacy_nav { 40 } else { 36 })
             .on_press(Message::PlayWithoutMods),
         design::button(settings_row)
             .width(Fill)
-            .height(43)
-            .padding(10)
+            .height(if legacy_nav { 43 } else { 36 })
+            .padding(if legacy_nav { [10, 10] } else { [8, 12] })
             .style(move |theme, status| design::rail(theme, status, page == Page::Settings))
             .on_press(Message::Navigate(Page::Settings)),
     ]
-    .spacing(5);
+    .spacing(if legacy_nav { 5 } else { 4 });
+    let mut sidebar_content = column![].spacing(if legacy_nav { 8 } else { 16 });
+    if !legacy_nav {
+        sidebar_content =
+            sidebar_content.push(container(text("Evolve Mod Manager").size(16)).padding([12, 12]));
+    }
     let sidebar = container(
-        column![navigation, space().height(Fill), lower,]
-            .spacing(8)
+        sidebar_content
+            .push(navigation)
+            .push(space().height(Fill))
+            .push(lower)
             .height(Fill)
-            .padding([12, 9]),
+            .padding(if legacy_nav { [12, 9] } else { [16, 12] }),
     )
-    .width(Length::Fixed(sidebar_width(state.sidebar_reveal)))
+    .width(Length::Fixed(if legacy_nav {
+        sidebar_width(state.sidebar_reveal)
+    } else {
+        240.0
+    }))
     .height(Fill)
     .style(|theme| container::Style {
         background: Some(iced::Background::Color(design::sidebar(theme))),
@@ -13449,7 +13503,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 .align_y(iced::Center),
             )
         } else {
-            Element::<Message>::from(text(page.title()).size(20))
+            Element::<Message>::from(text(page.title()).size(28))
         },
         space().width(Fill),
         design::button("Help")
@@ -13459,7 +13513,7 @@ fn view(state: &State) -> Element<'_, Message> {
             .on_press(Message::ToggleActivity)
             .style(design::secondary),
     ]
-    .spacing(13)
+    .spacing(16)
     .align_y(iced::Center);
     if state.scan_cancel.is_some() {
         headline = headline.push(
@@ -13819,7 +13873,7 @@ fn view(state: &State) -> Element<'_, Message> {
             .spacing(8),
             advanced,
         ]
-        .spacing(7)
+        .spacing(8)
         .into()
     } else {
         container(column![]).into()
@@ -13839,8 +13893,8 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(12)
         .align_y(iced::Alignment::Center),
     ]
-    .spacing(11)
-    .padding([16, 22])
+    .spacing(16)
+    .padding([24, 24])
     .width(Fill)
     .height(Fill);
     // Activity is detached so it never steals space from the working page.
@@ -14404,7 +14458,8 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let sidebar_animation = if !self.state.preferences.reduce_motion
+        let sidebar_animation = if self.state.preferences.ui_theme == "Evolve Legacy"
+            && !self.state.preferences.reduce_motion
             && (self.state.sidebar_reveal - if self.state.sidebar_hovered { 1.0 } else { 0.0 })
                 .abs()
                 > 0.001

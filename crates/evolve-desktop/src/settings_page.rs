@@ -8,20 +8,12 @@ use iced::{Background, Border, Color, Element, Fill, Length};
 fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(child)
         .width(Fill)
-        .padding(14)
-        .style(|theme| container::Style {
-            background: Some(Background::Color(design::surface(theme))),
-            border: Border {
-                color: design::border(theme),
-                width: 1.0,
-                radius: if design::is_legacy(theme) { 1.0 } else { 7.0 }.into(),
-            },
-            ..container::Style::default()
-        })
+        .padding(16)
+        .style(design::panel)
 }
 
 fn heading(name: &str) -> iced::widget::Text<'_> {
-    text(name).size(17)
+    text(name).size(20)
 }
 
 fn health_entry<'a>(title: &'static str, value: &str) -> Element<'a, Message> {
@@ -30,7 +22,7 @@ fn health_entry<'a>(title: &'static str, value: &str) -> Element<'a, Message> {
             text(title).size(13),
             text(value.to_owned()).size(12).style(design::muted),
         ]
-        .spacing(6),
+        .spacing(8),
     )
     .into()
 }
@@ -99,7 +91,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
     panel(
         column![
             heading("Game & Client"),
-            text("GAME LAUNCH METHOD").size(12),
+            text("Game launch method").size(13),
             row![
                 design::button("Client Launch")
                     .on_press(Message::PreferenceGameLaunchMode("Client Launch"))
@@ -109,7 +101,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
             ].spacing(8),
             text("Recommended: Client Launch for authenticated profiles, relay and Shift+Tab friends. Direct Launch currently uses a Stage 2 smoke host and does not establish the full relay/overlay session. Explicit Direct selection is preserved.")
-                .size(11).style(design::muted),
+                .size(13).style(design::muted),
             text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
             row![
                 design::text_input(

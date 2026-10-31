@@ -77,13 +77,13 @@ impl DeveloperSection {
 fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(content)
         .width(Fill)
-        .padding(15)
+        .padding(16)
         .style(|theme| container::Style {
             background: Some(Background::Color(design::surface(theme))),
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
+                radius: if design::is_legacy(theme) { 1.0 } else { 12.0 }.into(),
             },
             ..container::Style::default()
         })
@@ -97,42 +97,37 @@ fn home_surface<'a>(
 ) -> iced::widget::Container<'a, Message> {
     surface(content).style(move |theme| {
         let mut backdrop = design::surface(theme);
-        backdrop.a = if wallpaper { 0.88 } else { 1.0 };
+        backdrop.a = if wallpaper { 0.96 } else { 1.0 };
         container::Style {
             background: Some(Background::Color(backdrop)),
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
+                radius: if design::is_legacy(theme) { 1.0 } else { 12.0 }.into(),
             },
             ..container::Style::default()
         }
     })
 }
 
-/// The launch actions are the most important Home controls. Keep the panel
-/// compact, but distinguish it from news and onboarding with a restrained
-/// Evolve-red border and a very slight tint, without sacrificing contrast.
+/// Keep the launch controls in a calm panel; the primary action and active
+/// workspace carry the accent instead of tinting another large surface.
 fn home_play_surface<'a>(
     content: impl Into<Element<'a, Message>>,
     wallpaper: bool,
 ) -> iced::widget::Container<'a, Message> {
     container(content)
         .width(Fill)
-        .padding([13, 18])
+        .padding([16, 20])
         .style(move |theme| {
             let mut backdrop = design::surface(theme);
-            let accent = theme.palette().primary;
-            backdrop.r = backdrop.r * 0.94 + accent.r * 0.06;
-            backdrop.g = backdrop.g * 0.94 + accent.g * 0.06;
-            backdrop.b = backdrop.b * 0.94 + accent.b * 0.06;
-            backdrop.a = if wallpaper { 0.91 } else { 1.0 };
+            backdrop.a = if wallpaper { 0.94 } else { 1.0 };
             container::Style {
                 background: Some(Background::Color(backdrop)),
                 border: Border {
-                    color: accent,
-                    width: 1.25,
-                    radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
+                    color: design::border(theme),
+                    width: 1.0,
+                    radius: if design::is_legacy(theme) { 1.0 } else { 12.0 }.into(),
                 },
                 ..container::Style::default()
             }
@@ -142,7 +137,22 @@ fn home_play_surface<'a>(
 /// Original Evolve red corner atlas sprite, cropped from the uploaded
 /// button_I8.dds.0. Only rendered when the optional Legacy theme is selected.
 fn legacy_section_label(label: &'static str, legacy: bool) -> Element<'static, Message> {
-    let title = text(label).size(12).style(design::accent);
+    let title = text(if legacy {
+        label
+    } else {
+        match label {
+            "YOUR WORKBENCH" => "Your workbench",
+            "GETTING STARTED" => "Getting started",
+            "PLAY EVOLVE" => "Play Evolve",
+            _ => label,
+        }
+    })
+    .size(12)
+    .style(if legacy {
+        design::accent
+    } else {
+        design::muted
+    });
     if legacy {
         row![
             image(image::Handle::from_bytes(
@@ -196,10 +206,10 @@ fn home_button_style(
 fn tile(name: &'static str, page: Page, wallpaper: bool) -> Element<'static, Message> {
     design::button(
         row![
-            svg(page.icon()).style(design::icon).width(24).height(24),
-            text(name).size(15),
+            svg(page.icon()).style(design::icon).width(18).height(18),
+            text(name).size(14),
         ]
-        .spacing(14)
+        .spacing(12)
         .align_y(iced::Center),
     )
     .style(move |theme, status| {
@@ -221,7 +231,7 @@ fn tile(name: &'static str, page: Page, wallpaper: bool) -> Element<'static, Mes
             style.border = Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: 12.0.into(),
+                radius: 8.0.into(),
             };
         }
         if wallpaper {
@@ -231,9 +241,9 @@ fn tile(name: &'static str, page: Page, wallpaper: bool) -> Element<'static, Mes
                 _ => design::surface(theme),
             };
             backdrop.a = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                0.42
+                0.96
             } else {
-                0.16
+                0.90
             };
             style.background = Some(Background::Color(backdrop));
             style.text_color = theme.palette().text;
@@ -241,21 +251,43 @@ fn tile(name: &'static str, page: Page, wallpaper: bool) -> Element<'static, Mes
         style
     })
     .width(Fill)
-    .height(Length::Fixed(64.0))
-    .padding(12)
+    .height(Length::Fixed(44.0))
+    .padding([8, 12])
     .on_press(Message::Navigate(page))
     .into()
 }
 
-fn status_card<'a>(label: &'static str, value: String, wallpaper: bool) -> Element<'a, Message> {
-    home_surface(
-        column![
-            text(label).size(13),
-            text(value).size(12).style(design::muted),
-        ]
-        .spacing(8),
-        wallpaper,
-    )
+fn status_value_preview(value: &str) -> String {
+    if value.chars().count() > 24 {
+        format!(
+            "…{}",
+            value
+                .chars()
+                .rev()
+                .take(23)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
+        )
+    } else {
+        value.to_owned()
+    }
+}
+
+fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
+    let short = status_value_preview(&value);
+    row![
+        text(label).size(13).width(Length::FillPortion(2)),
+        container(tooltip(
+            text(short).size(13).style(design::muted),
+            text(value).size(12),
+            tooltip::Position::Top,
+        ))
+        .width(Length::FillPortion(3)),
+    ]
+    .spacing(12)
+    .align_y(iced::Center)
     .into()
 }
 
@@ -274,7 +306,7 @@ fn short_client_version(version: &str) -> String {
     format!("v{version}")
 }
 
-fn client_version_card<'a>(version: Option<&str>, wallpaper: bool) -> Element<'a, Message> {
+fn client_version_card<'a>(version: Option<&str>) -> Element<'a, Message> {
     let value: Element<'a, Message> = if let Some(version) = version {
         tooltip(
             text(short_client_version(version))
@@ -287,10 +319,14 @@ fn client_version_card<'a>(version: Option<&str>, wallpaper: bool) -> Element<'a
     } else {
         text("Not detected").size(12).style(design::muted).into()
     };
-    home_surface(
-        column![text("Client Version").size(13), value].spacing(8),
-        wallpaper,
-    )
+    row![
+        text("Client version")
+            .size(13)
+            .width(Length::FillPortion(2)),
+        container(value).width(Length::FillPortion(3)),
+    ]
+    .spacing(12)
+    .align_y(iced::Center)
     .into()
 }
 
@@ -331,14 +367,13 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
             .find(|url| crate::whats_new::allowed_image_url(url))
         {
             if let Some(handle) = news.image_handles.get(url) {
-                // A 340px "Contain" frame reduced ultrawide screenshots to
-                // tiny strips. Use a larger filled preview; clicking it opens
-                // the complete original attachment without cropping.
+                // A compact filled thumbnail keeps the workspace visible on
+                // Home; clicking opens the complete original attachment.
                 preview = Some(
                     button(
                         image(handle.clone())
                             .width(Fill)
-                            .height(Length::Fixed(190.0))
+                            .height(Length::Fixed(112.0))
                             .content_fit(iced::ContentFit::Cover),
                     )
                     .width(Length::FillPortion(3))
@@ -536,20 +571,20 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                         "YOUR WORKBENCH",
                         state.preferences.ui_theme == "Evolve Legacy"
                     ),
-                    text("Continue where you left off").size(22),
+                    text("Continue editing").size(22),
                     row![
                         svg(Page::Files.icon())
                             .style(design::icon)
-                            .width(30)
-                            .height(30),
+                            .width(24)
+                            .height(24),
                         column![
                             text(label).size(16),
                             text(details).size(12).style(design::muted),
                         ]
-                        .spacing(5),
+                        .spacing(4),
                     ]
                     .align_y(iced::Center)
-                    .spacing(13),
+                    .spacing(12),
                     row![
                         design::button("Continue Editing")
                             .on_press_maybe((!state.busy).then_some(Message::HomeContinueEditing))
@@ -562,16 +597,16 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                                 theme, status, wallpaper, false
                             )),
                     ]
-                    .spacing(9),
+                    .spacing(8),
                 ]
-                .spacing(12)
+                .spacing(8)
                 .width(Fill),
             ]
-            .spacing(12)
+            .spacing(16)
             .align_y(iced::Center),
             wallpaper,
         )
-        .padding([13, 18])
+        .padding([12, 20])
     } else {
         let paths_selected = !state.preferences.game_installation.is_empty()
             && !state.preferences.client_executable.is_empty();
@@ -603,9 +638,9 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                     text(if paths_selected {
                         "Create your first mod"
                     } else {
-                        "Ready to make your first mod?"
+                        "Set up your modding workspace"
                     })
-                    .size(18),
+                    .size(24),
                     if paths_selected {
                         Element::from(
                             text("Import a PAK to get started.")
@@ -623,31 +658,28 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                     },
                     row![primary_action, secondary_action].spacing(8),
                 ]
-                .spacing(7)
+                .spacing(12)
                 .width(Fill),
             ]
-            .spacing(12)
+            .spacing(16)
             .align_y(iced::Center),
             wallpaper,
         )
-        .padding([12, 18])
+        .padding([12, 20])
     };
-    let quick = column![
-        row![
-            legacy_section_label("PLAY EVOLVE", state.preferences.ui_theme == "Evolve Legacy"),
-            text("Launch Evolve").size(20),
-        ]
-        .spacing(12)
-        .align_y(iced::Center),
-        if state.developer_unlocked && state.developer_online_mods {
-            Element::from(
-                text("Developer online testing is armed. Server acceptance is not guaranteed.")
-                    .size(12)
-                    .style(design::muted),
-            )
-        } else {
-            Element::from(text(""))
-        },
+    let mut quick = column![
+        legacy_section_label("PLAY EVOLVE", state.preferences.ui_theme == "Evolve Legacy"),
+        text("Launch Evolve").size(20),
+    ]
+    .spacing(8);
+    if state.developer_unlocked && state.developer_online_mods {
+        quick = quick.push(
+            text("Developer online testing is armed. Server acceptance is not guaranteed.")
+                .size(12)
+                .style(design::muted),
+        );
+    }
+    quick = quick.push(
         row![
             design::button(if state.developer_unlocked && state.developer_online_mods {
                 "Play with Mods Online · Dev Test"
@@ -655,31 +687,30 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 "Play with Mods"
             })
             .on_press(Message::PlayWithMods)
-            .padding([10, 17])
+            .padding([12, 20])
             .style(move |theme, status| home_button_style(theme, status, wallpaper, true)),
             design::button("Play without Mods")
                 .on_press(Message::PlayWithoutMods)
-                .padding([10, 15])
+                .padding([12, 20])
                 .style(move |theme, status| home_button_style(theme, status, wallpaper, false)),
         ]
         .spacing(8),
+    );
+    quick = quick.push(
         text(format!(
             "Launch method: {} · Change in Settings",
             state.preferences.game_launch_mode
         ))
         .size(12)
         .style(design::muted),
-        if state.preferences.game_launch_mode.contains("Direct") {
-            Element::from(
-                text("Direct Launch is experimental and does not provide the full client session.")
-                    .size(12)
-                    .style(design::muted),
-            )
-        } else {
-            Element::from(text(""))
-        },
-    ]
-    .spacing(8);
+    );
+    if state.preferences.game_launch_mode.contains("Direct") {
+        quick = quick.push(
+            text("Direct Launch is experimental and does not provide the full client session.")
+                .size(12)
+                .style(design::muted),
+        );
+    }
     let entries = column![
         text("Your workspace").size(19),
         row![
@@ -696,51 +727,53 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             tile("What's New", Page::WhatsNew, wallpaper),
             tile("Credits", Page::Credits, wallpaper),
         ]
-        .spacing(10),
+        .spacing(12),
     ]
-    .spacing(9)
-    .width(Length::FillPortion(5));
+    .spacing(12)
+    .width(Length::FillPortion(3));
     let status = column![
         text("At a glance").size(19),
-        status_card(
-            "Game installation",
-            if state.preferences.game_installation.is_empty() {
-                "Select EvolveGame in Settings".to_owned()
-            } else {
-                state.preferences.game_installation.clone()
-            },
-            wallpaper,
-        ),
-        status_card(
-            "Modded Evolve client",
-            if state.preferences.client_executable.is_empty() {
-                "Select ModdedEvolveLauncher.exe in Settings".to_owned()
-            } else {
-                state.preferences.client_executable.clone()
-            },
-            wallpaper,
-        ),
-        client_version_card(state.client_version.as_deref(), wallpaper),
-        status_card(
-            "Signing stage",
-            if state.preferences.stage.is_empty() {
-                "Not prepared".to_owned()
-            } else {
-                "Isolated offline stage configured".to_owned()
-            },
-            wallpaper,
-        ),
-        status_card(
-            "Editing project",
-            if state.preferences.current_workspace.is_empty() {
-                "None selected".to_owned()
-            } else {
-                state.preferences.current_workspace.clone()
-            },
-            wallpaper,
+        home_surface(
+            column![
+                status_card(
+                    "Game installation",
+                    if state.preferences.game_installation.is_empty() {
+                        "Select EvolveGame in Settings".to_owned()
+                    } else {
+                        state.preferences.game_installation.clone()
+                    },
+                ),
+                status_card(
+                    "Modded Evolve client",
+                    if state.preferences.client_executable.is_empty() {
+                        "Select ModdedEvolveLauncher.exe in Settings".to_owned()
+                    } else {
+                        state.preferences.client_executable.clone()
+                    },
+                ),
+                client_version_card(state.client_version.as_deref()),
+                status_card(
+                    "Signing stage",
+                    if state.preferences.stage.is_empty() {
+                        "Not prepared".to_owned()
+                    } else {
+                        "Isolated offline stage configured".to_owned()
+                    },
+                ),
+                status_card(
+                    "Editing project",
+                    if state.preferences.current_workspace.is_empty() {
+                        "None selected".to_owned()
+                    } else {
+                        state.preferences.current_workspace.clone()
+                    },
+                ),
+            ]
+            .spacing(16),
+            wallpaper
         ),
     ]
-    .spacing(9)
+    .spacing(12)
     .width(Length::FillPortion(2));
     // Scroll the Home controls above a fixed, viewport-sized background.
     // The art has no layout height of its own, so it never pushes the page
@@ -750,10 +783,10 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             hero,
             home_play_surface(quick, wallpaper),
             latest_announcement(state, wallpaper),
-            row![entries, status].spacing(14),
+            row![entries, status].spacing(24),
         ]
-        .spacing(13)
-        .padding(12),
+        .spacing(16)
+        .padding(20),
     )
     .width(Fill)
     .height(Fill);
@@ -2151,7 +2184,18 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
 
 #[cfg(test)]
 mod home_layout_tests {
-    use super::short_client_version;
+    use super::{short_client_version, status_value_preview};
+
+    #[test]
+    fn compact_status_keeps_readable_path_tail_without_losing_tooltip_value() {
+        let value = r"C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail";
+        let preview = status_value_preview(value);
+        assert!(preview.starts_with('…'));
+        assert!(preview.ends_with("bin64_SteamRetail"));
+        assert!(preview.chars().count() <= 24);
+        assert_eq!(status_value_preview("Not prepared"), "Not prepared");
+        assert_eq!(status_value_preview("é"), "é");
+    }
 
     #[test]
     fn client_build_is_short_but_release_is_preserved() {
