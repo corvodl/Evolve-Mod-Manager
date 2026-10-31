@@ -36,6 +36,7 @@ mod gfx_tool_install;
 mod guided_modding;
 mod initial_setup;
 mod launcher_bridge;
+mod level_atmosphere;
 mod level_camera;
 mod level_editor_shell;
 mod level_environment;
