@@ -92,7 +92,7 @@ pub use client_hook::{
 pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
 pub use dds::{
     DdsError, DdsFormat, DdsInfo, DdsLayout, decode_dds_rgba, decode_dds_rgba_with_layout,
-    export_dds_png, inspect_dds,
+    decode_dds_rgba_with_parts, export_dds_png, inspect_dds,
 };
 pub use dependency_graph::{
     DependencyEdge, DependencyError, DependencyGraph, DependencyNode, DependencyStatus,
@@ -165,9 +165,10 @@ pub use signed_pak::{
 };
 pub use skin_preview::{VerifiedCafAssembly, VerifiedCafSkin};
 pub use terrain::{
-    TerrainError, TerrainInfo, TerrainMesh, TerrainPaintMap, TerrainTextureHeader,
-    TerrainTextureLayer, decode_terrain_bytes, decode_terrain_paint_bytes, export_terrain_obj,
-    read_terrain, read_terrain_paint, read_terrain_texture_header,
+    TerrainError, TerrainInfo, TerrainLayerDefinition, TerrainMesh, TerrainPaintMap,
+    TerrainSurfaceType, TerrainTextureHeader, TerrainTextureLayer, decode_terrain_bytes,
+    decode_terrain_paint_bytes, export_terrain_obj, read_terrain, read_terrain_paint,
+    read_terrain_texture_header,
 };
 pub use terrain_tiles::{
     TerrainTextureAtlas, read_terrain_rgb24_tiles, read_terrain_texture_atlas,

@@ -227,6 +227,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 world: state.level_world.clone(),
                 level_hour: state.level_time_of_day,
                 level_full_textures: state.level_full_textures,
+                level_terrain_unlit: state.level_terrain_unlit,
                 viewer_full_textures: state.level_full_textures,
                 viewer_gpu_remaining: None,
             },
@@ -442,6 +443,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .width(Fill)
             .height(Length::FillPortion(3))
             .style(design::panel);
+    // The right panel is an editor first. Time and texture choices stay
+    // compact; long engine/source diagnostics have their own scrollable tab.
     let scene_settings_panel = container(
         column![
             text("Scene Settings").size(15),
@@ -475,6 +478,49 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 "Textures: Balanced"
             })
             .on_press(Message::LevelFullTexturesToggled),
+            design::button(if state.level_terrain_unlit {
+                "Terrain: Source RGB (unlit)"
+            } else {
+                "Terrain: Lit preview"
+            })
+            .on_press(Message::LevelTerrainSourceColorToggled),
+            text(state.level_world.as_ref().map_or_else(
+                || "No world GPU resources loaded.".to_owned(),
+                |world| {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    let p = &world.gpu_progress;
+                    format!(
+                        "Scene loaded: {} / {} groups · {} pending · {} deferred",
+                        p.loaded.load(Relaxed),
+                        world.groups.len(),
+                        p.pending.load(Relaxed),
+                        p.deferred.load(Relaxed),
+                    )
+                },
+            ))
+            .size(11)
+            .style(design::muted),
+            text("Rendering details and source warnings are in Diagnostics.")
+                .size(11)
+                .style(design::muted),
+        ]
+        .spacing(8),
+    )
+    .padding(12)
+    .width(Fill)
+    .style(design::panel);
+    let diagnostics_panel = container(
+        column![
+            row![
+                text("Rendering Diagnostics").size(15),
+                space().width(Fill),
+                text(format!("{} scene notes", state.level_diagnostics.len()))
+                    .size(11)
+                    .style(design::muted),
+            ]
+            .align_y(iced::Center),
+            scrollable(
+                column![
             text(state.level_world.as_ref().map_or_else(
                 || "GPU residency: no world loaded.".to_owned(),
                 |world| {
@@ -559,11 +605,19 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             ))
                 .size(11)
                 .style(design::muted),
+                    text(format!("{} source scene diagnostics", state.level_diagnostics.len()))
+                        .size(11)
+                        .style(design::muted),
+                ]
+                .spacing(8),
+            )
+            .height(Fill),
         ]
-        .spacing(7),
+        .spacing(8),
     )
     .padding(12)
     .width(Fill)
+    .height(Fill)
     .style(design::panel);
     let changes_panel = container(
         column![
@@ -603,21 +657,75 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .padding(12)
     .width(Fill)
     .style(design::panel);
-    let inspector = column![
-        outliner_panel,
-        details_panel,
-        scene_settings_panel,
-        changes_panel
+    let actor_content: Element<'_, Message> = if state.level_read_only {
+        column![outliner_panel, details_panel]
+            .spacing(8)
+            .height(Fill)
+            .into()
+    } else {
+        column![outliner_panel, details_panel, changes_panel]
+            .spacing(8)
+            .height(Fill)
+            .into()
+    };
+    let tab = state.level_sidebar_tab;
+    let tabs = row![
+        design::button("Actors")
+            .style(if tab == super::LevelSidebarTab::Actors {
+                design::primary
+            } else {
+                design::text_button
+            })
+            .on_press(Message::LevelSidebarTabSelected(
+                super::LevelSidebarTab::Actors,
+            )),
+        design::button("Scene")
+            .style(if tab == super::LevelSidebarTab::Scene {
+                design::primary
+            } else {
+                design::text_button
+            })
+            .on_press(Message::LevelSidebarTabSelected(
+                super::LevelSidebarTab::Scene,
+            )),
+        design::button("Diagnostics")
+            .style(if tab == super::LevelSidebarTab::Diagnostics {
+                design::primary
+            } else {
+                design::text_button
+            })
+            .on_press(Message::LevelSidebarTabSelected(
+                super::LevelSidebarTab::Diagnostics,
+            )),
     ]
-    .spacing(8)
-    .width(Length::Fixed(350.0))
-    .height(Fill);
+    .spacing(4);
+    let selected_panel: Element<'_, Message> = match tab {
+        super::LevelSidebarTab::Actors => actor_content,
+        super::LevelSidebarTab::Scene => scene_settings_panel.into(),
+        super::LevelSidebarTab::Diagnostics => diagnostics_panel.into(),
+    };
+    let inspector = column![tabs, selected_panel]
+        .spacing(8)
+        .width(Length::Fixed(350.0))
+        .height(Fill);
     row![viewport, inspector].spacing(8).height(Fill).into()
 }
 
 #[cfg(test)]
 mod editing_tests {
     use super::*;
+
+    #[test]
+    fn level_inspector_defaults_to_actors_instead_of_verbose_scene_diagnostics() {
+        assert_eq!(
+            super::super::LevelSidebarTab::default(),
+            super::super::LevelSidebarTab::Actors
+        );
+        assert_ne!(
+            super::super::LevelSidebarTab::default(),
+            super::super::LevelSidebarTab::Diagnostics
+        );
+    }
 
     #[test]
     fn transform_fields_preserve_source_order_and_reject_nonfinite_values() {

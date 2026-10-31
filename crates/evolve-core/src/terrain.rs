@@ -241,6 +241,50 @@ pub fn decode_terrain_bytes(source: &[u8], render_grid: u32) -> Result<TerrainMe
     })
 }
 
+/// Authored material metadata associated with a terrain layer ID.
+/// These source values are retained verbatim for build-scoped material
+/// resolution. They are not a native terrain shader or a color correction.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerrainLayerDefinition {
+    pub id: u8,
+    pub name: String,
+    pub surface_type: String,
+    pub filter_color: Option<[f32; 3]>,
+    pub brightness: Option<f32>,
+    pub tiling: Option<f32>,
+}
+
+fn finite_terrain_factor(value: &str) -> Option<f32> {
+    value
+        .parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite() && (0.0..=1024.0).contains(v))
+}
+
+fn terrain_filter_color(value: &str) -> Option<[f32; 3]> {
+    let parts = value.split(',').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return None;
+    }
+    Some([
+        finite_terrain_factor(parts[0].trim())?,
+        finite_terrain_factor(parts[1].trim())?,
+        finite_terrain_factor(parts[2].trim())?,
+    ])
+}
+
+/// A CryEngine terrain SurfaceType definition. This is separate from a
+/// painted Layer's LayerId: the two ID namespaces must never be conflated.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerrainSurfaceType {
+    pub id: u8,
+    pub name: String,
+    pub detail_material: String,
+    pub detail_texture: String,
+    pub project_axis: Option<u8>,
+    pub detail_scale: Option<[f32; 2]>,
+}
+
 /// One authentic terrain paint layer entry from Heightmap.dat's XML header.
 /// This is not the baked terrain diffuse: CryEngine stores its surface tiles
 /// separately in TerrainTexture.xml and terraintexture.pak.
@@ -249,6 +293,12 @@ pub struct TerrainPaintMap {
     pub width: u32,
     pub height: u32,
     pub layer_names: std::collections::BTreeMap<u8, String>,
+    /// Preserve all authored Layer entries. IDs can be repeated in original
+    /// source XML; do not silently assume each bitmap byte names one unique
+    /// detail material.
+    pub layers: Vec<TerrainLayerDefinition>,
+    /// Original SurfaceTypes table; SurfaceTypeID is NOT a LayerId.
+    pub surface_types: Vec<TerrainSurfaceType>,
     /// Exactly width * height bytes in the original layer bitmap order.
     pub ids: Vec<u8>,
 }
@@ -319,6 +369,8 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
         .ok_or_else(|| TerrainError::Format("truncated terrain layer bitmap".into()))?
         .to_vec();
     let mut names = std::collections::BTreeMap::new();
+    let mut layers = Vec::new();
+    let mut surface_types = Vec::new();
     let mut reader = Reader::from_reader(xml);
     loop {
         match reader
@@ -328,23 +380,85 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
             Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"Layer" => {
                 let mut id = None;
                 let mut name = None;
+                let mut surface_type = String::new();
+                let mut filter_color = None;
+                let mut brightness = None;
+                let mut tiling = None;
                 for attr in e.attributes() {
                     let attr = attr.map_err(|e| TerrainError::Format(e.to_string()))?;
-                    if attr.key.as_ref() == b"LayerId" {
-                        id = attr
-                            .unescape_value()
-                            .ok()
-                            .and_then(|v| v.parse::<u8>().ok());
-                    } else if attr.key.as_ref() == b"Name" {
-                        name = attr.unescape_value().ok().map(|v| v.to_string());
+                    let value = attr
+                        .unescape_value()
+                        .map_err(|e| TerrainError::Format(e.to_string()))?;
+                    match attr.key.as_ref() {
+                        b"LayerId" => id = value.parse::<u8>().ok(),
+                        b"Name" => name = Some(value.to_string()),
+                        b"SurfaceType" if value.len() <= 512 => {
+                            surface_type = value.to_string();
+                        }
+                        b"FilterColor" => filter_color = terrain_filter_color(&value),
+                        b"LayerBrightness" => brightness = finite_terrain_factor(&value),
+                        b"LayerTiling" => tiling = finite_terrain_factor(&value),
+                        _ => {}
                     }
                 }
                 if let (Some(id), Some(name)) = (id, name)
                     && name.len() <= 128
                 {
-                    names.insert(id, name);
+                    // Preserve duplicates for auditing; some authored
+                    // heightmaps reuse a layer ID for the default layer.
+                    names.insert(id, name.clone());
+                    layers.push(TerrainLayerDefinition {
+                        id,
+                        name,
+                        surface_type,
+                        filter_color,
+                        brightness,
+                        tiling,
+                    });
                 }
-                if names.len() > 256 {
+                if layers.len() > 256 {
+                    return Err(TerrainError::Limits);
+                }
+            }
+            Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"SurfaceType" => {
+                let mut id = None;
+                let mut name = String::new();
+                let mut detail_material = String::new();
+                let mut detail_texture = String::new();
+                let mut project_axis = None;
+                let mut scale_x = None;
+                let mut scale_y = None;
+                for attr in e.attributes() {
+                    let attr = attr.map_err(|e| TerrainError::Format(e.to_string()))?;
+                    let value = attr
+                        .unescape_value()
+                        .map_err(|e| TerrainError::Format(e.to_string()))?;
+                    match attr.key.as_ref() {
+                        b"SurfaceTypeID" => id = value.parse::<u8>().ok(),
+                        b"Name" if value.len() <= 512 => name = value.to_string(),
+                        b"DetailMaterial" if value.len() <= 512 => {
+                            detail_material = value.to_string();
+                        }
+                        b"DetailTexture" if value.len() <= 512 => {
+                            detail_texture = value.to_string();
+                        }
+                        b"ProjectAxis" => project_axis = value.parse::<u8>().ok(),
+                        b"DetailScaleX" => scale_x = finite_terrain_factor(&value),
+                        b"DetailScaleY" => scale_y = finite_terrain_factor(&value),
+                        _ => {}
+                    }
+                }
+                if let Some(id) = id {
+                    surface_types.push(TerrainSurfaceType {
+                        id,
+                        name,
+                        detail_material,
+                        detail_texture,
+                        project_axis,
+                        detail_scale: scale_x.zip(scale_y).map(|(x, y)| [x, y]),
+                    });
+                }
+                if surface_types.len() > 256 {
                     return Err(TerrainError::Limits);
                 }
             }
@@ -359,6 +473,8 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
         width,
         height,
         layer_names: names,
+        layers,
+        surface_types,
         ids,
     }))
 }
@@ -571,6 +687,8 @@ mod tests {
         assert_eq!(paint.id_at(1, 0), Some(1));
         assert_eq!(paint.id_at(16, 0), None);
         assert!(paint.layer_names.is_empty());
+        assert!(paint.layers.is_empty());
+        assert!(paint.surface_types.is_empty());
         data[3
             + br#"<Heightmap Width="16" Height="16" UnitSize="2" MaxHeight="100"/>"#.len()
             + 4
@@ -579,6 +697,61 @@ mod tests {
             + 16 * 16 * 2
             + NEXT.len()] = 0xff;
         assert!(decode_terrain_paint_bytes(&data).is_err());
+    }
+
+    #[test]
+    fn retains_source_layer_materials_and_duplicate_ids_without_tutorial_overrides() {
+        // Generic synthetic v2 heightmap; no original game content is stored.
+        let sample = sample_data();
+        let xml_size = usize::from(u16::from_le_bytes([sample[1], sample[2]]));
+        let xml = br#"<Heightmap Width="16" Height="16" UnitSize="2" MaxHeight="100">
+            <SurfaceTypes>
+                <SurfaceType Name="wet_stone" SurfaceTypeID="4"
+                    DetailMaterial="materials/terrain/wet_stone" DetailTexture=""
+                    DetailScaleX="2" DetailScaleY="3" ProjectAxis="2"/>
+            </SurfaceTypes>
+            <Layers>
+                <Layer Name="Default" LayerId="0" SurfaceType="materials/default"
+                       FilterColor="1,1,1" LayerBrightness="0.5" LayerTiling="1"/>
+                <Layer Name="Wet Stone" LayerId="0" SurfaceType="materials/terrain/wet_stone"
+                       FilterColor="0.2,0.5,0.7" LayerBrightness="0.4" LayerTiling="4"/>
+                <Layer Name="Dry Mud" LayerId="12" SurfaceType="materials/terrain/dry_mud"
+                       FilterColor="0.8,0.6,0.4" LayerBrightness="0.8" LayerTiling="2"/>
+            </Layers>
+        </Heightmap>"#;
+        let mut data = vec![0xff];
+        data.extend_from_slice(&(xml.len() as u16).to_le_bytes());
+        data.extend_from_slice(xml);
+        data.extend_from_slice(&sample[3 + xml_size..]);
+        data.extend_from_slice(&256u32.to_le_bytes());
+        data.extend_from_slice(&256u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend((0..256).map(|i| if i % 3 == 0 { 12 } else { 0 }));
+        let paint = decode_terrain_paint_bytes(&data).unwrap().unwrap();
+        assert_eq!(paint.layers.len(), 3);
+        assert_eq!(paint.surface_types.len(), 1);
+        assert_eq!(paint.surface_types[0].id, 4);
+        assert_eq!(
+            paint.surface_types[0].detail_material,
+            "materials/terrain/wet_stone"
+        );
+        assert_eq!(paint.surface_types[0].detail_scale, Some([2.0, 3.0]));
+        assert_eq!(paint.surface_types[0].project_axis, Some(2));
+        assert_ne!(paint.surface_types[0].id, paint.layers[1].id);
+        assert_eq!(paint.layers[1].id, 0);
+        assert_eq!(paint.layers[1].surface_type, "materials/terrain/wet_stone");
+        assert_eq!(paint.layers[1].filter_color, Some([0.2, 0.5, 0.7]));
+        assert_eq!(paint.layers[1].brightness, Some(0.4));
+        assert_eq!(paint.layers[1].tiling, Some(4.0));
+        assert_eq!(paint.layers[2].id, 12);
+        assert_eq!(paint.id_at(0, 0), Some(12));
+        assert_eq!(paint.id_at(1, 0), Some(0));
+        // The original duplicate LayerId entries remain distinguishable.
+        assert_eq!(paint.layers.iter().filter(|layer| layer.id == 0).count(), 2);
+        assert_eq!(paint.layer_names.get(&0).unwrap(), "Wet Stone");
+        assert_eq!(terrain_filter_color("NaN,1,1"), None);
+        assert_eq!(terrain_filter_color("1,2"), None);
+        assert_eq!(finite_terrain_factor("-1"), None);
     }
 
     #[test]

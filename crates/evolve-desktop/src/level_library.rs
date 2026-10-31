@@ -7,10 +7,11 @@ use crate::{
     modding_projects::ProjectRow,
 };
 use evolve_core::{
-    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
-    imported_archive_preview_inventory, imported_library, parse_level_scene,
-    parse_level_scene_read_only, read_terrain, read_terrain_paint, read_terrain_rgb24_tiles,
-    read_terrain_texture_atlas, read_terrain_texture_header, scan_directory,
+    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, TerrainPaintMap,
+    imported_archive_files, imported_archive_preview_inventory, imported_library,
+    parse_level_scene, parse_level_scene_read_only, read_terrain, read_terrain_paint,
+    read_terrain_rgb24_tiles, read_terrain_texture_atlas, read_terrain_texture_header,
+    scan_directory,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -749,6 +750,41 @@ fn open_selected(
             None
         }
     };
+    let sky_source = match authored_environment(&archive, chosen, &inventory) {
+        Ok(Some(file)) => match fs::read(file) {
+            Ok(data) => match crate::level_atmosphere::sky_source(&data) {
+                Ok(value) => value,
+                Err(error) => {
+                    diagnostics.push(format!("Original sky configuration unsupported: {error}"));
+                    Default::default()
+                }
+            },
+            Err(error) => {
+                diagnostics.push(format!(
+                    "Could not read original SkyBox configuration: {error}"
+                ));
+                Default::default()
+            }
+        },
+        Ok(None) => Default::default(),
+        Err(error) => {
+            diagnostics.push(format!(
+                "Could not resolve original SkyBox configuration: {error}"
+            ));
+            Default::default()
+        }
+    };
+    let static_sky = match crate::level_atmosphere::load_static_sky(&archive, &sky_source) {
+        Ok(Some(sky)) => {
+            diagnostics.push("Map-owned static Sky material and three complete, matching original DDS face textures resolved.".into());
+            Some(std::sync::Arc::new(sky))
+        }
+        Ok(None) => None,
+        Err(error) => {
+            diagnostics.push(format!("Static Sky source unavailable: {error}; original TimeOfDay dynamic sky preview used when present."));
+            None
+        }
+    };
     let mut sources = Vec::<(String, Vec<u8>)>::new();
     // Keep both memory and parser work bounded. A map with more than this
     // requires an incremental scene loader rather than silent unbounded reads.
@@ -864,6 +900,9 @@ fn open_selected(
             )),
         }
     }
+    let (local_lights, light_warnings) = crate::level_atmosphere::lights(&sources, scene.as_ref());
+    diagnostics.push(format!("Original map light entities with verified authored color, radius and strength: {}. GPU viewport uses nearby point/spot preview lighting; authored shadow maps and projector textures require separate verification.",local_lights.len()));
+    diagnostics.extend(light_warnings.into_iter().take(5));
     let terrain_xml = if chosen.terrain.is_some() {
         terrain_resource(
             &root,
@@ -899,18 +938,23 @@ fn open_selected(
     let terrain_xml = terrain_xml.ok().flatten();
     let terrain_pak = terrain_pak.ok().flatten();
 
+    let mut terrain_paint: Option<TerrainPaintMap> = None;
     let terrain = if let Some(relative) = &chosen.terrain {
         let exact = verified_source(&root, relative, 512 * 1024 * 1024)?;
         match read_terrain_paint(&exact) {
             Ok(Some(paint)) => {
                 let mut counts = std::collections::BTreeMap::<u8, usize>::new();
-                for id in paint.ids {
+                for &id in &paint.ids {
                     *counts.entry(id).or_default() += 1;
                 }
                 diagnostics.push(format!(
                     "Original terrain layer bitmap decoded: {} used layer IDs; {} authored names. Original baked terrain tile textures are separate.",
                     counts.len(), paint.layer_names.len()
                 ));
+                diagnostics.push(terrain_layer_material_report(&paint));
+                diagnostics.push(terrain_surface_type_report(&paint));
+                diagnostics.extend(crate::terrain_material_probe::audit(&archive, &paint));
+                terrain_paint = Some(paint);
             }
             Ok(None) => diagnostics.push(
                 "This original heightmap contains no readable terrain layer-ID section.".into(),
@@ -1000,7 +1044,7 @@ fn open_selected(
                 let dimensions = atlas.image.dimensions();
                 diagnostics.push(terrain_pixel_report(&atlas.image));
                 let mut applied = false;
-                if let (Some(assembled), Some((terrain_mesh, _))) =
+                if let (Some(assembled), Some((terrain_mesh, terrain_info))) =
                     (full_scene.as_mut(), terrain.as_ref())
                     && let Some(surface) = assembled.surfaces.first_mut()
                     && surface.first_index == 0
@@ -1021,6 +1065,22 @@ fn open_selected(
                     {
                         material.diffuse = Some(diffuse);
                         applied = true;
+                        if let Some(paint) = terrain_paint.as_ref() {
+                            match crate::terrain_material_probe::compose(
+                                &archive, paint, dimensions, terrain_info.unit,
+                            ) {
+                                Ok(Some((highpass, report))) => {
+                                    world.terrain_detail = Some(std::sync::Arc::new(highpass));
+                                    diagnostics.push(report);
+                                }
+                                Ok(None) => diagnostics.push(
+                                    "Terrain high-pass detail unavailable: no exact complete, explicitly high-pass material DDS streams for painted layer IDs; preserving original RGB atlas.".into()
+                                ),
+                                Err(error) => diagnostics.push(format!(
+                                    "Terrain high-pass detail unavailable: {error}; original RGB atlas remains intact."
+                                )),
+                            }
+                        }
                     }
                     assembled.world = std::sync::Arc::new(world);
                 }
@@ -1043,6 +1103,9 @@ fn open_selected(
     diagnostics.push(resources.description());
     if let Some(assembled) = full_scene.as_mut() {
         let mut world = (*assembled.world).clone();
+        world.sky_source = sky_source;
+        world.static_sky = static_sky;
+        world.local_lights = std::sync::Arc::new(local_lights);
         world.time_of_day = original_time.map(std::sync::Arc::new);
         world.fog_profile = original_fog;
         world.source_resources = resources;
@@ -1064,6 +1127,96 @@ fn open_selected(
         project,
         diagnostics,
     })
+}
+
+/// Audit every map's actual Heightmap.dat material references. The baked
+/// RGB atlas supplies macro color; CryEngine also draws source surface
+/// materials through its native terrain shader. This is a read-only source
+/// inventory, not a synthetic color/tint substitute.
+fn terrain_layer_material_report(paint: &TerrainPaintMap) -> String {
+    use std::collections::{BTreeMap, BTreeSet};
+    let used = paint.ids.iter().copied().collect::<BTreeSet<_>>();
+    let mut by_id = BTreeMap::<u8, BTreeSet<&str>>::new();
+    for layer in &paint.layers {
+        if !layer.surface_type.is_empty() {
+            by_id
+                .entry(layer.id)
+                .or_default()
+                .insert(layer.surface_type.as_str());
+        }
+    }
+    let covered = used.iter().filter(|id| by_id.contains_key(id)).count();
+    let missing = used
+        .iter()
+        .filter(|id| !by_id.contains_key(id))
+        .take(12)
+        .map(u8::to_string)
+        .collect::<Vec<_>>();
+    let ambiguous = by_id.values().filter(|paths| paths.len() > 1).count();
+    let examples = paint
+        .layers
+        .iter()
+        .filter(|layer| !layer.surface_type.is_empty())
+        .take(4)
+        .map(|layer| format!("{}:{}", layer.id, layer.surface_type))
+        .collect::<Vec<_>>();
+    format!(
+        "Source terrain detail materials: {} authored layer entries, {} distinct material paths, {covered}/{} used bitmap IDs with a declared material, {} duplicate-ID material conflicts. Examples: [{}]. Unmapped/special IDs (first 12): [{}]. Original layer tint/brightness/tiling metadata decoded but native detail-material blending is NOT rendered; this baked color atlas alone cannot reproduce every terrain surface.",
+        paint.layers.len(),
+        by_id
+            .values()
+            .flat_map(|paths| paths.iter())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        used.len(),
+        ambiguous,
+        examples.join(", "),
+        missing.join(", "),
+    )
+}
+
+/// The original SurfaceTypeID namespace is distinct from painted LayerId.
+/// Joining them numerically could assign an unrelated high-pass texture and
+/// would make valid baked source colors appear wrong on every map.
+fn terrain_surface_type_report(paint: &TerrainPaintMap) -> String {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut definitions = BTreeMap::<u8, BTreeSet<&str>>::new();
+    for entry in &paint.surface_types {
+        let path = if entry.detail_material.is_empty() {
+            entry.name.as_str()
+        } else {
+            entry.detail_material.as_str()
+        };
+        if !path.is_empty() {
+            definitions.entry(entry.id).or_default().insert(path);
+        }
+    }
+    let conflicting_ids = definitions.values().filter(|paths| paths.len() > 1).count();
+    let known = definitions
+        .values()
+        .flat_map(|paths| paths.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let matched = paint
+        .layers
+        .iter()
+        .filter(|layer| {
+            !layer.surface_type.is_empty() && known.contains(layer.surface_type.as_str())
+        })
+        .count();
+    let samples = paint
+        .surface_types
+        .iter()
+        .take(4)
+        .map(|entry| format!("{}:{}", entry.id, entry.detail_material))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Original terrain SurfaceTypes: {} definitions, {} conflicting source IDs, {matched}/{} authored Layers reference a declared high-pass material; source samples [{}]. SurfaceTypeID and LayerId are separate, and the original surface detail textures are not yet blended in the preview.",
+        paint.surface_types.len(),
+        conflicting_ids,
+        paint.layers.len(),
+        samples,
+    )
 }
 
 /// Diagnostic of original decoded atlas bytes, before shader lighting or
@@ -1120,6 +1273,66 @@ fn terrain_pixel_report(img: &image::RgbaImage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_type_ids_are_never_assumed_equal_to_layer_bitmap_ids() {
+        let paint = TerrainPaintMap {
+            width: 1,
+            height: 1,
+            layer_names: [(22, "Beach".into())].into(),
+            layers: vec![evolve_core::TerrainLayerDefinition {
+                id: 22,
+                name: "Beach".into(),
+                surface_type: "materials/terrain/sand".into(),
+                filter_color: None,
+                brightness: None,
+                tiling: None,
+            }],
+            surface_types: vec![evolve_core::TerrainSurfaceType {
+                id: 0,
+                name: "Sand".into(),
+                detail_material: "materials/terrain/sand".into(),
+                detail_texture: String::new(),
+                project_axis: Some(2),
+                detail_scale: Some([1.0, 1.0]),
+            }],
+            ids: vec![22],
+        };
+        let report = terrain_surface_type_report(&paint);
+        assert!(report.contains("1/1 authored Layers"));
+        assert!(report.contains("SurfaceTypeID and LayerId are separate"));
+    }
+
+    #[test]
+    fn reports_missing_and_duplicate_source_terrain_layer_mappings_generically() {
+        use evolve_core::TerrainLayerDefinition;
+        let layer = |id, path: &str| TerrainLayerDefinition {
+            id,
+            name: format!("Layer {id}"),
+            surface_type: path.into(),
+            filter_color: Some([0.8, 0.7, 0.6]),
+            brightness: Some(0.5),
+            tiling: Some(1.0),
+        };
+        let paint = TerrainPaintMap {
+            width: 2,
+            height: 2,
+            layer_names: [(0, "Default".into()), (3, "Rock".into())].into(),
+            layers: vec![
+                layer(0, "materials/terrain/rock"),
+                layer(0, "materials/terrain/mud"),
+                layer(3, "materials/terrain/sand"),
+            ],
+            surface_types: Vec::new(),
+            ids: vec![0, 3, 255, 3],
+        };
+        let text = terrain_layer_material_report(&paint);
+        assert!(text.contains("3 authored layer entries"));
+        assert!(text.contains("2/3 used bitmap IDs"));
+        assert!(text.contains("1 duplicate-ID material conflicts"));
+        assert!(text.contains("[255]"));
+        assert!(text.contains("native detail-material blending is NOT rendered"));
+    }
 
     #[test]
     fn terrain_color_diagnostic_reports_decoded_pixels_without_adjustment() {

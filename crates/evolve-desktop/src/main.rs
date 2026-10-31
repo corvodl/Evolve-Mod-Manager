@@ -36,6 +36,7 @@ mod gfx_tool_install;
 mod guided_modding;
 mod initial_setup;
 mod launcher_bridge;
+mod level_atmosphere;
 mod level_camera;
 mod level_editor_shell;
 mod level_environment;
@@ -76,6 +77,7 @@ mod staged_library;
 mod standard_user_launch;
 mod storage_usage;
 mod system_health;
+mod terrain_material_probe;
 mod text_asset_editor;
 mod textured;
 mod updater;
@@ -239,6 +241,16 @@ fn sidebar_width(reveal: f32) -> f32 {
         + (SIDEBAR_EXPANDED_WIDTH - SIDEBAR_COLLAPSED_WIDTH) * reveal.clamp(0.0, 1.0)
 }
 
+/// Right-hand Level Editor workspace. Actor editing is the default; verbose
+/// GPU/source diagnostics must not consume the actor hierarchy's space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum LevelSidebarTab {
+    #[default]
+    Actors,
+    Scene,
+    Diagnostics,
+}
+
 #[derive(Default)]
 struct State {
     sidebar_hovered: bool,
@@ -397,9 +409,11 @@ struct State {
     level_open_after_copy: bool,
     level_diagnostics: Vec<String>,
     level_show_overview: bool,
+    level_sidebar_tab: LevelSidebarTab,
     /// Preview-only lighting controls, never written to original game files.
     level_time_of_day: f32,
     level_full_textures: bool,
+    level_terrain_unlit: bool,
     terrain: Option<TerrainInfo>,
     selected: Option<usize>,
     file_selection: MultiSelection,
@@ -2213,10 +2227,12 @@ enum Message {
     LightStrengthChanged(f32),
     LevelSelect(usize),
     LevelFilterChanged(String),
+    LevelSidebarTabSelected(LevelSidebarTab),
     LevelZoomChanged(f32),
     LevelTimeOfDayChanged(f32),
     LevelTimePreset(f32),
     LevelFullTexturesToggled,
+    LevelTerrainSourceColorToggled,
     LevelEditPositionChanged(String),
     LevelEditRotationChanged(String),
     LevelEditScaleChanged(String),
@@ -7553,10 +7569,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_selection.click(&[index], index, false, false);
                 }
                 state.level_selected = state.level_selection.primary_after(index);
+                // Viewport picking should reveal the corresponding actor
+                // inspector, not leave the user in the diagnostics tab.
+                state.level_sidebar_tab = LevelSidebarTab::Actors;
                 sync_level_fields(state);
             }
         }
         Message::LevelFilterChanged(value) => state.level_filter = value,
+        Message::LevelSidebarTabSelected(tab) => state.level_sidebar_tab = tab,
         Message::LevelZoomChanged(value) => state.level_zoom = value.clamp(0.3, 3.0),
         Message::LevelTimeOfDayChanged(value) => {
             if value.is_finite() {
@@ -7568,6 +7588,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelFullTexturesToggled => {
             state.level_full_textures = !state.level_full_textures;
+        }
+        Message::LevelTerrainSourceColorToggled => {
+            state.level_terrain_unlit = !state.level_terrain_unlit;
         }
         Message::LevelEditPositionChanged(value) => state.level_edit_position = value,
         Message::LevelEditRotationChanged(value) => state.level_edit_rotation = value,
@@ -12817,6 +12840,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let loaded = *loaded;
                     state.level_diagnostics = loaded.diagnostics.clone();
                     state.level_show_overview = false;
+                    state.level_sidebar_tab = LevelSidebarTab::Actors;
                     let map_name = loaded.maps[loaded.index].name.clone();
                     state.input = loaded
                         .source
@@ -12936,6 +12960,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .collect();
                     state.level_dirty_count = 0;
                     state.level_scene = Some(Arc::new(scene));
+                    state.level_sidebar_tab = LevelSidebarTab::Actors;
                     state.level_selected = None;
                     state.level_selection.clear();
                     state.level_undo.clear();
@@ -13790,6 +13815,7 @@ fn view(state: &State) -> Element<'_, Message> {
                             world: None,
                             level_hour: 12.0,
                             level_full_textures: true,
+                            level_terrain_unlit: false,
                             viewer_full_textures: state.viewer_full_textures,
                             viewer_gpu_remaining: None,
                         }).width(Fill).height(Length::Fixed(400.)).into()
@@ -13989,6 +14015,7 @@ fn initial_state() -> State {
         level_zoom: 1.0,
         level_time_of_day: 12.0,
         level_full_textures: true,
+        level_terrain_unlit: false,
         viewer_full_textures: true,
         light_strength: 1.6,
         emissive_strength: 1.0,

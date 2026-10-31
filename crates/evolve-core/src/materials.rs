@@ -308,6 +308,7 @@ fn append_texture(
             | "opacity"
             | "detail"
             | "height"
+            | "heightmap"
             | "environment"
             | "custom"
             | "[1] custom"
