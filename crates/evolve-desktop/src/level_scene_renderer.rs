@@ -297,6 +297,14 @@ impl Index {
                 }
             };
             let root = PathBuf::from(&inventory.root);
+            // Canonicalize both sides for containment checks. Windows may
+            // introduce a \\?\ transport prefix only on the canonical side;
+            // comparing that against a persisted C:\ path rejects valid
+            // imports even though both paths identify the same file.
+            let Ok(canonical_root) = fs::canonicalize(&root) else {
+                report.note(format!("Imported extraction folder not accessible: {}", pak.name));
+                continue;
+            };
             let mut matched = false;
             for asset in &inventory.entries {
                 let Some(key) = safe_virtual(&asset.relative_path) else {
@@ -316,14 +324,17 @@ impl Index {
                     let Ok(canonical) = fs::canonicalize(&path) else {
                         continue;
                     };
-                    if !canonical.starts_with(&root) {
+                    if !canonical.starts_with(&canonical_root) {
                         continue;
                     }
                     accepted += 1;
                     matched = true;
                     index.files.entry(key).or_default().push(AssetLocation {
                         archive: pak.id.clone(),
-                        path: canonical,
+                        // Retain an ordinary Windows path for downstream
+                        // decoders. The resolved canonical path above is
+                        // used only to verify containment, never persisted.
+                        path,
                     });
                 }
             }
