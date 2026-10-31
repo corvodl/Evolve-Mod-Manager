@@ -2005,6 +2005,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn world_mesh_material_leaves_follow_source_ids_not_mesh_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("tree.cgf");
+        let material = dir.path().join("tree.mtl");
+        std::fs::write(&source, b"source owner for test").unwrap();
+        std::fs::write(
+            &material,
+            br#"<Material Name="tree"><SubMaterials>
+                <Material Name="trunk" Shader="Illum"/>
+                <Material Name="leaves" Shader="Vegetation" AlphaTest="0.5"/>
+                <Material Name="hidden" Shader="NoDraw"/>
+            </SubMaterials></Material>"#,
+        )
+        .unwrap();
+        let mesh = evolve_core::RenderMesh {
+            info: evolve_core::ModelInfo {
+                format: "test".into(),
+                version: 7,
+                chunk_count: 1,
+                vertex_count: 3,
+                triangle_count: 1,
+                original_uv0: false,
+                original_normals: false,
+            },
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            indices: vec![0, 1, 2],
+            uv0: None,
+            normals: None,
+        };
+        let parts = [
+            evolve_core::WorldModelPart {
+                mesh: mesh.clone(),
+                subsets: vec![(0, 3, 2)],
+                has_subset_table: true,
+            },
+            evolve_core::WorldModelPart {
+                mesh,
+                subsets: vec![(0, 3, 1)],
+                has_subset_table: true,
+            },
+        ];
+        let inventory = evolve_core::scan_directory(dir.path()).unwrap();
+        let (surfaces, _) = load_world_model_surfaces(
+            &source,
+            &material,
+            &parts,
+            &inventory,
+            None,
+            None,
+            &SharedCache::default(),
+        )
+        .unwrap();
+        assert_eq!(surfaces.len(), 2);
+        assert!(!surfaces[0][0].visible, "NoDraw leaf ID 2 must be hidden");
+        assert!(surfaces[1][0].visible, "leaf ID 1 is not NoDraw");
+        assert_eq!((surfaces[1][0].first_index, surfaces[1][0].index_count), (0, 3));
+
+        let mut missing_table = parts.clone();
+        missing_table[0].has_subset_table = false;
+        assert!(load_world_model_surfaces(
+            &source, &material, &missing_table,
+            &inventory, None, None, &SharedCache::default(),
+        ).is_err());
+
+        let mut unknown_slot = parts.clone();
+        unknown_slot[0].subsets[0].2 = 11;
+        assert!(load_world_model_surfaces(
+            &source, &material, &unknown_slot,
+            &inventory, None, None, &SharedCache::default(),
+        ).is_err());
+    }
+
     fn compiled_material_fixture(with_subsets: bool) -> Vec<u8> {
         let mut data = vec![0u8; 16 + (if with_subsets { 4 } else { 3 }) * 16];
         data[..8].copy_from_slice(b"CrChF\x07\0\0");
