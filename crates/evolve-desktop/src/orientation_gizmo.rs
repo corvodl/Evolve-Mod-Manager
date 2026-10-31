@@ -31,6 +31,13 @@ struct AxisPoint {
 /// untouched: viewer orbit, grid, and gizmo share this projection only.
 pub(crate) const FRONT_YAW: f32 = 0.0;
 
+/// Camera-space horizontal axis shared by GPU material preview, CPU wireframe,
+/// floor grid, and the gizmo. This is intentionally NOT the Level Editor's
+/// world-camera basis (which looks in a different direction at yaw zero).
+pub(crate) fn model_screen_horizontal(x: f32, y: f32, sin_yaw: f32, cos_yaw: f32) -> f32 {
+    y * sin_yaw - x * cos_yaw
+}
+
 pub(crate) fn model_camera_preset(preset: &str) -> Option<(f32, f32)> {
     match preset {
         "Front" => Some((FRONT_YAW, 0.0)),
@@ -75,7 +82,7 @@ impl OrientationGizmo {
         ] {
             for direction in [-1.0, 1.0] {
                 let [x, y, z] = axis.map(|part| part * direction);
-                let horizontal = y * sy - x * cy;
+                let horizontal = model_screen_horizontal(x, y, sy, cy);
                 let vertical = z * cp - (x * sy + y * cy) * sp;
                 let depth = (x * sy + y * cy) * cp + z * sp;
                 points.push(AxisPoint {
@@ -246,6 +253,15 @@ impl canvas::Program<super::Message> for OrientationGizmo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn model_only_projection_keeps_left_right_across_orbit() {
+        assert_eq!(model_screen_horizontal(1.0, 0.0, 0.0, 1.0), -1.0);
+        assert_eq!(model_screen_horizontal(-1.0, 0.0, 0.0, 1.0), 1.0);
+        assert_eq!(model_screen_horizontal(1.0, 0.0, 0.0, -1.0), 1.0);
+        // At yaw 90, camera right maps to source +Y, not source X.
+        assert_eq!(model_screen_horizontal(0.0, 1.0, 1.0, 0.0), 1.0);
+    }
+
     #[test]
     fn cryengine_front_camera_sees_positive_y_and_keeps_right_left_consistent() {
         use std::f32::consts::PI;
