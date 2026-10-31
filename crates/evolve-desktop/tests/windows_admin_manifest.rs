@@ -30,3 +30,22 @@ fn installer_requests_uac_before_launching_privileged_gui() {
     assert!(setup.contains("UsePreviousAppDir=no"));
     assert!(setup.contains(r#"Filename: "{app}\evolve-mod-manager.exe""#));
 }
+
+#[test]
+fn isolated_worker_and_overlay_do_not_request_administrator_by_manifest() {
+    for manifest in [
+        include_str!("../../evolve-privileged-worker/app.manifest"),
+        include_str!("../../evolve-teleport-overlay/app.manifest"),
+    ] {
+        assert!(manifest.contains("level=\"asInvoker\""));
+        assert!(manifest.contains("uiAccess=\"false\""));
+        assert!(!manifest.contains("requireAdministrator"));
+    }
+    let worker = include_str!("../../evolve-privileged-worker/Cargo.toml");
+    let overlay = include_str!("../../evolve-teleport-overlay/Cargo.toml");
+    assert!(worker.contains("name = \"evolve-privileged-worker\""));
+    assert!(overlay.contains("name = \"evolve-teleport-overlay\""));
+    let workspace = include_str!("../../../Cargo.toml");
+    assert!(workspace.contains("\"crates/evolve-privileged-worker\""));
+    assert!(workspace.contains("\"crates/evolve-teleport-overlay\""));
+}
