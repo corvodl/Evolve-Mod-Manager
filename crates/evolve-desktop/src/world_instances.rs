@@ -1045,6 +1045,8 @@ impl Renderer {
         full_textures: bool,
         cache: &mut TextureCache,
         hashes: &mut SourceKeys,
+        pending_diffuse: &mut HashMap<TextureKey, PendingDiffuseMip>,
+        mip_min_level: &mut HashMap<TextureKey, u32>,
         used_bytes: &mut u64,
     ) -> GpuGroup {
         let vert: Vec<Vertex> = model
@@ -1123,14 +1125,28 @@ impl Renderer {
                     )
                 });
                 let (w, h) = source.as_ref().map_or((1, 1), |img| img.dimensions());
-                let (tex, view) = upload_rgba_mips(
-                    device,
-                    queue,
-                    source.as_deref(),
-                    fallback,
-                    wgpu::TextureFormat::Rgba8UnormSrgb,
-                    "Original diffuse / baked ground atlas",
-                );
+                let (tex, view) = if let Some(ref selected) = source {
+                    let original = match selected {
+                        Cow::Borrowed(_) if surf.diffuse.as_ref().is_some_and(|img| img.dimensions() == (w, h)) =>
+                            surf.diffuse.as_ref().expect("borrowed diffuse source").clone(),
+                        _ => Arc::new(selected.as_ref().clone()),
+                    };
+                    let (tex, view, lowest) = create_streaming_diffuse(device, queue, &original);
+                    mip_min_level.insert(key, lowest);
+                    if lowest > 0 {
+                        pending_diffuse.insert(key, PendingDiffuseMip {
+                            source: original,
+                            next_level: lowest - 1,
+                        });
+                    }
+                    (tex, view)
+                } else {
+                    upload_rgba_mips(
+                        device, queue, None, fallback,
+                        wgpu::TextureFormat::Rgba8UnormSrgb,
+                        "Missing source diffuse (neutral)",
+                    )
+                };
                 let bytes = mip_chain_bytes(w, h);
                 *used_bytes = used_bytes.saturating_add(bytes);
                 cache.insert(key, (tex.clone(), view.clone(), bytes));
@@ -1240,7 +1256,7 @@ impl Renderer {
                     surf.alpha_cutoff.clamp(0.0, 1.0),
                     surf.emission_strength.clamp(0.0, 30.0),
                     if surf.normal.is_some() { 1.0 } else { 0.0 },
-                    0.0,
+                    mip_min_level.get(&key).copied().unwrap_or(0) as f32,
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -1303,6 +1319,7 @@ impl Renderer {
                 ],
             });
             surfaces.push(GpuSurface {
+                diffuse_key: key,
                 first: surf.first_index,
                 count: surf.index_count,
                 transparent: surf.transparent,
@@ -1353,6 +1370,8 @@ impl Renderer {
             self.groups.clear();
             self.cache.clear();
             self.source_hashes.clear();
+            self.pending_diffuse.clear();
+            self.mip_min_level.clear();
             self.peak_gpu_bytes = 0;
             self.world_identity = 0;
             self.last_camera = None;
@@ -1365,6 +1384,8 @@ impl Renderer {
             self.groups = std::iter::repeat_with(|| None).take(world.groups.len()).collect();
             self.cache.clear();
             self.source_hashes = (*world.source_pixel_hashes).clone();
+            self.pending_diffuse.clear();
+            self.mip_min_level.clear();
             self.peak_gpu_bytes = 0;
             self.world_identity = key;
             self.last_full_textures = full_textures;
@@ -1405,6 +1426,8 @@ impl Renderer {
         let mut cache = std::mem::take(&mut self.cache);
         let mut hashes = std::mem::take(&mut self.source_hashes);
         let evicted = evict_offscreen(&mut self.groups, &visible_groups, &mut cache);
+        self.pending_diffuse.retain(|key, _| cache.contains_key(key));
+        self.mip_min_level.retain(|key, _| cache.contains_key(key));
         let target_bytes = if full_textures {
             WORLD_RESIDENT_TARGET_BYTES
         } else {
@@ -1453,6 +1476,8 @@ impl Renderer {
                 let retained: HashSet<TextureKey> = self.groups.iter().flatten()
                     .flat_map(|group| group.source_keys.iter().copied()).collect();
                 cache.retain(|key, _| retained.contains(key));
+                self.pending_diffuse.retain(|key, _| cache.contains_key(key));
+                self.mip_min_level.retain(|key, _| cache.contains_key(key));
                 used_bytes = cache_bytes(&cache);
             }
             if used_bytes
@@ -1466,7 +1491,8 @@ impl Renderer {
             }
             let gpu = self.group(
                 device, queue, &world.groups[idx], full_textures,
-                &mut cache, &mut hashes, &mut used_bytes,
+                &mut cache, &mut hashes, &mut self.pending_diffuse,
+                &mut self.mip_min_level, &mut used_bytes,
             );
             self.groups[idx] = Some(gpu);
             uploaded += 1;
