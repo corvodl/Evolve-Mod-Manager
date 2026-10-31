@@ -26,3 +26,5 @@ Work follows the merged PR #168/#169 nightly snapshot. No proprietary game PAK, 
 - Next: source-linked emitter placement, texture atlases, GPU sprite instancing and effects-browser playback; refraction coverage mask and scene-color capture; native raymarched fog/beam lighting.
 
 CI note: The branch uses a temporary formatting workflow that removes itself after applying cargo fmt; this documentation update triggers ordinary checks against the formatted source. PR remains draft until validation and in-game visual inspection.
+
+Updated implementation note: source-authored map ParticleEffect placement names are now checked against the exact imported original libs.pak CryXmlB library when the installation/build matches. The lookup is bounded to referenced libraries and reports unresolved definitions rather than generating substitute effects. Shader/refraction and simulation limitations listed above remain applicable.
