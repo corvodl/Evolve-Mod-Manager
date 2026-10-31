@@ -1046,6 +1046,10 @@ fn open_selected(
         world.time_of_day = original_time.map(std::sync::Arc::new);
         world.fog_profile = original_fog;
         world.source_resources = resources;
+        // Map assembly already runs in an operation worker. Hash source
+        // image identities here so the first viewport frame never spends
+        // time hashing full-resolution decoded DDS and terrain atlases.
+        world.precompute_gpu_source_hashes();
         assembled.world = std::sync::Arc::new(world);
         diagnostics.push(assembled.report.status());
     }
