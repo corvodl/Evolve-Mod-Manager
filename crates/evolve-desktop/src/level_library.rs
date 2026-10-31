@@ -7,10 +7,11 @@ use crate::{
     modding_projects::ProjectRow,
 };
 use evolve_core::{
-    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
-    imported_archive_preview_inventory, imported_library, parse_level_scene,
-    parse_level_scene_read_only, read_terrain, read_terrain_paint, read_terrain_rgb24_tiles,
-    read_terrain_texture_atlas, read_terrain_texture_header, scan_directory, TerrainPaintMap,
+    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, TerrainPaintMap,
+    imported_archive_files, imported_archive_preview_inventory, imported_library,
+    parse_level_scene, parse_level_scene_read_only, read_terrain, read_terrain_paint,
+    read_terrain_rgb24_tiles, read_terrain_texture_atlas, read_terrain_texture_header,
+    scan_directory,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -1101,7 +1102,11 @@ fn terrain_layer_material_report(paint: &TerrainPaintMap) -> String {
     format!(
         "Source terrain detail materials: {} authored layer entries, {} distinct material paths, {covered}/{} used bitmap IDs with a declared material, {} duplicate-ID material conflicts. Examples: [{}]. Unmapped/special IDs (first 12): [{}]. Original layer tint/brightness/tiling metadata decoded but native detail-material blending is NOT rendered; this baked color atlas alone cannot reproduce every terrain surface.",
         paint.layers.len(),
-        by_id.values().flat_map(|paths| paths.iter()).collect::<BTreeSet<_>>().len(),
+        by_id
+            .values()
+            .flat_map(|paths| paths.iter())
+            .collect::<BTreeSet<_>>()
+            .len(),
         used.len(),
         ambiguous,
         examples.join(", "),
