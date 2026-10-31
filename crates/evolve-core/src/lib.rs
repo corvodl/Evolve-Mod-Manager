@@ -51,7 +51,7 @@ mod terrain_tiles;
 
 pub use animation::{
     AnimatedGlb, AnimationError, AnimationReference, CafInspection, MotionClip, PoseSample,
-    animation_references, inspect_caf_bytes, inspect_caf_file,
+    animation_references, animation_wildcard_matches, inspect_caf_bytes, inspect_caf_file,
 };
 pub use animation_events::{
     AnimationEvent, AnimationEventDatabase, AnimationEventDiagnostic, AnimationEventError,

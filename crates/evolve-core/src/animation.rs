@@ -161,10 +161,13 @@ fn handle_animation(
     let database = name.eq_ignore_ascii_case("$TracksDatabase");
     let events = name.eq_ignore_ascii_case("$AnimEventDatabase");
     let directive = name.starts_with('#') || name.starts_with(char::from(36u8));
+    // CryEngine CHRPARAMS allows authored wildcard animation entries
+    // (for example: name="*" path="*/*.caf"). Preserve them for expansion
+    // against the selected build's AnimationsCAF PAK manifest, rather than
+    // silently losing almost the entire animation browser.
     if name.is_empty()
         || reference.is_empty()
-        || name.contains('*')
-        || reference.contains('*')
+        || (name.contains('*') && name != "*")
         || (directive && !database && !events)
     {
         return Ok(());
@@ -183,26 +186,74 @@ fn handle_animation(
             .trim_start_matches('/')
             .to_owned()
     };
-    if let Ok(path) = safe_member_name(&virtual_path) {
-        let kind = path
+    // Validate wildcard paths using the same member-name rules as literal
+    // references. The placeholder is ONLY used to check the path; never
+    // resolve a placeholder as a real asset or broaden to a basename search.
+    let wildcard = virtual_path.contains('*');
+    let validated = virtual_path.replace('*', "x");
+    if safe_member_name(&validated).is_ok() && virtual_path.len() <= 512 {
+        let extension = virtual_path
             .rsplit('.')
             .next()
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if (matches!(kind.as_str(), "caf" | "dba" | "bspace" | "comb")
-            || (events && kind == "animevents"))
+        let kind = if wildcard {
+            match extension.as_str() {
+                "caf" => "caf_glob",
+                "dba" if database => "dba_glob",
+                _ => return Ok(()),
+            }
+        } else {
+            extension.as_str()
+        };
+        if (matches!(
+            kind,
+            "caf" | "dba" | "bspace" | "comb" | "caf_glob" | "dba_glob"
+        ) || (events && kind == "animevents"))
             && out.len() < MAX_FRAMES
         {
             out.push(AnimationReference {
                 name,
-                path,
-                kind,
+                path: virtual_path,
+                kind: kind.into(),
                 database,
             });
         }
     }
     Ok(())
 }
+/// Match a CHRPARAMS animation wildcard against an exact archive virtual path.
+/// '*' stays in one directory; '**' crosses directory separators. Matching is
+/// case-insensitive, full-path anchored, and never selects by basename alone.
+pub fn animation_wildcard_matches(pattern: &str, candidate: &str) -> bool {
+    if pattern.len() > 512 || candidate.len() > 512 {
+        return false;
+    }
+    let p = pattern.as_bytes();
+    let s = candidate.as_bytes();
+    let mut row = vec![false; s.len() + 1];
+    row[0] = true;
+    for (index, &token) in p.iter().enumerate() {
+        let mut next = vec![false; s.len() + 1];
+        if token == b'*' {
+            let recursive = index > 0 && p[index - 1] == b'*';
+            for at in 0..=s.len() {
+                // '*' can consume no characters, or one more non-separator.
+                next[at] = row[at]
+                    || (at > 0
+                        && (recursive || (s[at - 1] != b'/' && s[at - 1] != b'\\'))
+                        && next[at - 1]);
+            }
+        } else {
+            for at in 1..=s.len() {
+                next[at] = row[at - 1] && token.eq_ignore_ascii_case(&s[at - 1]);
+            }
+        }
+        row = next;
+    }
+    row[s.len()]
+}
+
 pub fn animation_references(bytes: &[u8]) -> Result<Vec<AnimationReference>, AnimationError> {
     let decoded = crate::cryxml::xml_bytes(bytes, MAX_CONFIG)
         .map_err(|e| AnimationError::Invalid(e.to_string()))?;
@@ -716,6 +767,44 @@ impl AnimatedGlb {
         Ok(result)
     }
 }
+#[cfg(test)]
+mod wildcard_catalog_tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_anchors_character_paths_and_never_matches_neighbor() {
+        assert!(animation_wildcard_matches(
+            "characters/hunters/merc_bucket/animations/*.caf",
+            "characters/hunters/merc_bucket/animations/bucket_idle.caf"
+        ));
+        assert!(!animation_wildcard_matches(
+            "characters/hunters/merc_bucket/animations/*.caf",
+            "characters/hunters/merc_emet/animations/bucket_idle.caf"
+        ));
+        assert!(!animation_wildcard_matches(
+            "characters/hunters/merc_bucket/animations/*.caf",
+            "characters/hunters/merc_bucket/animations/3p/bucket_idle.caf"
+        ));
+    }
+
+    #[test]
+    fn parser_preserves_authored_wildcard_instead_of_losing_it() {
+        let refs = animation_references(
+            br##"<Params><AnimationList>
+            <Animation name="#filepath" path="characters/hunters/merc_bucket/animations"/>
+            <Animation name="*" path="*.caf"/>
+        </AnimationList></Params>"##,
+        )
+        .unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].kind, "caf_glob");
+        assert_eq!(
+            refs[0].path,
+            "characters/hunters/merc_bucket/animations/*.caf"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

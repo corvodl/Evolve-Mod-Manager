@@ -173,7 +173,12 @@ fn handle_element(
         let name = attr(element, b"AName")?
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| fallback.to_string());
-        let bone_name = attr(element, b"BoneName")?.filter(|value| !value.trim().is_empty());
+        // CryXML authors sometimes pad socket identifiers. Preserve the
+        // actual named bone while discarding surrounding XML whitespace, so
+        // a valid CA_BONE arm/weapon mount is not mistaken for an absent joint.
+        let bone_name = attr(element, b"BoneName")?
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
         let material = attr(element, b"Material")?
             .or(attr(element, b"MaterialName")?)
             .or(attr(element, b"MaterialFile")?)
@@ -632,6 +637,30 @@ mod tests {
             resolve_cdf(&inventory, &cdf).skeleton,
             AssetResolution::Ambiguous(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod equipment_socket_tests {
+    use super::*;
+    #[test]
+    fn trims_exact_bone_socket_without_renaming_equipment() {
+        let cdf = parse_cdf(
+            br#"<CharacterDefinition>
+            <Model File="characters/hunters/merc_emet/emet_3p.chr"/>
+            <AttachmentList>
+                <Attachment Type="CA_BONE" AName="arm_tool"
+                    Binding="characters/hunters/merc_emet/arm_tool.cgf"
+                    BoneName="  right_arm_socket  "/>
+            </AttachmentList>
+        </CharacterDefinition>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cdf.attachments[0].bone_name.as_deref(),
+            Some("right_arm_socket")
+        );
+        assert_eq!(cdf.attachments[0].name, "arm_tool");
     }
 }
 

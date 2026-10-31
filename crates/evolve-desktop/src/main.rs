@@ -7819,24 +7819,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::ViewerResetCamera => {
-            state.yaw = 0.0;
+            // CryEngine characters face +Y: the correct FRONT camera is at +Y.
+            state.yaw = orientation_gizmo::FRONT_YAW;
             state.pitch = 0.0;
             state.zoom = 1.0;
             state.pan_x = 0.0;
             state.pan_y = 0.0;
         }
         Message::ViewerCameraPreset(preset) => {
-            // Match the private viewer's Blender-style axis directions.
-            let orientation = match preset {
-                "Front" => Some((0.0, 0.0)),
-                "Back" => Some((180.0, 0.0)),
-                "Left" => Some((-90.0, 0.0)),
-                "Right" => Some((90.0, 0.0)),
-                "Top" => Some((0.0, 89.5)),
-                "Bottom" => Some((0.0, -89.5)),
-                "Isometric" => Some((-30.0, 14.0)),
-                _ => None,
-            };
+            // Only the camera rotates. Source skeleton transforms, winding,
+            // export coordinate basis and UVs are never reflected.
+            let orientation = orientation_gizmo::model_camera_preset(preset);
             if let Some((yaw, pitch)) = orientation {
                 state.yaw = yaw;
                 state.pitch = pitch;
@@ -12201,6 +12194,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if !still_selected {
                         state.auto_idle_pending = None;
                     } else {
+                        // A standalone arm/weapon skin is not a complete character.
+                        // If exactly one original CDF owns this mesh, load that
+                        // assembly so CA_SKIN weights and CA_BONE sockets use the
+                        // owning skeleton instead of previewing root-space parts.
+                        // Multiple candidate CDFs already fail as ambiguous.
+                        if let Some(owner) = resources.owning_cdf.as_deref()
+                            && let Some(index) = state.inventory.as_ref().and_then(|inv| {
+                                inv.entries.iter().position(|item| {
+                                    item.relative_path.eq_ignore_ascii_case(owner)
+                                        && item.relative_path.to_ascii_lowercase().ends_with(".cdf")
+                                })
+                            })
+                        {
+                            state.selected = Some(index);
+                            state.file_selection.click(&[index], index, false, false);
+                            state.status = format!(
+                                "Opening exact owning CDF {owner} to preserve skeleton-bound equipment arms"
+                            );
+                            return update(state, Message::ViewerPreviewStaticCdf);
+                        }
                         state.auto_clips = resources.clips;
                         if let Some((source, events)) = resources.event_database {
                             state.animation_event_source = source;
@@ -13967,6 +13980,7 @@ fn view(state: &State) -> Element<'_, Message> {
 fn initial_state() -> State {
     let mut result = State {
         docs_expanded: HashSet::from([private_pages::DocsSection::GettingStarted]),
+        yaw: orientation_gizmo::FRONT_YAW,
         zoom: 1.0,
         playback_speed: 1.0,
         export_rigged: true,
@@ -13994,7 +14008,14 @@ fn initial_state() -> State {
                 result.light_strength = saved.light_strength;
                 result.playback_speed = saved.animation_speed;
                 result.playback_loop = saved.animation_loop;
-                result.yaw = saved.saved_yaw;
+                // Previous builds persisted 0° as the default "Front",
+                // but it actually looked from -Y (the character's back).
+                // Migrate only that legacy default to the correct +Y view.
+                result.yaw = if saved.saved_yaw.abs() < 0.001 && saved.saved_pitch.abs() < 0.001 {
+                    orientation_gizmo::FRONT_YAW
+                } else {
+                    saved.saved_yaw
+                };
                 result.pitch = saved.saved_pitch;
                 result.zoom = saved.saved_zoom;
                 result.preferences = saved;

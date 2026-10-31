@@ -171,8 +171,17 @@ pub fn select_attachments_with_kala_state(
                     // of meshes to render. Keep the body and active gun.
                     !keys.contains(&normalized)
                 } else {
+                    // HiddenWhen* groups describe *exclusions* for another
+                    // equipment state. They do not define a visible variant.
+                    // If an equipment-as-arm part exists only in such a group,
+                    // the default body must STILL include it. This affected
+                    // characters whose arm is a separate CA_SKIN attachment.
                     keys.contains(&normalized)
-                        || !cdf.skin_sets.values().any(|set| set.contains(&normalized))
+                        || !cdf
+                            .skin_sets
+                            .iter()
+                            .filter(|(set_name, _)| !set_name.starts_with("hiddenwhen"))
+                            .any(|(_, set)| set.contains(&normalized))
                 }
             })
         })
@@ -579,19 +588,6 @@ pub fn read_static_cdf_assembly_with_kala_state(
                 continue;
             }
         };
-        if matches!(attachment.kind, AttachmentKind::Bone) {
-            let Some(verified) = skeleton.as_ref() else {
-                notes.push(format!(
-                    "{}: no verified skeleton for bone socket",
-                    attachment.name
-                ));
-                continue;
-            };
-            if let Err(error) = transform_equipment(&mut mesh, attachment, verified) {
-                notes.push(format!("{}: {error}", attachment.name));
-                continue;
-            }
-        }
         let verified_skin_weights = if matches!(
             attachment.kind,
             AttachmentKind::Skin | AttachmentKind::UniqueSkin
@@ -611,9 +607,39 @@ pub fn read_static_cdf_assembly_with_kala_state(
         } else {
             false
         };
-        if !verified_skin_weights && !matches!(attachment.kind, AttachmentKind::Bone) {
+        // Some equipment-as-arm assets are declared as CA_SKIN but have no
+        // weight stream in the compiled mesh. Only their explicit authored
+        // BoneName permits a rigid fallback. Skin that DOES have verified
+        // weights always uses native deformation; never rigidly double-mount.
+        let socket_mounted = matches!(attachment.kind, AttachmentKind::Bone)
+            || (!verified_skin_weights
+                && matches!(
+                    attachment.kind,
+                    AttachmentKind::Skin | AttachmentKind::UniqueSkin
+                )
+                && attachment.bone_name.is_some());
+        if socket_mounted {
+            let Some(verified) = skeleton.as_ref() else {
+                notes.push(format!(
+                    "{}: no verified skeleton for authored bone socket",
+                    attachment.name
+                ));
+                continue;
+            };
+            if let Err(error) = transform_equipment(&mut mesh, attachment, verified) {
+                notes.push(format!("{}: {error}", attachment.name));
+                continue;
+            }
+            if !matches!(attachment.kind, AttachmentKind::Bone) {
+                notes.push(format!(
+                    "{}: native skin weights unavailable; mounted rigidly to authored bone {}",
+                    attachment.name,
+                    attachment.bone_name.as_deref().unwrap_or_default()
+                ));
+            }
+        } else if !verified_skin_weights {
             notes.push(format!(
-                "{}: original weights not yet verified against selected skeleton",
+                "{}: no verified original skin weights or authored BoneName; static mesh cannot be guaranteed bone-attached",
                 attachment.name
             ));
         }
@@ -622,9 +648,11 @@ pub fn read_static_cdf_assembly_with_kala_state(
             source: rendered.clone(),
             vertex_first: vertex_cursor,
             vertex_count: mesh.positions.len(),
-            bone_socket: (attachment.kind == AttachmentKind::Bone)
-                .then(|| attachment.bone_name.clone())
-                .flatten(),
+            bone_socket: if socket_mounted {
+                attachment.bone_name.clone()
+            } else {
+                None
+            },
             verified_skin_weights,
         });
         vertex_cursor = vertex_cursor
@@ -681,6 +709,34 @@ pub fn read_static_cdf_assembly_with_kala_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_skin_set_keeps_equipment_arm_from_exclusion_only_group() {
+        // A HiddenWhenWeaponSelected set is an exclusion list, not an
+        // alternate complete model. Bucket/Emet-style arm equipment must not
+        // vanish merely because it is named in that exclusion metadata.
+        let cdf = crate::cdf::parse_cdf(
+            br#"<CharacterDefinition>
+          <Model File="characters/hunters/merc_bucket/bucket_skeleton.chr"/>
+          <AttachmentList>
+            <Attachment AName="body" Type="CA_SKIN"
+                Binding="characters/hunters/merc_bucket/body.skin"/>
+            <Attachment AName="equipment_arm" Type="CA_SKIN"
+                Binding="characters/hunters/merc_bucket/equipment_arm.skin"/>
+          </AttachmentList>
+          <SkinSets>
+            <SkinSet name="default"><skin name="body"/></SkinSet>
+            <SkinSet name="HiddenWhenAnotherWeaponSelected">
+              <skin name="equipment_arm"/>
+            </SkinSet>
+          </SkinSets>
+        </CharacterDefinition>"#,
+        )
+        .unwrap();
+        let (variant, selected) = select_attachments(&cdf).unwrap();
+        assert_eq!(variant.as_deref(), Some("default"));
+        assert_eq!(selected, vec!["body", "equipment_arm"]);
+    }
 
     #[test]
     fn historical_scorpid_cdf_renders_five_authored_chr_parts_with_unbound_sockets() {
@@ -965,9 +1021,16 @@ mod tests {
         transform_equipment(&mut rifle, &attachment, &skeleton).unwrap();
         assert_eq!(rifle.positions[0], [12., 22., 33.]);
         assert_eq!(rifle.normals.as_ref().unwrap()[0], [0., 0., 1.]);
-        let mut wrong = attachment;
+        let mut wrong = attachment.clone();
         wrong.bone_name = Some("OtherWeaponSocket".into());
         assert!(transform_equipment(&mut rifle, &wrong, &skeleton).is_err());
+        // A CA_SKIN piece lacking weights but naming the original socket
+        // uses precisely the same original rest transform, never root space.
+        let mut unweighted_arm = attachment;
+        unweighted_arm.kind = AttachmentKind::Skin;
+        let mut arm = part(3, true);
+        transform_equipment(&mut arm, &unweighted_arm, &skeleton).unwrap();
+        assert_eq!(arm.positions[0], [11., 22., 33.]);
     }
 
     fn part(count: usize, uv: bool) -> RenderMesh {

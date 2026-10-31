@@ -2,7 +2,8 @@
 //! model viewer. Never infer an animation from a matching filename alone.
 use evolve_core::{
     AnimationEventDatabase, AssetResolution, Inventory, LibraryReferenceStatus,
-    animation_references, read_animation_events, resolve_imported_reference, resolve_virtual,
+    animation_references, animation_wildcard_matches, imported_library, read_animation_events,
+    resolve_imported_reference, resolve_virtual,
 };
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,10 @@ pub struct AutoClip {
 pub struct AutoDiscovery {
     pub material: Option<PathBuf>,
     pub skeleton: Option<PathBuf>,
+    /// Unique authored CDF that owns this standalone skin/equipment mesh.
+    /// Used to preview complete skeleton-bound character assemblies rather
+    /// than leaving an isolated equipment arm in raw mesh coordinates.
+    pub owning_cdf: Option<String>,
     pub material_note: String,
     pub clips: Vec<AutoClip>,
     pub idle: Option<PathBuf>,
@@ -111,16 +116,21 @@ pub fn exact_render_companion(
 fn declaring_local_cdf(
     relative: &str,
     inv: &Inventory,
-) -> Result<Option<evolve_core::CdfDefinition>, String> {
+) -> Result<Option<(String, evolve_core::CdfDefinition)>, String> {
     let lower = relative.replace('\\', "/").to_ascii_lowercase();
-    let binding = [(".skinm", ".skin"), (".chrm", ".chr")]
-        .iter()
-        .find_map(|(compiled, authored)| {
-            lower
-                .strip_suffix(compiled)
-                .map(|base| format!("{base}{authored}"))
-        })
-        .unwrap_or(lower);
+    let binding = [
+        (".skinm", ".skin"),
+        (".chrm", ".chr"),
+        (".cgfm", ".cgf"),
+        (".cgam", ".cga"),
+    ]
+    .iter()
+    .find_map(|(compiled, authored)| {
+        lower
+            .strip_suffix(compiled)
+            .map(|base| format!("{base}{authored}"))
+    })
+    .unwrap_or(lower);
     let cdfs = inv
         .entries
         .iter()
@@ -164,7 +174,7 @@ fn declaring_local_cdf(
                 "Multiple authored CDFs reference {binding}; select the intended CDF assembly"
             ));
         }
-        owner = Some(cdf);
+        owner = Some((entry.relative_path.clone(), cdf));
     }
     Ok(owner)
 }
@@ -231,6 +241,75 @@ fn idle_priority(name: &str) -> Option<(bool, bool, bool, String)> {
     ))
 }
 
+/// Expand only source-declared wildcard CAFs. Local entries and matching-build
+/// AnimationsCAF manifests are metadata; each clip is independently verified
+/// by exact() when selected. Never walk arbitrary game directories or borrow
+/// a different build's animation by basename.
+fn matching_caf_paths(
+    pattern: &str,
+    inv: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Vec<String>, String> {
+    const MAX_MATCHES: usize = 12_000;
+    const MAX_MANIFEST: u64 = 32 * 1024 * 1024;
+    let mut paths = std::collections::BTreeMap::<String, String>::new();
+    let mut consider = |path: &str| -> Result<(), String> {
+        let normalized = path.replace('\\', "/");
+        if normalized.to_ascii_lowercase().ends_with(".caf")
+            && animation_wildcard_matches(pattern, &normalized)
+        {
+            paths
+                .entry(normalized.to_ascii_lowercase())
+                .or_insert(normalized);
+            if paths.len() > MAX_MATCHES {
+                return Err("Animation wildcard exceeds 12000 matching CAFs".into());
+            }
+        }
+        Ok(())
+    };
+    for entry in &inv.entries {
+        consider(&entry.relative_path)?;
+    }
+    if let Some(root) = imported {
+        let catalog = imported_library(root).map_err(|e| e.to_string())?;
+        for archive in &catalog.archives {
+            if !archive.name.eq_ignore_ascii_case("AnimationsCAF.pak")
+                || build.is_some_and(|label| !archive.builds.iter().any(|b| b == label))
+            {
+                continue;
+            }
+            let manifest = Path::new(&archive.directory).join("asset-library.json");
+            let meta = std::fs::symlink_metadata(&manifest).map_err(|e| e.to_string())?;
+            if !meta.file_type().is_file() || meta.len() > MAX_MANIFEST {
+                return Err("Unsafe animation archive manifest".into());
+            }
+            let raw = std::fs::read(&manifest).map_err(|e| e.to_string())?;
+            let document: serde_json::Value =
+                serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+            if document["version"].as_u64() != Some(1)
+                || document["name"]
+                    .as_str()
+                    .is_none_or(|s| !s.eq_ignore_ascii_case(&archive.name))
+            {
+                return Err("Animation archive manifest identity mismatch".into());
+            }
+            let entries = document["entries"]
+                .as_array()
+                .ok_or("Missing animation archive entries")?;
+            if entries.len() > 250_000 {
+                return Err("Animation archive manifest member limit".into());
+            }
+            for entry in entries {
+                if let Some(name) = entry["path"].as_str() {
+                    consider(name)?;
+                }
+            }
+        }
+    }
+    Ok(paths.into_values().collect())
+}
+
 pub fn discover(
     relative: &str,
     inv: &Inventory,
@@ -272,12 +351,15 @@ pub fn discover(
     // owning CDF. Use its exact Binding references for skeleton/CAF lookup.
     // The selected mesh retains its own material discovery path.
     if !canonical.to_ascii_lowercase().ends_with(".cdf")
-        && [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cga"]
-            .iter()
-            .any(|ext| canonical.to_ascii_lowercase().ends_with(ext))
+        && [
+            ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
+        ]
+        .iter()
+        .any(|ext| canonical.to_ascii_lowercase().ends_with(ext))
     {
         match declaring_local_cdf(&canonical, inv) {
-            Ok(Some(cdf)) => {
+            Ok(Some((owner, cdf))) => {
+                found.owning_cdf = Some(owner);
                 animation_source = cdf.skeleton.clone();
                 match exact(inv, &cdf.skeleton, imported, build) {
                     Ok(Some(skeleton)) => found.skeleton = Some(skeleton),
@@ -438,6 +520,28 @@ pub fn discover(
             }
             continue;
         }
+        if r.kind == "caf_glob" {
+            match matching_caf_paths(&r.path, inv, imported, build) {
+                Ok(paths) => {
+                    for path in paths {
+                        let label = path
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&path)
+                            .trim_end_matches(".caf")
+                            .to_owned();
+                        found.clips.push(AutoClip {
+                            label,
+                            kind: "caf".into(),
+                            virtual_path: path,
+                            source: None,
+                        });
+                    }
+                }
+                Err(error) => found.warnings.push(format!("CAF wildcard: {error}")),
+            }
+            continue;
+        }
         let path = if r.kind == "caf" {
             match exact(inv, &r.path, None, None) {
                 Ok(path) => path,
@@ -513,6 +617,39 @@ pub fn resolve_declared_dba(
 mod tests {
     use super::*;
     use evolve_core::scan_directory;
+
+    #[test]
+    fn wildcard_expands_only_matching_character_cafs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("characters/hunters/merc_bucket/animations"))
+            .unwrap();
+        std::fs::create_dir_all(dir.path().join("characters/hunters/merc_emet/animations"))
+            .unwrap();
+        std::fs::write(
+            dir.path()
+                .join("characters/hunters/merc_bucket/animations/bucket_idle.caf"),
+            b"caf",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path()
+                .join("characters/hunters/merc_emet/animations/emet_idle.caf"),
+            b"caf",
+        )
+        .unwrap();
+        let inv = scan_directory(dir.path()).unwrap();
+        let clips = matching_caf_paths(
+            "characters/hunters/merc_bucket/animations/*.caf",
+            &inv,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            clips,
+            vec!["characters/hunters/merc_bucket/animations/bucket_idle.caf"]
+        );
+    }
 
     #[test]
     fn render_companion_never_falls_back_to_neighboring_character() {
@@ -670,6 +807,10 @@ mod tests {
         .unwrap();
         let inventory = scan_directory(dir.path()).unwrap();
         let found = discover("characters/hunter/torso.skinm", &inventory, None, None);
+        assert_eq!(
+            found.owning_cdf.as_deref(),
+            Some("characters/hunter/whole_hunter.cdf")
+        );
         assert!(found.skeleton.unwrap().ends_with("rig.chr"));
         assert!(found.config.unwrap().ends_with("rig.chrparams"));
         assert!(found.warnings.is_empty(), "{:?}", found.warnings);

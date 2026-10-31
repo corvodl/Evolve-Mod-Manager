@@ -68,7 +68,9 @@ impl canvas::Program<super::Message> for MeshViewport {
             let x = (p[0] - center[0]) / extent;
             let y = (p[1] - center[1]) / extent;
             let z = (p[2] - center[2]) / extent;
-            let horiz = x * yaw_cos - y * yaw_sin;
+            // Same right-handed camera as the textured GPU viewport:
+            // looking from +Y toward -Y puts world +X on screen-left.
+            let horiz = super::orientation_gizmo::model_screen_horizontal(x, y, yaw_sin, yaw_cos);
             let depth = x * yaw_sin + y * yaw_cos;
             let vertical = z * pitch_cos - depth * pitch_sin;
             let behind = z * pitch_sin + depth * pitch_cos;
