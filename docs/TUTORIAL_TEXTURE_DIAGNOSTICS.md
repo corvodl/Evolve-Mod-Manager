@@ -10,7 +10,10 @@ build**. It previously excluded all numbered higher DDS fragments
 The material loader's `decoded_dds_indexed` explicitly resolves each such
 fragment. When a fragment exists in more than one same-game PAK, it could
 therefore reject an identical verified copy as ambiguous and leave the
-diffuse material unresolved. This PR extends the *same* strict path, build,
+material's original texture maps unresolved. The observed Tutorial
+`carcass_large_internals_ddna.dds.1` is a normal-map fragment; resolving it
+may restore shading, but it does not by itself repair a missing diffuse.
+This PR extends the *same* strict path, build,
 manifest and SHA-256 matching to those fragment suffixes; different bytes,
 different virtual paths, unsupported suffixes, and unselected builds still
 fail closed. No heuristic nearest-name lookup is used.
