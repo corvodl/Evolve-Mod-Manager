@@ -18,9 +18,10 @@ remain read-only/unchanged.
   If a group cannot fit, it is deferred instead of risking a wgpu OOM panic.
   Moving the camera can free offscreen GPU handles and retry its source files.
 - Identical decoded RGBA images are deduplicated across independent Arc
-  allocations using a SHA-256 of dimensions + pixel bytes. Roles and ground
-  sampler class are part of GPU cache identity. Cache lifetime is one World,
-  not a globally persistent untrusted image reference.
+  allocations using a SHA-256 of dimensions + pixel bytes. The hash is
+  precomputed in the existing map-import worker, not during GPU redraw.
+  Roles and ground sampler class are part of GPU cache identity. Cache
+  lifetime is one World, not a globally persistent untrusted image reference.
 - Shader/renderer source images retain full resolution on the CPU while GPU
   cache resources for offscreen groups are released. Visible nearer groups may
   replace farther resident groups only if closer, avoiding ping-pong residency.
