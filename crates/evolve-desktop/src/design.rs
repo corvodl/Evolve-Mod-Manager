@@ -10,7 +10,7 @@ pub fn button<'a>(
     content: impl Into<iced::Element<'a, crate::Message>>,
 ) -> iced::widget::Button<'a, crate::Message> {
     iced::widget::button(content)
-        .padding([7, 11])
+        .padding([8, 12])
         .style(secondary)
 }
 
@@ -76,7 +76,7 @@ pub fn text_input<'a>(
     value: &str,
 ) -> iced::widget::TextInput<'a, crate::Message> {
     iced::widget::text_input(placeholder, value)
-        .padding([7, 11])
+        .padding([8, 12])
         .style(|theme, status| {
             let mut style = iced::widget::text_input::default(theme, status);
             style.background = Background::Color(field(theme));
@@ -121,15 +121,15 @@ pub fn theme(settings: &Preferences) -> Theme {
             .and_then(|v| hex(v))
             .unwrap_or_else(|| hex(if light { pale } else { dark }).unwrap())
     };
-    let foreground = role("text", "#f2f3f5", "#242731", "#e9e9e6");
-    let background = role("background", "#111318", "#f5f6f8", "#0a0c0e");
+    let foreground = role("text", "#eceef0", "#25282b", "#e9e9e6");
+    let background = role("background", "#151719", "#f7f7f6", "#0a0c0e");
     let accent = role("accent", "#c9384a", "#b72b41", "#b62b3d");
-    let surface = role("surface", "#1c1e24", "#ffffff", "#141719");
-    let field = role("field", "#24262e", "#eff1f5", "#202325");
-    let border = role("border", "#393e49", "#d6dbe3", "#50575a");
-    let muted = role("muted", "#adb1bd", "#606775", "#adb2b3");
-    let button = role("button", "#292c34", "#e9ecf1", "#191c1e");
-    let selection = role("selection", "#48303b", "#f1dce2", "#4b1720");
+    let surface = role("surface", "#1c1f21", "#ffffff", "#141719");
+    let field = role("field", "#292c2f", "#eff0f0", "#202325");
+    let border = role("border", "#363a3d", "#daddde", "#50575a");
+    let muted = role("muted", "#aab0b4", "#61686c", "#adb2b3");
+    let button = role("button", "#292c2f", "#edeef0", "#191c1e");
+    let selection = role("selection", "#292d30", "#eceeef", "#4b1720");
     let palette = Palette {
         background,
         text: foreground,
@@ -162,9 +162,9 @@ pub fn theme(settings: &Preferences) -> Theme {
                 color: hex(if legacy {
                     "#0e1012"
                 } else if light_background {
-                    "#f0f2f5"
+                    "#f3f4f3"
                 } else {
-                    "#17191f"
+                    "#111315"
                 })
                 .unwrap(),
                 text: foreground,
@@ -204,7 +204,7 @@ pub fn panel(theme: &Theme) -> container::Style {
         border: Border {
             color: border(theme),
             width: 1.0,
-            radius: if is_legacy(theme) { 1.0 } else { 10.0 }.into(),
+            radius: if is_legacy(theme) { 1.0 } else { 12.0 }.into(),
         },
         ..container::Style::default()
     }
@@ -225,12 +225,12 @@ pub fn rail(theme: &Theme, status: buttons::Status, active: bool) -> buttons::St
     style.text_color = theme.palette().text;
     style.border = Border {
         radius: if is_legacy(theme) { 1.0 } else { 9.0 }.into(),
-        color: if active {
+        color: if active && is_legacy(theme) {
             theme.palette().primary
         } else {
             Color::TRANSPARENT
         },
-        width: if active { 1.0 } else { 0.0 },
+        width: if active && is_legacy(theme) { 1.0 } else { 0.0 },
     };
     if is_legacy(theme) && matches!(status, buttons::Status::Hovered | buttons::Status::Pressed) {
         style.background = Some(Background::Color(Color::WHITE));
@@ -272,15 +272,27 @@ mod tests {
     }
 
     #[test]
+    fn modern_palette_preserves_brand_accent_and_custom_overrides() {
+        let mut prefs = Preferences::default();
+        let default = theme(&prefs);
+        assert_eq!(default.palette().primary, hex("#c9384a").unwrap());
+        assert_eq!(default.palette().background, hex("#151719").unwrap());
+        prefs
+            .appearance_colors
+            .insert("surface".into(), "#313437".into());
+        assert_eq!(surface(&theme(&prefs)), hex("#313437").unwrap());
+    }
+
+    #[test]
     fn reference_palettes_and_overrides_reach_widget_roles() {
         let mut prefs = Preferences::default();
         let dark = theme(&prefs);
-        assert_eq!(dark.palette().background, hex("#111318").unwrap());
-        assert_eq!(surface(&dark), hex("#1c1e24").unwrap());
+        assert_eq!(dark.palette().background, hex("#151719").unwrap());
+        assert_eq!(surface(&dark), hex("#1c1f21").unwrap());
         prefs.appearance_mode = "Light".into();
         let light = theme(&prefs);
         assert_eq!(surface(&light), Color::WHITE);
-        assert_eq!(muted(&light).color, hex("#606775"));
+        assert_eq!(muted(&light).color, hex("#61686c"));
         prefs
             .appearance_colors
             .insert("surface".into(), "#abcdef".into());

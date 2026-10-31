@@ -37,7 +37,7 @@ pub(super) fn page_range(count: usize, page: usize) -> std::ops::Range<usize> {
 fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(content)
         .width(Fill)
-        .padding(14)
+        .padding(16)
         .style(design::panel)
 }
 
