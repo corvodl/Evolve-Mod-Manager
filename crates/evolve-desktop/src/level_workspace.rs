@@ -489,6 +489,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     )
                 },
             )).size(11).style(design::muted),
+            text("Full: no manager GPU texture ceiling; requires sufficient VRAM, and GPU texture dimension limits still apply. Balanced: lower memory usage.")
+                .size(11)
+                .style(design::muted),
             text(if let Some(source) = state.level_world.as_ref()
                 .and_then(|world| world.time_of_day.as_ref()) {
                 format!("Original TimeOfDay.xml: {} variables, {} animated splines, {} out-of-day editor keys ignored; {}. Source sun/sky and tangent-aware curves are preview approximations; native CryEngine particles, fog, HDR, GI and shaders are not rendered.",
