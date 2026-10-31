@@ -737,6 +737,19 @@ fn is_translucent_shader(slot: &evolve_core::MaterialSlot) -> bool {
     matches!(slot.shader.to_ascii_lowercase().as_str(), "glass" | "water")
 }
 
+/// Original CryEngine beam shaders use special additive/volumetric passes,
+/// not a depth-writing Illum mesh. Displaying them as a plain CGF surface
+/// creates opaque white cylinders at projector lights. Hide ONLY the exact
+/// unsupported beam-effect material leaves in the world editor; retain the
+/// light entity and all ordinary lamp/fixture material spans. The Model Viewer
+/// still renders its own source geometry independently.
+fn is_original_beam_effect(slot: &evolve_core::MaterialSlot) -> bool {
+    matches!(
+        slot.shader.to_ascii_lowercase().as_str(),
+        "lightbeam.lightbeam" | "geometrybeam" | "templbeamproc"
+    )
+}
+
 fn needs_alpha_blending(slot: &evolve_core::MaterialSlot) -> bool {
     // An explicit opacity IMAGE on a solid CryEngine material is an alpha
     // TEST, not evidence the entire body is translucent. Blend only for
@@ -939,8 +952,16 @@ fn load_authored_subset_surfaces(
                     document.slots.len()
                 )
             })?;
-            if leaf.shader.eq_ignore_ascii_case("NoDraw") {
+            if leaf.shader.eq_ignore_ascii_case("NoDraw") || is_original_beam_effect(leaf) {
+                // An effect-only beam needs an additive/volumetric shader.
+                // Do not turn that source volume into an opaque solid tube.
                 surface.visible = false;
+                if is_original_beam_effect(leaf) {
+                    warnings.push(format!(
+                        "Original material slot {} ({}) uses {}: suppressing the unsupported opaque beam mesh; nearby authored point/spot light still renders",
+                        material_slot, leaf.name, leaf.shader
+                    ));
+                }
             } else {
                 match authored_maps(
                     document,
@@ -1657,6 +1678,22 @@ mod tests {
         .unwrap();
         assert_eq!(authored.slots[0].glow_amount, Some(0.0));
         assert_eq!(role_channel(&authored.slots[0].maps[0].role), Some(2));
+    }
+
+    #[test]
+    fn original_light_beam_materials_are_not_opaque_world_meshes() {
+        for name in ["Lightbeam.LightBeam", "GeometryBeam", "TemplBeamProc"] {
+            let slot = evolve_core::parse_material(
+                format!("<Material Name=\"beam\" Shader=\"{name}\"/>").as_bytes(),
+            ).unwrap();
+            assert!(is_original_beam_effect(&slot.slots[0]));
+        }
+        for name in ["Illum", "Glass", "Vegetation", "NoDraw", "LightFlares.Flare"] {
+            let slot = evolve_core::parse_material(
+                format!("<Material Name=\"fixture\" Shader=\"{name}\"/>").as_bytes(),
+            ).unwrap();
+            assert!(!is_original_beam_effect(&slot.slots[0]));
+        }
     }
 
     #[test]
