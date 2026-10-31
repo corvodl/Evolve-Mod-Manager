@@ -211,12 +211,16 @@ pub(super) fn lights(
                             }
                         }
                     } else if let Some(ref mut p) = pending
-                        && depth > p.depth
-                        && depth <= p.depth + 7
+                        // Empty <Properties .../> is a direct child too:
+                        // its tag does not increment the XML reader depth.
+                        && depth + usize::from(!nested) > p.depth
+                        && depth + usize::from(!nested) <= p.depth + 7
                     {
                         p.props(&e);
                     }
-                    if !nested && pending.as_ref().is_some_and(|p| p.depth == depth) {
+                    // Only a self-closing Light entity, not a self-closing
+                    // <Properties/>, can finish the pending light.
+                    if !nested && is_entity && pending.as_ref().is_some_and(|p| p.depth == depth) {
                         finalize(&mut pending, &objects, &mut result);
                     }
                 }
