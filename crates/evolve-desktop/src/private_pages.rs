@@ -572,12 +572,12 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                         "YOUR WORKBENCH",
                         state.preferences.ui_theme == "Evolve Legacy"
                     ),
-                    text("Continue editing").size(24),
+                    text("Continue editing").size(22),
                     row![
                         svg(Page::Files.icon())
                             .style(design::icon)
-                            .width(30)
-                            .height(30),
+                            .width(24)
+                            .height(24),
                         column![
                             text(label).size(16),
                             text(details).size(12).style(design::muted),
@@ -600,14 +600,14 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                     ]
                     .spacing(8),
                 ]
-                .spacing(16)
+                .spacing(8)
                 .width(Fill),
             ]
             .spacing(16)
             .align_y(iced::Center),
             wallpaper,
         )
-        .padding([20, 24])
+        .padding([12, 20])
     } else {
         let paths_selected = !state.preferences.game_installation.is_empty()
             && !state.preferences.client_executable.is_empty();
@@ -666,20 +666,21 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             .align_y(iced::Center),
             wallpaper,
         )
-        .padding([20, 24])
+        .padding([12, 20])
     };
-    let quick = column![
+    let mut quick = column![
         legacy_section_label("PLAY EVOLVE", state.preferences.ui_theme == "Evolve Legacy"),
         text("Launch Evolve").size(20),
-        if state.developer_unlocked && state.developer_online_mods {
-            Element::from(
-                text("Developer online testing is armed. Server acceptance is not guaranteed.")
-                    .size(12)
-                    .style(design::muted),
-            )
-        } else {
-            Element::from(text(""))
-        },
+    ]
+    .spacing(8);
+    if state.developer_unlocked && state.developer_online_mods {
+        quick = quick.push(
+            text("Developer online testing is armed. Server acceptance is not guaranteed.")
+                .size(12)
+                .style(design::muted),
+        );
+    }
+    quick = quick.push(
         row![
             design::button(if state.developer_unlocked && state.developer_online_mods {
                 "Play with Mods Online · Dev Test"
@@ -695,23 +696,22 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 .style(move |theme, status| home_button_style(theme, status, wallpaper, false)),
         ]
         .spacing(8),
+    );
+    quick = quick.push(
         text(format!(
             "Launch method: {} · Change in Settings",
             state.preferences.game_launch_mode
         ))
         .size(12)
         .style(design::muted),
-        if state.preferences.game_launch_mode.contains("Direct") {
-            Element::from(
-                text("Direct Launch is experimental and does not provide the full client session.")
-                    .size(12)
-                    .style(design::muted),
-            )
-        } else {
-            Element::from(text(""))
-        },
-    ]
-    .spacing(12);
+    );
+    if state.preferences.game_launch_mode.contains("Direct") {
+        quick = quick.push(
+            text("Direct Launch is experimental and does not provide the full client session.")
+                .size(12)
+                .style(design::muted),
+        );
+    }
     let entries = column![
         text("Your workspace").size(19),
         row![
@@ -786,8 +786,8 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             latest_announcement(state, wallpaper),
             row![entries, status].spacing(24),
         ]
-        .spacing(24)
-        .padding(24),
+        .spacing(16)
+        .padding(20),
     )
     .width(Fill)
     .height(Fill);

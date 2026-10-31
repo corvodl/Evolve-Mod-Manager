@@ -72,10 +72,10 @@ class HomeBannerAssetTests(unittest.TestCase):
         self.assertRegex(
             home,
             re.compile(
-                r"scrollable\(\s*column!\[.*?\]\s*\.spacing\(24\)\s*\.padding\(24\)",
+                r"scrollable\(\s*column!\[.*?\]\s*\.spacing\(16\)\s*\.padding\(20\)",
                 re.DOTALL,
             ),
-            "Home content column should keep the roomy 24 spacing/padding rhythm",
+            "Home content column should keep the 16/20 spacing/padding rhythm",
         )
         self.assertIn("paths_selected", home)
         self.assertIn("Create your first mod", home)
