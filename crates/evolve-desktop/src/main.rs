@@ -411,6 +411,7 @@ struct State {
     /// Preview-only lighting controls, never written to original game files.
     level_time_of_day: f32,
     level_full_textures: bool,
+    level_terrain_unlit: bool,
     terrain: Option<TerrainInfo>,
     selected: Option<usize>,
     file_selection: MultiSelection,
@@ -2229,6 +2230,7 @@ enum Message {
     LevelTimeOfDayChanged(f32),
     LevelTimePreset(f32),
     LevelFullTexturesToggled,
+    LevelTerrainSourceColorToggled,
     LevelEditPositionChanged(String),
     LevelEditRotationChanged(String),
     LevelEditScaleChanged(String),
@@ -7584,6 +7586,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelFullTexturesToggled => {
             state.level_full_textures = !state.level_full_textures;
+        }
+        Message::LevelTerrainSourceColorToggled => {
+            state.level_terrain_unlit = !state.level_terrain_unlit;
         }
         Message::LevelEditPositionChanged(value) => state.level_edit_position = value,
         Message::LevelEditRotationChanged(value) => state.level_edit_rotation = value,
@@ -13795,6 +13800,7 @@ fn view(state: &State) -> Element<'_, Message> {
                             world: None,
                             level_hour: 12.0,
                             level_full_textures: true,
+                            level_terrain_unlit: false,
                             viewer_full_textures: state.viewer_full_textures,
                             viewer_gpu_remaining: None,
                         }).width(Fill).height(Length::Fixed(400.)).into()
@@ -13993,6 +13999,7 @@ fn initial_state() -> State {
         level_zoom: 1.0,
         level_time_of_day: 12.0,
         level_full_textures: true,
+        level_terrain_unlit: false,
         viewer_full_textures: true,
         light_strength: 1.6,
         emissive_strength: 1.0,
