@@ -10,10 +10,6 @@ on:
         description: "Type PARITY_VERIFIED_AND_TESTED after real-game checks"
         required: true
         type: string
-      include_cryengine_converter:
-        description: 'Opt in to verified GPLv2 Cryengine-Converter and corresponding source'
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -79,8 +75,7 @@ jobs:
       - run: cargo test --workspace --all-targets
       - run: cargo build --release --workspace --bins
 
-      - name: Opt-in fetch of independent GPLv2 Cryengine-Converter
-        if: inputs.include_cryengine_converter
+      - name: Stage verified GPLv2 Cryengine-Converter and corresponding source
         shell: pwsh
         run: ./scripts/prepare-cryengine-converter.ps1 -Fetch
 
