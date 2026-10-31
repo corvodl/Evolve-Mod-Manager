@@ -1,0 +1,27 @@
+name: One-time light and particle source formatting
+on:
+  push:
+    branches: [fix/terrain-authored-detail-resolution-20261031]
+    paths: [.github/workflows/level-fx-fmt-once.yml]
+permissions:
+  contents: write
+jobs:
+  format:
+    if: github.repository == 'corvodl/Evolve-Mod-Manager'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/terrain-authored-detail-resolution-20261031
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format new source-backed light selection, particle inventory and renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git rm .github/workflows/level-fx-fmt-once.yml
+          git -c user.name='Terrain CI' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -am 'Apply rustfmt to map-local light and particle preview'
+          git push origin HEAD:fix/terrain-authored-detail-resolution-20261031
