@@ -840,6 +840,8 @@ pub(super) struct Renderer {
     sky_layout: wgpu::BindGroupLayout,
     sky_group: wgpu::BindGroup,
     sky_images: [wgpu::Texture; 3],
+    sky_sampler: wgpu::Sampler,
+    sky_active: bool,
     sky_uniform: wgpu::Buffer,
     local_uniform: wgpu::Buffer,
     hdr_uniform: wgpu::Buffer,
@@ -1252,6 +1254,8 @@ impl Renderer {
             sky_layout,
             sky_group,
             sky_images,
+            sky_sampler,
+            sky_active: false,
             sky_uniform,
             local_uniform,
             hdr_uniform,
@@ -1649,6 +1653,7 @@ impl Renderer {
         terrain_source_unlit: bool,
     ) {
         let Some(world) = world else {
+            self.sky_active = false;
             self.groups.clear();
             self.cache.clear();
             self.source_hashes.clear();
@@ -1661,6 +1666,7 @@ impl Renderer {
             return;
         };
         self.terrain_source_unlit = terrain_source_unlit;
+        self.sky_active = world.time_of_day.is_some() || world.static_sky.is_some();
         let key = Arc::as_ptr(world) as usize;
         if key != self.world_identity || self.last_full_textures != full_textures {
             // Drop the former GPU scene before creating any new allocations.
@@ -1678,6 +1684,7 @@ impl Renderer {
             self.last_full_textures = full_textures;
             self.last_camera = None;
             self.last_lighting_hour = f32::NAN;
+            self.update_sky_source(device, queue, world);
             world.gpu_progress.pending.store(1, Ordering::Relaxed);
         }
         let hour = if hour.is_finite() {
@@ -1692,6 +1699,12 @@ impl Renderer {
             );
             let values = lighting.uniforms();
             queue.write_buffer(&self.lighting_uniform, 0, bytemuck::cast_slice(&values));
+            let sky = super::level_atmosphere::atmosphere_uniform(
+                world.time_of_day.as_deref(), hour, &world.sky_source,
+                world.static_sky.is_some(),
+            );
+            queue.write_buffer(&self.sky_uniform, 0, bytemuck::cast_slice(&sky));
+            queue.write_buffer(&self.hdr_uniform, 0, bytemuck::cast_slice(&sky[7]));
             let fog = world.fog_profile.map_or([[0.0_f32; 4]; 2], |profile| {
                 profile.preview_uniform(world.time_of_day.as_deref(), hour)
             });
@@ -1707,6 +1720,9 @@ impl Renderer {
         };
         let uniform = CameraGpu::make(camera, yaw, pitch, aspect, zoom);
         let camera_changed = self.last_camera != Some(uniform);
+        if camera_changed {
+            self.update_local_lights(queue, world, camera.position);
+        }
         let mut cache = std::mem::take(&mut self.cache);
         let mut hashes = std::mem::take(&mut self.source_hashes);
         // Loaded GPU groups and all of their transforms remain resident until
@@ -1890,6 +1906,66 @@ impl Renderer {
         }
         self.last_camera = Some(uniform);
     }
+
+    fn update_sky_source(
+        &mut self,device:&wgpu::Device,queue:&wgpu::Queue,world:&World
+    ) {
+        let images: [(wgpu::Texture,wgpu::TextureView);3] =
+            std::array::from_fn(|index| {
+                let original=world.static_sky.as_ref().map(|sky|sky.images[index].as_ref());
+                upload_rgba_mips(
+                    device,queue,original,[90,120,155,255],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "Verified original map static Sky face",
+                )
+            });
+        let sky_group=device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:Some("Per-map sky box/static or dynamic"),
+            layout:&self.sky_layout,
+            entries:&[
+                wgpu::BindGroupEntry{binding:0,resource:self.camera_uniform.as_entire_binding()},
+                wgpu::BindGroupEntry{binding:1,resource:self.sky_uniform.as_entire_binding()},
+                wgpu::BindGroupEntry{binding:2,resource:wgpu::BindingResource::Sampler(&self.sky_sampler)},
+                wgpu::BindGroupEntry{binding:3,resource:wgpu::BindingResource::TextureView(&images[0].1)},
+                wgpu::BindGroupEntry{binding:4,resource:wgpu::BindingResource::TextureView(&images[1].1)},
+                wgpu::BindGroupEntry{binding:5,resource:wgpu::BindingResource::TextureView(&images[2].1)},
+                wgpu::BindGroupEntry{binding:6,resource:self.lighting_uniform.as_entire_binding()},
+            ],
+        });
+        self.sky_images=images.map(|(texture,_)|texture);
+        self.sky_group=sky_group;
+    }
+    fn update_local_lights(
+        &self,queue:&wgpu::Queue,world:&World,position:[f32;3]
+    ) {
+        const LIMIT:usize=24;
+        let mut nearest=world.local_lights.iter().filter(|light| {
+            let distance=light.position.iter().zip(position).map(|(a,b)|(a-b)*(a-b)).sum::<f32>();
+            distance <= light.radius*light.radius
+        }).collect::<Vec<_>>();
+        nearest.sort_by(|a,b| {
+            let squared=|light:&super::level_atmosphere::LocalLight|
+                light.position.iter().zip(position).map(|(a,b)|(a-b)*(a-b)).sum::<f32>();
+            squared(a).total_cmp(&squared(b))
+        });
+        let mut uniform=[[0.0_f32;4];1+LIMIT*3];
+        let visible=nearest.len().min(LIMIT);
+        uniform[0][0]=visible as f32;
+        for (idx,light) in nearest.into_iter().take(LIMIT).enumerate() {
+            let base=1+idx*3;
+            uniform[base]=[light.position[0],light.position[1],light.position[2],light.radius];
+            uniform[base+1]=[light.direction[0],light.direction[1],light.direction[2],light.cone_cos];
+            uniform[base+2]=[light.color[0],light.color[1],light.color[2],light.intensity];
+        }
+        queue.write_buffer(&self.local_uniform,0,bytemuck::cast_slice(&uniform));
+    }
+    pub fn draw_sky<'a>(&'a self,pass:&mut wgpu::RenderPass<'a>) {
+        if !self.sky_active {return;}
+        pass.set_pipeline(&self.sky_pipeline);
+        pass.set_bind_group(0,&self.sky_group,&[]);
+        pass.draw(0..3,0..1);
+    }
+
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         // Opaque, masked foliage, then blended glass/water. Alpha-tested
         // vegetation writes depth, unlike translucent overlays.
