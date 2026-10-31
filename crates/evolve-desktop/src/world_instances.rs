@@ -1557,6 +1557,7 @@ impl Renderer {
             .copied()
             .find(|key| cache.contains_key(key));
         let mut mip_uploads = 0usize;
+        let mut finished_key = None;
         if let Some(key) = next_key
             && let Some(pending) = self.pending_diffuse.get_mut(&key)
             && let Some((texture, _, _)) = cache.get(&key)
@@ -1586,13 +1587,16 @@ impl Renderer {
                     }
                 }
                 if level == 0 {
-                    self.pending_diffuse.remove(&key);
+                    finished_key = Some(key);
                 } else {
                     pending.next_level -= 1;
                     pending.next_row = 0;
                     pending.prepared = None;
                 }
             }
+        }
+        if let Some(key) = finished_key {
+            self.pending_diffuse.remove(&key);
         }
         let texture_bytes = cache_bytes(&cache);
         let geometry_bytes = resident_geometry_bytes(&self.groups);
