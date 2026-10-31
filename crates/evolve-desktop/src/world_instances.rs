@@ -495,17 +495,20 @@ fn group_new_bytes(
     bytes
 }
 
-fn group_distance_sq(group: &ModelGroup, camera: level_camera::Camera) -> f32 {
+fn group_distance_sq(
+    group: &ModelGroup,
+    visible_instances: &[InstanceGpu],
+    camera: level_camera::Camera,
+) -> f32 {
     if is_ground(group) {
         return -1.0;
     }
-    group
-        .instances
+    // When a model has placements all over a map, its nearest *offscreen*
+    // placement must not win upload priority over a model actually nearby.
+    visible_instances
         .iter()
         .map(|instance| {
-            instance
-                .transform
-                .position
+            instance.cols[3][..3]
                 .iter()
                 .zip(camera.position)
                 .map(|(point, origin)| (point - origin) * (point - origin))
@@ -1554,8 +1557,12 @@ impl Renderer {
             .filter(|&idx| !visible_groups[idx].is_empty() && self.groups[idx].is_none())
             .collect::<Vec<_>>();
         candidates.sort_by(|&left, &right| {
-            group_distance_sq(&world.groups[left], camera)
-                .total_cmp(&group_distance_sq(&world.groups[right], camera))
+            group_distance_sq(&world.groups[left], &visible_groups[left], camera)
+                .total_cmp(&group_distance_sq(
+                    &world.groups[right],
+                    &visible_groups[right],
+                    camera,
+                ))
         });
         for idx in candidates {
             if uploaded == MAX_NEW_GROUPS_PER_FRAME {
