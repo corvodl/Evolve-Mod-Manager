@@ -500,6 +500,55 @@ fn append(
     true
 }
 
+// One GPU group can have dozens of independently textured material spans.
+// Split oversized *multi-material* groups before GPU upload; each sub-group
+// shares the exact source CPU mesh and authored instances but retains only its
+// own material spans. A single larger-than-target source still requires sparse
+// GPU texture residency and remains explicitly reported as deferred.
+const WORLD_RESIDENCY_TARGET: u64 = 512 * 1024 * 1024;
+fn rgba_mip_footprint(width: u32, height: u32) -> u64 {
+    let mut total = 0u64;
+    let (mut w, mut h) = (width.max(1), height.max(1));
+    loop {
+        total = total.saturating_add(u64::from(w) * u64::from(h) * 4);
+        if w == 1 && h == 1 { break; }
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+    }
+    total
+}
+
+fn surface_gpu_estimate(surface: &Surface) -> u64 {
+    [
+        surface.diffuse.as_ref(), surface.opacity.as_ref(),
+        surface.normal.as_ref(), surface.specular.as_ref(),
+        surface.gloss.as_ref(), surface.emissive.as_ref(),
+    ].into_iter().map(|source| source.map_or(4, |image| {
+        rgba_mip_footprint(image.width(), image.height())
+    })).sum()
+}
+
+fn surface_batch_ranges(costs: &[u64], geometry: u64) -> Vec<std::ops::Range<usize>> {
+    if costs.is_empty() { return vec![0..0]; }
+    if geometry.saturating_add(costs.iter().copied().sum::<u64>())
+        <= WORLD_RESIDENCY_TARGET {
+        return vec![0..costs.len()];
+    }
+    let mut result = Vec::new();
+    let mut from = 0;
+    let mut used = geometry;
+    for (index, cost) in costs.iter().copied().enumerate() {
+        if index > from && used.saturating_add(cost) > WORLD_RESIDENCY_TARGET {
+            result.push(from..index);
+            from = index;
+            used = geometry;
+        }
+        used = used.saturating_add(cost);
+    }
+    result.push(from..costs.len());
+    result
+}
+
 pub(super) fn assemble(
     archive: &ImportedPak,
     scene: Option<&LevelScene>,
@@ -766,15 +815,34 @@ pub(super) fn assemble(
                     } else {
                         material_ranges.clone()
                     };
-                    indices.push(models.len());
-                    models.push(world_instances::ModelGroup {
-                        mesh: std::sync::Arc::new(mesh),
-                        surfaces: parts,
-                        instances: Vec::new(),
-                        radius,
-                    });
+                    let geometry = (mesh.positions.len() * 32
+                        + mesh.indices.len() * 4
+                        + object.model.len()) as u64;
+                    let costs = parts.iter().map(surface_gpu_estimate).collect::<Vec<_>>();
+                    let batches = surface_batch_ranges(&costs, geometry);
+                    if models.len().saturating_add(batches.len()) > MAX_MODELS {
+                        budget_hit = true;
+                        break;
+                    }
+                    let shared = std::sync::Arc::new(mesh);
+                    if batches.len() > 1 {
+                        report.note(format!(
+                            "Split {} into {} independent GPU material-residency groups",
+                            object.model, batches.len(),
+                        ));
+                    }
+                    for batch in batches {
+                        indices.push(models.len());
+                        models.push(world_instances::ModelGroup {
+                            mesh: shared.clone(),
+                            surfaces: parts[batch].to_vec(),
+                            instances: Vec::new(),
+                            radius,
+                        });
+                    }
                     report.geometries += 1;
                 }
+                if budget_hit { break; }
                 resolved.insert(key, indices.clone());
                 indices
             };
@@ -884,6 +952,22 @@ pub(super) fn reproject_after_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multi_material_group_splits_before_exceeding_residency_target() {
+        let mb = 1024 * 1024u64;
+        assert_eq!(
+            surface_batch_ranges(&[230*mb, 230*mb, 230*mb], 4*mb),
+            vec![0..2, 2..3],
+        );
+        assert_eq!(
+            surface_batch_ranges(&[100*mb, 100*mb, 100*mb], 4*mb),
+            vec![0..3],
+        );
+        // A single oversized source remains unaltered for later sparse-GPU
+        // work rather than being silently downscaled or omitted.
+        assert_eq!(surface_batch_ranges(&[800*mb], 4*mb), vec![0..1]);
+    }
 
     #[test]
     fn matching_byte_identical_cgf_assets_are_not_falsely_ambiguous() {
