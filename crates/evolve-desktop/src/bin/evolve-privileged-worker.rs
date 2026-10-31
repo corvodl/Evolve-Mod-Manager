@@ -198,7 +198,10 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         assert!(validate_game_root(&root).is_err());
         std::fs::write(folder.join("Evolve.exe"), b"not a real game").unwrap();
-        assert_eq!(validate_game_root(&root).unwrap(), std::fs::canonicalize(&root).unwrap());
+        assert_eq!(
+            validate_game_root(&root).unwrap(),
+            std::fs::canonicalize(&root).unwrap()
+        );
         assert!(validate_game_root(Path::new("relative")).is_err());
         assert!(validate_game_root(&root.join("..")).is_err());
     }
