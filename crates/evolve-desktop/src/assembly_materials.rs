@@ -1085,6 +1085,8 @@ fn load_authored_subset_surfaces(
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
@@ -1163,6 +1165,7 @@ fn load_authored_subset_surfaces(
                             tint[2],
                             leaf.indirect_color.unwrap_or(0.25) / 0.25,
                         ]);
+                        surface.material_specular = leaf.specular_tint;
                         surface.uv_transform = leaf
                             .diffuse_tex_mod
                             .as_ref()
@@ -1173,6 +1176,13 @@ fn load_authored_subset_surfaces(
                             let tint = leaf.diffuse_tint.unwrap_or([1.0; 3]);
                             surface.distance_clouds =
                                 Some([tint[0], tint[1], tint[2], authored_exposure(material)]);
+                        }
+                        surface.waterfall = leaf
+                            .waterfall
+                            .filter(|_| leaf.shader.eq_ignore_ascii_case("Waterfall"));
+                        if surface.waterfall.is_some() {
+                            // Its own shader scrolls both layers; TexMod does not apply.
+                            surface.uv_transform = None;
                         }
                         surface.foliage_cutout =
                             source_vegetation_cutout(leaf) && surface.diffuse.is_some();
@@ -1454,6 +1464,8 @@ pub fn load_with_progress(
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
@@ -1667,6 +1679,8 @@ mod tests {
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&base_pixels)),
             normal: None,
@@ -1747,9 +1761,11 @@ mod tests {
             alpha_glow: true,
             shader_gen_mask: None,
             diffuse_tint: None,
+            specular_tint: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
             indirect_color: None,
+            waterfall: None,
         };
         let mask = legacy_alpha_emission(&slot, &diffuse).unwrap();
         assert!(mask.get_pixel(0, 0)[0] > 150);
@@ -1928,6 +1944,8 @@ mod tests {
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
                 2,
@@ -1967,6 +1985,8 @@ mod tests {
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
                 2,
@@ -2062,9 +2082,11 @@ mod tests {
             alpha_glow: false,
             shader_gen_mask: None,
             diffuse_tint: None,
+            specular_tint: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
             indirect_color: None,
+            waterfall: None,
             maps: if with_mask {
                 vec![evolve_core::TextureReference {
                     role: "opacity".into(),
@@ -2199,6 +2221,8 @@ mod tests {
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&image)),
             normal: None,
@@ -2698,9 +2722,11 @@ mod tests {
             alpha_glow: false,
             shader_gen_mask: None,
             diffuse_tint: None,
+            specular_tint: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
             indirect_color: None,
+            waterfall: None,
         };
         assert!(!needs_alpha_blending(&ordinary));
         let mut transparent = ordinary;

@@ -105,6 +105,10 @@ pub struct Surface {
     pub uv_transform: Option<[f32; 4]>,
     /// World meshes only: authored Diffuse tint, then ambient share.
     pub material_tint: Option<[f32; 4]>,
+    /// World meshes only: authored Specular color.
+    pub material_specular: Option<[f32; 3]>,
+    /// World meshes only: Waterfall shader params.
+    pub waterfall: Option<[f32; 11]>,
     /// Original per-leaf AlphaTest threshold (normalized). Default preview 0.5.
     pub alpha_cutoff: f32,
     pub diffuse: Option<Arc<image::RgbaImage>>,
@@ -620,7 +624,8 @@ impl Pipeline {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
             .create_view(&wgpu::TextureViewDescriptor::default())
@@ -1884,6 +1889,8 @@ impl Pipeline {
         self.world_renderer.draw_spotlight_beams(&mut pass);
         self.world_renderer.draw_light_points(&mut pass);
         drop(pass);
+        self.world_renderer
+            .draw_water(encoder, self.hdr.scene(), &self.depth, Some(clip));
         // Apply bloom and ACES only after all opaque, transparent, sky and
         // depth-tested light-source contributions exist in linear HDR.
         self.hdr.composite(encoder, target, clip);

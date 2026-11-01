@@ -592,6 +592,9 @@ pub(super) struct World {
     pub authored_sun: Option<super::level_atmosphere::AuthoredSun>,
     pub ambient_cube: Option<[[f32; 4]; 6]>,
     pub probe_cube: Option<Arc<super::level_atmosphere::ProbeCube>>,
+    pub rain_darkening: f32,
+    pub local_probes: Arc<Vec<super::level_atmosphere::LocalProbe>>,
+    pub particles: Arc<Vec<super::level_atmosphere::ParticleBatch>>,
     pub water: Arc<Vec<super::level_atmosphere::WaterSurface>>,
     pub celestial_bodies: Arc<Vec<super::level_atmosphere::CelestialBody>>,
     pub color_chart: Option<Arc<image::RgbaImage>>,
@@ -804,7 +807,7 @@ impl World {
         [key, low, high, 1.0]
     }
 
-    fn lighting_at(&self, hour: f32) -> super::level_lighting::Lighting {
+    pub fn lighting_at(&self, hour: f32) -> super::level_lighting::Lighting {
         self.time_of_day.as_ref().map_or_else(
             || super::level_lighting::Lighting::at(hour),
             |profile| {
@@ -977,6 +980,8 @@ struct TerrainGpuTextures {
     layer_view: wgpu::TextureView,
     _normals: wgpu::Texture,
     normal_view: wgpu::TextureView,
+    _heights: wgpu::Texture,
+    height_view: wgpu::TextureView,
     _paint: wgpu::Texture,
     paint_view: wgpu::TextureView,
     uniforms: wgpu::Buffer,
@@ -1068,6 +1073,13 @@ fn upload_terrain_layers(
             s.layers.iter().map(|l| l.normal.as_ref()).collect()
         }),
     );
+    let (heights, height_view) = layer_array(
+        "Full native-resolution original terrain material height arrays",
+        [255, 255, 255, 255],
+        source.map_or_else(Vec::new, |s| {
+            s.layers.iter().map(|l| l.height.as_ref()).collect()
+        }),
+    );
     let paint = source.map_or_else(
         || image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255])),
         |s| s.paint.clone(),
@@ -1107,7 +1119,7 @@ fn upload_terrain_layers(
         },
     );
     let paint_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut desc = [[0.0f32; 4]; 17];
+    let mut desc = [[0.0f32; 4]; 33];
     if let Some(s) = source {
         desc[0] = [pw as f32, ph as f32, s.unit, s.layers.len() as f32];
         for (index, layer) in s.layers.iter().enumerate() {
@@ -1116,6 +1128,12 @@ fn upload_terrain_layers(
                 layer.tile[0],
                 layer.tile[1],
                 layer.strength,
+            ];
+            desc[index + 17] = [
+                layer.blend_factor,
+                layer.blend_falloff,
+                layer.pom_displacement,
+                0.0,
             ];
         }
     }
@@ -1129,24 +1147,37 @@ fn upload_terrain_layers(
         layer_view,
         _normals: normals,
         normal_view,
+        _heights: heights,
+        height_view,
         _paint: texture,
         paint_view,
         uniforms,
-        bytes: 2 * depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
+        bytes: 3 * depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
             + pw as u64 * ph as u64 * 4,
     }
 }
 
+struct GpuParticles {
+    instances: wgpu::Buffer,
+    count: u32,
+    bind: wgpu::BindGroup,
+    _sprite: wgpu::Texture,
+}
+
 struct GpuWater {
+    height: f32,
+    center: [f32; 2],
     vertices: wgpu::Buffer,
     count: u32,
     bind: wgpu::BindGroup,
     _decal: wgpu::Texture,
+    _gloss: wgpu::Texture,
     _params: wgpu::Buffer,
 }
 
 struct GpuSurface {
     distance_clouds: bool,
+    waterfall: bool,
     diffuse_key: TextureKey,
     first: u32,
     count: u32,
@@ -1322,6 +1353,96 @@ fn upload_celestial(
     (view, uniform)
 }
 
+// Probes blended per fragment, from those nearest the camera.
+const LOCAL_PROBE_SLOTS: usize = 12;
+const LOCAL_PROBE_MIPS: u32 = 5;
+const MAX_LOCAL_PROBES: usize = 128;
+const LOCAL_PROBE_VEC4S: usize = 11;
+// Planar water reflection, sampled by screen position so its aspect is free.
+const REFLECTION_SIZE: (u32, u32) = (1024, 576);
+
+fn upload_local_probes(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    probes: &[super::level_atmosphere::LocalProbe],
+) -> wgpu::TextureView {
+    use super::level_atmosphere::LOCAL_PROBE_SIDE;
+    let count = probes.len().clamp(1, MAX_LOCAL_PROBES) as u32;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Original local environment probes"),
+        size: wgpu::Extent3d {
+            width: LOCAL_PROBE_SIDE,
+            height: LOCAL_PROBE_SIDE,
+            depth_or_array_layers: count * 6,
+        },
+        mip_level_count: LOCAL_PROBE_MIPS,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (index, probe) in probes.iter().take(MAX_LOCAL_PROBES).enumerate() {
+        for mip in 0..LOCAL_PROBE_MIPS {
+            let side = LOCAL_PROBE_SIDE >> mip;
+            // A probe baked smaller than this mip reuses its nearest stored level.
+            let Some(level) = probe
+                .cube
+                .levels
+                .iter()
+                .min_by_key(|level| level.side.abs_diff(side))
+            else {
+                continue;
+            };
+            for face in 0..6 {
+                let resampled;
+                let pixels: &[u16] = if level.side == side {
+                    &level.faces[face]
+                } else {
+                    resampled = (0..side * side)
+                        .flat_map(|at| {
+                            let (x, y) = (at % side, at / side);
+                            let from = (y * level.side / side * level.side + x * level.side / side)
+                                as usize
+                                * 4;
+                            level.faces[face][from..from + 4].to_vec()
+                        })
+                        .collect::<Vec<u16>>();
+                    &resampled
+                };
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: mip,
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: index as u32 * 6 + face as u32,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    bytemuck::cast_slice(pixels),
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(side * 8),
+                        rows_per_image: Some(side),
+                    },
+                    wgpu::Extent3d {
+                        width: side,
+                        height: side,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::CubeArray),
+        ..Default::default()
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn shadow_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -1330,6 +1451,8 @@ fn shadow_bind_group(
     compare: &wgpu::Sampler,
     probe: &wgpu::TextureView,
     probe_sampler: &wgpu::Sampler,
+    local_uniform: &wgpu::Buffer,
+    local_cubes: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Sun shadow cascades and environment probe"),
@@ -1355,6 +1478,14 @@ fn shadow_bind_group(
                 binding: 4,
                 resource: wgpu::BindingResource::Sampler(probe_sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: local_uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(local_cubes),
+            },
         ],
     })
 }
@@ -1369,6 +1500,48 @@ const SHADOW_MATRIX_STRIDE: u64 = 256;
 const SHADOW_REFRESH_GROUPS: usize = 48;
 
 /// World to light clip space, snapped to whole texels so edges hold still.
+/// Write the probes nearest the camera, lowest SortPriority first so that
+/// higher priority boxes blend over them as the game orders them.
+fn update_local_probes(
+    queue: &wgpu::Queue,
+    uniform: &wgpu::Buffer,
+    world: &World,
+    position: [f32; 3],
+) {
+    let reach = |index: usize| {
+        let probe = &world.local_probes[index];
+        (0..3)
+            .map(|axis| (probe.center[axis] - position[axis]).powi(2))
+            .sum::<f32>()
+            .sqrt()
+            - probe.half_diagonal
+    };
+    let mut nearest = (0..world.local_probes.len().min(MAX_LOCAL_PROBES)).collect::<Vec<_>>();
+    nearest.sort_by(|&a, &b| reach(a).total_cmp(&reach(b)));
+    nearest.truncate(LOCAL_PROBE_SLOTS);
+    nearest.sort_by(|&a, &b| {
+        world.local_probes[a]
+            .priority
+            .total_cmp(&world.local_probes[b].priority)
+    });
+    let mut data = vec![[0.0_f32; 4]; 1 + LOCAL_PROBE_VEC4S * LOCAL_PROBE_SLOTS];
+    data[0][0] = nearest.len() as f32;
+    for (slot, &index) in nearest.iter().enumerate() {
+        let probe = &world.local_probes[index];
+        let at = 1 + slot * LOCAL_PROBE_VEC4S;
+        data[at] = [
+            probe.center[0],
+            probe.center[1],
+            probe.center[2],
+            index as f32,
+        ];
+        data[at + 1..at + 4].copy_from_slice(&probe.axes);
+        data[at + 4] = [probe.tint[0], probe.tint[1], probe.tint[2], probe.falloff];
+        data[at + 5..at + 11].copy_from_slice(&probe.ambient);
+    }
+    queue.write_buffer(uniform, 0, bytemuck::cast_slice(&data));
+}
+
 fn shadow_matrix(center: [f32; 3], to_sun: [f32; 3], radius: f32) -> [[f32; 4]; 4] {
     let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let normalized = |v: [f32; 3]| {
@@ -1410,6 +1583,7 @@ pub(super) struct Renderer {
     foliage_cutout: wgpu::RenderPipeline,
     distance_clouds: wgpu::RenderPipeline,
     transparent: wgpu::RenderPipeline,
+    waterfall: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     sky_layout: wgpu::BindGroupLayout,
     sky_group: wgpu::BindGroup,
@@ -1467,7 +1641,20 @@ pub(super) struct Renderer {
     shadow_array: wgpu::TextureView,
     shadow_compare: wgpu::Sampler,
     probe_sampler: wgpu::Sampler,
+    local_probe_uniform: wgpu::Buffer,
+    device: wgpu::Device,
+    water_screen_layout: wgpu::BindGroupLayout,
+    particle_layout: wgpu::BindGroupLayout,
+    particle_pipeline: wgpu::RenderPipeline,
+    particle_batches: Vec<GpuParticles>,
+    screen_sampler: wgpu::Sampler,
+    reflection_view: wgpu::TextureView,
+    reflection_depth: wgpu::TextureView,
+    reflection_solid: wgpu::RenderPipeline,
+    reflection_foliage: wgpu::RenderPipeline,
+    refraction_copy: std::sync::Mutex<Option<(wgpu::Texture, wgpu::TextureView)>>,
     probe_tint: [f32; 4],
+    surface_darkening: f32,
     shadow_groups_seen: usize,
     ambient_cube: Option<[[f32; 4]; 6]>,
 }
@@ -1671,6 +1858,16 @@ impl Renderer {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
+                    binding: 20,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
                     binding: 19,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
@@ -1684,7 +1881,8 @@ impl Renderer {
         });
         let camera_uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Level fly camera (GPU)"),
-            size: 64,
+            // Camera, then the reflection clip height read only by reflection shaders.
+            size: 80,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1705,7 +1903,7 @@ impl Renderer {
         });
         let local_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Map source local point/spot light GPU table"),
-            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 73]),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 97]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let hdr_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1789,8 +1987,34 @@ impl Renderer {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::CubeArray,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
                 ],
             });
+        let local_probe_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Nearest original local probes"),
+            size: (16 + 16 * LOCAL_PROBE_VEC4S * LOCAL_PROBE_SLOTS) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Sun shadow cascades"),
             size: wgpu::Extent3d {
@@ -1847,6 +2071,8 @@ impl Renderer {
             &shadow_compare,
             &upload_probe_cube(device, queue, None),
             &probe_sampler,
+            &local_probe_uniform,
+            &upload_local_probes(device, queue, &[]),
         );
         let shadow_pass_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1967,8 +2193,88 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
+        let screen_color_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let water_screen_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Water reflection, refraction and scene depth"),
+                entries: &[
+                    screen_color_entry(0),
+                    screen_color_entry(1),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let screen_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Water screen maps"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let reflection_extent = wgpu::Extent3d {
+            width: REFLECTION_SIZE.0,
+            height: REFLECTION_SIZE.1,
+            depth_or_array_layers: 1,
+        };
+        let reflection_view = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Planar water reflection"),
+                size: reflection_extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let reflection_depth = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Planar water reflection depth"),
+                size: reflection_extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
         let water_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Authored water surface"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
@@ -1977,7 +2283,7 @@ impl Renderer {
         });
         let water_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Authored water surface"),
-            bind_group_layouts: &[&water_layout, &shadow_sample_layout],
+            bind_group_layouts: &[&water_layout, &shadow_sample_layout, &water_screen_layout],
             push_constant_ranges: &[],
         });
         let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2483,7 +2789,125 @@ impl Renderer {
             ],
         });
 
+        let particle_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Authored particle sprite"),
+            entries: &[
+                water_uniform_entry(0),
+                water_uniform_entry(1),
+                screen_color_entry(2),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let particle_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Authored particles"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "world_particles.wgsl"
+            ))),
+        });
+        let particle_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Authored particles"),
+            bind_group_layouts: &[&particle_layout, &water_screen_layout],
+            push_constant_ranges: &[],
+        });
+        let particle_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Authored particles"),
+            layout: Some(&particle_pipe_layout),
+            vertex: wgpu::VertexState {
+                module: &particle_shader,
+                entry_point: Some("vs_particle"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 96,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![
+                        0 => Float32x4,
+                        1 => Float32x4,
+                        2 => Float32x4,
+                        3 => Float32x4,
+                        4 => Float32x4,
+                        5 => Float32x4,
+                    ],
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &particle_shader,
+                entry_point: Some("fs_particle"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let reflection_pipeline = |entry: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Planar water reflection geometry"),
+                layout: Some(&pipe_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Vertex::layout(), InstanceGpu::layout()],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
         Self {
+            reflection_solid: reflection_pipeline("fs_opaque_reflected"),
+            reflection_foliage: reflection_pipeline("fs_foliage_reflected"),
+            reflection_view,
+            reflection_depth,
+            local_probe_uniform,
+            device: device.clone(),
+            water_screen_layout,
+            particle_layout,
+            particle_pipeline,
+            particle_batches: Vec::new(),
+            screen_sampler,
+            refraction_copy: std::sync::Mutex::new(None),
             solid: make(false, false, false),
             terrain_source: make(false, false, true),
             terrain_source_unlit: false,
@@ -2523,6 +2947,40 @@ impl Renderer {
                 cache: None,
             }),
             transparent: make(true, false, false),
+            waterfall: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Authored Waterfall surfaces"),
+                layout: Some(&pipe_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Vertex::layout(), InstanceGpu::layout()],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_waterfall"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: false,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            }),
             sky_pipeline,
             sky_layout,
             sky_group,
@@ -2581,6 +3039,7 @@ impl Renderer {
             shadow_compare,
             probe_sampler,
             probe_tint: [0.0; 4],
+            surface_darkening: 1.0,
             shadow_groups_seen: 0,
             ambient_cube: None,
         }
@@ -2844,6 +3303,7 @@ impl Renderer {
                 .distance_clouds
                 .or(surf.material_tint)
                 .unwrap_or([1.0; 4]);
+            let waterfall = surf.waterfall.unwrap_or([0.0; 11]);
             let alpha_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Authored per-material Vegetation AlphaTest"),
                 contents: bytemuck::cast_slice(&[
@@ -2859,6 +3319,22 @@ impl Renderer {
                     surf.uv_transform.map_or(1.0, |uv| uv[1]),
                     surf.uv_transform.map_or(0.0, |uv| uv[2]),
                     surf.uv_transform.map_or(0.0, |uv| uv[3]),
+                    surf.material_specular.map_or(1.0, |color| color[0]),
+                    surf.material_specular.map_or(1.0, |color| color[1]),
+                    surf.material_specular.map_or(1.0, |color| color[2]),
+                    0.0,
+                    waterfall[0],
+                    waterfall[1],
+                    waterfall[2],
+                    waterfall[3],
+                    waterfall[4],
+                    waterfall[5],
+                    waterfall[6],
+                    waterfall[7],
+                    waterfall[8],
+                    waterfall[9],
+                    waterfall[10],
+                    0.0,
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -2947,6 +3423,10 @@ impl Renderer {
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
                     },
                     wgpu::BindGroupEntry {
+                        binding: 20,
+                        resource: wgpu::BindingResource::TextureView(&terrain_textures.height_view),
+                    },
+                    wgpu::BindGroupEntry {
                         binding: 19,
                         resource: wgpu::BindingResource::TextureView(&terrain_textures.normal_view),
                     },
@@ -2959,6 +3439,7 @@ impl Renderer {
                 transparent: surf.transparent,
                 foliage_cutout: surf.foliage_cutout && diffuse_uploaded,
                 distance_clouds: surf.distance_clouds.is_some() && diffuse_uploaded,
+                waterfall: surf.waterfall.is_some() && diffuse_uploaded,
                 bind,
                 _image: tex,
                 _opacity_image: opacity_tex,
@@ -3038,7 +3519,9 @@ impl Renderer {
             self.last_camera = None;
             self.shadow_groups_seen = 0;
             self.update_water(device, queue, world);
+            self.update_particles(device, queue, world);
             self.ambient_cube = world.ambient_cube;
+            self.surface_darkening = 1.0 - world.rain_darkening;
             self.probe_tint = world.probe_cube.as_ref().map_or([0.0; 4], |cube| {
                 [cube.tint[0], cube.tint[1], cube.tint[2], 0.0]
             });
@@ -3050,7 +3533,10 @@ impl Renderer {
                 &self.shadow_compare,
                 &upload_probe_cube(device, queue, world.probe_cube.as_deref()),
                 &self.probe_sampler,
+                &self.local_probe_uniform,
+                &upload_local_probes(device, queue, &world.local_probes),
             );
+            self.last_camera = None;
             self.last_lighting_hour = f32::NAN;
             self.update_sky_source(device, queue, world);
             self.update_light_point_sources(device, world);
@@ -3062,7 +3548,8 @@ impl Renderer {
         } else {
             12.0
         };
-        if self.last_lighting_hour != hour {
+        let lighting_changed = self.last_lighting_hour != hour;
+        if lighting_changed {
             let lighting =
                 world.time_of_day.as_ref().map_or_else(
                     || super::level_lighting::Lighting::at(hour),
@@ -3102,6 +3589,7 @@ impl Renderer {
         let camera_changed = self.last_camera != Some(uniform);
         if camera_changed {
             self.update_local_lights(queue, world, uniform);
+            update_local_probes(queue, &self.local_probe_uniform, world, camera.position);
         }
         let mut cache = std::mem::take(&mut self.cache);
         let mut hashes = std::mem::take(&mut self.source_hashes);
@@ -3293,11 +3781,13 @@ impl Renderer {
                 ),
             );
         }
-        if camera_changed || uploaded > 0 {
-            // The GPU clips primitives outside the viewport; there is no
-            // per-camera CPU culling or repeated instance-buffer upload.
-            queue.write_buffer(&self.camera_uniform, 0, bytemuck::bytes_of(&uniform));
+        // The scene is static, so the mirror only redraws when its view changes.
+        if !self.water_surfaces.is_empty() && (camera_changed || uploaded > 0 || lighting_changed) {
+            self.render_reflection(device, queue, uniform);
         }
+        // The GPU clips primitives outside the viewport; there is no per-camera
+        // CPU culling or repeated instance-buffer upload.
+        queue.write_buffer(&self.camera_uniform, 0, bytemuck::bytes_of(&uniform));
         // Wrapped so scrolling keeps its precision in a long session.
         let seconds = self.started.elapsed().as_secs_f32() % 3600.0;
         queue.write_buffer(&self.camera_uniform, 12, bytemuck::bytes_of(&seconds));
@@ -3365,7 +3855,7 @@ impl Renderer {
                 } else {
                     0.0
                 },
-                0.0,
+                self.surface_darkening,
             ];
             queue.write_buffer(
                 &self.shadow_uniform,
@@ -3414,11 +3904,9 @@ impl Renderer {
                 pass.set_vertex_buffer(0, group.vertices.slice(..));
                 pass.set_vertex_buffer(1, group.instances.slice(..));
                 pass.set_index_buffer(group.indices.slice(..), wgpu::IndexFormat::Uint32);
-                for surface in group
-                    .surfaces
-                    .iter()
-                    .filter(|surface| !surface.transparent && !surface.distance_clouds)
-                {
+                for surface in group.surfaces.iter().filter(|surface| {
+                    !surface.transparent && !surface.distance_clouds && !surface.waterfall
+                }) {
                     pass.set_pipeline(if surface.foliage_cutout {
                         &self.shadow_cutout
                     } else {
@@ -3433,6 +3921,249 @@ impl Renderer {
                 }
             }
         }
+    }
+
+    /// Draw the scene mirrored in the water surface nearest the camera, on its
+    /// own submission so the main pass sees the real camera again.
+    fn render_reflection(&self, device: &wgpu::Device, queue: &wgpu::Queue, camera: CameraGpu) {
+        let Some(height) = self
+            .water_surfaces
+            .iter()
+            .min_by(|a, b| {
+                let distance = |water: &GpuWater| {
+                    (water.center[0] - camera.origin[0]).powi(2)
+                        + (water.center[1] - camera.origin[1]).powi(2)
+                        + (water.height - camera.origin[2]).powi(2)
+                };
+                distance(a).total_cmp(&distance(b))
+            })
+            .map(|water| water.height)
+        else {
+            return;
+        };
+        let mut mirrored = camera;
+        mirrored.origin[2] = height * 2.0 - camera.origin[2];
+        mirrored.forward[2] = -camera.forward[2];
+        mirrored.right[2] = -camera.right[2];
+        mirrored.up[2] = -camera.up[2];
+        queue.write_buffer(&self.camera_uniform, 0, bytemuck::bytes_of(&mirrored));
+        queue.write_buffer(&self.camera_uniform, 64, bytemuck::bytes_of(&[height; 4]));
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Planar water reflection"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.reflection_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.reflection_depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            self.draw_sky(&mut pass);
+            pass.set_bind_group(1, &self.shadow_group, &[]);
+            for mode in [3, 0, 1] {
+                for group in self.groups.iter().flatten() {
+                    if group.visible == 0 {
+                        continue;
+                    }
+                    pass.set_pipeline(match mode {
+                        0 => &self.reflection_solid,
+                        1 => &self.reflection_foliage,
+                        _ => &self.distance_clouds,
+                    });
+                    pass.set_vertex_buffer(0, group.vertices.slice(..));
+                    pass.set_vertex_buffer(1, group.instances.slice(..));
+                    pass.set_index_buffer(group.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    for surf in group.surfaces.iter().filter(|s| match mode {
+                        0 => {
+                            !s.transparent
+                                && !s.foliage_cutout
+                                && !s.distance_clouds
+                                && !s.waterfall
+                        }
+                        1 => s.foliage_cutout && !s.distance_clouds && !s.waterfall,
+                        _ => s.distance_clouds,
+                    }) {
+                        pass.set_bind_group(0, &surf.bind, &[]);
+                        pass.draw_indexed(surf.first..surf.first + surf.count, 0, 0..group.visible);
+                    }
+                }
+            }
+        }
+        queue.submit([encoder.finish()]);
+    }
+
+    /// Water reads the finished scene behind it, so it draws in its own pass.
+    pub fn draw_water(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        scene: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        clip: Option<iced::Rectangle<u32>>,
+    ) {
+        if self.water_surfaces.is_empty() && self.particle_batches.is_empty() {
+            return;
+        }
+        let source = scene.texture();
+        let Ok(mut copy) = self.refraction_copy.lock() else {
+            return;
+        };
+        if copy
+            .as_ref()
+            .is_none_or(|(texture, _)| texture.size() != source.size())
+        {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Scene behind water"),
+                size: source.size(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: source.format(),
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            *copy = Some((texture, view));
+        }
+        let Some((texture, view)) = copy.as_ref() else {
+            return;
+        };
+        encoder.copy_texture_to_texture(
+            source.as_image_copy(),
+            texture.as_image_copy(),
+            source.size(),
+        );
+        let screen = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Water reflection, refraction and scene depth"),
+            layout: &self.water_screen_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.reflection_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(depth),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.screen_sampler),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Authored water surfaces"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: scene,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: None,
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        if let Some(clip) = clip {
+            pass.set_viewport(
+                clip.x as f32,
+                clip.y as f32,
+                clip.width as f32,
+                clip.height as f32,
+                0.,
+                1.,
+            );
+            pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
+        }
+        pass.set_pipeline(&self.water_pipeline);
+        pass.set_bind_group(1, &self.shadow_group, &[]);
+        pass.set_bind_group(2, &screen, &[]);
+        for water in &self.water_surfaces {
+            pass.set_bind_group(0, &water.bind, &[]);
+            pass.set_vertex_buffer(0, water.vertices.slice(..));
+            pass.draw(0..water.count, 0..1);
+        }
+        pass.set_pipeline(&self.particle_pipeline);
+        pass.set_bind_group(1, &screen, &[]);
+        for batch in &self.particle_batches {
+            pass.set_bind_group(0, &batch.bind, &[]);
+            pass.set_vertex_buffer(0, batch.instances.slice(..));
+            pass.draw(0..6, 0..batch.count);
+        }
+    }
+
+    fn update_particles(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
+        self.particle_batches = world
+            .particles
+            .iter()
+            .filter(|batch| !batch.instances.is_empty())
+            .map(|batch| {
+                let instances = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Authored particles"),
+                    contents: bytemuck::cast_slice(&batch.instances),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let (sprite, sprite_view) = upload_rgba_mips(
+                    device,
+                    queue,
+                    Some(batch.sprite.as_ref()),
+                    [255, 255, 255, 255],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "Authored particle sprite",
+                );
+                let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Authored particle sprite"),
+                    layout: &self.particle_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.camera_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: self.lighting_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(&sprite_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Sampler(&self.water_sampler),
+                        },
+                    ],
+                });
+                GpuParticles {
+                    instances,
+                    count: batch.instances.len() as u32,
+                    bind,
+                    _sprite: sprite,
+                }
+            })
+            .collect();
     }
 
     fn update_water(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
@@ -3456,6 +4187,15 @@ impl Renderer {
                             water.decal_strength,
                         ],
                         water.tiling,
+                        water.surface,
+                        [
+                            water.gloss[0],
+                            water.gloss[1],
+                            water.gloss[2],
+                            if water.gloss_map.is_some() { 1.0 } else { 0.0 },
+                        ],
+                        water.fog,
+                        [water.specular[0], water.specular[1], water.specular[2], 0.0],
                     ]),
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
@@ -3467,6 +4207,18 @@ impl Renderer {
                     wgpu::TextureFormat::Rgba8UnormSrgb,
                     "Authored water decal",
                 );
+                let (gloss, gloss_view) = upload_rgba_mips(
+                    device,
+                    queue,
+                    water.gloss_map.as_deref(),
+                    [255, 255, 255, 255],
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    "Authored water gloss",
+                );
+                let count = water.triangles.len().max(1) as f32;
+                let center = water.triangles.iter().fold([0.0_f32; 2], |sum, point| {
+                    [sum[0] + point[0] / count, sum[1] + point[1] / count]
+                });
                 let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Authored water surface"),
                     layout: &self.water_layout,
@@ -3499,9 +4251,16 @@ impl Renderer {
                             binding: 6,
                             resource: wgpu::BindingResource::Sampler(&self.water_sampler),
                         },
+                        wgpu::BindGroupEntry {
+                            binding: 7,
+                            resource: wgpu::BindingResource::TextureView(&gloss_view),
+                        },
                     ],
                 });
                 GpuWater {
+                    height: water.triangles.first().map_or(0.0, |point| point[2]),
+                    center,
+                    _gloss: gloss,
                     vertices,
                     count: water.triangles.len() as u32,
                     bind,
@@ -3712,10 +4471,10 @@ impl Renderer {
     fn update_local_lights(&self, queue: &wgpu::Queue, world: &World, camera: CameraGpu) {
         const LIMIT: usize = 24;
         let selected = select_visible_lights(&world.local_lights, camera, LIMIT);
-        let mut uniform = [[0.0_f32; 4]; 1 + LIMIT * 3];
+        let mut uniform = [[0.0_f32; 4]; 1 + LIMIT * 4];
         uniform[0][0] = selected.len() as f32;
         for (idx, light) in selected.into_iter().enumerate() {
-            let base = 1 + idx * 3;
+            let base = 1 + idx * 4;
             uniform[base] = [
                 light.position[0],
                 light.position[1],
@@ -3734,6 +4493,7 @@ impl Renderer {
                 light.color[2],
                 light.intensity,
             ];
+            uniform[base + 3] = [light.bulb, 0.0, 0.0, 0.0];
         }
         queue.write_buffer(&self.local_uniform, 0, bytemuck::cast_slice(&uniform));
     }
@@ -3750,16 +4510,7 @@ impl Renderer {
         // Opaque, masked foliage, then blended glass/water. Alpha-tested
         // vegetation writes depth, unlike translucent overlays.
         pass.set_bind_group(1, &self.shadow_group, &[]);
-        for mode in [3, 0, 1, 4, 2] {
-            if mode == 4 {
-                pass.set_pipeline(&self.water_pipeline);
-                for water in &self.water_surfaces {
-                    pass.set_bind_group(0, &water.bind, &[]);
-                    pass.set_vertex_buffer(0, water.vertices.slice(..));
-                    pass.draw(0..water.count, 0..1);
-                }
-                continue;
-            }
+        for mode in [3, 0, 1, 2, 5] {
             for group in self.groups.iter().flatten() {
                 if group.visible == 0 {
                     continue;
@@ -3769,16 +4520,18 @@ impl Renderer {
                     0 => &self.solid,
                     1 => &self.foliage_cutout,
                     3 => &self.distance_clouds,
+                    5 => &self.waterfall,
                     _ => &self.transparent,
                 });
                 pass.set_vertex_buffer(0, group.vertices.slice(..));
                 pass.set_vertex_buffer(1, group.instances.slice(..));
                 pass.set_index_buffer(group.indices.slice(..), wgpu::IndexFormat::Uint32);
                 for surf in group.surfaces.iter().filter(|s| match mode {
-                    0 => !s.transparent && !s.foliage_cutout && !s.distance_clouds,
-                    1 => s.foliage_cutout && !s.distance_clouds,
+                    0 => !s.transparent && !s.foliage_cutout && !s.distance_clouds && !s.waterfall,
+                    1 => s.foliage_cutout && !s.distance_clouds && !s.waterfall,
                     3 => s.distance_clouds,
-                    _ => s.transparent && !s.distance_clouds,
+                    5 => s.waterfall,
+                    _ => s.transparent && !s.distance_clouds && !s.waterfall,
                 }) {
                     pass.set_bind_group(0, &surf.bind, &[]);
                     pass.draw_indexed(surf.first..surf.first + surf.count, 0, 0..group.visible);
@@ -3976,6 +4729,7 @@ mod tests {
             direction: [1.0, 0.0, 0.0],
             color: [1.0, 1.0, 1.0],
             intensity: 2.0,
+            bulb: 0.05,
             radius,
             cone_cos: -1.0,
         };

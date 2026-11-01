@@ -30,31 +30,37 @@ struct CompositeParams {
 fn adapted_exposure()->f32 {
     if (composite.adaptation.w<0.5) { return 1.0; }
     let average=exp(textureLoad(scene_log_luminance,vec2<i32>(0,0),0).r);
-    // Eyes only partly adapt: a dark or bright view stays somewhat dark or bright.
-    let partial=sqrt(max(average,0.0001)*composite.adaptation.x);
-    return clamp(composite.adaptation.x/partial,
-        composite.adaptation.y,composite.adaptation.z);
+    // The game scales its target by a runtime constant that is not in its
+    // shaders; this value is calibrated to in-game captures.
+    return clamp(composite.adaptation.x/(average+0.00001),
+        composite.adaptation.y,composite.adaptation.z)*0.7;
 }
+// The final-scene curve from the game's compiled HDR shader.
 fn filmic_curve(x:vec3<f32>)->vec3<f32>{
     let a=0.22*composite.film.x;
+    let cb=0.03*composite.film.y;
     let b=0.30*composite.film.y;
-    let c=0.10;
-    let d=0.20*composite.film.z;
-    let e=0.01;
-    let f=0.30*composite.film.z;
-    return (x*(a*x+c*b)+d*e)/(x*(a*x+b)+d*f)-e/f;
+    let de=0.002*composite.film.z;
+    return (x*(a*x+cb)+vec3<f32>(de))/(x*(a*x+b)+vec3<f32>(0.06))-vec3<f32>(composite.film.z*0.033333);
 }
-// Calibrated to the film variables each map authors. Evolve's compiled curve
-// has not been decoded, so the coefficients here are not verified engine data.
 fn film_map(radiance:vec3<f32>)->vec3<f32>{
-    // 0.6 is calibrated to in-game screenshots; the engine's scale is unverified.
-    let v=max(radiance*composite.params.y*adapted_exposure()*0.6,vec3<f32>(0.0));
+    let v=max(radiance*composite.params.y*adapted_exposure(),vec3<f32>(0.0));
     let white=max(composite.film.w,0.01);
     return clamp(filmic_curve(v)/filmic_curve(vec3<f32>(white)),vec3<f32>(0.0),vec3<f32>(1.0));
 }
+fn to_display(c:vec3<f32>)->vec3<f32>{
+    let low=c*12.92;
+    let high=pow(max(c,vec3<f32>(0.0)),vec3<f32>(1.0/2.4))*1.055-vec3<f32>(0.055);
+    return select(high,low,c<vec3<f32>(0.003131));
+}
+fn from_display(c:vec3<f32>)->vec3<f32>{
+    let low=c/12.92;
+    let high=pow((max(c,vec3<f32>(0.0))+vec3<f32>(0.055))/1.055,vec3<f32>(2.4));
+    return select(high,low,c<vec3<f32>(0.04045));
+}
 // Original charts are a 256x16 strip of 16 slices, with blue selecting the slice.
-fn graded(linear:vec3<f32>)->vec3<f32>{
-    let display=pow(clamp(linear,vec3<f32>(0.0),vec3<f32>(1.0)),vec3<f32>(1.0/2.2));
+fn graded(display_in:vec3<f32>)->vec3<f32>{
+    let display=clamp(display_in,vec3<f32>(0.0),vec3<f32>(1.0));
     let slice=display.b*15.0;
     let lower=floor(slice);
     let upper=min(lower+1.0,15.0);
@@ -63,7 +69,7 @@ fn graded(linear:vec3<f32>)->vec3<f32>{
         vec2<f32>((lower+cell.x)/16.0,cell.y),0.0).rgb;
     let b=textureSampleLevel(color_chart,hdr_sampler,
         vec2<f32>((upper+cell.x)/16.0,cell.y),0.0).rgb;
-    return pow(mix(a,b,slice-lower),vec3<f32>(2.2));
+    return mix(a,b,slice-lower);
 }
 @fragment
 fn fs_composite(input:FsOut)->@location(0) vec4<f32> {
@@ -80,6 +86,9 @@ fn fs_composite(input:FsOut)->@location(0) vec4<f32> {
     }
     let bloom=textureSampleLevel(hdr_bloom,hdr_sampler,uv,0.0).rgb;
     let shafts=textureSampleLevel(sun_shafts,hdr_sampler,uv,0.0).rgb;
-    let combined=source+bloom*max(composite.params.x,0.0)+shafts*composite.shafts.x;
-    return vec4<f32>(graded(film_map(combined)),1.0);
+    let combined=source+bloom*max(composite.params.x,0.0);
+    // The game screens shafts over the display-encoded image.
+    let display=to_display(film_map(combined));
+    let lit=display+min(shafts*composite.shafts.x,vec3<f32>(1.0))*(vec3<f32>(1.0)-display);
+    return vec4<f32>(from_display(graded(lit)),1.0);
 }

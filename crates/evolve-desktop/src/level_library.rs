@@ -980,6 +980,16 @@ fn open_selected(
                 (None, None)
             }
         };
+    let local_probes = match crate::level_atmosphere::authored_local_probes(&archive, &sources) {
+        Ok(probes) => {
+            diagnostics.push(format!("Original local probes: {}", probes.len()));
+            probes
+        }
+        Err(error) => {
+            diagnostics.push(format!("Original local probes unavailable: {error}"));
+            Vec::new()
+        }
+    };
     let mut source = chosen.layers.first().map(|p| root.join(p));
     let mut scene = None;
     if !sources.is_empty() {
@@ -1105,6 +1115,24 @@ fn open_selected(
             &particle_placements,
         ),
     );
+    let particles =
+        match crate::level_atmosphere::authored_particles(&archive, &particle_placements) {
+            Ok(batches) => {
+                diagnostics.push(format!(
+                    "Original looping particles: {} across {} sprites",
+                    batches
+                        .iter()
+                        .map(|batch| batch.instances.len())
+                        .sum::<usize>(),
+                    batches.len()
+                ));
+                batches
+            }
+            Err(error) => {
+                diagnostics.push(format!("Original particles unavailable: {error}"));
+                Vec::new()
+            }
+        };
     let (local_lights, light_warnings) = crate::level_atmosphere::lights(&sources, scene.as_ref());
     diagnostics.push(format!("Original map light entities with verified authored color, radius and strength: {}. GPU viewport uses nearby point/spot preview lighting; authored shadow maps and projector textures require separate verification.",local_lights.len()));
     diagnostics.extend(light_warnings.into_iter().take(5));
@@ -1316,6 +1344,9 @@ fn open_selected(
         world.authored_sun = authored_sun;
         world.ambient_cube = ambient_cube;
         world.probe_cube = probe_cube;
+        world.rain_darkening = crate::level_atmosphere::authored_rain_darkening(&sources);
+        world.local_probes = std::sync::Arc::new(local_probes);
+        world.particles = std::sync::Arc::new(particles);
         world.water = std::sync::Arc::new(water);
         world.celestial_bodies = std::sync::Arc::new(celestial_bodies);
         world.color_chart = color_chart;

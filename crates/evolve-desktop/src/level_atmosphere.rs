@@ -17,6 +17,8 @@ pub(super) struct LocalLight {
     pub intensity: f32,
     /// -1 means omni; otherwise cosine of authored projector half-angle.
     pub cone_cos: f32,
+    /// fAttenuationBulbSize, the distance inverse-square falloff starts from.
+    pub bulb: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -84,19 +86,20 @@ struct PendingLight {
     intensity: Option<f32>,
     color: Option<[f32; 3]>,
     cone: Option<f32>,
+    bulb: Option<f32>,
     enabled: bool,
 }
 impl PendingLight {
     fn props(&mut self, e: &BytesStart<'_>) {
-        if let Some(radius) = val(
-            e,
-            &[
-                b"Radius",
-                b"fRadius",
-                b"LightRadius",
-                b"fAttenuationBulbSize",
-            ],
-        ) && (0.1..=100000.0).contains(&radius)
+        if let Some(bulb) = val(e, &[b"fAttenuationBulbSize"]).filter(|bulb| *bulb > 0.0) {
+            self.bulb = Some(bulb);
+        }
+        // Fake lights only feed lens flares and never light the scene.
+        if attr(e, b"bFakeLight").is_some_and(|fake| fake == "1") {
+            self.enabled = false;
+        }
+        if let Some(radius) = val(e, &[b"Radius", b"fRadius", b"LightRadius"])
+            && (0.1..=100000.0).contains(&radius)
         {
             self.radius = Some(radius);
         }
@@ -204,6 +207,7 @@ pub(super) fn lights(
                                 intensity: None,
                                 color: None,
                                 cone: None,
+                                bulb: None,
                                 enabled: true,
                             });
                             if let Some(ref mut p) = pending {
@@ -270,9 +274,10 @@ fn finalize(
         position: o.world.position,
         direction: unit(rotate(o.world.quaternion, [1.0, 0.0, 0.0])),
         radius,
-        intensity: intensity.clamp(0.0, 32.0),
+        intensity: intensity.clamp(0.0, 1000.0),
         color,
         cone_cos: p.cone.unwrap_or(-1.0),
+        bulb: p.bulb.unwrap_or(0.05),
     });
 }
 
@@ -284,6 +289,179 @@ fn finalize(
 pub(super) struct ParticlePlacement {
     pub effect: String,
     pub position: [f32; 3],
+    /// w, x, y, z.
+    pub rotation: [f32; 4],
+}
+
+/// Particles sharing one sprite. Each instance is origin and phase, velocity
+/// and life, birth and full size with gravity and alpha, tint and spin, tiles
+/// across and down with framerate and first tile, then diffuse, emissive, the
+/// radius it wraps around the camera (0 stays put) and whether it adds light.
+#[derive(Clone, Debug)]
+pub(super) struct ParticleBatch {
+    pub sprite: std::sync::Arc<image::RgbaImage>,
+    pub instances: Vec<[f32; 24]>,
+}
+
+// Across the whole map. Effects past this draw nothing instead of stalling.
+const MAX_PARTICLES: usize = 60_000;
+// The game keeps rain around the player. Placed sheets repeat within this reach.
+const RAIN_WRAP_RADIUS: f32 = 70.0;
+
+/// The named particle library in this installation's own libs.pak. Several
+/// builds can hold the same virtual path, so this looks only in that one pak.
+fn particle_library_path(
+    root: &std::path::Path,
+    source: &str,
+    library: &str,
+) -> Option<std::path::PathBuf> {
+    let catalog = evolve_core::imported_library(root).ok()?;
+    let pak = catalog.archives.iter().find(|pak| {
+        pak.name.eq_ignore_ascii_case("libs.pak")
+            && std::path::Path::new(&pak.source).parent() == std::path::Path::new(source).parent()
+    })?;
+    let files = std::path::Path::new(&pak.directory).join("files");
+    let wanted = format!("{library}.xml");
+    let matching = |parent: &std::path::Path, name: &str| {
+        std::fs::read_dir(parent).ok()?.flatten().find_map(|entry| {
+            entry
+                .file_name()
+                .to_str()?
+                .eq_ignore_ascii_case(name)
+                .then(|| entry.path())
+        })
+    };
+    let directory = matching(&matching(&files, "libs")?, "particles")?;
+    matching(&directory, &wanted)
+}
+
+/// Expand every placed effect into the looping particles its emitters keep alive.
+pub(super) fn authored_particles(
+    archive: &evolve_core::ImportedPak,
+    placed: &[ParticlePlacement],
+) -> Result<Vec<ParticleBatch>, String> {
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    let mut libraries = HashMap::<String, Vec<evolve_core::ParticleEmitter>>::new();
+    let mut sprites = HashMap::<String, Option<std::sync::Arc<image::RgbaImage>>>::new();
+    let mut batches = HashMap::<String, ParticleBatch>::new();
+    let mut total = 0usize;
+    // Camera-following rain overlaps every placement, so only a few are kept.
+    let mut wrapped = HashMap::<String, u32>::new();
+    let mut seed = 0x2545_F491_u32;
+    let mut random = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed as f32 / u32::MAX as f32
+    };
+    for place in placed {
+        let Some((library, effect)) = place.effect.split_once('.') else {
+            continue;
+        };
+        let key = library.to_ascii_lowercase();
+        if !libraries.contains_key(&key) {
+            let emitters = particle_library_path(root, &archive.source, library)
+                .and_then(|path| std::fs::read(path).ok())
+                .and_then(|bytes| evolve_core::decode_particle_library(&bytes).ok())
+                .unwrap_or_default();
+            libraries.insert(key.clone(), emitters);
+        }
+        let child_prefix = format!("{}.", effect.to_ascii_lowercase());
+        for emitter in &libraries[&key] {
+            let name = emitter.effect.to_ascii_lowercase();
+            if name != effect.to_ascii_lowercase() && !name.starts_with(&child_prefix) {
+                continue;
+            }
+            let Some(texture) = emitter.texture.as_ref().filter(|_| {
+                emitter.enabled && emitter.continuous && emitter.count > 0.0 && emitter.size > 0.0
+            }) else {
+                continue;
+            };
+            let sprite = sprites.entry(texture.clone()).or_insert_with(|| {
+                let stem = texture
+                    .rsplit_once('.')
+                    .map_or(texture.as_str(), |(stem, _)| stem);
+                let path = indexed_source(root, &build, &format!("{stem}.dds.0")).ok()??;
+                evolve_core::decode_dds_rgba(&path)
+                    .ok()
+                    .map(|(_, image)| std::sync::Arc::new(image))
+            });
+            let Some(sprite) = sprite.clone() else {
+                continue;
+            };
+            let is_rain = name.contains("rain") && emitter.gravity_scale > 0.0;
+            if is_rain {
+                let kept = wrapped.entry(name.clone()).or_insert(0);
+                *kept += 1;
+                if *kept > 3 {
+                    continue;
+                }
+            }
+            let batch = batches
+                .entry(texture.clone())
+                .or_insert_with(|| ParticleBatch {
+                    sprite,
+                    instances: Vec::new(),
+                });
+            let axis = rotate(place.rotation, [0.0, 0.0, 1.0]);
+            let side = unit(rotate(place.rotation, [1.0, 0.0, 0.0]));
+            let other = unit(rotate(place.rotation, [0.0, 1.0, 0.0]));
+            for _ in 0..(emitter.count.ceil() as usize).min(256) {
+                if total >= MAX_PARTICLES {
+                    break;
+                }
+                total += 1;
+                let tilt = emitter.spread.to_radians() * random();
+                let turn = std::f32::consts::TAU * random();
+                let direction: [f32; 3] = std::array::from_fn(|i| {
+                    axis[i] * tilt.cos()
+                        + (side[i] * turn.cos() + other[i] * turn.sin()) * tilt.sin()
+                });
+                let jitter = emitter
+                    .random_offset
+                    .map(|reach| (random() * 2.0 - 1.0) * reach);
+                let origin: [f32; 3] = std::array::from_fn(|i| {
+                    place.position[i]
+                        + side[i] * jitter[0]
+                        + other[i] * jitter[1]
+                        + axis[i] * jitter[2]
+                });
+                let frames = emitter.tiling[0] * emitter.tiling[1];
+                batch.instances.push([
+                    origin[0],
+                    origin[1],
+                    origin[2],
+                    random(),
+                    direction[0] * emitter.speed,
+                    direction[1] * emitter.speed,
+                    direction[2] * emitter.speed,
+                    emitter.lifetime * (0.85 + random() * 0.3),
+                    emitter.size * emitter.size_birth,
+                    emitter.size,
+                    emitter.gravity_scale,
+                    emitter.alpha,
+                    emitter.color[0],
+                    emitter.color[1],
+                    emitter.color[2],
+                    random() * std::f32::consts::TAU,
+                    emitter.tiling[0],
+                    emitter.tiling[1],
+                    emitter.tiling[2],
+                    (random() * frames).floor(),
+                    emitter.diffuse_lighting,
+                    emitter.emissive_lighting,
+                    if is_rain { RAIN_WRAP_RADIUS } else { 0.0 },
+                    if emitter.additive { 1.0 } else { 0.0 },
+                ]);
+            }
+        }
+    }
+    Ok(batches.into_values().collect())
 }
 pub(super) fn particle_placements(
     sources: &[(String, Vec<u8>)],
@@ -348,6 +526,8 @@ pub(super) fn particle_placements(
                         }
                         if let Some(flag) = attr(&e, b"Active").or_else(|| attr(&e, b"bActive"))
                             && (flag == "0" || flag.eq_ignore_ascii_case("false"))
+                            // The weather system switches these on while it runs.
+                            && attr(&e, b"bWeatherEmitter").as_deref() != Some("1")
                         {
                             *active = false;
                         }
@@ -400,6 +580,7 @@ fn complete_particle(
     out.push(ParticlePlacement {
         effect,
         position: obj.world.position,
+        rotation: obj.world.quaternion,
     });
 }
 
@@ -773,6 +954,7 @@ fn decode_probe_cube(
     head_path: &std::path::Path,
     head: &[u8],
     tint: [f32; 3],
+    max_side: u32,
 ) -> Result<ProbeCube, String> {
     let signed = bc6h_format(head)?;
     let payload = head.len() - DX10_HEADER;
@@ -796,6 +978,9 @@ fn decode_probe_cube(
     let mut part = 1;
     let mut upper = Vec::new();
     loop {
+        if (blocks_wide * 4) as u32 > max_side {
+            break;
+        }
         let path = head_path.with_file_name(format!("{name}.{part}"));
         let Ok(bytes) = std::fs::read(path) else {
             break;
@@ -823,13 +1008,15 @@ fn decode_probe_cube(
     let mut offset = 0usize;
     while wide >= 1 {
         let size = wide * wide * 16;
-        levels.push(ProbeLevel {
-            side: (wide * 4) as u32,
-            faces: std::array::from_fn(|face| {
-                let at = DX10_HEADER + face * face_blocks * 16 + offset;
-                decode_probe_level(&head[at..at + size], wide, signed)
-            }),
-        });
+        if (wide * 4) as u32 <= max_side {
+            levels.push(ProbeLevel {
+                side: (wide * 4) as u32,
+                faces: std::array::from_fn(|face| {
+                    let at = DX10_HEADER + face * face_blocks * 16 + offset;
+                    decode_probe_level(&head[at..at + size], wide, signed)
+                }),
+            });
+        }
         offset += size;
         wide /= 2;
     }
@@ -889,7 +1076,7 @@ pub(super) fn authored_ambient_cube(
     let diffuse = indexed_source(root, &build, &format!("{stem}_diff.dds.0"))?
         .and_then(|path| std::fs::read(path).ok());
     let means = cubemap_face_means(diffuse.as_deref().unwrap_or(&bytes))?;
-    let cube = decode_probe_cube(&path, &bytes, tint)?;
+    let cube = decode_probe_cube(&path, &bytes, tint, u32::MAX)?;
     Ok(Some((
         std::array::from_fn(|face| {
             [
@@ -903,6 +1090,174 @@ pub(super) fn authored_ambient_cube(
     )))
 }
 
+/// An authored EnvironmentLight box other than the map's global probe.
+#[derive(Clone, Debug)]
+pub(super) struct LocalProbe {
+    pub center: [f32; 3],
+    /// World axes of the box, each with its inverse half size.
+    pub axes: [[f32; 4]; 3],
+    pub half_diagonal: f32,
+    pub tint: [f32; 3],
+    pub falloff: f32,
+    pub priority: f32,
+    pub ambient: [[f32; 4]; 6],
+    pub cube: ProbeCube,
+}
+
+/// The side of each local probe's largest uploaded mip.
+pub(super) const LOCAL_PROBE_SIDE: u32 = 64;
+
+/// Every EnvironmentLight except the widest, which is already the global probe.
+pub(super) fn authored_local_probes(
+    archive: &evolve_core::ImportedPak,
+    layers: &[(String, Vec<u8>)],
+) -> Result<Vec<LocalProbe>, String> {
+    struct Pending {
+        center: [f32; 3],
+        rotation: [f32; 4],
+        size: [f32; 3],
+        tint: [f32; 3],
+        falloff: f32,
+        priority: f32,
+        cubemap: String,
+    }
+    let mut pending = Vec::new();
+    for (_, bytes) in layers {
+        let text = String::from_utf8_lossy(bytes);
+        for (offset, _) in text.match_indices("EntityClass=\"EnvironmentLight\"") {
+            let start = text[..offset].rfind("<Object").unwrap_or(offset);
+            let object = &text[start..];
+            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let (Some(cubemap), Some(position)) = (
+                xml_attribute(object, "texture_deferred_cubemap"),
+                xml_tuple(object, "Pos").filter(|pos| pos.len() == 3),
+            ) else {
+                continue;
+            };
+            if xml_attribute(object, "bActive") == Some("0") {
+                continue;
+            }
+            let rotation = xml_tuple(object, "Rotate")
+                .filter(|rotate| rotate.len() == 4)
+                .map_or([1.0, 0.0, 0.0, 0.0], |rotate| {
+                    [rotate[0], rotate[1], rotate[2], rotate[3]]
+                });
+            let scale = mtl_value(object, "fDiffuseMultiplier", 1.0);
+            let color = xml_tuple(object, "clrDiffuse").unwrap_or_default();
+            pending.push(Pending {
+                center: [position[0], position[1], position[2]],
+                rotation,
+                size: [
+                    mtl_value(object, "BoxSizeX", 0.0),
+                    mtl_value(object, "BoxSizeY", 0.0),
+                    mtl_value(object, "BoxSizeZ", 0.0),
+                ],
+                tint: match color.as_slice() {
+                    [r, g, b] => [r * scale, g * scale, b * scale],
+                    _ => [scale; 3],
+                },
+                falloff: mtl_value(object, "fAttenuationFalloffMax", 0.3),
+                priority: mtl_value(object, "SortPriority", 0.0),
+                cubemap: cubemap.to_owned(),
+            });
+        }
+    }
+    let widest =
+        (0..pending.len()).max_by(|&a, &b| pending[a].size[0].total_cmp(&pending[b].size[0]));
+    if let Some(widest) = widest {
+        pending.swap_remove(widest);
+    }
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    let mut located = Vec::new();
+    for probe in pending {
+        let stem = probe
+            .cubemap
+            .rsplit_once('.')
+            .map_or(probe.cubemap.as_str(), |(stem, _)| stem)
+            .to_owned();
+        if let Some(path) = indexed_source(root, &build, &format!("{stem}.dds.0"))? {
+            let diffuse = indexed_source(root, &build, &format!("{stem}_diff.dds.0"))?;
+            located.push((probe, path, diffuse));
+        }
+    }
+    let threads = std::thread::available_parallelism().map_or(4, |count| count.get());
+    let chunk = located.len().div_ceil(threads).max(1);
+    let decoded = std::thread::scope(|scope| {
+        let workers = located
+            .chunks(chunk)
+            .map(|batch| {
+                scope.spawn(move || {
+                    batch
+                        .iter()
+                        .filter_map(|(probe, path, diffuse)| {
+                            let bytes = std::fs::read(path).ok()?;
+                            let irradiance = diffuse.as_ref().and_then(|d| std::fs::read(d).ok());
+                            let means =
+                                cubemap_face_means(irradiance.as_deref().unwrap_or(&bytes)).ok()?;
+                            let cube =
+                                decode_probe_cube(path, &bytes, probe.tint, LOCAL_PROBE_SIDE)
+                                    .ok()?;
+                            let half = probe.size.map(|size| (size * 0.5).max(0.01));
+                            let axis = |unit: [f32; 3], half: f32| {
+                                let world = rotate(probe.rotation, unit);
+                                [world[0], world[1], world[2], 1.0 / half]
+                            };
+                            Some(LocalProbe {
+                                center: probe.center,
+                                axes: [
+                                    axis([1.0, 0.0, 0.0], half[0]),
+                                    axis([0.0, 1.0, 0.0], half[1]),
+                                    axis([0.0, 0.0, 1.0], half[2]),
+                                ],
+                                half_diagonal: half.iter().map(|h| h * h).sum::<f32>().sqrt(),
+                                tint: probe.tint,
+                                falloff: probe.falloff.max(0.001),
+                                priority: probe.priority,
+                                ambient: std::array::from_fn(|face| {
+                                    [
+                                        means[face][0] * probe.tint[0],
+                                        means[face][1] * probe.tint[1],
+                                        means[face][2] * probe.tint[2],
+                                        0.0,
+                                    ]
+                                }),
+                                cube,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap_or_default())
+            .collect::<Vec<_>>()
+    });
+    Ok(decoded)
+}
+
+/// How much the map's Rain entity darkens wet surfaces, when it has one.
+pub(super) fn authored_rain_darkening(layers: &[(String, Vec<u8>)]) -> f32 {
+    layers
+        .iter()
+        .find_map(|(_, bytes)| {
+            let text = String::from_utf8_lossy(bytes);
+            let at = text.find("EntityClass=\"Rain\"")?;
+            let object = &text[at..];
+            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            xml_attribute(object, "fDiffuseDarkening")?
+                .parse::<f32>()
+                .ok()
+        })
+        .filter(|value| value.is_finite())
+        .map_or(0.0, |value| value.clamp(0.0, 1.0))
+}
+
 /// One authored WaterVolume, as triangles at its world height.
 #[derive(Clone, Debug)]
 pub(super) struct WaterSurface {
@@ -911,7 +1266,15 @@ pub(super) struct WaterSurface {
     pub decal_strength: f32,
     /// Tilling, DetailTilling, DecalTilling, NormalsScale.
     pub tiling: [f32; 4],
+    /// DetailNormalsScale, SoftIntersectionFactor, unused, unused.
+    pub surface: [f32; 4],
+    /// GlossMapTilling, GlossMapScale, GlossMapBias, unused.
+    pub gloss: [f32; 4],
+    /// FogColor scaled by its multiplier, then FogDensity.
+    pub fog: [f32; 4],
+    pub specular: [f32; 3],
     pub decal: Option<std::sync::Arc<image::RgbaImage>>,
+    pub gloss_map: Option<std::sync::Arc<image::RgbaImage>>,
 }
 
 /// Ear clipping for the simple polygons authored as water outlines.
@@ -986,7 +1349,8 @@ pub(super) fn authored_water(
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
         for (offset, _) in text.match_indices(" Type=\"WaterVolume\"") {
-            let object = &text[offset..];
+            let start = text[..offset].rfind("<Object").unwrap_or(offset);
+            let object = &text[start..];
             let object = &object[..object.find("</Object>").unwrap_or(object.len())];
             let Some(origin) = xml_tuple(object, "Pos").filter(|pos| pos.len() == 3) else {
                 continue;
@@ -1008,15 +1372,22 @@ pub(super) fn authored_water(
                 .and_then(|path| std::fs::read_to_string(path).ok())
                 .unwrap_or_default();
             let tint = xml_tuple(&mtl, "Diffuse").unwrap_or_default();
-            let decal = mtl
-                .find("Map=\"Custom\"")
-                .and_then(|at| xml_attribute(&mtl[at..], "File"))
-                .and_then(|file| {
-                    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
-                    let path = indexed_source(root, &build, &format!("{stem}.dds.0")).ok()??;
-                    evolve_core::decode_dds_rgba(&path).ok()
-                })
-                .map(|(_, image)| std::sync::Arc::new(image));
+            let material_map = |map: &str| {
+                mtl.find(&format!("Map=\"{map}\""))
+                    .and_then(|at| xml_attribute(&mtl[at..], "File"))
+                    .and_then(|file| {
+                        let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+                        let path =
+                            indexed_source(root, &build, &format!("{stem}.dds.0")).ok()??;
+                        evolve_core::decode_dds_rgba(&path).ok()
+                    })
+                    .map(|(_, image)| std::sync::Arc::new(image))
+            };
+            let decal = material_map("Custom");
+            let gloss_map = material_map("Specular");
+            let fog_color = xml_tuple(object, "FogColor").unwrap_or_default();
+            let fog_scale = mtl_value(object, "FogColorMultiplier", 1.0);
+            let specular = xml_tuple(&mtl, "Specular").unwrap_or_default();
             surfaces.push(WaterSurface {
                 triangles: triangulate(&points),
                 tint: match tint.as_slice() {
@@ -1030,7 +1401,33 @@ pub(super) fn authored_water(
                     mtl_value(&mtl, "DecalTilling", 0.05),
                     mtl_value(&mtl, "NormalsScale", 1.0),
                 ],
+                surface: [
+                    mtl_value(&mtl, "DetailNormalsScale", 1.0),
+                    mtl_value(&mtl, "SoftIntersectionFactor", 1.0),
+                    0.0,
+                    0.0,
+                ],
+                gloss: [
+                    mtl_value(&mtl, "GlossMapTilling", 0.1),
+                    mtl_value(&mtl, "GlossMapScale", 0.5),
+                    mtl_value(&mtl, "GlossMapBias", 0.5),
+                    0.0,
+                ],
+                fog: match fog_color.as_slice() {
+                    [r, g, b] => [
+                        r * fog_scale,
+                        g * fog_scale,
+                        b * fog_scale,
+                        mtl_value(object, "FogDensity", 1.0),
+                    ],
+                    _ => [0.0, 0.0, 0.0, mtl_value(object, "FogDensity", 1.0)],
+                },
+                specular: match specular.as_slice() {
+                    [r, g, b] => [*r, *g, *b],
+                    _ => [0.1; 3],
+                },
                 decal,
+                gloss_map,
             });
         }
     }
@@ -1046,7 +1443,7 @@ pub(super) struct CelestialBody {
     pub image: std::sync::Arc<image::RgbaImage>,
 }
 
-/// CelestialBody1..N. The placement convention and size scale are calibrated
+/// CelestialBody1..N. The size scale is calibrated
 /// to in-game captures; only the authored numbers come from the map.
 pub(super) fn authored_celestial_bodies(
     archive: &evolve_core::ImportedPak,
@@ -1075,9 +1472,11 @@ pub(super) fn authored_celestial_bodies(
             continue;
         };
         let (_, image) = evolve_core::decode_dds_rgba(&path).map_err(|e| e.to_string())?;
+        // CryEngine's moon placement: latitude turns from -180 degrees, and
+        // longitude tips down from straight up.
         let (azimuth, polar) = (
-            number("Latitude").to_radians(),
-            number("Longitude").to_radians(),
+            (number("Latitude") - 180.0).to_radians(),
+            (90.0 - number("Longitude")).to_radians(),
         );
         bodies.push(CelestialBody {
             direction_size: [

@@ -44,6 +44,10 @@ fn capture_real_map_views() {
     let map = level_library::open(archive, 0).unwrap();
     for note in map.diagnostics.iter().filter(|note| {
         note.contains("global probe")
+            || note.contains("looping particles")
+            || note.contains("local probes")
+            || note.contains("Particle")
+            || note.contains("particle")
             || note.contains("water volumes")
             || note.contains("celestial")
             || note.contains("terrain color")
@@ -97,7 +101,7 @@ fn capture_real_map_views() {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         })
         .create_view(&Default::default());
@@ -142,6 +146,7 @@ fn capture_real_map_views() {
             &queue,
             world.sun_shafts(Some(camera), yaw, pitch, aspect, 1.0, hour),
         );
+        hdr.reset_adaptation();
         let frames = if uploaded { 2 } else { 40_000 };
         for frame in 0..frames {
             renderer.prepare(
@@ -194,6 +199,7 @@ fn capture_real_map_views() {
             renderer.draw_spotlight_beams(&mut pass);
             renderer.draw_light_points(&mut pass);
         }
+        renderer.draw_water(&mut encoder, hdr.scene(), &depth, None);
         hdr.composite(
             &mut encoder,
             &target_view,

@@ -112,6 +112,7 @@ pub struct MaterialSlot {
     /// The authored RGB Diffuse scalar. This is distinct from the Diffuse DDS.
     #[serde(default)]
     pub diffuse_tint: Option<[f32; 3]>,
+    pub specular_tint: Option<[f32; 3]>,
     /// Source TexMod of an explicitly authored Decal, if present.
     #[serde(default)]
     pub decal_tex_mod: Option<DecalTexMod>,
@@ -121,6 +122,11 @@ pub struct MaterialSlot {
     /// PublicParams IndirectColor, the share of ambient light this leaf receives.
     #[serde(default)]
     pub indirect_color: Option<f32>,
+    /// Waterfall shader params: TillingLayer0, TillingLayer1, SpeedLayer0,
+    /// SpeedLayer1, BumpScaleLayer0, BumpScaleLayer1, ReflectionAmount,
+    /// FresnelBias, AlphaBlendMul, FoamDeform, FoamMultiplier.
+    #[serde(default)]
+    pub waterfall: Option<[f32; 11]>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialDocument {
@@ -236,7 +242,11 @@ fn source_alpha_glow(node: &BytesStart<'_>) -> Result<bool, MaterialError> {
 /// Material Diffuse is an authored scalar, not a texture-name heuristic.
 /// Malformed color values are left absent instead of replacing them with white.
 fn source_diffuse_tint(node: &BytesStart<'_>) -> Result<Option<[f32; 3]>, MaterialError> {
-    let Some(raw) = attr(node, b"Diffuse")? else {
+    source_color(node, b"Diffuse")
+}
+
+fn source_color(node: &BytesStart<'_>, name: &[u8]) -> Result<Option<[f32; 3]>, MaterialError> {
+    let Some(raw) = attr(node, name)? else {
         return Ok(None);
     };
     let values = raw
@@ -250,6 +260,33 @@ fn source_diffuse_tint(node: &BytesStart<'_>) -> Result<Option<[f32; 3]>, Materi
         return Ok(None);
     }
     Ok(Some([values[0], values[1], values[2]]))
+}
+
+fn authored_waterfall(node: &BytesStart<'_>) -> Result<Option<[f32; 11]>, MaterialError> {
+    const NAMES: [(&[u8], f32); 11] = [
+        (b"TillingLayer0", 1.0),
+        (b"TillingLayer1", 1.0),
+        (b"SpeedLayer0", 1.0),
+        (b"SpeedLayer1", 1.0),
+        (b"BumpScaleLayer0", 1.0),
+        (b"BumpScaleLayer1", 1.0),
+        (b"ReflectionAmount", 1.0),
+        (b"FresnelBias", 0.1),
+        (b"AlphaBlendMul", 1.0),
+        (b"FoamDeform", 0.0),
+        (b"FoamMultiplier", 1.0),
+    ];
+    if attr(node, b"TillingLayer0")?.is_none() {
+        return Ok(None);
+    }
+    let mut values = [0.0; 11];
+    for (value, (name, fallback)) in values.iter_mut().zip(NAMES) {
+        *value = attr(node, name)?
+            .and_then(|raw| raw.trim().parse::<f32>().ok())
+            .filter(|number| number.is_finite())
+            .unwrap_or(fallback);
+    }
+    Ok(Some(values))
 }
 
 /// The first component of IndirectColor, when this element authors one.
@@ -491,9 +528,11 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         alpha_glow: source_alpha_glow(&node)?,
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
+                        specular_tint: source_color(&node, b"Specular")?,
                         decal_tex_mod: None,
                         diffuse_tex_mod: None,
                         indirect_color: None,
+                        waterfall: None,
                     });
                     nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
@@ -535,9 +574,13 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                                 || p.eq_ignore_ascii_case(b"PublicParams")
                         })))
                     && let Some((_, index)) = material_indices.last()
-                    && let Some(indirect) = authored_indirect_color(&node)?
                 {
-                    slots[*index].indirect_color = Some(indirect);
+                    if let Some(waterfall) = authored_waterfall(&node)? {
+                        slots[*index].waterfall = Some(waterfall);
+                    }
+                    if let Some(indirect) = authored_indirect_color(&node)? {
+                        slots[*index].indirect_color = Some(indirect);
+                    }
                     if let Some(amount) = authored_glow_amount(&node)? {
                         slots[*index].glow_amount = Some(amount);
                     }
@@ -587,9 +630,11 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         alpha_glow: source_alpha_glow(&node)?,
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
+                        specular_tint: source_color(&node, b"Specular")?,
                         decal_tex_mod: None,
                         diffuse_tex_mod: None,
                         indirect_color: None,
+                        waterfall: None,
                     });
                     nonleaf.push(false);
                 } else if tag.eq_ignore_ascii_case(b"Texture")
@@ -629,9 +674,13 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                                 || p.eq_ignore_ascii_case(b"PublicParams")
                         })))
                     && let Some((_, index)) = material_indices.last()
-                    && let Some(indirect) = authored_indirect_color(&node)?
                 {
-                    slots[*index].indirect_color = Some(indirect);
+                    if let Some(waterfall) = authored_waterfall(&node)? {
+                        slots[*index].waterfall = Some(waterfall);
+                    }
+                    if let Some(indirect) = authored_indirect_color(&node)? {
+                        slots[*index].indirect_color = Some(indirect);
+                    }
                     if let Some(amount) = authored_glow_amount(&node)? {
                         slots[*index].glow_amount = Some(amount);
                     }

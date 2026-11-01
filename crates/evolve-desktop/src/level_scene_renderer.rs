@@ -426,6 +426,8 @@ fn neutral(first_index: u32, index_count: u32) -> Surface {
         distance_clouds: None,
         uv_transform: None,
         material_tint: None,
+        material_specular: None,
+        waterfall: None,
         alpha_cutoff: 0.5,
         diffuse: None,
         normal: None,
