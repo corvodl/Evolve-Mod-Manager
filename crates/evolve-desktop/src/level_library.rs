@@ -160,10 +160,10 @@ fn map_virtual_folder(map: &MapCandidate, archive: &ImportedPak) -> Option<Strin
         .chain(map.vegetation.iter())
         .map(|path| {
             let relative = path.to_string_lossy();
-            if map_relative_member(&relative) {
-                if let Some((folder, _)) = &source_owner {
-                    return folder.clone();
-                }
+            if map_relative_member(&relative)
+                && let Some((folder, _)) = &source_owner
+            {
+                return folder.clone();
             }
             map_group(&relative).0
         })
@@ -444,7 +444,7 @@ fn terrain_resource(
         return verified_source(source_root, relative, 2 * 1024 * 1024 * 1024)
             .map(|path| Some(TerrainResource::Cry(path)));
     }
-    let folder = map_virtual_folder(map, archive)
+    let folder = map_virtual_folder(map, selected)
         .ok_or_else(|| "Cannot determine the original map's virtual folder".to_owned())?;
     let loaded_inventory = if inventory.is_none() {
         Some(imported_archive_files(selected).map_err(|e| e.to_string())?)
@@ -1486,8 +1486,20 @@ mod tests {
             terrain_texture_xml: None,
             terrain_texture_pak: None,
         };
+        let archive = ImportedPak {
+            id: "exact-owner-test".into(),
+            name: "levels_desert_canyon.pak".into(),
+            source: String::new(),
+            directory: String::new(),
+            group: "Levels".into(),
+            description: String::new(),
+            entries: 0,
+            extracted_bytes: 0,
+            warnings: 0,
+            builds: vec![],
+        };
         assert_eq!(
-            map_virtual_folder(&map).as_deref(),
+            map_virtual_folder(&map, &archive).as_deref(),
             Some("levels/desert_canyon")
         );
     }
