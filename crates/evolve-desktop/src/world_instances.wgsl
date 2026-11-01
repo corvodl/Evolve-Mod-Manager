@@ -62,6 +62,17 @@ struct SourceLights {
 // saturation mapped to a bounded linear-radiance ACES preview. This does
 // NOT reproduce Evolve's eye-adaptation history or bloom framebuffer.
 @group(0) @binding(14) var<uniform> hdr:vec4<f32>;
+// Native-resolution authored Terrain.Layer diffuse sources. A 16-layer
+// source-verification limit is explicit; no guessed material ID mapping.
+@group(0) @binding(15) var source_terrain_layers: texture_2d_array<f32>;
+@group(0) @binding(16) var source_terrain_ids: texture_2d<f32>;
+struct SourceTerrainParams {
+  info: vec4<f32>, // paint width, height, world unit, decoded layer count
+  layers: array<vec4<f32>, 16>, // actual LayerId, TileU, TileV, detail strength
+}
+@group(0) @binding(17) var<uniform> source_terrain: SourceTerrainParams;
+@group(0) @binding(18) var source_terrain_repeat: sampler;
+
 fn authored_scene_linear(color:vec3<f32>)->vec3<f32> {
   // Preserve source TimeOfDay exposure and saturation in linear light.
   // The shared HDR compositor performs the only ACES tone mapping pass.
@@ -125,20 +136,69 @@ fn sample_source_albedo(uv:vec2<f32>)->vec4<f32> {
   return textureSampleLevel(albedo,tex_sampler,uv,safe_lod);
 }
 
+// Keep the baked macro-color independent. Resolve categorical paint IDs
+// from four source-neighbor texels and sample the ORIGINAL DDS mip chain per
+// fragment; this preserves close-up source detail absent from a CPU atlas.
+// The boundary weights are a documented preview approximation, not native
+// CryEngine paint-mask, POM or slope/blend behavior.
+fn original_terrain_detail(input:Output)->vec3<f32> {
+  let extents=max(source_terrain.info.xy-vec2<f32>(1.0),vec2<f32>(1.0));
+  let coord=clamp(input.uv,vec2<f32>(0.0),vec2<f32>(1.0))*extents;
+  let lo=vec2<i32>(floor(coord));
+  let hi=min(lo+vec2<i32>(1,1),vec2<i32>(source_terrain.info.xy)-vec2<i32>(1,1));
+  let a=fract(coord);
+  let ids=array<vec2<i32>,4>(
+    lo,vec2<i32>(hi.x,lo.y),vec2<i32>(lo.x,hi.y),hi
+  );
+  let weights=array<f32,4>(
+    (1.0-a.x)*(1.0-a.y),a.x*(1.0-a.y),
+    (1.0-a.x)*a.y,a.x*a.y
+  );
+  let dx=dpdx(input.uv);
+  let dy=dpdy(input.uv);
+  let original_pixels=vec2<f32>(textureDimensions(source_terrain_layers,0));
+  var signed_color=vec3<f32>(0.0);
+  for (var neighbor:i32=0;neighbor<4;neighbor=neighbor+1) {
+    if (weights[neighbor]<=0.0) {continue;}
+    let encoded=textureLoad(source_terrain_ids,ids[neighbor],0).r;
+    let paint_id=round(encoded*255.0);
+    for (var layer:i32=0;layer<16;layer=layer+1) {
+      if (f32(layer)>=source_terrain.info.w) {break;}
+      let config=source_terrain.layers[layer];
+      if (abs(config.x-paint_id)>0.25) {continue;}
+      let tile=extents*source_terrain.info.z*config.yz;
+      let uv=input.uv*tile;
+      let diff_x=dx*tile*original_pixels;
+      let diff_y=dy*tile*original_pixels;
+      let footprint=max(max(length(diff_x),length(diff_y)),1.0);
+      let lod=log2(footprint);
+      let detail=textureSampleLevel(
+        source_terrain_layers,source_terrain_repeat,uv,layer,lod
+      ).rgb;
+      signed_color+=(detail-vec3<f32>(128.0/255.0))*config.w*weights[neighbor];
+      break;
+    }
+  }
+  return signed_color;
+}
+
 // Shared lighting, preserving the original source alpha only for materials
 // explicitly routed through the transparent pipeline. CryEngine can store
 // gloss, masks and other non-opacity data in a diffuse texture's alpha.
 fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   var base=sample_source_albedo(input.uv);
-  let detail=textureSample(terrain_detail,tex_sampler,input.uv);
-  // CryEngine 3.5 Terrain.Layer: high-pass diffuse is ADD-SIGNED over the
-  // low-frequency baked terrain color, not an ordinary diffuse replacement.
-  // 128/255 is neutral. Missing/ambiguous layers contribute zero alpha.
-  // 120-350 world-unit fade is an EDITOR preview while Evolve's real
-  // DetailLayersViewDistRatio remains unverified for this map/build.
-  let distance=length(input.world-camera.origin.xyz);
-  let detail_fade=1.0-smoothstep(120.0,350.0,distance);
-  let signed_detail=(detail.rgb-vec3<f32>(128.0/255.0))*detail.a*detail_fade;
+  // CryEngine Terrain.Layer high-pass is ADD-SIGNED over the original
+  // low-frequency baked terrain color, not a diffuse replacement.
+  // Prefer original DDS layers at their full mip dimensions when same-build
+  // sources form a supported texture array; otherwise use a mip-filtered
+  // CPU fallback without a guessed fixed-distance fade.
+  var signed_detail=vec3<f32>(0.0);
+  if (source_terrain.info.w>0.5) {
+    signed_detail=original_terrain_detail(input);
+  } else {
+    let detail=textureSample(terrain_detail,tex_sampler,input.uv);
+    signed_detail=(detail.rgb-vec3<f32>(128.0/255.0))*detail.a;
+  }
   base=vec4<f32>(clamp(base.rgb+signed_detail,vec3<f32>(0.0),vec3<f32>(1.0)),base.a);
   if (use_opacity_mask) {
     let coverage=textureSample(authored_opacity,tex_sampler,input.uv).r;
