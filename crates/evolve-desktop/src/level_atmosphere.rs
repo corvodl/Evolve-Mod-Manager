@@ -1301,6 +1301,128 @@ pub(super) fn authored_light_cookies(
         .collect())
 }
 
+/// Decals sharing one material. Each instance is the box's X, Y and Z world
+/// axes with half sizes, its center with DecalFalloff, then tint with opacity.
+#[derive(Clone, Debug)]
+pub(super) struct DecalBatch {
+    pub priority: f32,
+    pub image: std::sync::Arc<image::RgbaImage>,
+    pub instances: Vec<[f32; 20]>,
+}
+
+/// Every placed deferred decal, grouped by material and ordered by SortPriority.
+pub(super) fn authored_decals(
+    archive: &evolve_core::ImportedPak,
+    layers: &[(String, Vec<u8>)],
+) -> Result<Vec<DecalBatch>, String> {
+    const MAX_SIDE: u32 = 1024;
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    type Material = Option<(std::sync::Arc<image::RgbaImage>, [f32; 3], f32, f32)>;
+    let mut materials = HashMap::<String, Material>::new();
+    let mut batches = HashMap::<String, DecalBatch>::new();
+    for (_, bytes) in layers {
+        let text = String::from_utf8_lossy(bytes);
+        for (offset, _) in text.match_indices(" Type=\"Decal\"") {
+            let start = text[..offset].rfind("<Object").unwrap_or(offset);
+            let object = &text[start..];
+            let object = &object[..object.find('>').unwrap_or(object.len())];
+            let (Some(position), Some(material)) = (
+                xml_tuple(object, "Pos").filter(|pos| pos.len() == 3),
+                xml_attribute(object, "Material").filter(|name| !name.is_empty()),
+            ) else {
+                continue;
+            };
+            let key = material.to_ascii_lowercase();
+            let loaded = materials.entry(key.clone()).or_insert_with(|| {
+                let mtl = indexed_source(root, &build, &format!("{material}.mtl"))
+                    .ok()
+                    .flatten()
+                    .and_then(|path| std::fs::read(path).ok())
+                    .and_then(|raw| {
+                        evolve_core::cryxml::xml_bytes(&raw, 4 * 1024 * 1024)
+                            .ok()
+                            .map(|xml| String::from_utf8_lossy(xml.as_ref()).into_owned())
+                    })?;
+                let file = xml_attribute(&mtl[mtl.find("Map=\"Diffuse\"")?..], "File")?;
+                let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+                let path = indexed_source(root, &build, &format!("{stem}.dds.0")).ok()??;
+                let (_, image) = evolve_core::decode_dds_rgba(&path).ok()?;
+                let image = if image.width().max(image.height()) > MAX_SIDE {
+                    image::imageops::resize(
+                        &image,
+                        image.width().min(MAX_SIDE),
+                        image.height().min(MAX_SIDE),
+                        image::imageops::FilterType::Triangle,
+                    )
+                } else {
+                    image
+                };
+                let tint = xml_tuple(&mtl, "Diffuse").unwrap_or_default();
+                Some((
+                    std::sync::Arc::new(image),
+                    match tint.as_slice() {
+                        [r, g, b] => [*r, *g, *b],
+                        _ => [1.0; 3],
+                    },
+                    mtl_value(&mtl, "DecalFalloff", 1.0).max(0.01),
+                    mtl_value(&mtl, "DecalAlphaMult", 1.0)
+                        * mtl_value(&mtl, "DecalDiffuseOpacity", 1.0),
+                ))
+            });
+            let Some((image, tint, falloff, opacity)) = loaded.clone() else {
+                continue;
+            };
+            let rotation = xml_tuple(object, "Rotate")
+                .filter(|rotate| rotate.len() == 4)
+                .map_or([1.0, 0.0, 0.0, 0.0], |rotate| {
+                    [rotate[0], rotate[1], rotate[2], rotate[3]]
+                });
+            let scale = xml_tuple(object, "Scale")
+                .filter(|scale| scale.len() == 3)
+                .unwrap_or_else(|| vec![1.0; 3]);
+            let x = rotate(rotation, [1.0, 0.0, 0.0]);
+            let y = rotate(rotation, [0.0, 1.0, 0.0]);
+            let z = rotate(rotation, [0.0, 0.0, 1.0]);
+            let depth = mtl_value(object, "ProjectionDepth", 1.0).max(0.05);
+            let batch = batches.entry(key).or_insert_with(|| DecalBatch {
+                priority: mtl_value(object, "SortPriority", 16.0),
+                image,
+                instances: Vec::new(),
+            });
+            batch.instances.push([
+                x[0],
+                x[1],
+                x[2],
+                scale[0].abs().max(0.01),
+                y[0],
+                y[1],
+                y[2],
+                scale[1].abs().max(0.01),
+                z[0],
+                z[1],
+                z[2],
+                depth,
+                position[0],
+                position[1],
+                position[2],
+                falloff,
+                tint[0],
+                tint[1],
+                tint[2],
+                opacity,
+            ]);
+        }
+    }
+    let mut ordered = batches.into_values().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| a.priority.total_cmp(&b.priority));
+    Ok(ordered)
+}
+
 /// How much the map's Rain entity darkens wet surfaces, when it has one.
 pub(super) fn authored_rain_darkening(layers: &[(String, Vec<u8>)]) -> f32 {
     layers

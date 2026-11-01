@@ -594,6 +594,7 @@ pub(super) struct World {
     pub probe_cube: Option<Arc<super::level_atmosphere::ProbeCube>>,
     pub rain_darkening: f32,
     pub local_probes: Arc<Vec<super::level_atmosphere::LocalProbe>>,
+    pub decals: Arc<Vec<super::level_atmosphere::DecalBatch>>,
     pub particles: Arc<Vec<super::level_atmosphere::ParticleBatch>>,
     pub water: Arc<Vec<super::level_atmosphere::WaterSurface>>,
     pub celestial_bodies: Arc<Vec<super::level_atmosphere::CelestialBody>>,
@@ -1748,6 +1749,8 @@ pub(super) struct Renderer {
     particle_layout: wgpu::BindGroupLayout,
     particle_pipeline: wgpu::RenderPipeline,
     particle_batches: Vec<GpuParticles>,
+    decal_pipeline: wgpu::RenderPipeline,
+    decal_batches: Vec<GpuParticles>,
     screen_sampler: wgpu::Sampler,
     reflection_view: wgpu::TextureView,
     reflection_depth: wgpu::TextureView,
@@ -3000,6 +3003,53 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
+        let decal_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Authored decals"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "world_decals.wgsl"
+            ))),
+        });
+        let decal_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Authored decals"),
+            layout: Some(&particle_pipe_layout),
+            vertex: wgpu::VertexState {
+                module: &decal_shader,
+                entry_point: Some("vs_decal"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 80,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4],
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &decal_shader,
+                entry_point: Some("fs_decal"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    // Scene alpha marks open sky for the shaft pass.
+                    write_mask: wgpu::ColorWrites::COLOR,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            // Back faces only, so the box still draws with the camera inside it.
+            primitive: wgpu::PrimitiveState {
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
         let reflection_pipeline = |entry: &str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Planar water reflection geometry"),
@@ -3051,6 +3101,8 @@ impl Renderer {
             particle_layout,
             particle_pipeline,
             particle_batches: Vec::new(),
+            decal_pipeline,
+            decal_batches: Vec::new(),
             screen_sampler,
             refraction_copy: std::sync::Mutex::new(None),
             solid: make(false, false, false),
@@ -3730,6 +3782,7 @@ impl Renderer {
             self.cookie_view = upload_light_cookies(device, queue, &world.light_cookies);
             self.update_water(device, queue, world);
             self.update_particles(device, queue, world);
+            self.update_decals(device, queue, world);
             self.ambient_cube = world.ambient_cube;
             self.surface_darkening = 1.0 - world.rain_darkening;
             self.local_probe_slots = [None; LOCAL_PROBE_SLOTS];
@@ -4232,7 +4285,10 @@ impl Renderer {
         depth: &wgpu::TextureView,
         clip: Option<iced::Rectangle<u32>>,
     ) {
-        if self.water_surfaces.is_empty() && self.particle_batches.is_empty() {
+        if self.water_surfaces.is_empty()
+            && self.particle_batches.is_empty()
+            && self.decal_batches.is_empty()
+        {
             return;
         }
         let source = scene.texture();
@@ -4328,8 +4384,14 @@ impl Renderer {
             );
             pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
         }
-        pass.set_pipeline(&self.water_pipeline);
         pass.set_bind_group(1, &screen, &[]);
+        pass.set_pipeline(&self.decal_pipeline);
+        for batch in &self.decal_batches {
+            pass.set_bind_group(0, &batch.bind, &[]);
+            pass.set_vertex_buffer(0, batch.instances.slice(..));
+            pass.draw(0..36, 0..batch.count);
+        }
+        pass.set_pipeline(&self.water_pipeline);
         for water in &self.water_surfaces {
             pass.set_bind_group(0, &water.bind, &[]);
             pass.set_vertex_buffer(0, water.vertices.slice(..));
@@ -4341,6 +4403,57 @@ impl Renderer {
             pass.set_vertex_buffer(0, batch.instances.slice(..));
             pass.draw(0..6, 0..batch.count);
         }
+    }
+
+    fn update_decals(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
+        self.decal_batches = world
+            .decals
+            .iter()
+            .filter(|batch| !batch.instances.is_empty())
+            .map(|batch| {
+                let instances = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Authored decals"),
+                    contents: bytemuck::cast_slice(&batch.instances),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let (sprite, sprite_view) = upload_rgba_mips(
+                    device,
+                    queue,
+                    Some(batch.image.as_ref()),
+                    [255, 255, 255, 0],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "Authored decal",
+                );
+                let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Authored decal"),
+                    layout: &self.particle_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.camera_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: self.lighting_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(&sprite_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Sampler(&self.screen_sampler),
+                        },
+                    ],
+                });
+                GpuParticles {
+                    instances,
+                    count: batch.instances.len() as u32,
+                    bind,
+                    _sprite: sprite,
+                }
+            })
+            .collect();
     }
 
     fn update_particles(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {

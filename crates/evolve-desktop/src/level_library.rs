@@ -997,6 +997,15 @@ fn open_selected(
             Vec::new()
         }
     };
+    let decals = crate::level_atmosphere::authored_decals(&archive, &sources).unwrap_or_default();
+    diagnostics.push(format!(
+        "Original decals: {} across {} materials.",
+        decals
+            .iter()
+            .map(|batch| batch.instances.len())
+            .sum::<usize>(),
+        decals.len()
+    ));
     let mut source = chosen.layers.first().map(|p| root.join(p));
     let mut scene = None;
     if !sources.is_empty() {
@@ -1379,6 +1388,7 @@ fn open_selected(
         world.probe_cube = probe_cube;
         world.rain_darkening = crate::level_atmosphere::authored_rain_darkening(&sources);
         world.local_probes = std::sync::Arc::new(local_probes);
+        world.decals = std::sync::Arc::new(decals);
         world.particles = std::sync::Arc::new(particles);
         world.water = std::sync::Arc::new(water);
         world.celestial_bodies = std::sync::Arc::new(celestial_bodies);

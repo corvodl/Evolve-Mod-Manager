@@ -50,6 +50,8 @@ fn capture_real_map_views() {
             || note.contains("particle")
             || note.contains("water volumes")
             || note.contains("celestial")
+            || note.contains("Original decals")
+            || note.contains("vegetation")
             || note.contains("terrain color")
             || note.contains("baked terrain")
             || note.contains("olor chart")
