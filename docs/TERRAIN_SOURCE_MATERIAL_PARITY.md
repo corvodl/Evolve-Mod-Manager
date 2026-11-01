@@ -140,3 +140,11 @@ and Ice_Crashsite, separately checking: original unlit baked RGB; material
 layer IDs/UV orientation; close-up DDS high-frequency texture; native
 shadows/normal mapping; and color-chart/postprocessing. No arbitrary brown
 tint, swapped-channel heuristic or borrowed map texture is permitted.
+
+## GPU original terrain diffuse sampling (2026-11-01)
+
+The native Tutorial screenshots now cover canyon interiors, climbing cliffs, damp soil, waterfalls, shoreline and orange-hour sky. They are comparison targets, not proof of renderer parity.
+
+The old CPU detail overlay lost high-frequency source DDS detail by resampling repeating materials into a single baked map-wide atlas. The new GPU path retains up to 16 same-build verified equal-dimension Terrain.Layer diffuse sources (2048-pixel per-axis and 256-MiB raw base cap), uploads their full decoded pixels and mip chains into a 2D texture array, and fetches exact original categorical LayerId bytes in a separate paint map. Per-fragment sampling honors authored TileU/TileV and DetailTextureStrength over the original unmodified baked ground colors. Material arrays are included in GPU residency diagnostics. Unsupported arrays retain the mip-filtered CPU fallback.
+
+The four-neighbor category interpolation is an approximation, not Evolve's original splat masks. Normals, height/POM, slope projection, specular lighting, game shadows, native exposure, reflections and water remain outstanding. Real Tutorial and Ice_Crashsite Windows screenshots at matched positions, plus shader validation and fallback tests, are required before parity claims.
