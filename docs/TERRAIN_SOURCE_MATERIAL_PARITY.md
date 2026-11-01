@@ -104,3 +104,39 @@ The owner-supplied `textures.zip.001` through `.004` are four sequential parts o
 - New map diagnostics enumerate **exact original same-build** `textures.pak`, `materials_min_particle.pak`, `objects_min_effects.pak`, and `objects_basic_effects.pak` imports and show their DDS head/material/mesh counts, so the user can immediately tell which dependencies are absent from the Asset Library.
 
 These findings explain why Ice_Crashsite can load its complete baked 4096×4096 macro color atlas while still appearing blurry nearby: without the matching high-detail split DDS chains, the terrain cannot show source-authored fine texture. The patch repairs the duplicate-fragment decoding failure, **not** Evolve-native terrain projection/blend formulas. Visual acceptance must still check full-resolution detail on the user's imported Stage 2 assets and compare the Lit and Source RGB modes.
+
+## In-game Tutorial comparison and atlas minification (November 1, 2026)
+
+A paired Level Editor / Evolve Stage 2 Beta screenshot shows bright cyan-colored
+terrain speckling in the editor versus dark, physically shaded earth in game.
+The original Tutorial map-owned `Environment.xml` records
+`DetailLayersViewDistRatio="0.15"` and a map color-chart reference
+`levels/Tutorial/colorgrading/tutorial_color_grade.tif`. The present viewer
+does **not** evaluate that LUT, CryEngine's distance-dependent terrain pass,
+terrain bump/displacement/OBM/POM, authored surface shadows, or native
+light-adaptation. It must not claim visual parity on the basis of one fix.
+
+A separate deterministic failure was located in the existing CPU high-pass
+compositor: every map-wide atlas pixel bilinearly sampled exactly one texel
+from the full-resolution, repeating material diffuse. A 512-wide paint map,
+2048-wide baked atlas, authored tile scale 0.25 and 1024-wide source DDS
+represent about **64 original texture texels per output pixel**. Without
+minification filtering this produces incorrect low-frequency false colors
+and severe aliasing instead of real ground detail.
+
+PR #171 constructs minified source-image mip levels once per material,
+selects a trilinear LOD from the *source texture footprint per atlas pixel*,
+and retains existing categorical paint coverage and source material
+provenance. This is an anti-aliasing correctness fix, not a restoration of
+high-frequency texture detail: a map-wide CPU atlas can never contain the
+full per-pixel detail of a repeated 1024² material everywhere. **Full native
+near-camera terrain quality requires moving authored Terrain.Layer
+diffuse/normal/displacement sampling into the GPU world pass and reconstructing
+the original layer masks, projection and distance behavior** rather than
+sampling those materials into the macro-color atlas.
+
+Acceptance requires paired positions and matching time-of-day under Tutorial
+and Ice_Crashsite, separately checking: original unlit baked RGB; material
+layer IDs/UV orientation; close-up DDS high-frequency texture; native
+shadows/normal mapping; and color-chart/postprocessing. No arbitrary brown
+tint, swapped-channel heuristic or borrowed map texture is permitted.
