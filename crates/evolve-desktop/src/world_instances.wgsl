@@ -157,7 +157,7 @@ fn original_terrain_detail(input:Output)->vec3<f32> {
   let dx=dpdx(input.uv);
   let dy=dpdy(input.uv);
   let original_pixels=vec2<f32>(textureDimensions(source_terrain_layers,0));
-  var signed=vec3<f32>(0.0);
+  var signed_color=vec3<f32>(0.0);
   for (var neighbor:i32=0;neighbor<4;neighbor=neighbor+1) {
     if (weights[neighbor]<=0.0) {continue;}
     let encoded=textureLoad(source_terrain_ids,ids[neighbor],0).r;
@@ -175,11 +175,11 @@ fn original_terrain_detail(input:Output)->vec3<f32> {
       let detail=textureSampleLevel(
         source_terrain_layers,source_terrain_repeat,uv,layer,lod
       ).rgb;
-      signed+=(detail-vec3<f32>(128.0/255.0))*config.w*weights[neighbor];
+      signed_color+=(detail-vec3<f32>(128.0/255.0))*config.w*weights[neighbor];
       break;
     }
   }
-  return signed;
+  return signed_color;
 }
 
 // Shared lighting, preserving the original source alpha only for materials
