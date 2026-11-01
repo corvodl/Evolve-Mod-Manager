@@ -1,22 +1,14 @@
 // Authored deferred decals: a box around each decal reads the scene depth and
 // projects its texture along the box's Z axis onto whatever lies inside. The
-// game lights them in its deferred pass; here ambient and shadowed sun on the
-// depth-derived surface stand in, and the view fade is calibrated.
+// game lights them in its deferred pass; here the lit scene behind each pixel
+// stands in for that light, so the albedo scale and view fade are calibrated.
 struct Camera { origin:vec4<f32>, forward:vec4<f32>, right:vec4<f32>, up:vec4<f32>, }
-struct TimeOfDayLight { sun:vec4<f32>, ambient:vec4<f32>, sun_color:vec4<f32>, }
-struct SunShadows {
-  matrices:array<mat4x4<f32>,4>,
-  control:vec4<f32>,
-  ambient_cube:array<vec4<f32>,6>,
-}
 @group(0) @binding(0) var<uniform> camera:Camera;
-@group(0) @binding(1) var<uniform> light:TimeOfDayLight;
 @group(0) @binding(2) var decal_map:texture_2d<f32>;
 @group(0) @binding(3) var decal_sampler:sampler;
+@group(1) @binding(1) var scene_color:texture_2d<f32>;
 @group(1) @binding(2) var scene_depth:texture_depth_2d;
-@group(1) @binding(4) var<uniform> sun_shadows:SunShadows;
-@group(1) @binding(5) var shadow_depth:texture_depth_2d_array;
-@group(1) @binding(6) var shadow_compare:sampler_comparison;
+@group(1) @binding(3) var screen_sampler:sampler;
 
 struct Output {
   @builtin(position) position:vec4<f32>,
@@ -56,16 +48,8 @@ fn vs_decal(
   return out;
 }
 
-fn sun_visibility(world:vec3<f32>)->f32 {
-  if (sun_shadows.control.x<0.5) { return 1.0; }
-  for (var index:i32=0;index<4;index=index+1) {
-    let projected=sun_shadows.matrices[index]*vec4<f32>(world,1.0);
-    if (any(abs(projected.xy)>vec2<f32>(0.985))) { continue; }
-    let uv=vec2<f32>(projected.x*0.5+0.5,0.5-projected.y*0.5);
-    return textureSampleCompareLevel(shadow_depth,shadow_compare,uv,index,projected.z);
-  }
-  return 1.0;
-}
+// Roughly what surfaces reflect, to turn the scene color into incoming light.
+const TYPICAL_ALBEDO:f32=0.3;
 
 @fragment
 fn fs_decal(input:Output)->@location(0) vec4<f32> {
@@ -89,14 +73,6 @@ fn fs_decal(input:Output)->@location(0) vec4<f32> {
   let view_fade=clamp((220.0-view_depth)/60.0,0.0,1.0);
   let alpha=pow(max(source.a,0.0001),input.center.w)*input.tint.a*facing*edge*view_fade;
   if (alpha<=0.002) { discard; }
-  let toward_sun=normalize(light.sun.xyz);
-  let up_facing=select(n,-n,dot(n,camera.origin.xyz-world)<0.0);
-  let sun=light.sun_color.rgb*light.sun.w*max(dot(up_facing,toward_sun),0.0)*sun_visibility(world+up_facing*0.05);
-  let weight=up_facing*up_facing;
-  let x=select(sun_shadows.ambient_cube[1],sun_shadows.ambient_cube[0],up_facing.x>=0.0).rgb;
-  let y=select(sun_shadows.ambient_cube[3],sun_shadows.ambient_cube[2],up_facing.y>=0.0).rgb;
-  let c=select(sun_shadows.ambient_cube[5],sun_shadows.ambient_cube[4],up_facing.z>=0.0).rgb;
-  var ambient=x*weight.x+y*weight.y+c*weight.z;
-  if (sun_shadows.control.z<0.5) { ambient=light.ambient.rgb; }
-  return vec4<f32>(source.rgb*input.tint.rgb*(ambient+sun),alpha);
+  let behind=textureSampleLevel(scene_color,screen_sampler,input.position.xy/vec2<f32>(textureDimensions(scene_color)),0.0).rgb;
+  return vec4<f32>(source.rgb*input.tint.rgb*behind/TYPICAL_ALBEDO,alpha);
 }
