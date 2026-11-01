@@ -3035,8 +3035,7 @@ impl Renderer {
             }),
             // Back faces only, so the box still draws with the camera inside it.
             primitive: wgpu::PrimitiveState {
-                front_face: wgpu::FrontFace::Cw,
-                cull_mode: None,
+                cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
