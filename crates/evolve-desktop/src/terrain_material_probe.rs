@@ -411,7 +411,9 @@ fn gpu_source(
         || dimensions.1 > 2048
         || dimensions.0 == 0
         || dimensions.1 == 0
-        || layers.values().any(|layer| layer.image.dimensions() != dimensions)
+        || layers
+            .values()
+            .any(|layer| layer.image.dimensions() != dimensions)
     {
         return None;
     }
@@ -677,11 +679,7 @@ fn detail_mips(source: &image::RgbaImage) -> Vec<image::RgbaImage> {
     chain
 }
 
-fn detail_sample(
-    mips: &[image::RgbaImage],
-    uv: [f32; 2],
-    footprint_texels: f32,
-) -> [f32; 3] {
+fn detail_sample(mips: &[image::RgbaImage], uv: [f32; 2], footprint_texels: f32) -> [f32; 3] {
     let maximum = (mips.len() - 1) as f32;
     let lod = footprint_texels.max(1.0).log2().clamp(0.0, maximum);
     let low = lod.floor() as usize;
@@ -699,10 +697,10 @@ fn detail_footprint(
     atlas_size: (u32, u32),
     terrain_unit: f32,
 ) -> f32 {
-    let x = (paint.width - 1) as f32 * terrain_unit * tile[0].abs()
-        * image.width() as f32 / atlas_size.0 as f32;
-    let y = (paint.height - 1) as f32 * terrain_unit * tile[1].abs()
-        * image.height() as f32 / atlas_size.1 as f32;
+    let x = (paint.width - 1) as f32 * terrain_unit * tile[0].abs() * image.width() as f32
+        / atlas_size.0 as f32;
+    let y = (paint.height - 1) as f32 * terrain_unit * tile[1].abs() * image.height() as f32
+        / atlas_size.1 as f32;
     x.max(y).max(1.0)
 }
 
@@ -791,7 +789,9 @@ fn compose_detail(
                 let tiled = [world[0] * layer.tile[0], world[1] * layer.tile[1]];
                 let (color_mips, height_mips, color_footprint, height_footprint) = &filtered[&id];
                 let detail = detail_sample(color_mips, tiled, *color_footprint);
-                let height = height_mips.as_ref().zip(height_footprint.as_ref())
+                let height = height_mips
+                    .as_ref()
+                    .zip(height_footprint.as_ref())
                     .map(|(mips, footprint)| detail_sample(mips, tiled, *footprint)[0]);
                 // Original layer IDs are categorical. Preserve the authored
                 // fractional coverage of resolved neighbors at boundaries.
@@ -1056,16 +1056,33 @@ mod composition_tests {
             image::Rgba([(x * 13 + y * 17) as u8, 60, 100, 255])
         });
         let b = image::RgbaImage::from_pixel(4, 4, image::Rgba([12, 180, 250, 255]));
-        layers.insert(2, DetailLayer {
-            image: b.clone(), height: None, tile: [0.15, 0.5],
-            strength: 0.8, blend_factor: 10.0, blend_falloff: 4.0,
-        });
-        layers.insert(1, DetailLayer {
-            image: a.clone(), height: None, tile: [0.25, 0.25],
-            strength: 1.0, blend_factor: 16.0, blend_falloff: 2.0,
-        });
+        layers.insert(
+            2,
+            DetailLayer {
+                image: b.clone(),
+                height: None,
+                tile: [0.15, 0.5],
+                strength: 0.8,
+                blend_factor: 10.0,
+                blend_falloff: 4.0,
+            },
+        );
+        layers.insert(
+            1,
+            DetailLayer {
+                image: a.clone(),
+                height: None,
+                tile: [0.25, 0.25],
+                strength: 1.0,
+                blend_factor: 16.0,
+                blend_falloff: 2.0,
+            },
+        );
         let gpu = gpu_source(&paint, 2.0, &layers).unwrap();
-        assert_eq!(gpu.layers.iter().map(|layer| layer.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            gpu.layers.iter().map(|layer| layer.id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         assert_eq!(gpu.layers[0].image.as_raw(), a.as_raw());
         assert_eq!(gpu.layers[1].image.as_raw(), b.as_raw());
         assert_eq!(gpu.layers[1].tile, [0.15, 0.5]);
@@ -1079,14 +1096,27 @@ mod composition_tests {
         let paint = fixture();
         let mut layers = HashMap::new();
         for (id, size) in [(1, 4), (2, 8)] {
-            layers.insert(id, DetailLayer {
-                image: image::RgbaImage::from_pixel(size, size, image::Rgba([127, 128, 129, 255])),
-                height: None, tile: [1.0, 1.0], strength: 1.0,
-                blend_factor: 16.0, blend_falloff: 2.0,
-            });
+            layers.insert(
+                id,
+                DetailLayer {
+                    image: image::RgbaImage::from_pixel(
+                        size,
+                        size,
+                        image::Rgba([127, 128, 129, 255]),
+                    ),
+                    height: None,
+                    tile: [1.0, 1.0],
+                    strength: 1.0,
+                    blend_factor: 16.0,
+                    blend_falloff: 2.0,
+                },
+            );
         }
         assert!(gpu_source(&paint, 1.0, &layers).is_none());
-        assert_eq!(compose_detail(&paint, (8, 8), 1.0, &layers).dimensions(), (8, 8));
+        assert_eq!(
+            compose_detail(&paint, (8, 8), 1.0, &layers).dimensions(),
+            (8, 8)
+        );
     }
 
     #[test]
