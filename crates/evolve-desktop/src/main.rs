@@ -3369,7 +3369,10 @@ fn refresh_library_matches(state: &mut State) {
                 && !entry.description.to_ascii_lowercase().contains(&needle)
                 && !entry.group.to_ascii_lowercase().contains(&needle)
                 && !entry.source.to_ascii_lowercase().contains(&needle)
-                && !entry.builds.iter().any(|label| label.to_ascii_lowercase().contains(&needle))
+                && !entry
+                    .builds
+                    .iter()
+                    .any(|label| label.to_ascii_lowercase().contains(&needle))
             {
                 return None;
             }
