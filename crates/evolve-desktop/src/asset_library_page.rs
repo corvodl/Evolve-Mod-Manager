@@ -201,7 +201,7 @@ fn archive_row<'a>(
             .on_press(Message::LibrarySelect(index)),
         design::button(if details { "Less" } else { "Details" })
             .style(design::text_button)
-            .on_press(Message::LibraryToggleDetails(index)),
+            .on_press(Message::LibraryToggleDetails(archive.id.clone())),
     ]
     .spacing(8)
     .align_y(iced::Center);
@@ -686,7 +686,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                             archive,
                             state.library_selection.indices.contains(index),
                             state.preferences.ui_density == "Compact",
-                            state.library_expanded_details.contains(index),
+                            state.library_expanded_details.contains(&archive.id),
                         ));
                         shown += 1;
                     }
