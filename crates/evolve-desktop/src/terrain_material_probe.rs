@@ -686,10 +686,17 @@ fn compose_detail(
     let filtered: HashMap<_, _> = layers
         .iter()
         .map(|(&id, layer)| {
-            (id, (
-                detail_mips(&layer.image),
-                layer.height.as_ref().map(detail_mips),
-            ))
+            (
+                id,
+                (
+                    detail_mips(&layer.image),
+                    layer.height.as_ref().map(detail_mips),
+                    detail_footprint(&layer.image, layer.tile, paint, atlas_size, terrain_unit),
+                    layer.height.as_ref().map(|img| {
+                        detail_footprint(img, layer.tile, paint, atlas_size, terrain_unit)
+                    }),
+                ),
+            )
         })
         .collect();
     let mut bytes = vec![0u8; width as usize * height as usize * 4];
@@ -715,17 +722,10 @@ fn compose_detail(
                     uv[1] * (paint.height - 1) as f32 * terrain_unit,
                 ];
                 let tiled = [world[0] * layer.tile[0], world[1] * layer.tile[1]];
-                let (color_mips, height_mips) = &filtered[&id];
-                let color_footprint = detail_footprint(
-                    &layer.image, layer.tile, paint, atlas_size, terrain_unit,
-                );
-                let detail = detail_sample(color_mips, tiled, color_footprint);
-                let height = layer.height.as_ref().zip(height_mips.as_ref())
-                    .map(|(img, mips)| detail_sample(
-                        mips,
-                        tiled,
-                        detail_footprint(img, layer.tile, paint, atlas_size, terrain_unit),
-                    )[0]);
+                let (color_mips, height_mips, color_footprint, height_footprint) = &filtered[&id];
+                let detail = detail_sample(color_mips, tiled, *color_footprint);
+                let height = height_mips.as_ref().zip(height_footprint.as_ref())
+                    .map(|(mips, footprint)| detail_sample(mips, tiled, *footprint)[0]);
                 // Original layer IDs are categorical. Preserve the authored
                 // fractional coverage of resolved neighbors at boundaries.
                 coverage += original_weight;
