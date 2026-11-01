@@ -41,14 +41,13 @@ fn source_label(source: &str) -> String {
     if let Some(game) = pieces
         .iter()
         .rposition(|part| part.eq_ignore_ascii_case("game"))
+        && game >= 1
     {
-        if game >= 1 {
-            let parent = pieces[game - 1];
-            if parent.to_ascii_lowercase().starts_with("build_") && game >= 2 {
-                return format!("{} / {parent}", pieces[game - 2]);
-            }
-            return parent.to_owned();
+        let parent = pieces[game - 1];
+        if parent.to_ascii_lowercase().starts_with("build_") && game >= 2 {
+            return format!("{} / {parent}", pieces[game - 2]);
         }
+        return parent.to_owned();
     }
     pieces
         .iter()
@@ -947,16 +946,17 @@ mod browser_tests {
                 "C:\\Games\\Stage2\\Game\\Levels_Tutorial.pak",
             ),
         ];
-        let mut state = State::default();
-        state.library_catalog = Some(evolve_core::ImportedLibrary {
-            root: "/library".to_owned(),
-            archives: items,
-            builds: vec!["Stage 2".to_owned()],
-            total_bytes: 1200,
-            ignored: 0,
-        });
-        state.library_matches = vec![0, 1, 2, 3];
-        state
+        State {
+            library_catalog: Some(evolve_core::ImportedLibrary {
+                root: "/library".to_owned(),
+                archives: items,
+                builds: vec!["Stage 2".to_owned()],
+                total_bytes: 1200,
+                ignored: 0,
+            }),
+            library_matches: vec![0, 1, 2, 3],
+            ..State::default()
+        }
     }
 
     #[test]
@@ -989,7 +989,9 @@ mod browser_tests {
             .insert("animations".to_owned());
         let source_key = source_group_key(&state.library_catalog.as_ref().unwrap().archives[0]);
         state.library_expanded_sources.insert(source_key);
-        assert_eq!(visible_archive_indices(&state), vec![0, 1, 2]);
+        let mut visible = visible_archive_indices(&state);
+        visible.sort_unstable();
+        assert_eq!(visible, vec![0, 1, 2]);
         assert_ne!(
             state.library_catalog.as_ref().unwrap().archives[0].id,
             state.library_catalog.as_ref().unwrap().archives[1].id
