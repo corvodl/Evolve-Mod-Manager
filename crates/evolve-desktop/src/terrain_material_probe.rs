@@ -372,6 +372,73 @@ struct DetailLayer {
     blend_factor: f32,
     blend_falloff: f32,
 }
+/// Decoded original diffuse maps stay at their own source resolution until
+/// the GPU texture-array upload. No source material is sampled into the
+/// low-resolution baked atlas when this verified path is supported.
+#[derive(Clone)]
+pub(super) struct GpuTerrainLayer {
+    pub id: u8,
+    pub image: image::RgbaImage,
+    pub tile: [f32; 2],
+    pub strength: f32,
+}
+
+#[derive(Clone)]
+pub(super) struct GpuTerrainSource {
+    /// Categorical LayerId map; RGBA8 red channel is the exact ID byte.
+    pub paint: image::RgbaImage,
+    pub unit: f32,
+    pub layers: Vec<GpuTerrainLayer>,
+}
+
+pub(super) struct Preview {
+    pub fallback: image::RgbaImage,
+    pub gpu: Option<GpuTerrainSource>,
+    pub report: String,
+}
+
+/// An array texture requires equal source dimensions and at most 16 layers.
+fn gpu_source(
+    paint: &TerrainPaintMap,
+    unit: f32,
+    layers: &HashMap<u8, DetailLayer>,
+) -> Option<GpuTerrainSource> {
+    if layers.is_empty() || layers.len() > 16 {
+        return None;
+    }
+    let dimensions = layers.values().next()?.image.dimensions();
+    if dimensions.0 > 2048
+        || dimensions.1 > 2048
+        || dimensions.0 == 0
+        || dimensions.1 == 0
+        || layers.values().any(|layer| layer.image.dimensions() != dimensions)
+    {
+        return None;
+    }
+    let bytes = (dimensions.0 as u64) * (dimensions.1 as u64) * 4 * layers.len() as u64;
+    if bytes > 256 * 1024 * 1024 {
+        return None;
+    }
+    let paint_image = image::RgbaImage::from_fn(paint.width, paint.height, |x, y| {
+        image::Rgba([paint.id_at(x, y).unwrap_or(255), 0, 0, 255])
+    });
+    let mut order = layers.iter().collect::<Vec<_>>();
+    order.sort_by_key(|(&id, _)| id);
+    Some(GpuTerrainSource {
+        paint: paint_image,
+        unit,
+        layers: order
+            .into_iter()
+            .map(|(&id, layer)| GpuTerrainLayer {
+                id,
+                image: layer.image.clone(),
+                tile: layer.tile,
+                strength: layer.strength,
+            })
+            .collect(),
+    })
+}
+
 #[derive(Default)]
 struct AuthoredDetail {
     height: Option<String>,
@@ -807,7 +874,7 @@ pub(super) fn compose(
     paint: &TerrainPaintMap,
     atlas_size: (u32, u32),
     terrain_unit: f32,
-) -> Result<Option<(image::RgbaImage, String)>, String> {
+) -> Result<Option<Preview>, String> {
     if paint.width < 2
         || paint.height < 2
         || atlas_size.0 == 0
@@ -943,10 +1010,20 @@ pub(super) fn compose(
             .join("; "),
         failures.into_iter().take(5).collect::<Vec<_>>().join("; ")
     );
-    Ok(Some((
-        compose_detail(paint, atlas_size, terrain_unit, &layers),
+    let gpu = gpu_source(paint, terrain_unit, &layers);
+    let report = format!(
+        "{report} GPU source-material detail: {}.",
+        if gpu.is_some() {
+            "original full-resolution DDS array with categorical paint ID sampling"
+        } else {
+            "unsupported layer dimensions/count; mip-filtered CPU atlas fallback"
+        }
+    );
+    Ok(Some(Preview {
+        fallback: compose_detail(paint, atlas_size, terrain_unit, &layers),
+        gpu,
         report,
-    )))
+    }))
 }
 
 #[cfg(test)]
