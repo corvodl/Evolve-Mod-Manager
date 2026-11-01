@@ -1,5 +1,5 @@
 # Explicit manual Nightly build request. Only code already merged into main is packaged.
-request: user-requested-after-merged-pr168-pr169-2026-10-31
-requested: 2026-10-31
-base-main-commit: 9aabe417d70f46e32b008b1b9f7caf4b92ab8e06
-description: Release combined merged PR #168 (linear HDR Rgba16Float, quarter-resolution bloom, authored terrain detail, source-backed light and effect previews) and PR #169 (single-pass AnimationsCAF catalog discovery). New volumetric beam, refraction and particle simulation work begins on a separate branch after this release snapshot. Do not include unmerged work. Preserve official runtime packaging and signing safeguards.
+request: user-requested-after-merged-pr173-pr175-2026-11-01
+requested: 2026-11-01
+base-main-commit: fc623f0698de3289ce702fad834bbcd46c4ba9ae
+description: Build a new Windows Nightly from main after PR #173 (Asset Library grouped browser with non-destructive duplicate record expansion) and PR #175 (Level Editor authored sun, shadows, sky and materials) passed PR CI and were merged. Includes all earlier merged PRs such as #174. No unmerged branches should be packaged. Maintain official runtime and converter packaging, signing safeguards and prerelease metadata.
