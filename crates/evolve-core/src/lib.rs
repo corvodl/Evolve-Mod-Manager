@@ -39,6 +39,7 @@ pub mod model;
 pub mod native_caf;
 pub mod native_dba;
 pub mod native_offline_launch;
+pub mod particle_preview;
 pub mod policy;
 pub mod profiles;
 pub mod rig;
@@ -146,6 +147,10 @@ pub use native_dba::{
 pub use native_offline_launch::{
     NativeOfflineReadiness, NativeOfflineSwapPlan, NativeOfflineTarget, NativeRecoveryState,
     audit_native_offline_swap, inspect_native_offline_readiness, plan_native_offline_swap,
+};
+pub use particle_preview::{
+    MAX_LIVE_PARTICLES, ParticleEmitter, ParticlePreview, ParticlePreviewSimulation,
+    decode_particle_library,
 };
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
 pub use rig::{

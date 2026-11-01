@@ -1007,6 +1007,12 @@ fn open_selected(
         particle_placements.len(), particle_examples
     ));
     diagnostics.extend(particle_warnings.into_iter().take(5));
+    diagnostics.extend(
+        crate::level_effect_sources::verify_source_particle_placements(
+            &archive,
+            &particle_placements,
+        ),
+    );
     let (local_lights, light_warnings) = crate::level_atmosphere::lights(&sources, scene.as_ref());
     diagnostics.push(format!("Original map light entities with verified authored color, radius and strength: {}. GPU viewport uses nearby point/spot preview lighting; authored shadow maps and projector textures require separate verification.",local_lights.len()));
     diagnostics.extend(light_warnings.into_iter().take(5));
