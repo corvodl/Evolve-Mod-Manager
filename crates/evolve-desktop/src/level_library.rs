@@ -1087,9 +1087,10 @@ fn open_selected(
                             match crate::terrain_material_probe::compose(
                                 &archive, paint, dimensions, terrain_info.unit,
                             ) {
-                                Ok(Some((highpass, report))) => {
-                                    world.terrain_detail = Some(std::sync::Arc::new(highpass));
-                                    diagnostics.push(report);
+                                Ok(Some(preview)) => {
+                                    world.terrain_detail = Some(std::sync::Arc::new(preview.fallback));
+                                    world.terrain_gpu = preview.gpu.map(std::sync::Arc::new);
+                                    diagnostics.push(preview.report);
                                 }
                                 Ok(None) => diagnostics.push(
                                     "Terrain high-pass detail unavailable: no mapped Terrain.Layer diffuse could be reconstructed; see the material diagnostics. Preserving original RGB atlas.".into()
