@@ -146,8 +146,8 @@ fn dynamic_sky(direction:vec3<f32>)->vec3<f32> {
   let height=clamp(direction.z/sky.params[9].w,0.0,1.0);
   let gradient=mix(sky.params[6].rgb*sky.params[6].w,
       sky.params[5].rgb*sky.params[5].w,height*(2.0-height));
-  let sharpness=1.0/max(1.0-sky.params[8].w,0.001);
-  let sun_side=sky.params[8].rgb*pow(2.0,(mu-1.0)*sharpness);
+  let falloff=(1.0-sky.params[8].w)*16.0;
+  let sun_side=sky.params[8].rgb*pow(2.0,(mu-1.0)*falloff);
   let horizon=exp(-max(direction.z,0.0)*7.0);
   return max(natural+sun_rad*disk*0.7+gradient+sun_side*(0.35+0.65*horizon)+
       sky.params[9].rgb*horizon,vec3<f32>(0.0));

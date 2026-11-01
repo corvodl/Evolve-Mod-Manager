@@ -93,11 +93,11 @@ fn apply_fog(world:vec3<f32>,color:vec3<f32>)->vec3<f32> {
   let ramp_span=max(fog.ramp.y-fog.ramp.x,0.01);
   var ramp=clamp((distance-fog.ramp.x)/ramp_span,0.0,1.0);
   ramp=mix(1.0,ramp*(2.0-ramp),fog.ramp.z);
-  let amount=(1.0-exp(-distance*fog.params.y*fog.params.z*fog.ramp.w*15.0))*ramp;
-  let sharpness=1.0/max(1.0-fog.radial.w,0.001);
+  let amount=(1.0-pow(2.0,-distance*fog.ramp.w*0.01))*ramp;
+  let falloff=(1.0-fog.radial.w)*16.0;
   let toward=dot(to_fragment/max(distance,0.001),normalize(light.sun.xyz));
   let reach=clamp(distance*fog.params.y,0.0,1.0);
-  let haze=fog.color.rgb+fog.radial.rgb*pow(reach,fog.top.w)*pow(2.0,(toward-1.0)*sharpness);
+  let haze=fog.color.rgb+fog.radial.rgb*pow(reach,1.0/fog.top.w)*pow(2.0,(toward-1.0)*falloff);
   return mix(color,haze,clamp(amount,0.0,1.0));
 }
 

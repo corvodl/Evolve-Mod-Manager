@@ -534,14 +534,16 @@ fn distance_fog(input:Output, color:vec4<f32>)->vec4<f32> {
     var ramp=clamp((distance-fog.ramp.x)/ramp_span,0.0,1.0);
     ramp=mix(1.0,ramp*(2.0-ramp),fog.ramp.z);
     var haze=mix(fog.color.rgb,fog.top.rgb,graded);
-    // Authored sun-side lobe. Its shape is calibrated, not decoded engine math.
+    // The game's sun-side lobe: grows with distance, falls off as a power of
+    // two away from the sun. How its authored size maps to the falloff is not
+    // in the shader, so that scale is calibrated.
     let reach=clamp(distance*fog.params.y,0.0,1.0);
-    let sharpness=1.0/max(1.0-fog.radial.w,0.001);
+    let falloff=(1.0-fog.radial.w)*16.0;
     let toward_sun=dot(to_fragment/max(distance,0.001),normalize(light.sun.xyz));
-    let lobe=pow(reach,fog.top.w)*pow(2.0,(toward_sun-1.0)*sharpness);
+    let lobe=pow(reach,1.0/fog.top.w)*pow(2.0,(toward_sun-1.0)*falloff);
     haze+=fog.radial.rgb*lobe;
-    // The game's density scale is not in its shaders; calibrated to in-game captures.
-    let amount=(1.0-exp(-depth*fog.ramp.w*15.0))*ramp;
+    // The game's density term. Its 0.01 scale is inferred from the engine's usage.
+    let amount=(1.0-pow(2.0,-distance*fog.ramp.w*0.01))*ramp;
     return vec4<f32>(mix(color.rgb,haze,clamp(amount,0.0,1.0)),color.a);
   }
   let amount=clamp(1.0-exp(-depth),0.0,0.92);

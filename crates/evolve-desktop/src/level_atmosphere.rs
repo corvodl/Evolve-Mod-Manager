@@ -731,9 +731,9 @@ pub(super) fn atmosphere_uniform(
             sky.angle_degrees.to_radians(),
         ],
         [
-            color("Sky color", [0.24, 0.43, 0.75])[0],
-            color("Sky color", [0.24, 0.43, 0.75])[1],
-            color("Sky color", [0.24, 0.43, 0.75])[2],
+            color("Sky color", [0.0, 0.0, 0.0])[0],
+            color("Sky color", [0.0, 0.0, 0.0])[1],
+            color("Sky color", [0.0, 0.0, 0.0])[2],
             0.0,
         ],
         [
