@@ -27,6 +27,7 @@ struct SurfaceParams {
   detail: vec4<f32>,  // Detail tiling U and V, DetailBumpScale, DetailDiffuseScale
   layers: vec4<f32>,  // DetailGlossScale, has detail, has second layer, BlendFactor
   blend: vec4<f32>,   // BlendFalloff, BlendLayer2Tiling, BlendMaskTiling, normal in emissive slot
+  foliage: vec4<f32>, // TransmittanceColor by BackDiffuseMultiplier, BlendLayer2Specular
 }
 @group(0) @binding(4) var<uniform> authored: SurfaceParams;
 // Viewport-only time-of-day lighting. Never reads or edits game engine state.
@@ -100,6 +101,7 @@ struct SourceTerrainParams {
 // Tangent XY of the blended terrain layers, read by the normal step in shade.
 var<private> terrain_normal_xy: vec2<f32>;
 var<private> blended_surface: f32;
+var<private> foliage_surface: f32;
 
 // Sun shadow cascades, nearest first. Depth runs from 0 at the sun outward.
 struct SunShadows {
@@ -435,13 +437,19 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   let sun_direction=normalize(light.sun.xyz);
   // Blended water sheets are two sided, so the sun lights either face.
   let lambert=mix(max(dot(n,sun_direction),0.0),abs(dot(n,sun_direction)),blended_surface);
+  // The game's leaves: wrapped sun through the blade, tinted by thickness.
+  let leaf_through=clamp(dot(-n,sun_direction)*0.6+0.4,0.0,1.0)
+    *textureSample(authored_opacity,tex_sampler,input.uv).rgb*authored.foliage.rgb;
   let visibility=sun_visibility(input.world,normalize(input.normal+vec3<f32>(0.0,0.0,0.0001)),lambert);
   // A bump cannot catch sun on a face that is turned away from it.
-  let facing_sun=mix(clamp(dot(geometric,sun_direction)*8.0+0.5,0.0,1.0),1.0,blended_surface);
+  let facing_sun=mix(clamp(dot(geometric,sun_direction)*8.0+0.5,0.0,1.0),1.0,max(blended_surface,foliage_surface));
   let sun=light.sun_color.rgb*(light.sun.w*lambert*visibility*facing_sun);
   // Source-authored specular reflectance and gloss are separate channels.
   // A missing specular map is black (never invent shiny materials).
-  let reflectance=textureSample(specular_map,tex_sampler,input.uv).rgb*authored.specular.rgb;
+  var reflectance=textureSample(specular_map,tex_sampler,input.uv).rgb*authored.specular.rgb;
+  if (authored.foliage.w>=0.0) {
+    reflectance=mix(reflectance,vec3<f32>(authored.foliage.w),layer_amount);
+  }
   // A ddna normal map carries smoothness in alpha; other formats read as 1.
   let gloss=clamp(textureSample(gloss_map,tex_sampler,input.uv).r*textureSample(normal_map,tex_sampler,input.uv).a*detail_gloss,0.0,1.0);
   let view_direction=normalize(camera.origin.xyz-input.world);
@@ -516,7 +524,7 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // the filmic output pass bounds highlights, while true bloom remains a
   // separate post-processing feature. No guessed emission for plain Illum.
   let preview_glow=emission*max(authored.cutoff.y,0.0)*0.65*(1.0-authored.blend.w);
-  return vec4<f32>(base.rgb*(ambient_light*authored.clouds.w+sun)+specular+reflected+local_radiance+preview_glow,base.a);
+  return vec4<f32>(base.rgb*(ambient_light*authored.clouds.w*mix(1.0,n.z*0.25+0.75,foliage_surface)+sun+light.sun_color.rgb*light.sun.w*visibility*leaf_through*foliage_surface)+specular+reflected+local_radiance+preview_glow,base.a);
 }
 
 // A visually bounded preview heuristic, not an Evolve fog equation. Applying
@@ -605,6 +613,7 @@ fn fs_foliage(input:Output)->@location(0) vec4<f32> {
   // fragments write opaque window alpha and regular world depth.
   let leaf_alpha=sample_source_albedo(input.uv).a;
   if (leaf_alpha < authored.cutoff.x) { discard; }
+  foliage_surface=1.0;
   let color=shade(input,false);
   let fogged=distance_fog(input,color);
   return vec4<f32>(authored_scene_linear(fogged.rgb),1.0);
@@ -662,6 +671,7 @@ fn fs_opaque_reflected(input:Output)->@location(0) vec4<f32> {
 fn fs_foliage_reflected(input:Output)->@location(0) vec4<f32> {
   if (input.world.z<camera.reflection_height.x) { discard; }
   if (sample_source_albedo(input.uv).a < authored.cutoff.x) { discard; }
+  foliage_surface=1.0;
   let fogged=distance_fog(input,shade(input,false));
   return vec4<f32>(authored_scene_linear(fogged.rgb),1.0);
 }

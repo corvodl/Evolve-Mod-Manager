@@ -118,6 +118,8 @@ pub struct Surface {
     pub blend_normal: Option<Arc<image::RgbaImage>>,
     pub detail_tile: Option<[f32; 2]>,
     pub layer_params: Option<[f32; 7]>,
+    pub foliage_transmit: Option<[f32; 3]>,
+    pub layer_specular: Option<f32>,
     /// Original per-leaf AlphaTest threshold (normalized). Default preview 0.5.
     pub alpha_cutoff: f32,
     pub diffuse: Option<Arc<image::RgbaImage>>,

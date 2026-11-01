@@ -1126,6 +1126,8 @@ fn load_authored_subset_surfaces(
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
@@ -1221,6 +1223,7 @@ fn load_authored_subset_surfaces(
                                 )
                             };
                             surface.layer_params = leaf.layer_params;
+                            surface.layer_specular = leaf.layer_specular;
                             surface.detail_tile = leaf.detail_tile;
                             surface.detail_map = layer("detail");
                             if leaf.layer_params.is_some() {
@@ -1254,6 +1257,22 @@ fn load_authored_subset_surfaces(
                             || (leaf.shader.eq_ignore_ascii_case("Illum")
                                 && leaf.alpha_test.is_some_and(|test| test > 0.0)))
                             && surface.diffuse.is_some();
+                        if leaf.shader.eq_ignore_ascii_case("Vegetation") {
+                            surface.foliage_transmit = leaf.foliage_transmit;
+                            // Here the Opacity map holds leaf thickness, not a mask.
+                            surface.opacity = authored_layer_map(
+                                leaf,
+                                "opacity",
+                                material,
+                                &source.to_string_lossy(),
+                                MaterialLookup {
+                                    inventory: lookup.inventory,
+                                    imported: lookup.imported,
+                                    build: lookup.build,
+                                },
+                                cache,
+                            );
+                        }
                         surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
                         surface.opacity = if surface.foliage_cutout {
                             None
@@ -1540,6 +1559,8 @@ pub fn load_with_progress(
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
@@ -1761,6 +1782,8 @@ mod tests {
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&base_pixels)),
             normal: None,
@@ -1848,6 +1871,8 @@ mod tests {
             waterfall: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
         };
         let mask = legacy_alpha_emission(&slot, &diffuse).unwrap();
         assert!(mask.get_pixel(0, 0)[0] > 150);
@@ -2034,6 +2059,8 @@ mod tests {
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
                 2,
@@ -2081,6 +2108,8 @@ mod tests {
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
                 2,
@@ -2183,6 +2212,8 @@ mod tests {
             waterfall: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
             maps: if with_mask {
                 vec![evolve_core::TextureReference {
                     role: "opacity".into(),
@@ -2325,6 +2356,8 @@ mod tests {
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&image)),
             normal: None,
@@ -2832,6 +2865,8 @@ mod tests {
             waterfall: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
         };
         assert!(!needs_alpha_blending(&ordinary));
         let mut transparent = ordinary;

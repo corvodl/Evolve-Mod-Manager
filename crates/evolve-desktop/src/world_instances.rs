@@ -3652,6 +3652,7 @@ impl Renderer {
                 .layer_params
                 .unwrap_or([0.0, 0.0, 0.0, 8.0, 1.0, 1.0, 1.0]);
             let detail_tile = surf.detail_tile.unwrap_or([1.0, 1.0]);
+            let foliage = surf.foliage_transmit.unwrap_or([0.0; 3]);
             let params = surf
                 .distance_clouds
                 .or(surf.material_tint)
@@ -3704,6 +3705,10 @@ impl Renderer {
                     } else {
                         0.0
                     },
+                    foliage[0],
+                    foliage[1],
+                    foliage[2],
+                    surf.layer_specular.unwrap_or(-1.0),
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
