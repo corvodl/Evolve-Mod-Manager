@@ -932,16 +932,26 @@ fn upload_terrain_layers(
                 wgpu::TexelCopyTextureInfo {
                     texture: &layers,
                     mip_level: mip,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
-                pixels.as_ref().map_or(fallback.as_slice(), |img| img.as_raw()),
+                pixels
+                    .as_ref()
+                    .map_or(fallback.as_slice(), |img| img.as_raw()),
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(w * 4),
                     rows_per_image: Some(h),
                 },
-                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
             );
         }
     }
@@ -956,7 +966,11 @@ fn upload_terrain_layers(
     let (pw, ph) = paint.dimensions();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Exact original categorical painted terrain IDs"),
-        size: wgpu::Extent3d { width: pw, height: ph, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: pw,
+            height: ph,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -977,7 +991,11 @@ fn upload_terrain_layers(
             bytes_per_row: Some(pw * 4),
             rows_per_image: Some(ph),
         },
-        wgpu::Extent3d { width: pw, height: ph, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: pw,
+            height: ph,
+            depth_or_array_layers: 1,
+        },
     );
     let paint_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let mut desc = [[0.0f32; 4]; 17];
@@ -2060,7 +2078,8 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 14,
                         resource: self.hdr_uniform.as_entire_binding(),
-                    },                    wgpu::BindGroupEntry {
+                    },
+                    wgpu::BindGroupEntry {
                         binding: 15,
                         resource: wgpu::BindingResource::TextureView(&terrain_textures.layer_view),
                     },
@@ -2211,7 +2230,8 @@ impl Renderer {
             .retain(|key, _| cache.contains_key(key));
         self.mip_min_level.retain(|key, _| cache.contains_key(key));
         let target_bytes = residency_target_bytes(full_textures);
-        let mut used_bytes = cache_bytes(&cache).saturating_add(resident_terrain_bytes(&self.groups));
+        let mut used_bytes =
+            cache_bytes(&cache).saturating_add(resident_terrain_bytes(&self.groups));
         let mut deferred = 0usize;
         let mut pending = 0usize;
         let mut uploaded = 0usize;
@@ -2286,9 +2306,8 @@ impl Renderer {
                 &mut mip_min_level,
                 &mut used_bytes,
             );
-            used_bytes = used_bytes.saturating_add(
-                gpu._terrain_source.as_ref().map_or(0, |tex| tex.bytes),
-            );
+            used_bytes =
+                used_bytes.saturating_add(gpu._terrain_source.as_ref().map_or(0, |tex| tex.bytes));
             self.groups[idx] = Some(gpu);
             uploaded += 1;
         }
@@ -2357,7 +2376,8 @@ impl Renderer {
         if let Some(key) = finished_key {
             self.pending_diffuse.remove(&key);
         }
-        let texture_bytes = cache_bytes(&cache).saturating_add(resident_terrain_bytes(&self.groups));
+        let texture_bytes =
+            cache_bytes(&cache).saturating_add(resident_terrain_bytes(&self.groups));
         let geometry_bytes = resident_geometry_bytes(&self.groups);
         let resident = texture_bytes.saturating_add(geometry_bytes);
         self.peak_gpu_bytes = self.peak_gpu_bytes.max(resident);
