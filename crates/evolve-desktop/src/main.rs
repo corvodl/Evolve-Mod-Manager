@@ -797,7 +797,10 @@ enum Operation {
     InspectModel(PathBuf),
     InspectIndexedModel(PathBuf, String, Inventory, Option<PathBuf>, Option<String>),
     DiscoverModelResources(String, Inventory, Option<PathBuf>, Option<String>),
-    LoadDeclaredClip(usize, String, Inventory, Option<PathBuf>, Option<String>),
+    LoadDeclaredClip(
+        usize, String, Inventory, Option<PathBuf>, Option<String>,
+        Vec<String>, Option<PathBuf>,
+    ),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
     InspectLevel(PathBuf),
     OpenImportedMap(evolve_core::ImportedPak, usize),
@@ -924,6 +927,10 @@ enum Completed {
     BundleExported(evolve_core::ExportBundleReport),
     MotionConverted(ConvertedMotion, PathBuf),
     DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
+    DeclaredPackedDba(
+        usize, String, String, ConvertedMotion, PathBuf,
+        Arc<tempfile::TempDir>, Option<PathBuf>,
+    ),
     MotionGlb(AnimatedGlb),
     BoundConvertedGlb(PathBuf, AnimatedGlb, usize),
     Character(CdfDefinition),
@@ -1003,6 +1010,31 @@ fn model_preview_lookup(
         // Only a speed-up here: without it, lookups use the unindexed resolver.
         None => Ok(evolve_core::begin_imported_lookup_session_any_build(root).ok()),
     }
+}
+
+/// A verified source may come from the selected local inventory or from a
+/// single, independently verified imported-PAK extraction root. Never execute
+/// a converter against an arbitrarily guessed or cross-build game directory.
+fn verified_motion_asset_root(
+    source: &Path,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let local_root = std::fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+    if source.starts_with(&local_root) {
+        return Ok(local_root);
+    }
+    let Some(imported) = imported else {
+        return Err("DBA has no verified extracted source root".into());
+    };
+    let imported = std::fs::canonicalize(imported).map_err(|e| e.to_string())?;
+    if !source.starts_with(&imported) {
+        return Err("DBA escaped verified local and imported asset roots".into());
+    }
+    source.ancestors().find(|part| {
+        part.starts_with(&imported) && part.file_name().is_some_and(|name| name == "files")
+    }).map(Path::to_path_buf)
+        .ok_or_else(|| "Imported DBA has no verified extracted files root".into())
 }
 
 impl Operation {
@@ -1419,17 +1451,69 @@ impl Operation {
                 );
                 Ok(Completed::ModelResources(relative, discovery))
             }
-            Self::LoadDeclaredClip(index, virtual_path, inventory, library_root, build) => {
+            Self::LoadDeclaredClip(
+                index, virtual_path, inventory, library_root, build,
+                declared_databases, converter,
+            ) => {
                 let _lookup = model_preview_lookup(library_root.as_deref(), build.as_deref())?;
-                let file = auto_resources::resolve_declared(
-                    &inventory,
-                    &virtual_path,
-                    library_root.as_deref(),
-                    build.as_deref(),
-                )?
-                .ok_or_else(|| format!("Declared CAF is not available: {virtual_path}"))?;
-                let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
-                Ok(Completed::DeclaredClip(index, virtual_path, file, motion))
+                if let Some(file) = auto_resources::resolve_declared(
+                    &inventory, &virtual_path, library_root.as_deref(), build.as_deref(),
+                )? {
+                    let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
+                    return Ok(Completed::DeclaredClip(index, virtual_path, file, motion));
+                }
+                // A CAF reference can be a named track inside a Controller_905
+                // DBA, rather than a standalone file. Only search character-
+                // declared databases, with exact virtual paths and build scope.
+                let Some((source, record)) = auto_resources::find_declared_packed_caf(
+                    &inventory, &virtual_path, &declared_databases,
+                    library_root.as_deref(), build.as_deref(),
+                )? else {
+                    return Err(format!(
+                        "Declared CAF not found as a loose file or an exact track in the selected character's declared DBAs: {virtual_path} (build: {})",
+                        build.as_deref().unwrap_or("unselected; choose an exact game build"),
+                    ));
+                };
+                let converter = converter.ok_or_else(|| format!(
+                    "CAF {virtual_path} exists as an indexed animation in {} but its packed tracks require the bundled Cryengine-Converter. Check the converter installation.",
+                    source.display()
+                ))?;
+                let root = verified_motion_asset_root(
+                    &source, &inventory, library_root.as_deref(),
+                )?;
+                let temp = Arc::new(
+                    tempfile::Builder::new()
+                        .prefix("evolve-declared-packed-caf-")
+                        .tempdir()
+                        .map_err(|e| e.to_string())?,
+                );
+                let target = temp.path().join("tracks");
+                let report = convert_original_motion(&converter, &source, &root, &target)
+                    .map_err(|e| e.to_string())?;
+                // Converter output is a distinct representation. Locate only
+                // the matching full virtual path; a same-basename clip is NOT
+                // evidence of the source character or matching skeleton.
+                let mut exact_output: Option<PathBuf> = None;
+                for name in &report.glb_files {
+                    let file = target.join(name);
+                    let motion = evolve_core::AnimatedGlb::read(&file)
+                        .map_err(|e| e.to_string())?;
+                    if motion.list_clips().iter().any(|clip| {
+                        auto_resources::packed_record_matches(
+                            &virtual_path, &clip.name,
+                        )
+                    }) {
+                        if exact_output.is_some() {
+                            return Err(format!(
+                                "Converter produced multiple matches for {virtual_path}; refusing ambiguous packed tracks"
+                            ));
+                        }
+                        exact_output = Some(file);
+                    }
+                }
+                Ok(Completed::DeclaredPackedDba(
+                    index, virtual_path, record, report, target, temp, exact_output,
+                ))
             }
             Self::InspectModel(source) => {
                 let render_source = preferred_render_source(&source);
