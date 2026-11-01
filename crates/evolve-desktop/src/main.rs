@@ -746,6 +746,10 @@ enum Operation {
     ),
     LoadCaf(PathBuf),
     LoadCafLayer(String, Arc<NativeCafMotion>, String, PathBuf),
+    LoadDeclaredCafLayer(
+        String, Arc<NativeCafMotion>, String, String, Inventory,
+        Option<PathBuf>, Option<String>,
+    ),
     BindCafPreview(PathBuf, PathBuf, NativeCafMotion),
     BindCdfCafPreview(
         PathBuf,
@@ -1256,6 +1260,22 @@ impl Operation {
                     return Err("Additive CAF layers require a verified additive convention; select a non-additive clip.".into());
                 }
                 Ok(Completed::CafLayer(source, base, label, layer))
+            }
+            Self::LoadDeclaredCafLayer(
+                source, base, label, virtual_path, inventory, imported, build,
+            ) => {
+                let _lookup = model_preview_lookup(imported.as_deref(), build.as_deref())?;
+                let file = auto_resources::resolve_declared(
+                    &inventory, &virtual_path, imported.as_deref(), build.as_deref(),
+                )?
+                .ok_or_else(|| format!(
+                    "Native layer CAF not found in the selected build: {virtual_path}. Packed DBA conversion does not yet provide native CDF layering."
+                ))?;
+                let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
+                if motion.additive {
+                    return Err("Additive CAF layers require an independently verified additive convention".into());
+                }
+                Ok(Completed::CafLayer(source, base, label, motion))
             }
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(|motion| Completed::Caf(source, motion))
@@ -11245,18 +11265,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let Some(clip) = state.auto_clips.get(index) else {
                 return Task::none();
             };
-            let Some(path) = clip
-                .source
-                .clone()
+            if let Some(path) = clip.source.clone()
                 .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("caf")))
-            else {
-                state.status = "Layer playback requires an extracted native CAF.".into();
+            {
+                return launch(
+                    state,
+                    Operation::LoadCafLayer(state.input.clone(), base, clip.label.clone(), path),
+                );
+            }
+            let Some(inventory) = state.inventory.clone() else {
+                state.status = "Index extracted assets to resolve this CAF layer.".into();
                 return Task::none();
             };
-            return launch(
-                state,
-                Operation::LoadCafLayer(state.input.clone(), base, clip.label.clone(), path),
+            let operation = Operation::LoadDeclaredCafLayer(
+                state.input.clone(),
+                base,
+                clip.label.clone(),
+                clip.virtual_path.clone(),
+                inventory,
+                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                resource_build(state),
             );
+            return launch(state, operation);
         }
         Message::ViewerLayerWeight(weight) => {
             if weight.is_finite() && (0.0..=1.0).contains(&weight) {
