@@ -1993,6 +1993,8 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             decal_tex_mod: None,
+            diffuse_tex_mod: None,
+            indirect_color: None,
         };
         assert!(opaque_historical_2012_diffuse(true, &opaque));
         assert!(!opaque_historical_2012_diffuse(false, &opaque));

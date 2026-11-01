@@ -366,6 +366,7 @@ mod tests {
 #[derive(Clone)]
 struct DetailLayer {
     image: image::RgbaImage,
+    normal: Option<image::RgbaImage>,
     height: Option<image::RgbaImage>,
     tile: [f32; 2],
     strength: f32,
@@ -379,6 +380,7 @@ struct DetailLayer {
 pub(super) struct GpuTerrainLayer {
     pub id: u8,
     pub image: image::RgbaImage,
+    pub normal: Option<image::RgbaImage>,
     pub tile: [f32; 2],
     pub strength: f32,
 }
@@ -434,6 +436,19 @@ fn gpu_source(
             .map(|(&id, layer)| GpuTerrainLayer {
                 id,
                 image: layer.image.clone(),
+                // Array layers share one size, so a differing map is resampled.
+                normal: layer.normal.as_ref().map(|normal| {
+                    if normal.dimensions() == dimensions {
+                        normal.clone()
+                    } else {
+                        image::imageops::resize(
+                            normal,
+                            dimensions.0,
+                            dimensions.1,
+                            image::imageops::FilterType::Triangle,
+                        )
+                    }
+                }),
                 tile: layer.tile,
                 strength: layer.strength,
             })
@@ -444,6 +459,7 @@ fn gpu_source(
 #[derive(Default)]
 struct AuthoredDetail {
     height: Option<String>,
+    normal: Option<String>,
     tile: [f32; 2],
     strength: f32,
     blend_factor: f32,
@@ -487,9 +503,15 @@ fn authored_detail(bytes: &[u8]) -> Result<AuthoredDetail, String> {
                 if role.eq_ignore_ascii_case("Heightmap") {
                     parsed.height = attr(&e, b"File");
                 }
+                if role.eq_ignore_ascii_case("Bumpmap") {
+                    parsed.normal = attr(&e, b"File");
+                }
             }
             Event::Empty(e) if e.name().as_ref() == b"Texture" => {
                 let role = attr(&e, b"Map").unwrap_or_default();
+                if role.eq_ignore_ascii_case("Bumpmap") {
+                    parsed.normal = attr(&e, b"File");
+                }
                 if role.eq_ignore_ascii_case("Heightmap") {
                     parsed.height = attr(&e, b"File");
                 }
@@ -966,10 +988,15 @@ pub(super) fn compose(
                     .height
                     .as_deref()
                     .and_then(|source| load_detail_image(&catalog, source, material).ok());
+                let normal = authored
+                    .normal
+                    .as_deref()
+                    .and_then(|source| load_detail_image(&catalog, source, material).ok());
                 layers.insert(
                     id,
                     DetailLayer {
                         image,
+                        normal,
                         height,
                         tile: authored.tile,
                         strength: authored.strength,
@@ -1060,6 +1087,7 @@ mod composition_tests {
             2,
             DetailLayer {
                 image: b.clone(),
+                normal: None,
                 height: None,
                 tile: [0.15, 0.5],
                 strength: 0.8,
@@ -1071,6 +1099,7 @@ mod composition_tests {
             1,
             DetailLayer {
                 image: a.clone(),
+                normal: None,
                 height: None,
                 tile: [0.25, 0.25],
                 strength: 1.0,
@@ -1101,6 +1130,7 @@ mod composition_tests {
             layers.insert(
                 id,
                 DetailLayer {
+                    normal: None,
                     image: image::RgbaImage::from_pixel(
                         size,
                         size,
@@ -1232,6 +1262,7 @@ mod composition_tests {
             1,
             DetailLayer {
                 image: image::RgbaImage::from_pixel(2, 2, image::Rgba([128, 128, 128, 255])),
+                normal: None,
                 height: None,
                 tile: [0.25, 0.5],
                 strength: 1.0,

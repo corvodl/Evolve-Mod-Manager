@@ -40,3 +40,16 @@ fn fs_blur(input:FsOut)->@location(0) vec4<f32> {
     }
     return vec4<f32>(color,1.0);
 }
+// Mean log luminance of the scene, for authored eye adaptation.
+@fragment
+fn fs_luminance(input:FsOut)->@location(0) vec4<f32> {
+    var sum=0.0;
+    for (var y=0;y<16;y=y+1) {
+        for (var x=0;x<16;x=x+1) {
+            let uv=(vec2<f32>(f32(x),f32(y))+vec2<f32>(0.5))/16.0;
+            let color=textureSampleLevel(source_texture,source_sampler,uv,0.0).rgb;
+            sum+=log(max(dot(color,vec3<f32>(0.2126,0.7152,0.0722)),0.0001));
+        }
+    }
+    return vec4<f32>(sum/256.0,0.0,0.0,1.0);
+}

@@ -456,11 +456,17 @@ impl TimeOfDay {
         ])?;
         let top_height = sample(&["Fog height (top)", "Fog top height", "Fog height top"])?;
         let bottom_density = sample(&[
+            "Fog layer density (bottom)",
             "Fog density (bottom)",
             "Fog bottom density",
             "Fog density bottom",
         ])?;
-        let top_density = sample(&["Fog density (top)", "Fog top density", "Fog density top"])?;
+        let top_density = sample(&[
+            "Fog layer density (top)",
+            "Fog density (top)",
+            "Fog top density",
+            "Fog density top",
+        ])?;
         if ![bottom_height, top_height, bottom_density, top_density]
             .iter()
             .all(|v| v.is_finite())
@@ -548,6 +554,42 @@ impl FogProfile {
             result[0] = profile.gpu_uniform();
             result[1][0] = 1.0;
         }
+        result
+    }
+
+    /// Authored fog colors, sun lobe and ramp. Bottom color, params, radial
+    /// color + size, top color + lobe, then ramp start/end/influence/density.
+    pub fn gpu_uniform(self, tod: Option<&TimeOfDay>, hour: f32) -> [[f32; 4]; 5] {
+        let base = self.preview_uniform(tod, hour);
+        let mut result = [[0.0_f32; 4]; 5];
+        result[1] = base[1];
+        let Some(tod) = tod else {
+            return result;
+        };
+        let tinted = |color: &str, multiplier: &str| {
+            let rgb = tod.color(color, hour).unwrap_or([0.0; 3]);
+            let scale = tod.scalar(multiplier, hour).unwrap_or(1.0).max(0.0);
+            rgb.map(|channel| channel.max(0.0) * scale)
+        };
+        let bottom = tinted("Fog color", "Fog color multiplier");
+        let top = tinted("Fog color (top)", "Fog color (top) multiplier");
+        let radial = tinted("Fog color (radial)", "Fog color (radial) multiplier");
+        let size = tod.scalar("Fog radial size", hour).unwrap_or(0.75);
+        let lobe = tod.scalar("Fog radial lobe", hour).unwrap_or(0.5);
+        result[0] = [bottom[0], bottom[1], bottom[2], 0.0];
+        result[2] = [radial[0], radial[1], radial[2], size.clamp(0.0, 0.999)];
+        result[3] = [top[0], top[1], top[2], lobe.clamp(0.01, 1.0)];
+        result[4] = [
+            tod.scalar("Volumetric fog: Ramp start", hour)
+                .unwrap_or(0.0),
+            tod.scalar("Volumetric fog: Ramp end", hour).unwrap_or(0.0),
+            tod.scalar("Volumetric fog: Ramp influence", hour)
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0),
+            tod.scalar("Volumetric fog: Global density", hour)
+                .unwrap_or(1.0)
+                .max(0.0),
+        ];
         result
     }
 

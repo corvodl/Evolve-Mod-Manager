@@ -453,7 +453,7 @@ pub(super) fn atmosphere_uniform(
     hour: f32,
     sky: &SkySource,
     static_available: bool,
-) -> [[f32; 4]; 8] {
+) -> [[f32; 4]; 10] {
     let color = |key: &str, default: [f32; 3]| {
         source
             .and_then(|tod| tod.color(key, hour))
@@ -466,25 +466,61 @@ pub(super) fn atmosphere_uniform(
     };
     let sky_sun = source
         .and_then(|tod| {
-            tod.color("Sky light sun intensity", hour)
+            tod.color("Sky light: Sun intensity", hour)
+                .or_else(|| tod.color("Sky light sun intensity", hour))
                 .or_else(|| tod.color("Sun color", hour))
         })
         .unwrap_or([1.0, 0.94, 0.85]);
+    // Stage 2 TimeOfDay.xml names these "Sky light: ..." and "Night sky: ...".
+    let authored = |names: [&str; 2], default: f32| {
+        source
+            .and_then(|tod| {
+                tod.scalar(names[0], hour)
+                    .or_else(|| tod.scalar(names[1], hour))
+            })
+            .unwrap_or(default)
+    };
+    let authored_color = |names: [&str; 2], default: [f32; 3]| {
+        source
+            .and_then(|tod| {
+                tod.color(names[0], hour)
+                    .or_else(|| tod.color(names[1], hour))
+            })
+            .unwrap_or(default)
+    };
     let skybox_multiplier = scalar(
         "Skybox multiplier",
         if static_available { 1.0 } else { 0.0 },
     );
-    let intensity = scalar("Sky light sun intensity multiplier", 1.0);
-    let rayleigh = scalar("Rayleigh scattering", 2.0);
-    let mie = scalar("Mie scattering", 4.8);
-    let anisotropy = scalar("Sun anisotropy factor", -0.995);
+    let intensity = authored(
+        [
+            "Sky light: Sun intensity multiplier",
+            "Sky light sun intensity multiplier",
+        ],
+        1.0,
+    );
+    let rayleigh = authored(
+        ["Sky light: Rayleigh scattering", "Rayleigh scattering"],
+        2.0,
+    );
+    let mie = authored(["Sky light: Mie scattering", "Mie scattering"], 4.8);
+    let anisotropy = authored(
+        ["Sky light: Sun anisotropy factor", "Sun anisotropy factor"],
+        -0.995,
+    );
     let waves = [
-        scalar("Wavelength R", 650.),
-        scalar("Wavelength G", 570.),
-        scalar("Wavelength B", 475.),
+        authored(["Sky light: Wavelength (R)", "Wavelength R"], 650.),
+        authored(["Sky light: Wavelength (G)", "Wavelength G"], 570.),
+        authored(["Sky light: Wavelength (B)", "Wavelength B"], 475.),
     ];
-    let night_zenith = color("Night sky zenith color", [0.01, 0.025, 0.065]);
-    let night_horizon = color("Night sky horizon color", [0.025, 0.035, 0.065]);
+    let night_zenith = authored_color(
+        ["Night sky: Zenith color", "Night sky zenith color"],
+        [0.01, 0.025, 0.065],
+    );
+    let night_horizon = authored_color(
+        ["Night sky: Horizon color", "Night sky horizon color"],
+        [0.025, 0.035, 0.065],
+    );
     let scene_key = scalar("Scene key", 0.18).clamp(0.005, 4.0);
     let low = scalar("Min exposure", 0.125).clamp(0.01, 8.);
     let high = scalar("Max exposure", 8.).clamp(low, 64.);
@@ -529,13 +565,27 @@ pub(super) fn atmosphere_uniform(
             night_zenith[0],
             night_zenith[1],
             night_zenith[2],
-            scalar("Night sky zenith color multiplier", 1.).clamp(0., 10.),
+            authored(
+                [
+                    "Night sky: Zenith color multiplier",
+                    "Night sky zenith color multiplier",
+                ],
+                1.,
+            )
+            .clamp(0., 10.),
         ],
         [
             night_horizon[0],
             night_horizon[1],
             night_horizon[2],
-            scalar("Night sky horizon color multiplier", 1.).clamp(0., 10.),
+            authored(
+                [
+                    "Night sky: Horizon color multiplier",
+                    "Night sky horizon color multiplier",
+                ],
+                1.,
+            )
+            .clamp(0., 10.),
         ],
         [
             exposure,
@@ -543,7 +593,221 @@ pub(super) fn atmosphere_uniform(
             scalar("Saturation", 1.).clamp(0., 2.),
             hour,
         ],
+        {
+            let radial = color("Fog color (radial)", [0.0; 3]);
+            let scale = scalar("Fog color (radial) multiplier", 1.).max(0.);
+            [
+                radial[0] * scale,
+                radial[1] * scale,
+                radial[2] * scale,
+                scalar("Fog radial size", 0.75).clamp(0., 0.999),
+            ]
+        },
+        {
+            let top = color("Fog color (top)", [0.0; 3]);
+            let scale = scalar("Fog color (top) multiplier", 1.).max(0.);
+            [
+                top[0] * scale,
+                top[1] * scale,
+                top[2] * scale,
+                scalar("Night sky: Zenith shift", 0.5).clamp(0.01, 1.),
+            ]
+        },
     ]
+}
+
+/// The sun the map records for its authored mission time. Other hours rotate
+/// from this reference; the rotation axis is a preview choice, not engine data.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct AuthoredSun {
+    pub to_sun: [f32; 3],
+    pub hour: f32,
+}
+
+fn xml_attribute<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    // The leading space keeps "x" from matching a longer name like "_x".
+    let marker = format!(" {name}=\"");
+    let start = text.find(&marker)? + marker.len();
+    let length = text[start..].find('"')?;
+    Some(&text[start..start + length])
+}
+
+fn parse_authored_sun(mission: &str) -> Option<AuthoredSun> {
+    let vector = xml_attribute(mission, "SunVector")?
+        .split(',')
+        .map(|value| value.trim().parse::<f32>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    let [x, y, z] = vector.as_slice() else {
+        return None;
+    };
+    let length = (x * x + y * y + z * z).sqrt();
+    if !length.is_finite() || length < 0.001 {
+        return None;
+    }
+    let (hours, minutes) = xml_attribute(mission, "Time")?.split_once(':')?;
+    let hour = hours.parse::<f32>().ok()? + minutes.parse::<f32>().ok()? / 60.0;
+    // SunVector points along the light's travel; shading wants toward the sun.
+    Some(AuthoredSun {
+        to_sun: [-x / length, -y / length, -z / length],
+        hour,
+    })
+}
+
+/// Read the mission from the same installation's `levels/<map>/level.pak`.
+pub(super) fn authored_sun(
+    archive: &evolve_core::ImportedPak,
+    map_name: &str,
+) -> Result<Option<AuthoredSun>, String> {
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let game = std::path::Path::new(&archive.source)
+        .parent()
+        .ok_or("Imported archive has no source folder")?
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches("//?/")
+        .to_ascii_lowercase();
+    let wanted = format!("{game}/levels/{}/level.pak", map_name.to_ascii_lowercase());
+    let library = evolve_core::imported_library(root).map_err(|e| e.to_string())?;
+    for candidate in &library.archives {
+        let source = candidate.source.replace('\\', "/");
+        if source.trim_start_matches("//?/").to_ascii_lowercase() != wanted {
+            continue;
+        }
+        let mission = std::path::Path::new(&candidate.directory)
+            .join("files")
+            .join("mission_mission0.xml");
+        let Ok(bytes) = std::fs::read(mission) else {
+            continue;
+        };
+        return Ok(parse_authored_sun(&String::from_utf8_lossy(&bytes)));
+    }
+    Ok(None)
+}
+
+fn xml_tuple(text: &str, name: &str) -> Option<Vec<f32>> {
+    xml_attribute(text, name)?
+        .split(',')
+        .map(|value| value.trim().parse::<f32>().ok())
+        .collect()
+}
+
+/// Mean HDR color of the smallest stored mip on each of a BC6H cubemap's faces.
+/// Each face's mip tail is stored largest first in the `.dds.0` head.
+fn cubemap_face_means(bytes: &[u8]) -> Result<[[f32; 3]; 6], String> {
+    const HEADER: usize = 148;
+    if bytes.len() <= HEADER || &bytes[84..88] != b"DX10" {
+        return Err("Probe cubemap is not a DX10 DDS".into());
+    }
+    let format = u32::from_le_bytes(bytes[128..132].try_into().unwrap());
+    if format != 95 && format != 96 {
+        return Err(format!("Unsupported probe cubemap format {format}"));
+    }
+    let payload = bytes.len() - HEADER;
+    let face = payload / 6;
+    if !payload.is_multiple_of(6) || !face.is_multiple_of(16) || face == 0 {
+        return Err("Probe cubemap mip tail has an unexpected size".into());
+    }
+    let mut means = [[0.0_f32; 3]; 6];
+    for (index, mean) in means.iter_mut().enumerate() {
+        let start = HEADER + face * (index + 1) - 16;
+        let mut pixels = [0.0_f32; 48];
+        bcdec_rs::bc6h_float(&bytes[start..start + 16], &mut pixels, 12, format == 96);
+        for pixel in pixels.as_chunks::<3>().0 {
+            for (channel, value) in mean.iter_mut().zip(pixel) {
+                *channel += value.max(0.0) / 16.0;
+            }
+        }
+    }
+    Ok(means)
+}
+
+/// Baked ambient per direction from the widest EnvironmentLight in the layers.
+pub(super) fn authored_ambient_cube(
+    archive: &evolve_core::ImportedPak,
+    layers: &[(String, Vec<u8>)],
+) -> Result<Option<[[f32; 4]; 6]>, String> {
+    let mut best: Option<(f32, String, [f32; 3])> = None;
+    for (_, bytes) in layers {
+        let text = String::from_utf8_lossy(bytes);
+        for (offset, _) in text.match_indices("EntityClass=\"EnvironmentLight\"") {
+            let object = &text[offset..];
+            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let Some(cubemap) = xml_attribute(object, "texture_deferred_cubemap") else {
+                continue;
+            };
+            let box_size = xml_attribute(object, "BoxSizeX")
+                .and_then(|value| value.parse::<f32>().ok())
+                .unwrap_or(0.0);
+            if best.as_ref().is_some_and(|(size, _, _)| *size >= box_size) {
+                continue;
+            }
+            let color = xml_tuple(object, "clrDiffuse").unwrap_or_default();
+            let scale = xml_attribute(object, "fDiffuseMultiplier")
+                .and_then(|value| value.parse::<f32>().ok())
+                .unwrap_or(1.0);
+            let tint = match color.as_slice() {
+                [r, g, b] => [r * scale, g * scale, b * scale],
+                _ => [scale; 3],
+            };
+            best = Some((box_size, cubemap.to_owned(), tint));
+        }
+    }
+    let Some((_, cubemap, tint)) = best else {
+        return Ok(None);
+    };
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    let stem = cubemap
+        .rsplit_once('.')
+        .map_or(cubemap.as_str(), |(stem, _)| stem);
+    let Some(path) = indexed_source(root, &build, &format!("{stem}.dds.0"))? else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let means = cubemap_face_means(&bytes)?;
+    Ok(Some(std::array::from_fn(|face| {
+        [
+            means[face][0] * tint[0],
+            means[face][1] * tint[1],
+            means[face][2] * tint[2],
+            0.0,
+        ]
+    })))
+}
+
+/// The map's authored color chart, read from the same installation.
+pub(super) fn authored_color_chart(
+    archive: &evolve_core::ImportedPak,
+    environment: &[u8],
+) -> Result<Option<image::RgbaImage>, String> {
+    let text = String::from_utf8_lossy(environment);
+    let Some(chart) = xml_attribute(&text, "Chart").filter(|chart| !chart.is_empty()) else {
+        return Ok(None);
+    };
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    let stem = chart.rsplit_once('.').map_or(chart, |(stem, _)| stem);
+    let Some(path) = indexed_source(root, &build, &format!("{stem}.dds.0"))? else {
+        return Ok(None);
+    };
+    let (_, image) = evolve_core::decode_dds_rgba(&path).map_err(|e| e.to_string())?;
+    if image.dimensions() != (256, 16) {
+        return Err(format!(
+            "Unexpected color chart size {:?}",
+            image.dimensions()
+        ));
+    }
+    Ok(Some(image))
 }
 
 /// Verified authored static sky: CryEngine's Sky material packs four sides

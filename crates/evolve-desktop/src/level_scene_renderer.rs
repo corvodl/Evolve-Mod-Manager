@@ -26,8 +26,9 @@ use std::time::Instant;
 
 const MAX_ARCHIVES: usize = 1_024;
 const MAX_MODELS: usize = 1_024;
-const MAX_VERTICES: usize = 1_500_000;
-const MAX_INDICES: usize = 4_500_000;
+// A 2048-sample heightmap alone is about 4.2M vertices and 25M indices.
+const MAX_VERTICES: usize = 4_500_000;
+const MAX_INDICES: usize = 26_000_000;
 const MAX_SURFACES: usize = 2_048;
 
 #[derive(Clone, Debug, Default)]
@@ -422,6 +423,9 @@ fn neutral(first_index: u32, index_count: u32) -> Surface {
         visible: true,
         transparent: false,
         foliage_cutout: false,
+        distance_clouds: None,
+        uv_transform: None,
+        material_tint: None,
         alpha_cutoff: 0.5,
         diffuse: None,
         normal: None,
