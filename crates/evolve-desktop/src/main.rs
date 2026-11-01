@@ -13164,7 +13164,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     // the editor viewport.
                     state.status = format!(
                         "Map {map_name} opened {} · {} source notes (see Diagnostics)",
-                        if state.level_read_only { "read-only" } else { "as project" },
+                        if state.level_read_only {
+                            "read-only"
+                        } else {
+                            "as project"
+                        },
                         state.level_diagnostics.len(),
                     );
                     state.page = Some(Page::Levels);
@@ -15018,8 +15022,10 @@ mod project_edit_tests {
         assert!(short.chars().count() <= 111);
         assert!(short.ends_with('…'));
         assert!(!short.contains('\n'));
-        assert_eq!(compact_footer_status("Map opened read-only · 28 notes"),
-                   "Map opened read-only · 28 notes");
+        assert_eq!(
+            compact_footer_status("Map opened read-only · 28 notes"),
+            "Map opened read-only · 28 notes"
+        );
         assert_eq!(compact_footer_status("a\r\n b\t c"), "a b c");
     }
 
