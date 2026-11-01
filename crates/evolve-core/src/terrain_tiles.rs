@@ -279,6 +279,7 @@ pub fn read_terrain_rgb24_tiles(
                 "RGB24 terrain atlas exceeds 4096-pixel preview limit",
             ));
         }
+
         if tile_index == 0 {
             tile_dim = width;
             image = Some(RgbaImage::from_pixel(
@@ -315,7 +316,10 @@ pub fn read_terrain_rgb24_tiles(
                 let dest_y = tile_x * width + col;
                 let to = (dest_y * atlas_dim + dest_x) * 4;
                 let destination = &mut atlas.as_mut()[to..to + 4];
-                destination[..3].copy_from_slice(&pixels[from..from + 3]);
+                // Stored blue first. Read as RGB, every map's earth turns blue-gray.
+                destination[0] = pixels[from + 2];
+                destination[1] = pixels[from + 1];
+                destination[2] = pixels[from];
                 destination[3] = 255;
             }
         }
@@ -377,7 +381,8 @@ mod tests {
         assert_eq!(atlas.color_format, 3);
         for (x, y, index) in [(0, 0, 0), (0, 4, 1), (4, 0, 2), (4, 4, 3)] {
             let sample = atlas.image.get_pixel(x, y);
-            assert_eq!(&sample.0[..3], &colors[index]);
+            let [blue, green, red] = colors[index];
+            assert_eq!(&sample.0[..3], &[red, green, blue]);
             assert_eq!(sample.0[3], 255);
         }
         std::fs::write(&paths[3], b"short").unwrap();
@@ -399,8 +404,8 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         let atlas = read_terrain_rgb24_tiles(&[path], 1).unwrap();
         // Source row=1, col=3 moves to atlas X=1, Y=3.
-        assert_eq!(atlas.image.get_pixel(1, 3).0, [90, 40, 17, 255]);
-        assert_eq!(atlas.image.get_pixel(3, 1).0, [30, 120, 17, 255]);
+        assert_eq!(atlas.image.get_pixel(1, 3).0, [17, 40, 90, 255]);
+        assert_eq!(atlas.image.get_pixel(3, 1).0, [17, 120, 30, 255]);
     }
 
     #[test]
@@ -425,10 +430,10 @@ mod tests {
         let atlas = read_terrain_rgb24_tiles(&paths, side).unwrap();
         assert_eq!(atlas.image.dimensions(), (16, 16));
         assert_eq!(atlas.decoded_tiles, 16);
-        assert_eq!(atlas.image.get_pixel(0, 0).0, [0, 0, 120, 255]);
-        assert_eq!(atlas.image.get_pixel(15, 0).0, [0, 150, 120, 255]);
-        assert_eq!(atlas.image.get_pixel(0, 15).0, [150, 0, 120, 255]);
-        assert_eq!(atlas.image.get_pixel(15, 15).0, [150, 150, 120, 255]);
+        assert_eq!(atlas.image.get_pixel(0, 0).0, [120, 0, 0, 255]);
+        assert_eq!(atlas.image.get_pixel(15, 0).0, [120, 150, 0, 255]);
+        assert_eq!(atlas.image.get_pixel(0, 15).0, [120, 0, 150, 255]);
+        assert_eq!(atlas.image.get_pixel(15, 15).0, [120, 150, 150, 255]);
         assert!(read_terrain_rgb24_tiles(&paths[..15], side).is_err());
         std::fs::write(&paths[15], b"invalid truncated tile").unwrap();
         assert!(read_terrain_rgb24_tiles(&paths, side).is_err());

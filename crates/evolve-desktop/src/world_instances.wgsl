@@ -15,7 +15,12 @@ struct Camera {
 // The fourth alpha uniform component is the minimum fully uploaded mip
 // level for a progressive diffuse; fragment sampling must not access a
 // not-yet-populated higher-resolution GPU mip.
-@group(0) @binding(4) var<uniform> authored_cutoff: vec4<f32>;
+struct SurfaceParams {
+  cutoff: vec4<f32>,
+  clouds: vec4<f32>, // authored tint, then cloud exposure or ambient share
+  uv: vec4<f32>,     // authored diffuse tiling, then scroll per second
+}
+@group(0) @binding(4) var<uniform> authored: SurfaceParams;
 // Viewport-only time-of-day lighting. Never reads or edits game engine state.
 struct TimeOfDayLight {
   sun: vec4<f32>,
@@ -34,6 +39,9 @@ struct TimeOfDayLight {
 struct FogPreview {
   color: vec4<f32>,
   params: vec4<f32>, // enabled, inverse ViewDistance, scaled LDR density, reserved
+  radial: vec4<f32>, // authored sun-side color, radial size
+  top: vec4<f32>,    // authored top color, radial lobe
+  ramp: vec4<f32>,   // ramp start, end, influence, global density
 }
 @group(0) @binding(10) var<uniform> fog: FogPreview;
 // Authored TimeOfDay height/density samples. The additional binding is only
@@ -72,6 +80,52 @@ struct SourceTerrainParams {
 }
 @group(0) @binding(17) var<uniform> source_terrain: SourceTerrainParams;
 @group(0) @binding(18) var source_terrain_repeat: sampler;
+@group(0) @binding(19) var source_terrain_normals: texture_2d_array<f32>;
+// Tangent XY of the blended terrain layers, read by the normal step in shade.
+var<private> terrain_normal_xy: vec2<f32>;
+
+// Sun shadow cascades, nearest first. Depth runs from 0 at the sun outward.
+struct SunShadows {
+  matrices: array<mat4x4<f32>,4>,
+  control: vec4<f32>, // enabled, texel size, ambient cube enabled, reserved
+  // The map's global probe per direction: +X, -X, +Y, -Y, +Z, -Z.
+  ambient_cube: array<vec4<f32>,6>,
+  probe_tint: vec4<f32>,
+}
+@group(1) @binding(0) var<uniform> sun_shadows: SunShadows;
+@group(1) @binding(1) var shadow_depth: texture_depth_2d_array;
+@group(1) @binding(2) var shadow_compare: sampler_comparison;
+@group(1) @binding(3) var probe_cube: texture_cube<f32>;
+@group(1) @binding(4) var probe_sampler: sampler;
+
+fn authored_ambient(n:vec3<f32>)->vec3<f32> {
+  if (sun_shadows.control.z<0.5) { return light.ambient.rgb; }
+  let weight=n*n;
+  let x=select(sun_shadows.ambient_cube[1],sun_shadows.ambient_cube[0],n.x>=0.0).rgb;
+  let y=select(sun_shadows.ambient_cube[3],sun_shadows.ambient_cube[2],n.y>=0.0).rgb;
+  let z=select(sun_shadows.ambient_cube[5],sun_shadows.ambient_cube[4],n.z>=0.0).rgb;
+  return x*weight.x+y*weight.y+z*weight.z;
+}
+
+fn sun_visibility(world:vec3<f32>, normal:vec3<f32>, facing:f32)->f32 {
+  if (sun_shadows.control.x<0.5) { return 1.0; }
+  let distance_scale=max(length(world-camera.origin.xyz)*0.0012,0.02);
+  let offset=world+normal*distance_scale*(1.2-facing);
+  for (var index:i32=0;index<4;index=index+1) {
+    let projected=sun_shadows.matrices[index]*vec4<f32>(offset,1.0);
+    if (any(abs(projected.xy)>vec2<f32>(0.985))) { continue; }
+    let uv=vec2<f32>(projected.x*0.5+0.5,0.5-projected.y*0.5);
+    var lit=0.0;
+    for (var y:i32=-1;y<=1;y=y+1) {
+      for (var x:i32=-1;x<=1;x=x+1) {
+        lit+=textureSampleCompareLevel(shadow_depth,shadow_compare,
+          uv+vec2<f32>(f32(x),f32(y))*sun_shadows.control.y,index,projected.z);
+      }
+    }
+    return lit/9.0;
+  }
+  return 1.0;
+}
 
 fn authored_scene_linear(color:vec3<f32>)->vec3<f32> {
   // Preserve source TimeOfDay exposure and saturation in linear light.
@@ -106,7 +160,8 @@ fn vs_main(
       dot(delta,camera.right.xyz)/camera.right.w,
       dot(delta,camera.up.xyz)/camera.up.w,
       d-camera.forward.w,d);
-  out.uv=uv;
+  // camera.origin.w carries seconds since the map opened.
+  out.uv=uv*authored.uv.xy+authored.uv.zw*camera.origin.w;
   // Source actors may scale their X/Y/Z axes independently. Transforming
   // normals with the model matrix makes cliffs, buildings and foliage shade
   // incorrectly. The cofactor columns are the inverse-transpose basis;
@@ -132,7 +187,7 @@ fn sample_source_albedo(uv:vec2<f32>)->vec4<f32> {
   let dy=dpdy(uv)*size;
   let area=max(max(dot(dx,dx),dot(dy,dy)),0.000001);
   let implicit_lod=max(0.0,0.5*log2(area));
-  let safe_lod=max(implicit_lod, authored_cutoff.w);
+  let safe_lod=max(implicit_lod, authored.cutoff.w);
   return textureSampleLevel(albedo,tex_sampler,uv,safe_lod);
 }
 
@@ -176,6 +231,10 @@ fn original_terrain_detail(input:Output)->vec3<f32> {
         source_terrain_layers,source_terrain_repeat,uv,layer,lod
       ).rgb;
       signed_color+=(detail-vec3<f32>(128.0/255.0))*config.w*weights[neighbor];
+      let layer_normal=textureSampleLevel(
+        source_terrain_normals,source_terrain_repeat,uv,layer,lod
+      ).rg*2.0-vec2<f32>(1.0);
+      terrain_normal_xy+=layer_normal*weights[neighbor];
       break;
     }
   }
@@ -199,7 +258,7 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
     let detail=textureSample(terrain_detail,tex_sampler,input.uv);
     signed_detail=(detail.rgb-vec3<f32>(128.0/255.0))*detail.a;
   }
-  base=vec4<f32>(clamp(base.rgb+signed_detail,vec3<f32>(0.0),vec3<f32>(1.0)),base.a);
+  base=vec4<f32>(clamp(base.rgb+signed_detail,vec3<f32>(0.0),vec3<f32>(1.0))*authored.clouds.rgb,base.a);
   if (use_opacity_mask) {
     let coverage=textureSample(authored_opacity,tex_sampler,input.uv).r;
     if (coverage < 0.5) { discard; }
@@ -211,6 +270,13 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   if (dot(n,n)<0.000001) { n=face_normal; }
   if (dot(n,n)<0.000001) { n=vec3<f32>(0.0,0.0,1.0); }
   n=normalize(n);
+  if (dot(terrain_normal_xy,terrain_normal_xy)>0.000001) {
+    // Painted layers tile across world XY, so that plane is their tangent basis.
+    let t=normalize(vec3<f32>(1.0,0.0,0.0)-n*n.x);
+    let b=normalize(vec3<f32>(0.0,1.0,0.0)-n*n.y);
+    let z=sqrt(max(0.0,1.0-min(dot(terrain_normal_xy,terrain_normal_xy),1.0)));
+    n=normalize(t*terrain_normal_xy.x+b*terrain_normal_xy.y+n*z);
+  }
 
   // Original BC5 normal maps store tangent XY in linear space. Reconstruct Z,
   // then derive a basis from the unchanged original UV0 and world geometry.
@@ -223,7 +289,7 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   let encoded=textureSample(normal_map,tex_sampler,input.uv).rg;
   let xy=encoded*2.0-vec2<f32>(1.0);
   let tangent_z=sqrt(max(0.0,1.0-dot(xy,xy)));
-  if (authored_cutoff.z>0.5 && abs(determinant)>0.000001) {
+  if (authored.cutoff.z>0.5 && abs(determinant)>0.000001) {
     let tangent_raw=(pos_dx*uv_dy.y-pos_dy*uv_dx.y)/determinant;
     let bitangent_raw=(pos_dy*uv_dx.x-pos_dx*uv_dy.x)/determinant;
     let tangent=tangent_raw-n*dot(n,tangent_raw);
@@ -240,7 +306,8 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
 
   let sun_direction=normalize(light.sun.xyz);
   let lambert=max(dot(n,sun_direction),0.0);
-  let sun=light.sun_color.rgb*(light.sun.w*lambert);
+  let visibility=sun_visibility(input.world,normalize(input.normal+vec3<f32>(0.0,0.0,0.0001)),lambert);
+  let sun=light.sun_color.rgb*(light.sun.w*lambert*visibility);
   // Source-authored specular reflectance and gloss are separate channels.
   // A missing specular map is black (never invent shiny materials).
   let reflectance=textureSample(specular_map,tex_sampler,input.uv).rgb;
@@ -249,7 +316,13 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   let half_direction=normalize(sun_direction+view_direction);
   let exponent=mix(8.0,120.0,clamp(gloss,0.0,1.0));
   let highlight=pow(max(dot(n,half_direction),0.0),exponent);
-  let specular=reflectance*light.sun_color.rgb*(light.sun.w*0.6*highlight);
+  let specular=reflectance*light.sun_color.rgb*(light.sun.w*0.6*highlight*visibility);
+  // Reflect the map's baked probe. Only materials with authored specular do.
+  let view_angle=1.0-max(dot(n,view_direction),0.0);
+  let fresnel=reflectance+(vec3<f32>(1.0)-reflectance)*pow(view_angle,5.0);
+  let has_specular=step(0.001,max(reflectance.r,max(reflectance.g,reflectance.b)));
+  let reflected=textureSampleLevel(probe_cube,probe_sampler,
+    reflect(-view_direction,n),0.0).rgb*sun_shadows.probe_tint.rgb*fresnel*has_specular;
   var local_radiance=vec3<f32>(0.0);
   let sources=u32(clamp(local_lights.count.x,0.0,24.0));
   for (var i=0u;i<24u;i=i+1u) {
@@ -285,8 +358,8 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // channels. Do not divide it by three and normalize it away before HDR;
   // the filmic output pass bounds highlights, while true bloom remains a
   // separate post-processing feature. No guessed emission for plain Illum.
-  let preview_glow=emission*max(authored_cutoff.y,0.0)*0.65;
-  return vec4<f32>(base.rgb*(light.ambient.rgb+sun)+specular+local_radiance+preview_glow,base.a);
+  let preview_glow=emission*max(authored.cutoff.y,0.0)*0.65;
+  return vec4<f32>(base.rgb*(authored_ambient(n)*authored.clouds.w+sun)+specular+reflected+local_radiance+preview_glow,base.a);
 }
 
 // A visually bounded preview heuristic, not an Evolve fog equation. Applying
@@ -313,10 +386,26 @@ fn height_fog_depth(input:Output, distance:f32)->f32 {
 
 fn distance_fog(input:Output, color:vec4<f32>)->vec4<f32> {
   if (fog.params.x < 0.5) { return color; }
-  let distance=length(camera.origin.xyz-input.world);
+  let to_fragment=input.world-camera.origin.xyz;
+  let distance=length(to_fragment);
   var depth=distance*fog.params.y*fog.params.z;
   if (height_fog.control.x > 0.5) {
     depth=height_fog_depth(input,distance);
+    let span=max(height_fog.heights_density.y-height_fog.heights_density.x,0.01);
+    let h=clamp((input.world.z-height_fog.heights_density.x)/span,0.0,1.0);
+    let graded=h*(2.0-h);
+    let ramp_span=max(fog.ramp.y-fog.ramp.x,0.01);
+    var ramp=clamp((distance-fog.ramp.x)/ramp_span,0.0,1.0);
+    ramp=mix(1.0,ramp*(2.0-ramp),fog.ramp.z);
+    var haze=mix(fog.color.rgb,fog.top.rgb,graded);
+    // Authored sun-side lobe. Its shape is calibrated, not decoded engine math.
+    let reach=clamp(distance*fog.params.y,0.0,1.0);
+    let sharpness=1.0/max(1.0-fog.radial.w,0.001);
+    let toward_sun=dot(to_fragment/max(distance,0.001),normalize(light.sun.xyz));
+    let lobe=pow(reach,fog.top.w)*pow(2.0,(toward_sun-1.0)*sharpness);
+    haze+=fog.radial.rgb*lobe;
+    let amount=(1.0-exp(-depth*fog.ramp.w))*ramp;
+    return vec4<f32>(mix(color.rgb,haze,clamp(amount,0.0,1.0)),color.a);
   }
   let amount=clamp(1.0-exp(-depth),0.0,0.92);
   return vec4<f32>(mix(color.rgb,fog.color.rgb,amount),color.a);
@@ -349,10 +438,17 @@ fn fs_foliage(input:Output)->@location(0) vec4<f32> {
   // Discarded fragments neither write depth nor reveal the desktop; surviving
   // fragments write opaque window alpha and regular world depth.
   let leaf_alpha=sample_source_albedo(input.uv).a;
-  if (leaf_alpha < authored_cutoff.x) { discard; }
+  if (leaf_alpha < authored.cutoff.x) { discard; }
   let color=shade(input,false);
   let fogged=distance_fog(input,color);
   return vec4<f32>(authored_scene_linear(fogged.rgb),1.0);
+}
+
+// Painted cloud domes are unlit and blend over the sky behind all geometry.
+@fragment
+fn fs_distance_clouds(input:Output)->@location(0) vec4<f32> {
+  let source=sample_source_albedo(input.uv);
+  return vec4<f32>(source.rgb*authored.clouds.rgb*authored.clouds.w,source.a);
 }
 
 @fragment

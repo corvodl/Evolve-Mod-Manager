@@ -7,7 +7,7 @@
 struct Camera {
   origin:vec4<f32>, forward:vec4<f32>, right:vec4<f32>, up:vec4<f32>,
 }
-struct SourceAtmosphere { params:array<vec4<f32>,8>, }
+struct SourceAtmosphere { params:array<vec4<f32>,10>, }
 struct TimeOfDayLight {sun:vec4<f32>,ambient:vec4<f32>,sun_color:vec4<f32>,}
 @group(0) @binding(0) var<uniform> camera:Camera;
 @group(0) @binding(1) var<uniform> sky:SourceAtmosphere;
@@ -111,13 +111,16 @@ fn dynamic_sky(direction:vec3<f32>)->vec3<f32> {
   let natural=(scattering*sun_rad*3.0 +
       sky.params[3].rgb*(0.10+0.22*max(direction.z,0.0)))*max(sun_dir.z+0.08,0.0);
   let disk=smoothstep(0.9993,0.99995,mu)*max(sun_dir.z+0.04,0.0);
-  let night_mix=1.0-smoothstep(-0.12,0.10,sun_dir.z);
-  let sky_night=mix(sky.params[6].rgb*sky.params[6].w,
-      sky.params[5].rgb*sky.params[5].w,
-      smoothstep(-0.03,0.95,cos_zenith));
-  let horizon_haze=sky.params[4].rgb * exp(-abs(direction.z)*12.0)*0.15;
-  return max(mix(natural+sun_rad*disk*0.7+horizon_haze,
-      sky_night,night_mix),vec3<f32>(0.0));
+  // Maps author these gradient colors for daytime as well as night, which is
+  // where the warm horizon comes from. Blend shape and haze are calibrated.
+  let height=clamp(direction.z/sky.params[9].w,0.0,1.0);
+  let gradient=mix(sky.params[6].rgb*sky.params[6].w,
+      sky.params[5].rgb*sky.params[5].w,height*(2.0-height));
+  let sharpness=1.0/max(1.0-sky.params[8].w,0.001);
+  let sun_side=sky.params[8].rgb*pow(2.0,(mu-1.0)*sharpness);
+  let horizon=exp(-max(direction.z,0.0)*7.0);
+  return max(natural+sun_rad*disk*0.7+gradient+sun_side*(0.35+0.65*horizon)+
+      sky.params[9].rgb*horizon,vec3<f32>(0.0));
 }
 
 @fragment

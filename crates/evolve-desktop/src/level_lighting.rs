@@ -78,6 +78,40 @@ impl Lighting {
         lit
     }
 
+    /// Use the map's recorded sun at its authored hour. Maps with no authored
+    /// sky ambient variable get a neutral level tinted by the sky light color.
+    pub fn with_authored_sun(
+        mut self,
+        sun: Option<super::level_atmosphere::AuthoredSun>,
+        hour: f32,
+        source: &super::level_environment::TimeOfDay,
+    ) -> Self {
+        if let Some(sun) = sun {
+            let [x, y, z] = sun.to_sun;
+            // Turn about the horizontal axis across the sun's heading.
+            let flat = (x * x + y * y).sqrt().max(0.001);
+            let axis = [-y / flat, x / flat, 0.0];
+            let (sin, cos) = ((hour - sun.hour) * 15.0).to_radians().sin_cos();
+            let along = axis[0] * x + axis[1] * y;
+            let cross = [axis[1] * z, -axis[0] * z, axis[0] * y - axis[1] * x];
+            self.sun[0] = x * cos + cross[0] * sin + axis[0] * along * (1.0 - cos);
+            self.sun[1] = y * cos + cross[1] * sin + axis[1] * along * (1.0 - cos);
+            self.sun[2] = z * cos + cross[2] * sin;
+            self.sun[3] = ((self.sun[2] + 0.08) / 0.18).clamp(0.0, 1.0);
+        }
+        if source.color("Sky color", hour).is_none()
+            && source.color("Sky light color", hour).is_none()
+        {
+            let tint = source
+                .color("Sky light: Sun intensity", hour)
+                .unwrap_or([1.0; 3]);
+            for (channel, tinted) in self.ambient[..3].iter_mut().zip(tint) {
+                *channel = 0.11 + 0.09 * tinted.clamp(0.0, 1.0);
+            }
+        }
+        self
+    }
+
     pub fn label(hour: f32) -> String {
         let minutes = ((hour.clamp(0.0, 24.0) * 60.0).round() as u32) % 1440;
         format!("{:02}:{:02}", minutes / 60, minutes % 60)

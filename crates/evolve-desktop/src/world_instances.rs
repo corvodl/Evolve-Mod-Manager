@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 // Ordinary world-model diffuse textures are limited to 32 MiB so one map
@@ -589,6 +589,10 @@ pub(super) struct World {
     /// DDS images; the baked atlas stays available independently.
     pub terrain_gpu: Option<Arc<super::terrain_material_probe::GpuTerrainSource>>,
     pub sky_source: super::level_atmosphere::SkySource,
+    pub authored_sun: Option<super::level_atmosphere::AuthoredSun>,
+    pub ambient_cube: Option<[[f32; 4]; 6]>,
+    pub probe_cube: Option<Arc<super::level_atmosphere::ProbeCube>>,
+    pub color_chart: Option<Arc<image::RgbaImage>>,
     pub static_sky: Option<Arc<super::level_atmosphere::StaticSky>>,
     pub local_lights: Arc<Vec<super::level_atmosphere::LocalLight>>,
     pub gpu_progress: Arc<GpuProgress>,
@@ -767,6 +771,37 @@ impl World {
     /// Compute exact content identities on the import worker before the GPU
     /// viewport starts. Avoid hashing multi-megabyte source textures on the
     /// rendering thread, where it would produce the very stalls we are fixing.
+    /// The map's authored shoulder, midtones, toe and whitepoint at this hour.
+    pub fn film_curve(&self, hour: f32) -> [f32; 4] {
+        let sample = |name: &str, default: f32| {
+            self.time_of_day
+                .as_ref()
+                .and_then(|profile| profile.scalar(name, hour))
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .unwrap_or(default)
+        };
+        [
+            sample("Film curve shoulder scale", 1.0),
+            sample("Film curve midtones scale", 1.0),
+            sample("Film curve toe scale", 1.0),
+            sample("Film curve whitepoint", 4.0),
+        ]
+    }
+
+    /// The map's authored scene key and exposure limits at this hour.
+    pub fn eye_adaptation(&self, hour: f32) -> [f32; 4] {
+        let Some(profile) = self.time_of_day.as_ref() else {
+            return [0.18, 1.0, 1.0, 0.0];
+        };
+        let key = profile.scalar("Scene key", hour).unwrap_or(0.18).max(0.001);
+        let low = profile
+            .scalar("Min exposure", hour)
+            .unwrap_or(1.0)
+            .max(0.001);
+        let high = profile.scalar("Max exposure", hour).unwrap_or(1.0).max(low);
+        [key, low, high, 1.0]
+    }
+
     pub fn precompute_gpu_source_hashes(&mut self) {
         let mut hashes = SourceKeys::new();
         for group in &self.groups {
@@ -891,6 +926,8 @@ fn all_group_instances(group: &ModelGroup) -> Vec<InstanceGpu> {
 struct TerrainGpuTextures {
     _layers: wgpu::Texture,
     layer_view: wgpu::TextureView,
+    _normals: wgpu::Texture,
+    normal_view: wgpu::TextureView,
     _paint: wgpu::Texture,
     paint_view: wgpu::TextureView,
     uniforms: wgpu::Buffer,
@@ -907,58 +944,81 @@ fn upload_terrain_layers(
         .map_or((1, 1), |layer| layer.image.dimensions());
     let depth = source.map_or(1, |s| s.layers.len().max(1)) as u32;
     let count = dimensions.0.max(dimensions.1).ilog2() + 1;
-    let layers = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Full native-resolution original terrain material diffuse arrays"),
-        size: wgpu::Extent3d {
-            width: dimensions.0,
-            height: dimensions.1,
-            depth_or_array_layers: depth,
-        },
-        mip_level_count: count,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    for layer in 0..depth {
-        let src = source.and_then(|s| s.layers.get(layer as usize));
-        for mip in 0..count {
-            let w = (dimensions.0 >> mip).max(1);
-            let h = (dimensions.1 >> mip).max(1);
-            let pixels = src.map(|l| next_diffuse_mip(&l.image, mip));
-            let fallback = [128u8, 128, 128, 255];
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &layers,
-                    mip_level: mip,
-                    origin: wgpu::Origin3d {
-                        x: 0,
-                        y: 0,
-                        z: layer,
+    // A layer without an authored map reads as neutral: gray detail, flat normal.
+    let layer_array = |label, fallback: [u8; 4], picks: Vec<Option<&image::RgbaImage>>| {
+        let layers = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: dimensions.0,
+                height: dimensions.1,
+                depth_or_array_layers: depth,
+            },
+            mip_level_count: count,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for layer in 0..depth {
+            let src = picks.get(layer as usize).copied().flatten();
+            for mip in 0..count {
+                let w = (dimensions.0 >> mip).max(1);
+                let h = (dimensions.1 >> mip).max(1);
+                let pixels = src.map(|image| next_diffuse_mip(image, mip));
+                let flat;
+                let bytes = match &pixels {
+                    Some(image) => image.as_raw().as_slice(),
+                    None => {
+                        flat = fallback.repeat((w * h) as usize);
+                        flat.as_slice()
+                    }
+                };
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &layers,
+                        mip_level: mip,
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: layer,
+                        },
+                        aspect: wgpu::TextureAspect::All,
                     },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                pixels
-                    .as_ref()
-                    .map_or(fallback.as_slice(), |img| img.as_raw()),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(w * 4),
-                    rows_per_image: Some(h),
-                },
-                wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
-            );
+                    bytes,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(w * 4),
+                        rows_per_image: Some(h),
+                    },
+                    wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
         }
-    }
-    let layer_view = layers.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::D2Array),
-        ..Default::default()
-    });
+        let view = layers.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        (layers, view)
+    };
+    let (layers, layer_view) = layer_array(
+        "Full native-resolution original terrain material diffuse arrays",
+        [128, 128, 128, 255],
+        source.map_or_else(Vec::new, |s| {
+            s.layers.iter().map(|l| Some(&l.image)).collect()
+        }),
+    );
+    let (normals, normal_view) = layer_array(
+        "Full native-resolution original terrain material normal arrays",
+        [128, 128, 255, 255],
+        source.map_or_else(Vec::new, |s| {
+            s.layers.iter().map(|l| l.normal.as_ref()).collect()
+        }),
+    );
     let paint = source.map_or_else(
         || image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255])),
         |s| s.paint.clone(),
@@ -1018,15 +1078,18 @@ fn upload_terrain_layers(
     TerrainGpuTextures {
         _layers: layers,
         layer_view,
+        _normals: normals,
+        normal_view,
         _paint: texture,
         paint_view,
         uniforms,
-        bytes: depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
+        bytes: 2 * depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
             + pw as u64 * ph as u64 * 4,
     }
 }
 
 struct GpuSurface {
+    distance_clouds: bool,
     diffuse_key: TextureKey,
     first: u32,
     count: u32,
@@ -1052,11 +1115,149 @@ struct GpuGroup {
     _terrain_source: Option<TerrainGpuTextures>,
     geometry_bytes: u64,
 }
+/// Upload a map's probe mip. With no probe, a black cube reflects nothing.
+fn upload_probe_cube(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cube: Option<&super::level_atmosphere::ProbeCube>,
+) -> wgpu::TextureView {
+    let side = cube.map_or(1, |cube| cube.side);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Original map environment probe"),
+        size: wgpu::Extent3d {
+            width: side,
+            height: side,
+            depth_or_array_layers: 6,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let black = [0u16; 4];
+    for face in 0..6u32 {
+        let pixels = cube.map_or(black.as_slice(), |cube| {
+            cube.faces[face as usize].as_slice()
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: face,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(pixels),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(side * 8),
+                rows_per_image: Some(side),
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    })
+}
+
+fn shadow_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform: &wgpu::Buffer,
+    depth: &wgpu::TextureView,
+    compare: &wgpu::Sampler,
+    probe: &wgpu::TextureView,
+    probe_sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Sun shadow cascades and environment probe"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(depth),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(compare),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(probe),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(probe_sampler),
+            },
+        ],
+    })
+}
+
+// Half-widths of the sun shadow cascades in meters, nearest first.
+const SHADOW_CASCADES: usize = 4;
+const SHADOW_RADII: [f32; SHADOW_CASCADES] = [40.0, 160.0, 640.0, 2400.0];
+const SHADOW_RESOLUTION: u32 = 4096;
+const SHADOW_DEPTH_RANGE: f32 = 6000.0;
+const SHADOW_MATRIX_STRIDE: u64 = 256;
+// While a map streams in, redraw shadows only after this many new groups.
+const SHADOW_REFRESH_GROUPS: usize = 48;
+
+/// World to light clip space, snapped to whole texels so edges hold still.
+fn shadow_matrix(center: [f32; 3], to_sun: [f32; 3], radius: f32) -> [[f32; 4]; 4] {
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let normalized = |v: [f32; 3]| {
+        let length = dot(v, v).sqrt().max(0.0001);
+        [v[0] / length, v[1] / length, v[2] / length]
+    };
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let z = normalized(to_sun);
+    let up = if z[2].abs() > 0.99 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let x = normalized(cross(up, z));
+    let y = cross(z, x);
+    let texel = radius * 2.0 / SHADOW_RESOLUTION as f32;
+    let snap = |value: f32| (value / texel).round() * texel;
+    let (cx, cy, cz) = (snap(dot(center, x)), snap(dot(center, y)), dot(center, z));
+    let depth = 0.5 / SHADOW_DEPTH_RANGE;
+    // Columns of u = (x.p - cx) / r, v = (y.p - cy) / r, d = 0.5 - (z.p - cz) * k.
+    [
+        [x[0] / radius, y[0] / radius, -z[0] * depth, 0.0],
+        [x[1] / radius, y[1] / radius, -z[1] * depth, 0.0],
+        [x[2] / radius, y[2] / radius, -z[2] * depth, 0.0],
+        [-cx / radius, -cy / radius, 0.5 + cz * depth, 1.0],
+    ]
+}
+
 pub(super) struct Renderer {
     solid: wgpu::RenderPipeline,
     terrain_source: wgpu::RenderPipeline,
     terrain_source_unlit: bool,
     foliage_cutout: wgpu::RenderPipeline,
+    distance_clouds: wgpu::RenderPipeline,
     transparent: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     sky_layout: wgpu::BindGroupLayout,
@@ -1095,6 +1296,24 @@ pub(super) struct Renderer {
     mip_round_robin_cursor: usize,
     peak_gpu_bytes: u64,
     last_camera: Option<CameraGpu>,
+    shadow_opaque: wgpu::RenderPipeline,
+    shadow_cutout: wgpu::RenderPipeline,
+    shadow_layers: Vec<wgpu::TextureView>,
+    shadow_pass_group: wgpu::BindGroup,
+    shadow_pass_buffer: wgpu::Buffer,
+    shadow_uniform: wgpu::Buffer,
+    shadow_group: wgpu::BindGroup,
+    shadow_centers: [[f32; 3]; SHADOW_CASCADES],
+    shadow_sun: [f32; 3],
+    shadow_stale: [AtomicBool; SHADOW_CASCADES],
+    started: std::time::Instant,
+    shadow_sample_layout: wgpu::BindGroupLayout,
+    shadow_array: wgpu::TextureView,
+    shadow_compare: wgpu::Sampler,
+    probe_sampler: wgpu::Sampler,
+    probe_tint: [f32; 4],
+    shadow_groups_seen: usize,
+    ambient_cube: Option<[[f32; 4]; 6]>,
 }
 impl Renderer {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
@@ -1141,7 +1360,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -1295,6 +1514,16 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 19,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let camera_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1310,7 +1539,7 @@ impl Renderer {
         });
         let fog_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Original map distance fog - non-native preview"),
-            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 2]),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 5]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let height_fog_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1330,7 +1559,7 @@ impl Renderer {
         });
         let sky_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Original map dynamic/static sky controls"),
-            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 8]),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 10]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1358,9 +1587,198 @@ impl Renderer {
                 "world_instances.wgsl"
             ))),
         });
+        let shadow_sample_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Sun shadow cascades sampled by the world"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::Cube,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Sun shadow cascades"),
+            size: wgpu::Extent3d {
+                width: SHADOW_RESOLUTION,
+                height: SHADOW_RESOLUTION,
+                depth_or_array_layers: SHADOW_CASCADES as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let shadow_layers = (0..SHADOW_CASCADES as u32)
+            .map(|layer| {
+                shadow_texture.create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: layer,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect::<Vec<_>>();
+        let shadow_array = shadow_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let shadow_compare = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Sun shadow comparison"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+        let shadow_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Sun shadow matrices"),
+            size: 64 * SHADOW_CASCADES as u64 + 16 + 16 * 6 + 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let probe_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Environment probe reflection"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let shadow_group = shadow_bind_group(
+            device,
+            &shadow_sample_layout,
+            &shadow_uniform,
+            &shadow_array,
+            &shadow_compare,
+            &upload_probe_cube(device, queue, None),
+            &probe_sampler,
+        );
+        let shadow_pass_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("One sun shadow cascade matrix"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(64),
+                    },
+                    count: None,
+                }],
+            });
+        let shadow_pass_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Sun shadow pass matrices"),
+            size: SHADOW_MATRIX_STRIDE * SHADOW_CASCADES as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let shadow_pass_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Sun shadow pass matrix"),
+            layout: &shadow_pass_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &shadow_pass_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(64),
+                }),
+            }],
+        });
+        let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Sun shadow cascades"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "world_shadow.wgsl"
+            ))),
+        });
+        let shadow_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Sun shadow pipeline"),
+            bind_group_layouts: &[&layout, &shadow_pass_layout],
+            push_constant_ranges: &[],
+        });
+        let shadow_pipeline = |cutout: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(if cutout {
+                    "Sun shadow alpha-tested vegetation"
+                } else {
+                    "Sun shadow solid geometry"
+                }),
+                layout: Some(&shadow_pipe_layout),
+                vertex: wgpu::VertexState {
+                    module: &shadow_shader,
+                    entry_point: Some("vs_shadow"),
+                    buffers: &[Vertex::layout(), InstanceGpu::layout()],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: cutout.then_some(wgpu::FragmentState {
+                    module: &shadow_shader,
+                    entry_point: Some("fs_shadow_cutout"),
+                    targets: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let shadow_opaque = shadow_pipeline(false);
+        let shadow_cutout = shadow_pipeline(true);
         let pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Instanced level model pipeline"),
-            bind_group_layouts: &[&layout],
+            bind_group_layouts: &[&layout, &shadow_sample_layout],
             push_constant_ranges: &[],
         });
         let make = |blend: bool, cutout: bool, raw_terrain: bool| {
@@ -1785,6 +2203,40 @@ impl Renderer {
             terrain_source: make(false, false, true),
             terrain_source_unlit: false,
             foliage_cutout: make(false, true, false),
+            distance_clouds: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Unlit authored DistanceClouds sky dome"),
+                layout: Some(&pipe_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Vertex::layout(), InstanceGpu::layout()],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_distance_clouds"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: false,
+                    depth_compare: wgpu::CompareFunction::Always,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            }),
             transparent: make(true, false, false),
             sky_pipeline,
             sky_layout,
@@ -1823,6 +2275,24 @@ impl Renderer {
             mip_round_robin_cursor: 0,
             peak_gpu_bytes: 0,
             last_camera: None,
+            shadow_opaque,
+            shadow_cutout,
+            shadow_layers,
+            shadow_pass_group,
+            shadow_pass_buffer,
+            shadow_uniform,
+            shadow_group,
+            shadow_centers: [[f32::MAX; 3]; SHADOW_CASCADES],
+            shadow_sun: [0.0, 0.0, 1.0],
+            shadow_stale: std::array::from_fn(|_| AtomicBool::new(true)),
+            started: std::time::Instant::now(),
+            shadow_sample_layout,
+            shadow_array,
+            shadow_compare,
+            probe_sampler,
+            probe_tint: [0.0; 4],
+            shadow_groups_seen: 0,
+            ambient_cube: None,
         }
     }
     #[expect(
@@ -2080,6 +2550,10 @@ impl Renderer {
                 hashes,
                 used_bytes,
             );
+            let params = surf
+                .distance_clouds
+                .or(surf.material_tint)
+                .unwrap_or([1.0; 4]);
             let alpha_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Authored per-material Vegetation AlphaTest"),
                 contents: bytemuck::cast_slice(&[
@@ -2087,6 +2561,14 @@ impl Renderer {
                     surf.emission_strength.clamp(0.0, 30.0),
                     if surf.normal.is_some() { 1.0 } else { 0.0 },
                     mip_min_level.get(&key).copied().unwrap_or(0) as f32,
+                    params[0],
+                    params[1],
+                    params[2],
+                    params[3],
+                    surf.uv_transform.map_or(1.0, |uv| uv[0]),
+                    surf.uv_transform.map_or(1.0, |uv| uv[1]),
+                    surf.uv_transform.map_or(0.0, |uv| uv[2]),
+                    surf.uv_transform.map_or(0.0, |uv| uv[3]),
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -2174,6 +2656,10 @@ impl Renderer {
                         binding: 18,
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 19,
+                        resource: wgpu::BindingResource::TextureView(&terrain_textures.normal_view),
+                    },
                 ],
             });
             surfaces.push(GpuSurface {
@@ -2182,6 +2668,7 @@ impl Renderer {
                 count: surf.index_count,
                 transparent: surf.transparent,
                 foliage_cutout: surf.foliage_cutout && diffuse_uploaded,
+                distance_clouds: surf.distance_clouds.is_some() && diffuse_uploaded,
                 bind,
                 _image: tex,
                 _opacity_image: opacity_tex,
@@ -2259,6 +2746,20 @@ impl Renderer {
             self.world_identity = key;
             self.last_full_textures = full_textures;
             self.last_camera = None;
+            self.shadow_groups_seen = 0;
+            self.ambient_cube = world.ambient_cube;
+            self.probe_tint = world.probe_cube.as_ref().map_or([0.0; 4], |cube| {
+                [cube.tint[0], cube.tint[1], cube.tint[2], 0.0]
+            });
+            self.shadow_group = shadow_bind_group(
+                device,
+                &self.shadow_sample_layout,
+                &self.shadow_uniform,
+                &self.shadow_array,
+                &self.shadow_compare,
+                &upload_probe_cube(device, queue, world.probe_cube.as_deref()),
+                &self.probe_sampler,
+            );
             self.last_lighting_hour = f32::NAN;
             self.update_sky_source(device, queue, world);
             self.update_light_point_sources(device, world);
@@ -2271,11 +2772,19 @@ impl Renderer {
             12.0
         };
         if self.last_lighting_hour != hour {
-            let lighting = world.time_of_day.as_ref().map_or_else(
-                || super::level_lighting::Lighting::at(hour),
-                |profile| super::level_lighting::Lighting::from_original(hour, profile),
-            );
+            let lighting =
+                world.time_of_day.as_ref().map_or_else(
+                    || super::level_lighting::Lighting::at(hour),
+                    |profile| {
+                        super::level_lighting::Lighting::from_original(hour, profile)
+                            .with_authored_sun(world.authored_sun, hour, profile)
+                    },
+                );
             let values = lighting.uniforms();
+            self.shadow_sun = [lighting.sun[0], lighting.sun[1], lighting.sun[2]];
+            for stale in &self.shadow_stale {
+                stale.store(true, Ordering::Relaxed);
+            }
             queue.write_buffer(&self.lighting_uniform, 0, bytemuck::cast_slice(&values));
             let sky = super::level_atmosphere::atmosphere_uniform(
                 world.time_of_day.as_deref(),
@@ -2285,8 +2794,8 @@ impl Renderer {
             );
             queue.write_buffer(&self.sky_uniform, 0, bytemuck::cast_slice(&sky));
             queue.write_buffer(&self.hdr_uniform, 0, bytemuck::cast_slice(&sky[7]));
-            let fog = world.fog_profile.map_or([[0.0_f32; 4]; 2], |profile| {
-                profile.preview_uniform(world.time_of_day.as_deref(), hour)
+            let fog = world.fog_profile.map_or([[0.0_f32; 4]; 5], |profile| {
+                profile.gpu_uniform(world.time_of_day.as_deref(), hour)
             });
             queue.write_buffer(&self.fog_uniform, 0, bytemuck::cast_slice(&fog));
             let height = world.fog_profile.map_or([[0.0_f32; 4]; 2], |profile| {
@@ -2498,7 +3007,141 @@ impl Renderer {
             // per-camera CPU culling or repeated instance-buffer upload.
             queue.write_buffer(&self.camera_uniform, 0, bytemuck::bytes_of(&uniform));
         }
+        // Wrapped so scrolling keeps its precision in a long session.
+        let seconds = self.started.elapsed().as_secs_f32() % 3600.0;
+        queue.write_buffer(&self.camera_uniform, 12, bytemuck::bytes_of(&seconds));
         self.last_camera = Some(uniform);
+        self.update_shadows(
+            queue,
+            camera,
+            yaw,
+            pitch,
+            pending + self.pending_diffuse.len(),
+        );
+    }
+
+    /// Geometry is static, so a cascade only redraws after the camera has moved
+    /// well inside it, the sun has changed, or more of the map has streamed in.
+    fn update_shadows(
+        &mut self,
+        queue: &wgpu::Queue,
+        camera: level_camera::Camera,
+        yaw: f32,
+        pitch: f32,
+        pending: usize,
+    ) {
+        let loaded = self.groups.iter().flatten().count();
+        if loaded >= self.shadow_groups_seen + SHADOW_REFRESH_GROUPS
+            || (pending == 0 && loaded != self.shadow_groups_seen)
+        {
+            self.shadow_groups_seen = loaded;
+            for stale in &self.shadow_stale {
+                stale.store(true, Ordering::Relaxed);
+            }
+        }
+        let (forward, _, _) = level_camera::basis(yaw, pitch);
+        let mut matrices = [[[0.0_f32; 4]; 4]; SHADOW_CASCADES];
+        let mut written = false;
+        for (index, radius) in SHADOW_RADII.into_iter().enumerate() {
+            // Spend most of each cascade on what the camera is looking at.
+            let wanted: [f32; 3] =
+                std::array::from_fn(|axis| camera.position[axis] + forward[axis] * radius * 0.45);
+            let moved = (0..3)
+                .map(|axis| (wanted[axis] - self.shadow_centers[index][axis]).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            if moved > radius * 0.15 {
+                self.shadow_centers[index] = wanted;
+                self.shadow_stale[index].store(true, Ordering::Relaxed);
+            }
+            matrices[index] = shadow_matrix(self.shadow_centers[index], self.shadow_sun, radius);
+            if self.shadow_stale[index].load(Ordering::Relaxed) {
+                written = true;
+                queue.write_buffer(
+                    &self.shadow_pass_buffer,
+                    SHADOW_MATRIX_STRIDE * index as u64,
+                    bytemuck::cast_slice(&matrices[index]),
+                );
+            }
+        }
+        if written {
+            queue.write_buffer(&self.shadow_uniform, 0, bytemuck::cast_slice(&matrices));
+            let control = [
+                1.0_f32,
+                1.0 / SHADOW_RESOLUTION as f32,
+                if self.ambient_cube.is_some() {
+                    1.0
+                } else {
+                    0.0
+                },
+                0.0,
+            ];
+            queue.write_buffer(
+                &self.shadow_uniform,
+                64 * SHADOW_CASCADES as u64,
+                bytemuck::cast_slice(&control),
+            );
+            queue.write_buffer(
+                &self.shadow_uniform,
+                64 * SHADOW_CASCADES as u64 + 16,
+                bytemuck::cast_slice(&self.ambient_cube.unwrap_or([[0.0; 4]; 6])),
+            );
+            queue.write_buffer(
+                &self.shadow_uniform,
+                64 * SHADOW_CASCADES as u64 + 16 + 16 * 6,
+                bytemuck::cast_slice(&self.probe_tint),
+            );
+        }
+    }
+
+    /// Redraw whichever cascades `prepare` marked stale, before the scene pass.
+    pub fn render_shadows(&self, encoder: &mut wgpu::CommandEncoder) {
+        for (index, view) in self.shadow_layers.iter().enumerate() {
+            if !self.shadow_stale[index].swap(false, Ordering::Relaxed) {
+                continue;
+            }
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Sun shadow cascade"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            let offset = (SHADOW_MATRIX_STRIDE * index as u64) as u32;
+            pass.set_bind_group(1, &self.shadow_pass_group, &[offset]);
+            for group in self.groups.iter().flatten() {
+                if group.visible == 0 {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, group.vertices.slice(..));
+                pass.set_vertex_buffer(1, group.instances.slice(..));
+                pass.set_index_buffer(group.indices.slice(..), wgpu::IndexFormat::Uint32);
+                for surface in group
+                    .surfaces
+                    .iter()
+                    .filter(|surface| !surface.transparent && !surface.distance_clouds)
+                {
+                    pass.set_pipeline(if surface.foliage_cutout {
+                        &self.shadow_cutout
+                    } else {
+                        &self.shadow_opaque
+                    });
+                    pass.set_bind_group(0, &surface.bind, &[]);
+                    pass.draw_indexed(
+                        surface.first..surface.first + surface.count,
+                        0,
+                        0..group.visible,
+                    );
+                }
+            }
+        }
     }
 
     fn update_sky_source(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
@@ -2728,7 +3371,8 @@ impl Renderer {
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         // Opaque, masked foliage, then blended glass/water. Alpha-tested
         // vegetation writes depth, unlike translucent overlays.
-        for mode in 0..3 {
+        pass.set_bind_group(1, &self.shadow_group, &[]);
+        for mode in [3, 0, 1, 2] {
             for group in self.groups.iter().flatten() {
                 if group.visible == 0 {
                     continue;
@@ -2737,15 +3381,17 @@ impl Renderer {
                     0 if group.terrain && self.terrain_source_unlit => &self.terrain_source,
                     0 => &self.solid,
                     1 => &self.foliage_cutout,
+                    3 => &self.distance_clouds,
                     _ => &self.transparent,
                 });
                 pass.set_vertex_buffer(0, group.vertices.slice(..));
                 pass.set_vertex_buffer(1, group.instances.slice(..));
                 pass.set_index_buffer(group.indices.slice(..), wgpu::IndexFormat::Uint32);
                 for surf in group.surfaces.iter().filter(|s| match mode {
-                    0 => !s.transparent && !s.foliage_cutout,
-                    1 => s.foliage_cutout,
-                    _ => s.transparent,
+                    0 => !s.transparent && !s.foliage_cutout && !s.distance_clouds,
+                    1 => s.foliage_cutout && !s.distance_clouds,
+                    3 => s.distance_clouds,
+                    _ => s.transparent && !s.distance_clouds,
                 }) {
                     pass.set_bind_group(0, &surf.bind, &[]);
                     pass.draw_indexed(surf.first..surf.first + surf.count, 0, 0..group.visible);
@@ -2846,7 +3492,7 @@ mod tests {
     #[test]
     fn streaming_diffuse_shader_never_reads_uninitialized_high_mips() {
         let shader = include_str!("world_instances.wgsl");
-        assert!(shader.contains("let safe_lod=max(implicit_lod, authored_cutoff.w);"));
+        assert!(shader.contains("let safe_lod=max(implicit_lod, authored.cutoff.w);"));
         assert!(shader.contains("textureSampleLevel(albedo,tex_sampler,uv,safe_lod)"));
         assert!(shader.contains("let leaf_alpha=sample_source_albedo(input.uv).a;"));
         assert!(shader.contains("var base=sample_source_albedo(input.uv);"));
@@ -2963,7 +3609,7 @@ mod tests {
         let shader = include_str!("world_instances.wgsl");
         assert!(shader.contains("@group(0) @binding(0) var<uniform> camera: Camera;"));
         assert!(shader.contains("let view_direction=normalize(camera.origin.xyz-input.world);"));
-        assert!(shader.contains("let distance=length(camera.origin.xyz-input.world);"));
+        assert!(shader.contains("let distance=length(to_fragment);"));
 
         let source = include_str!("world_instances.rs");
         let layout = source
@@ -2989,7 +3635,7 @@ mod tests {
         assert!(shader.contains("return vec4<f32>(authored_scene_linear(fogged.rgb),1.0);"));
         assert!(shader.contains("fn fs_foliage(input:Output)"));
         assert!(shader.contains("let leaf_alpha=sample_source_albedo(input.uv).a;"));
-        assert!(shader.contains("leaf_alpha < authored_cutoff.x"));
+        assert!(shader.contains("leaf_alpha < authored.cutoff.x"));
         assert!(shader.contains("let color=shade(input,false);"));
         // Explicitly transparent materials still use authored coverage.
         assert!(shader.contains("fn fs_main(input:Output)"));
@@ -3003,9 +3649,9 @@ mod tests {
             .split("\n#[cfg(test)]\nmod tests {")
             .next()
             .unwrap();
-        assert!(production.contains("entry_point: Some(if cutout {"));
+        assert!(production.contains("entry_point: Some(if raw_terrain {"));
         assert!(production.contains("\"fs_foliage\""));
-        assert!(production.contains("foliage_cutout: make(false, true)"));
+        assert!(production.contains("foliage_cutout: make(false, true, false)"));
         assert!(production.contains("blend: if blend {"));
         assert!(production.contains("depth_write_enabled: !blend"));
         assert!(production.contains("foliage_cutout: surf.foliage_cutout && diffuse_uploaded"));
@@ -3046,7 +3692,7 @@ mod tests {
     fn world_only_distance_fog_preview_is_disabled_without_verified_sources() {
         let shader = include_str!("world_instances.wgsl");
         assert!(shader.contains("if (fog.params.x < 0.5) { return color; }"));
-        assert!(shader.contains("let distance=length(camera.origin.xyz-input.world);"));
+        assert!(shader.contains("let distance=length(to_fragment);"));
         assert!(shader.contains("fn distance_fog(input:Output, color:vec4<f32>)"));
         naga::front::wgsl::parse_str(shader).expect("distance fog preview shader is valid");
     }

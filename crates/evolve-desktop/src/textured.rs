@@ -98,6 +98,13 @@ pub struct Surface {
     /// Vegetation shader diffuse alpha is an alpha-tested cutout with depth writes.
     /// The separate authored Opacity texture is foliage transmittance, not coverage.
     pub foliage_cutout: bool,
+    /// Authored DistanceClouds tint and exposure: an unlit sky layer that casts
+    /// no shadow, rather than ordinary lit geometry.
+    pub distance_clouds: Option<[f32; 4]>,
+    /// World meshes only: authored diffuse tiling, then scroll per second.
+    pub uv_transform: Option<[f32; 4]>,
+    /// World meshes only: authored Diffuse tint, then ambient share.
+    pub material_tint: Option<[f32; 4]>,
     /// Original per-leaf AlphaTest threshold (normalized). Default preview 0.5.
     pub alpha_cutoff: f32,
     pub diffuse: Option<Arc<image::RgbaImage>>,
@@ -674,7 +681,7 @@ impl Pipeline {
     fn new_impl(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         // Render source materials in linear half-float. The original Iced
         // surface format is only used by the final bloom/tonemap compositor.
-        let hdr = super::viewport_hdr::ViewportHdr::new(device, format);
+        let hdr = super::viewport_hdr::ViewportHdr::new(device, queue, format);
         let format = super::viewport_hdr::SCENE_FORMAT;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Evolve scene diffuse bind layout"),
@@ -1559,6 +1566,27 @@ impl Pipeline {
         self.hdr.resize(device, size);
         self.hdr
             .set_source_unlit(queue, primitive.level_terrain_unlit);
+        let hour = primitive.level_hour;
+        let grade = primitive.world.as_ref().map(|world| {
+            (
+                world.color_chart.clone(),
+                world.film_curve(hour),
+                world.eye_adaptation(hour),
+            )
+        });
+        match grade {
+            Some((chart, film, adaptation)) => {
+                self.hdr
+                    .set_grade(device, queue, chart.as_ref(), film, adaptation);
+            }
+            None => self.hdr.set_grade(
+                device,
+                queue,
+                None,
+                [1.0, 1.0, 1.0, 4.0],
+                [0.18, 1.0, 1.0, 0.0],
+            ),
+        }
         self.world_renderer.prepare(
             device,
             queue,
@@ -1758,6 +1786,7 @@ impl Pipeline {
         if clip.width == 0 || clip.height == 0 {
             return;
         }
+        self.world_renderer.render_shadows(encoder);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Evolve linear HDR source DDS mesh render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

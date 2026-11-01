@@ -38,6 +38,8 @@ mod initial_setup;
 mod launcher_bridge;
 mod level_atmosphere;
 mod level_camera;
+#[cfg(test)]
+mod level_capture;
 mod level_editor_shell;
 mod level_effect_sources;
 mod level_environment;
@@ -15467,6 +15469,9 @@ mod project_edit_tests {
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            distance_clouds: None,
+            uv_transform: None,
+            material_tint: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&pixels)),
             normal: None,
@@ -15524,6 +15529,9 @@ mod project_edit_tests {
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            distance_clouds: None,
+            uv_transform: None,
+            material_tint: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,

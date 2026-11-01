@@ -10,7 +10,7 @@ use std::path::Path;
 
 pub const MAX_TERRAIN_FILE: usize = 80 * 1024 * 1024;
 pub const MAX_TERRAIN_DIM: u32 = 4096;
-pub const MAX_RENDER_GRID: u32 = 257;
+pub const MAX_RENDER_GRID: u32 = 2049;
 const SECTION: &[u8] = b"\x0eHeightmapDataW";
 const NEXT: &[u8] = b"\x1bHeightmapLayerIdBitmap_ver2";
 

@@ -46,6 +46,18 @@ pub struct DecalTexMod {
 }
 
 impl DecalTexMod {
+    /// UV scale, then UV offset per second for a constant-rate oscillator.
+    pub fn uv_transform(&self) -> [f32; 4] {
+        let flow = |kind: i32, rate: f32, amplitude: f32| {
+            if kind == 2 { rate * amplitude } else { 0.0 }
+        };
+        [
+            self.tile_u,
+            self.tile_v,
+            flow(self.u_type, self.u_rate, self.u_amplitude),
+            flow(self.v_type, self.v_rate, self.v_amplitude),
+        ]
+    }
     /// CryEngine ETexModMoveType: 0=no change, 1=fixed, 2=constant,
     /// 4=pan (pendulum). Unknown numeric types are not guessed.
     fn offset(kind: i32, rate: f32, amplitude: f32, seconds: f32) -> f32 {
@@ -103,6 +115,12 @@ pub struct MaterialSlot {
     /// Source TexMod of an explicitly authored Decal, if present.
     #[serde(default)]
     pub decal_tex_mod: Option<DecalTexMod>,
+    /// Source TexMod of the diffuse map: its tiling and any scrolling.
+    #[serde(default)]
+    pub diffuse_tex_mod: Option<DecalTexMod>,
+    /// PublicParams IndirectColor, the share of ambient light this leaf receives.
+    #[serde(default)]
+    pub indirect_color: Option<f32>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialDocument {
@@ -232,6 +250,13 @@ fn source_diffuse_tint(node: &BytesStart<'_>) -> Result<Option<[f32; 3]>, Materi
         return Ok(None);
     }
     Ok(Some([values[0], values[1], values[2]]))
+}
+
+/// The first component of IndirectColor, when this element authors one.
+fn authored_indirect_color(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
+    Ok(attr(node, b"IndirectColor")?
+        .and_then(|value| value.split(',').next()?.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite() && (0.0..=8.0).contains(value)))
 }
 
 fn parse_decal_tex_mod(node: &BytesStart<'_>) -> Result<DecalTexMod, MaterialError> {
@@ -467,6 +492,8 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
                         decal_tex_mod: None,
+                        diffuse_tex_mod: None,
+                        indirect_color: None,
                     });
                     nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
@@ -488,6 +515,32 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         .is_some_and(|map| map.role == "decal")
                 {
                     slots[*index].decal_tex_mod = Some(parse_decal_tex_mod(&node)?);
+                } else if tag.eq_ignore_ascii_case(b"TexMod")
+                    && parents
+                        .last()
+                        .is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
+                    && let Some((_, index)) = material_indices.last()
+                    && slots[*index]
+                        .maps
+                        .last()
+                        .is_some_and(|map| map.role == "diffuse")
+                {
+                    // Optional: an odd TexMod leaves the map untiled, not unusable.
+                    slots[*index].diffuse_tex_mod = parse_decal_tex_mod(&node).ok();
+                } else if (tag.eq_ignore_ascii_case(b"PublicParams")
+                    || tag.eq_ignore_ascii_case(b"ShaderParams")
+                    || (tag.eq_ignore_ascii_case(b"Param")
+                        && parents.last().is_some_and(|p| {
+                            p.eq_ignore_ascii_case(b"ShaderParams")
+                                || p.eq_ignore_ascii_case(b"PublicParams")
+                        })))
+                    && let Some((_, index)) = material_indices.last()
+                    && let Some(indirect) = authored_indirect_color(&node)?
+                {
+                    slots[*index].indirect_color = Some(indirect);
+                    if let Some(amount) = authored_glow_amount(&node)? {
+                        slots[*index].glow_amount = Some(amount);
+                    }
                 } else if (tag.eq_ignore_ascii_case(b"PublicParams")
                     || tag.eq_ignore_ascii_case(b"ShaderParams")
                     || (tag.eq_ignore_ascii_case(b"Param")
@@ -535,6 +588,8 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
                         decal_tex_mod: None,
+                        diffuse_tex_mod: None,
+                        indirect_color: None,
                     });
                     nonleaf.push(false);
                 } else if tag.eq_ignore_ascii_case(b"Texture")
@@ -555,6 +610,31 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         .is_some_and(|map| map.role == "decal")
                 {
                     slots[*index].decal_tex_mod = Some(parse_decal_tex_mod(&node)?);
+                } else if tag.eq_ignore_ascii_case(b"TexMod")
+                    && parents
+                        .last()
+                        .is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
+                    && let Some((_, index)) = material_indices.last()
+                    && slots[*index]
+                        .maps
+                        .last()
+                        .is_some_and(|map| map.role == "diffuse")
+                {
+                    slots[*index].diffuse_tex_mod = parse_decal_tex_mod(&node).ok();
+                } else if (tag.eq_ignore_ascii_case(b"PublicParams")
+                    || tag.eq_ignore_ascii_case(b"ShaderParams")
+                    || (tag.eq_ignore_ascii_case(b"Param")
+                        && parents.last().is_some_and(|p| {
+                            p.eq_ignore_ascii_case(b"ShaderParams")
+                                || p.eq_ignore_ascii_case(b"PublicParams")
+                        })))
+                    && let Some((_, index)) = material_indices.last()
+                    && let Some(indirect) = authored_indirect_color(&node)?
+                {
+                    slots[*index].indirect_color = Some(indirect);
+                    if let Some(amount) = authored_glow_amount(&node)? {
+                        slots[*index].glow_amount = Some(amount);
+                    }
                 } else if (tag.eq_ignore_ascii_case(b"PublicParams")
                     || tag.eq_ignore_ascii_case(b"ShaderParams")
                     || (tag.eq_ignore_ascii_case(b"Param")

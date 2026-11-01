@@ -1050,6 +1050,19 @@ fn validate_authored_subset_coverage(
     Ok(())
 }
 
+/// The PublicParams Exposure of a plain-text MTL, or neutral when absent.
+fn authored_exposure(material: &Path) -> f32 {
+    std::fs::read_to_string(material)
+        .ok()
+        .and_then(|text| {
+            let start = text.find("Exposure=\"")? + "Exposure=\"".len();
+            let length = text[start..].find('"')?;
+            text[start..start + length].parse::<f32>().ok()
+        })
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(1.0)
+}
+
 fn load_authored_subset_surfaces(
     source: &Path,
     material: &Path,
@@ -1069,6 +1082,9 @@ fn load_authored_subset_surfaces(
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            distance_clouds: None,
+            uv_transform: None,
+            material_tint: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
@@ -1139,6 +1155,25 @@ fn load_authored_subset_surfaces(
                         // Original scalar opacity, when present, is independent
                         // of packed diffuse DDS alpha. Never blend an Illum
                         // body unless there is explicit authored evidence.
+                        // 0.25 is the value materials leave at its default.
+                        let tint = leaf.diffuse_tint.unwrap_or([1.0; 3]);
+                        surface.material_tint = Some([
+                            tint[0],
+                            tint[1],
+                            tint[2],
+                            leaf.indirect_color.unwrap_or(0.25) / 0.25,
+                        ]);
+                        surface.uv_transform = leaf
+                            .diffuse_tex_mod
+                            .as_ref()
+                            .map(evolve_core::DecalTexMod::uv_transform);
+                        if leaf.shader.eq_ignore_ascii_case("DistanceClouds")
+                            && surface.diffuse.is_some()
+                        {
+                            let tint = leaf.diffuse_tint.unwrap_or([1.0; 3]);
+                            surface.distance_clouds =
+                                Some([tint[0], tint[1], tint[2], authored_exposure(material)]);
+                        }
                         surface.foliage_cutout =
                             source_vegetation_cutout(leaf) && surface.diffuse.is_some();
                         surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
@@ -1416,6 +1451,9 @@ pub fn load_with_progress(
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            distance_clouds: None,
+            uv_transform: None,
+            material_tint: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
@@ -1626,6 +1664,9 @@ mod tests {
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            distance_clouds: None,
+            uv_transform: None,
+            material_tint: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&base_pixels)),
             normal: None,
@@ -1707,6 +1748,8 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             decal_tex_mod: None,
+            diffuse_tex_mod: None,
+            indirect_color: None,
         };
         let mask = legacy_alpha_emission(&slot, &diffuse).unwrap();
         assert!(mask.get_pixel(0, 0)[0] > 150);
@@ -1882,6 +1925,9 @@ mod tests {
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            distance_clouds: None,
+            uv_transform: None,
+            material_tint: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
                 2,
@@ -1918,6 +1964,9 @@ mod tests {
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            distance_clouds: None,
+            uv_transform: None,
+            material_tint: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
                 2,
@@ -2014,6 +2063,8 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             decal_tex_mod: None,
+            diffuse_tex_mod: None,
+            indirect_color: None,
             maps: if with_mask {
                 vec![evolve_core::TextureReference {
                     role: "opacity".into(),
@@ -2145,6 +2196,9 @@ mod tests {
             visible: true,
             transparent: false,
             foliage_cutout: false,
+            distance_clouds: None,
+            uv_transform: None,
+            material_tint: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&image)),
             normal: None,
@@ -2645,6 +2699,8 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             decal_tex_mod: None,
+            diffuse_tex_mod: None,
+            indirect_color: None,
         };
         assert!(!needs_alpha_blending(&ordinary));
         let mut transparent = ordinary;

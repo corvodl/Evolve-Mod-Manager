@@ -874,6 +874,32 @@ fn open_selected(
             None
         }
     };
+    let authored_sun = match crate::level_atmosphere::authored_sun(&archive, &chosen.name) {
+        Ok(sun) => sun,
+        Err(error) => {
+            diagnostics.push(format!("Original sun vector unavailable: {error}"));
+            None
+        }
+    };
+    let color_chart = match authored_environment(&archive, chosen, &inventory)
+        .ok()
+        .flatten()
+        .and_then(|file| fs::read(file).ok())
+        .map(|bytes| crate::level_atmosphere::authored_color_chart(&archive, &bytes))
+    {
+        Some(Ok(Some(chart))) => {
+            diagnostics.push("Original map color chart applied.".into());
+            Some(std::sync::Arc::new(chart))
+        }
+        Some(Ok(None)) | None => {
+            diagnostics.push("No original color chart resolved; neutral grading used.".into());
+            None
+        }
+        Some(Err(error)) => {
+            diagnostics.push(format!("Original color chart unavailable: {error}"));
+            None
+        }
+    };
     let mut sources = Vec::<(String, Vec<u8>)>::new();
     // Keep both memory and parser work bounded. A map with more than this
     // requires an incremental scene loader rather than silent unbounded reads.
@@ -888,6 +914,21 @@ fn open_selected(
             chosen.layers.len()
         ));
     }
+    let (ambient_cube, probe_cube) =
+        match crate::level_atmosphere::authored_ambient_cube(&archive, &sources) {
+            Ok(Some((ambient, cube))) => {
+                diagnostics.push(format!("Original global probe ambient: {ambient:?}"));
+                (Some(ambient), Some(std::sync::Arc::new(cube)))
+            }
+            Ok(None) => {
+                diagnostics.push("No original global probe cubemap resolved.".into());
+                (None, None)
+            }
+            Err(error) => {
+                diagnostics.push(format!("Original global probe unavailable: {error}"));
+                (None, None)
+            }
+        };
     let mut source = chosen.layers.first().map(|p| root.join(p));
     let mut scene = None;
     if !sources.is_empty() {
@@ -1104,7 +1145,8 @@ fn open_selected(
                 "Original map TerrainTexture.xml is not available; the baked ground color can still be decoded from a complete RGB24 tile grid.".into()
             );
         }
-        match read_terrain(&exact, 129) {
+        // One vertex per authored height sample, up to the largest shipped grid.
+        match read_terrain(&exact, evolve_core::MAX_RENDER_GRID) {
             Ok(data) => {
                 let info = data.info.clone();
                 Some((
@@ -1220,6 +1262,10 @@ fn open_selected(
         let mut world = (*assembled.world).clone();
         world.sky_source = sky_source;
         world.static_sky = static_sky;
+        world.authored_sun = authored_sun;
+        world.ambient_cube = ambient_cube;
+        world.probe_cube = probe_cube;
+        world.color_chart = color_chart;
         world.local_lights = std::sync::Arc::new(local_lights);
         world.time_of_day = original_time.map(std::sync::Arc::new);
         world.fog_profile = original_fog;
@@ -1652,7 +1698,7 @@ mod tests {
                     .image
                     .get_pixel((4 * side - 1) as u32, (4 * side - 1) as u32)
                     .0,
-                [((side - 1) * 50) as u8, ((side - 1) * 50) as u8, 128, 255]
+                [128, ((side - 1) * 50) as u8, ((side - 1) * 50) as u8, 255]
             );
             std::fs::remove_file(files.join(format!("tile{}_{}.raw", side - 1, side - 1))).unwrap();
             let missing = scan_directory(dir.path()).unwrap();

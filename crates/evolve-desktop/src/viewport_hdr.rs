@@ -8,6 +8,8 @@ pub(super) const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16
 const BLOOM_DIVISOR: u32 = 4;
 
 struct Frames {
+    _luminance: wgpu::Texture,
+    luminance: wgpu::TextureView,
     size: (u32, u32),
     _scene: wgpu::Texture,
     scene: wgpu::TextureView,
@@ -30,8 +32,11 @@ pub(super) struct ViewportHdr {
     composite_layout: wgpu::BindGroupLayout,
     extract: wgpu::RenderPipeline,
     blur: wgpu::RenderPipeline,
+    luminance: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     composite_uniform: wgpu::Buffer,
+    chart_view: wgpu::TextureView,
+    chart_identity: usize,
     frames: Frames,
 }
 fn surface(
@@ -82,6 +87,7 @@ fn bind_filter(
         ],
     })
 }
+#[allow(clippy::too_many_arguments)]
 fn bind_composite(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -89,6 +95,8 @@ fn bind_composite(
     blur: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
     uniform: &wgpu::Buffer,
+    chart: &wgpu::TextureView,
+    luminance: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("HDR scene and bloom into Iced window"),
@@ -110,9 +118,69 @@ fn bind_composite(
                 binding: 3,
                 resource: uniform.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(chart),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(luminance),
+            },
         ],
     })
 }
+/// A 256x16 color chart. With no map chart, an identity table leaves color as is.
+fn upload_color_chart(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    chart: Option<&image::RgbaImage>,
+) -> wgpu::TextureView {
+    let identity;
+    let pixels = match chart {
+        Some(image) => image.as_raw().as_slice(),
+        None => {
+            identity = (0..256u32 * 16)
+                .flat_map(|index| {
+                    let (x, y) = (index % 256, index / 256);
+                    [
+                        (x % 16 * 17) as u8,
+                        (y * 17) as u8,
+                        (x / 16 * 17) as u8,
+                        255,
+                    ]
+                })
+                .collect::<Vec<u8>>();
+            identity.as_slice()
+        }
+    };
+    let size = wgpu::Extent3d {
+        width: 256,
+        height: 16,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Original map color chart"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        texture.as_image_copy(),
+        pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(256 * 4),
+            rows_per_image: Some(16),
+        },
+        size,
+    );
+    texture.create_view(&Default::default())
+}
+#[allow(clippy::too_many_arguments)]
 fn build_frames(
     device: &wgpu::Device,
     size: (u32, u32),
@@ -120,6 +188,7 @@ fn build_frames(
     filter_layout: &wgpu::BindGroupLayout,
     composite_layout: &wgpu::BindGroupLayout,
     composite_uniform: &wgpu::Buffer,
+    chart: &wgpu::TextureView,
 ) -> Frames {
     let size = (size.0.max(1), size.1.max(1));
     let small = (
@@ -130,6 +199,7 @@ fn build_frames(
     let (_bright, bright) = surface(device, small, "Bloom quarter-resolution bright pass");
     let (_horizontal, horizontal) = surface(device, small, "Bloom horizontal Gaussian pass");
     let (_blurred, blurred) = surface(device, small, "Bloom vertical Gaussian pass");
+    let (_luminance, luminance) = surface(device, (1, 1), "Scene mean log luminance");
     let upload = |values: [f32; 4], label| {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(label),
@@ -167,8 +237,12 @@ fn build_frames(
         &blurred,
         sampler,
         composite_uniform,
+        chart,
+        &luminance,
     );
     Frames {
+        _luminance,
+        luminance,
         size,
         _scene,
         scene,
@@ -187,7 +261,11 @@ fn build_frames(
     }
 }
 impl ViewportHdr {
-    pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+    ) -> Self {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Clamp HDR bloom to viewport"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -228,7 +306,23 @@ impl ViewportHdr {
         });
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("HDR bloom composite layout"),
-            entries: &[sampled(0), sampled(1), sampling(2), uniform(3)],
+            entries: &[
+                sampled(0),
+                sampled(1),
+                sampling(2),
+                uniform(3),
+                sampled(4),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
         });
         let bloom_source = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Linear HDR bloom threshold and Gaussian blur"),
@@ -293,6 +387,13 @@ impl ViewportHdr {
             "fs_blur",
             SCENE_FORMAT,
         );
+        let luminance = pipeline(
+            "Scene mean log luminance",
+            &filter_pipeline,
+            &bloom_source,
+            "fs_luminance",
+            SCENE_FORMAT,
+        );
         let composite = pipeline(
             "Linear HDR scene bloom composite",
             &composite_pipeline,
@@ -303,9 +404,14 @@ impl ViewportHdr {
         let composite_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("HDR bloom strength, exposure, bypass unlit"),
             // bloom strength=.20; manual exposure=1; bypass source color=0
-            contents: bytemuck::cast_slice(&[[0.20_f32, 1.0, 0.0, 0.0]]),
+            contents: bytemuck::cast_slice(&[
+                [0.20_f32, 1.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0, 4.0],
+                [0.18, 1.0, 1.0, 0.0],
+            ]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let chart_view = upload_color_chart(device, queue, None);
         let frames = build_frames(
             device,
             (1, 1),
@@ -313,6 +419,7 @@ impl ViewportHdr {
             &filter_layout,
             &composite_layout,
             &composite_uniform,
+            &chart_view,
         );
         Self {
             sampler,
@@ -320,8 +427,11 @@ impl ViewportHdr {
             composite_layout,
             extract,
             blur,
+            luminance,
             composite,
             composite_uniform,
+            chart_view,
+            chart_identity: 0,
             frames,
         }
     }
@@ -336,6 +446,34 @@ impl ViewportHdr {
             &self.filter_layout,
             &self.composite_layout,
             &self.composite_uniform,
+            &self.chart_view,
+        );
+    }
+    /// Apply a map's authored film curve and color chart. Neutral with no map.
+    pub(super) fn set_grade(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        chart: Option<&std::sync::Arc<image::RgbaImage>>,
+        film: [f32; 4],
+        adaptation: [f32; 4],
+    ) {
+        queue.write_buffer(&self.composite_uniform, 16, bytemuck::bytes_of(&film));
+        queue.write_buffer(&self.composite_uniform, 32, bytemuck::bytes_of(&adaptation));
+        let identity = chart.map_or(0, |image| std::sync::Arc::as_ptr(image) as usize);
+        if identity == self.chart_identity {
+            return;
+        }
+        self.chart_identity = identity;
+        self.chart_view = upload_color_chart(device, queue, chart.map(|image| &**image));
+        self.frames = build_frames(
+            device,
+            self.frames.size,
+            &self.sampler,
+            &self.filter_layout,
+            &self.composite_layout,
+            &self.composite_uniform,
+            &self.chart_view,
         );
     }
     pub(super) fn set_source_unlit(&self, queue: &wgpu::Queue, unlit: bool) {
@@ -359,6 +497,12 @@ impl ViewportHdr {
         // Bloom texture is a fraction of the full viewport, never a
         // high-resolution duplicate; all passes run without depth writes.
         for (label, view, pipeline, group) in [
+            (
+                "Scene mean log luminance",
+                &self.frames.luminance,
+                &self.luminance,
+                &self.frames.extract_group,
+            ),
             (
                 "Bloom extract",
                 &self.frames.bright,
@@ -438,7 +582,7 @@ mod tests {
         assert!(bloom.contains("fn fs_extract("));
         assert!(bloom.contains("fn fs_blur("));
         assert!(hdr.contains("fn fs_composite("));
-        assert!(hdr.contains("aces_fitted"));
+        assert!(hdr.contains("film_map"));
     }
     #[test]
     fn masked_scene_refraction_shader_parses_without_original_game_shaders() {
