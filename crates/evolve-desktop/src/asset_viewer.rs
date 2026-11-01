@@ -246,7 +246,9 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
             };
             let label = format!(
                 "{} · {}{}",
-                clip.label, clip.kind.to_ascii_uppercase(), availability,
+                clip.label,
+                clip.kind.to_ascii_uppercase(),
+                availability,
             );
             clips = clips.push(
                 row![
