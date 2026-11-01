@@ -15,6 +15,7 @@ struct WaterParams {
   gloss:vec4<f32>,    // GlossMapTilling, GlossMapScale, GlossMapBias, has map
   fog:vec4<f32>,      // authored fog color, density
   specular:vec4<f32>, // authored Specular, FoamTilling
+  decal_shape:vec4<f32>, // DecalFalloff, RealtimeReflMul
 }
 struct SunShadows {
   matrices:array<mat4x4<f32>,4>,
@@ -172,7 +173,9 @@ fn fs_water(input:Output)->@location(0) vec4<f32> {
 
   let facing=1.0-clamp(dot(view,n),0.0,1.0);
   let fresnel=(0.05+0.95*pow(facing,5.0))*clamp(view_depth-0.33,0.0,1.0)*soft;
-  var color=mix(body,mirrored+sun_light,fresnel);
+  // Materials with no realtime reflection keep only the sun highlight.
+  let reflected_light=select(vec3<f32>(0.0),mirrored,water.decal_shape.y>0.0);
+  var color=mix(body,reflected_light+sun_light,fresnel);
 
   // The game's shoreline foam. Maps name no foam texture, so the water's own
   // foam-shaped gloss map stands in for the engine's default.
@@ -185,6 +188,7 @@ fn fs_water(input:Output)->@location(0) vec4<f32> {
   }
   let drift=textureSample(decal,water_sampler,input.world.xy*water.tiling.z);
   let decal_light=ambient+light.sun_color.rgb*0.35*visibility;
-  color=mix(color,drift.rgb*decal_light,clamp(drift.a*water.tint.w,0.0,1.0)*0.25*soft);
+  let decal_amount=pow(clamp(drift.a,0.0,1.0),water.decal_shape.x)*water.tint.w;
+  color=mix(color,drift.rgb*decal_light,clamp(decal_amount,0.0,1.0)*soft);
   return vec4<f32>(apply_fog(input.world,color),soft);
 }

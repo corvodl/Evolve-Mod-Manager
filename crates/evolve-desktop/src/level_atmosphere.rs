@@ -1334,6 +1334,8 @@ pub(super) struct WaterSurface {
     pub fog: [f32; 4],
     pub specular: [f32; 3],
     pub foam_tilling: f32,
+    pub decal_falloff: f32,
+    pub reflection: f32,
     pub decal: Option<std::sync::Arc<image::RgbaImage>>,
     pub gloss_map: Option<std::sync::Arc<image::RgbaImage>>,
 }
@@ -1444,7 +1446,7 @@ pub(super) fn authored_water(
                     })
                     .map(|(_, image)| std::sync::Arc::new(image))
             };
-            let decal = material_map("Custom");
+            let decal = material_map("Decal").or_else(|| material_map("Custom"));
             let gloss_map = material_map("Specular");
             let fog_color = xml_tuple(object, "FogColor").unwrap_or_default();
             let fog_scale = mtl_value(object, "FogColorMultiplier", 1.0);
@@ -1469,6 +1471,8 @@ pub(super) fn authored_water(
                     mtl_value(&mtl, "FoamSoftIntersectionFactor", 1.0),
                 ],
                 foam_tilling: mtl_value(&mtl, "FoamTilling", 1.0),
+                decal_falloff: mtl_value(&mtl, "DecalFalloff", 1.0),
+                reflection: mtl_value(&mtl, "RealtimeReflMul", 1.0),
                 gloss: [
                     mtl_value(&mtl, "GlossMapTilling", 0.1),
                     mtl_value(&mtl, "GlossMapScale", 0.5),

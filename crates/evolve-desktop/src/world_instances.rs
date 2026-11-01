@@ -4429,6 +4429,7 @@ impl Renderer {
                             water.specular[2],
                             water.foam_tilling,
                         ],
+                        [water.decal_falloff, water.reflection, 0.0, 0.0],
                     ]),
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
