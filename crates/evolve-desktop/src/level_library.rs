@@ -59,6 +59,7 @@ fn map_relative_member(relative: &str) -> bool {
     let lower = lower.strip_prefix("files/").unwrap_or(&lower);
     lower.starts_with("layers/")
         || lower.starts_with("leveldata/")
+        || (lower.ends_with(".lyr") && !lower.contains('/'))
         || matches!(
             lower,
             "mission.xml" | "heightmap.dat" | "vegetationmap.dat"
@@ -107,7 +108,9 @@ fn map_group(relative: &str) -> (String, String) {
     if let Some(index) = parts.iter().position(|part| {
         part.eq_ignore_ascii_case("layers") || part.eq_ignore_ascii_case("leveldata")
     }) {
-        if index > 0 {
+        if index > 0
+            && !(index == 1 && parts[0].eq_ignore_ascii_case("files"))
+        {
             return (
                 parts[..index].join("/").to_ascii_lowercase(),
                 parts[index - 1].to_string(),
@@ -1644,6 +1647,89 @@ mod tests {
         assert_eq!(map_group("Levels/Distillery/Layers/A.lyr").1, "Distillery");
         assert_eq!(map_group("Levels/Distillery/Heightmap.dat").1, "Distillery");
         assert_eq!(map_group("MyMap/Layers/A.lyr").1, "MyMap");
+    }
+
+    #[test]
+    fn all_nested_tutorial_layers_and_heightmap_share_one_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = [
+            "Tutorial/Layers/Audio/music.lyr",
+            "Tutorial/Layers/Environment/background.lyr",
+            "Tutorial/Layers/Geometry/Natural/rocks.lyr",
+            "Tutorial/Layers/TutorialRooms/HunterRoom/scene.lyr",
+            "Tutorial/Layers/Lighting/default.lyr",
+            "Tutorial/LevelData/Heightmap.dat",
+            "Tutorial/LevelData/VegetationMap.dat",
+            "Other/Layers/Geometry/rocks.lyr",
+        ];
+        for relative in files {
+            let path = dir.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"synthetic test member").unwrap();
+        }
+        let inventory = scan_directory(dir.path()).unwrap();
+        let (_, maps) = discover_inventory(&inventory).unwrap();
+        assert_eq!(maps.len(), 2);
+        let tutorial = maps.iter().find(|map| map.name == "Tutorial").unwrap();
+        assert_eq!(tutorial.layers.len(), 5);
+        assert!(tutorial.terrain.as_ref().unwrap().ends_with("Heightmap.dat"));
+        assert!(tutorial.vegetation.is_some());
+    }
+
+    #[test]
+    fn map_owned_level_pak_uses_original_game_source_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Game/Levels/Forest_Rapids/level.pak");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"synthetic file").unwrap();
+        let archive = ImportedPak {
+            id: "owner-test".into(),
+            name: "level.pak".into(),
+            source: path.to_string_lossy().into_owned(),
+            directory: String::new(),
+            group: "Levels".into(),
+            description: String::new(),
+            entries: 0,
+            extracted_bytes: 0,
+            warnings: 0,
+            builds: vec![],
+        };
+        let owner = source_map_owner(&archive).unwrap();
+        assert_eq!(owner.0, "levels/forest_rapids");
+        assert_eq!(owner.1, "Forest_Rapids");
+        let files = dir.path().join("unpacked");
+        for rel in [
+            "LevelData/Heightmap.dat",
+            "Layers/Geometry/Natural/rocks.lyr",
+            "Layers/Environment.lyr",
+        ] {
+            let member = files.join(rel);
+            std::fs::create_dir_all(member.parent().unwrap()).unwrap();
+            std::fs::write(member, b"synthetic test member").unwrap();
+        }
+        let inventory = scan_directory(&files).unwrap();
+        let (_, maps) = discover_inventory_with_owner(&inventory, Some(&owner)).unwrap();
+        assert_eq!(maps.len(), 1);
+        assert_eq!(maps[0].name, "Forest_Rapids");
+        assert_eq!(maps[0].layers.len(), 2);
+        assert!(maps[0].terrain.is_some());
+        assert_eq!(map_virtual_folder(&maps[0], &archive).as_deref(), Some("levels/forest_rapids"));
+        // The archive's arbitrary original folder cannot authorize a map.
+        let mut unrelated = archive.clone();
+        unrelated.source = dir.path().join("unrelated/level.pak").display().to_string();
+        assert!(source_map_owner(&unrelated).is_none());
+    }
+
+    #[test]
+    fn nested_paks_without_map_members_report_collection_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("Desert_Canyon/level.pak");
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        std::fs::write(&nested, b"synthetic nested encrypted PAK").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let error = discover_inventory(&inventory).unwrap_err();
+        assert!(error.contains("1 nested PAK"));
+        assert!(error.contains("import each inner level.pak"));
     }
 
     #[test]
