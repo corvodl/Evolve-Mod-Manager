@@ -127,6 +127,13 @@ pub struct MaterialSlot {
     /// FresnelBias, AlphaBlendMul, FoamDeform, FoamMultiplier.
     #[serde(default)]
     pub waterfall: Option<[f32; 11]>,
+    /// TileU and TileV of the Detail map.
+    #[serde(default)]
+    pub detail_tile: Option<[f32; 2]>,
+    /// DetailBumpScale, DetailDiffuseScale, DetailGlossScale, BlendFactor,
+    /// BlendFalloff, BlendLayer2Tiling, BlendMaskTiling.
+    #[serde(default)]
+    pub layer_params: Option<[f32; 7]>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialDocument {
@@ -260,6 +267,29 @@ fn source_color(node: &BytesStart<'_>, name: &[u8]) -> Result<Option<[f32; 3]>, 
         return Ok(None);
     }
     Ok(Some([values[0], values[1], values[2]]))
+}
+
+fn authored_layer_params(node: &BytesStart<'_>) -> Result<Option<[f32; 7]>, MaterialError> {
+    const NAMES: [(&[u8], f32); 7] = [
+        (b"DetailBumpScale", 0.0),
+        (b"DetailDiffuseScale", 0.0),
+        (b"DetailGlossScale", 0.0),
+        (b"BlendFactor", 8.0),
+        (b"BlendFalloff", 1.0),
+        (b"BlendLayer2Tiling", 1.0),
+        (b"BlendMaskTiling", 1.0),
+    ];
+    if attr(node, b"DetailBumpScale")?.is_none() && attr(node, b"BlendFactor")?.is_none() {
+        return Ok(None);
+    }
+    let mut values = [0.0; 7];
+    for (value, (name, fallback)) in values.iter_mut().zip(NAMES) {
+        *value = attr(node, name)?
+            .and_then(|raw| raw.trim().parse::<f32>().ok())
+            .filter(|number| number.is_finite())
+            .unwrap_or(fallback);
+    }
+    Ok(Some(values))
 }
 
 fn authored_waterfall(node: &BytesStart<'_>) -> Result<Option<[f32; 11]>, MaterialError> {
@@ -533,6 +563,8 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         diffuse_tex_mod: None,
                         indirect_color: None,
                         waterfall: None,
+                        detail_tile: None,
+                        layer_params: None,
                     });
                     nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
@@ -543,6 +575,18 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     && let Some((_, index)) = material_indices.last()
                 {
                     append_texture(&node, &mut slots, *index)?;
+                } else if tag.eq_ignore_ascii_case(b"TexMod")
+                    && parents
+                        .last()
+                        .is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
+                    && let Some((_, index)) = material_indices.last()
+                    && slots[*index]
+                        .maps
+                        .last()
+                        .is_some_and(|map| map.role == "detail")
+                {
+                    let tile = parse_decal_tex_mod(&node).ok();
+                    slots[*index].detail_tile = tile.map(|tile| [tile.tile_u, tile.tile_v]);
                 } else if tag.eq_ignore_ascii_case(b"TexMod")
                     && parents
                         .last()
@@ -575,6 +619,9 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         })))
                     && let Some((_, index)) = material_indices.last()
                 {
+                    if let Some(layer) = authored_layer_params(&node)? {
+                        slots[*index].layer_params = Some(layer);
+                    }
                     if let Some(waterfall) = authored_waterfall(&node)? {
                         slots[*index].waterfall = Some(waterfall);
                     }
@@ -635,6 +682,8 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         diffuse_tex_mod: None,
                         indirect_color: None,
                         waterfall: None,
+                        detail_tile: None,
+                        layer_params: None,
                     });
                     nonleaf.push(false);
                 } else if tag.eq_ignore_ascii_case(b"Texture")
@@ -644,6 +693,18 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     && let Some((_, index)) = material_indices.last()
                 {
                     append_texture(&node, &mut slots, *index)?;
+                } else if tag.eq_ignore_ascii_case(b"TexMod")
+                    && parents
+                        .last()
+                        .is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
+                    && let Some((_, index)) = material_indices.last()
+                    && slots[*index]
+                        .maps
+                        .last()
+                        .is_some_and(|map| map.role == "detail")
+                {
+                    let tile = parse_decal_tex_mod(&node).ok();
+                    slots[*index].detail_tile = tile.map(|tile| [tile.tile_u, tile.tile_v]);
                 } else if tag.eq_ignore_ascii_case(b"TexMod")
                     && parents
                         .last()
@@ -675,6 +736,9 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         })))
                     && let Some((_, index)) = material_indices.last()
                 {
+                    if let Some(layer) = authored_layer_params(&node)? {
+                        slots[*index].layer_params = Some(layer);
+                    }
                     if let Some(waterfall) = authored_waterfall(&node)? {
                         slots[*index].waterfall = Some(waterfall);
                     }

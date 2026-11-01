@@ -1997,6 +1997,8 @@ mod tests {
             diffuse_tex_mod: None,
             indirect_color: None,
             waterfall: None,
+            detail_tile: None,
+            layer_params: None,
         };
         assert!(opaque_historical_2012_diffuse(true, &opaque));
         assert!(!opaque_historical_2012_diffuse(false, &opaque));

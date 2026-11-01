@@ -618,10 +618,11 @@ struct Vertex {
     xyz: [f32; 3],
     uv: [f32; 2],
     normal: [f32; 3],
+    paint: f32,
 }
 impl Vertex {
-    const ATTRS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
-        0 => Float32x3, 1 => Float32x2, 2 => Float32x3
+    const ATTRS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+        0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 7 => Float32
     ];
     fn layout<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
@@ -1191,6 +1192,8 @@ struct GpuSurface {
     _gloss_image: wgpu::Texture,
     _emissive_image: wgpu::Texture,
     _detail_image: wgpu::Texture,
+    _blend_layer_image: wgpu::Texture,
+    _blend_mask_image: wgpu::Texture,
     _alpha_uniform: wgpu::Buffer,
 }
 struct GpuGroup {
@@ -1356,24 +1359,19 @@ fn upload_celestial(
 // Probes blended per fragment, from those nearest the camera.
 const LOCAL_PROBE_SLOTS: usize = 12;
 const LOCAL_PROBE_MIPS: u32 = 5;
-const MAX_LOCAL_PROBES: usize = 128;
 const LOCAL_PROBE_VEC4S: usize = 11;
 // Planar water reflection, sampled by screen position so its aspect is free.
 const REFLECTION_SIZE: (u32, u32) = (1024, 576);
 
-fn upload_local_probes(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    probes: &[super::level_atmosphere::LocalProbe],
-) -> wgpu::TextureView {
-    use super::level_atmosphere::LOCAL_PROBE_SIDE;
-    let count = probes.len().clamp(1, MAX_LOCAL_PROBES) as u32;
+/// A fixed set of cube slots: array layers are limited, and maps author more
+/// probes than fit, so nearby probes are swapped in as the camera moves.
+fn create_local_probe_cubes(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Original local environment probes"),
         size: wgpu::Extent3d {
-            width: LOCAL_PROBE_SIDE,
-            height: LOCAL_PROBE_SIDE,
-            depth_or_array_layers: count * 6,
+            width: super::level_atmosphere::LOCAL_PROBE_SIDE,
+            height: super::level_atmosphere::LOCAL_PROBE_SIDE,
+            depth_or_array_layers: LOCAL_PROBE_SLOTS as u32 * 6,
         },
         mip_level_count: LOCAL_PROBE_MIPS,
         sample_count: 1,
@@ -1382,64 +1380,71 @@ fn upload_local_probes(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    for (index, probe) in probes.iter().take(MAX_LOCAL_PROBES).enumerate() {
-        for mip in 0..LOCAL_PROBE_MIPS {
-            let side = LOCAL_PROBE_SIDE >> mip;
-            // A probe baked smaller than this mip reuses its nearest stored level.
-            let Some(level) = probe
-                .cube
-                .levels
-                .iter()
-                .min_by_key(|level| level.side.abs_diff(side))
-            else {
-                continue;
-            };
-            for face in 0..6 {
-                let resampled;
-                let pixels: &[u16] = if level.side == side {
-                    &level.faces[face]
-                } else {
-                    resampled = (0..side * side)
-                        .flat_map(|at| {
-                            let (x, y) = (at % side, at / side);
-                            let from = (y * level.side / side * level.side + x * level.side / side)
-                                as usize
-                                * 4;
-                            level.faces[face][from..from + 4].to_vec()
-                        })
-                        .collect::<Vec<u16>>();
-                    &resampled
-                };
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &texture,
-                        mip_level: mip,
-                        origin: wgpu::Origin3d {
-                            x: 0,
-                            y: 0,
-                            z: index as u32 * 6 + face as u32,
-                        },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    bytemuck::cast_slice(pixels),
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(side * 8),
-                        rows_per_image: Some(side),
-                    },
-                    wgpu::Extent3d {
-                        width: side,
-                        height: side,
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-        }
-    }
-    texture.create_view(&wgpu::TextureViewDescriptor {
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
         dimension: Some(wgpu::TextureViewDimension::CubeArray),
         ..Default::default()
-    })
+    });
+    (texture, view)
+}
+
+fn write_local_probe(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    slot: usize,
+    probe: &super::level_atmosphere::LocalProbe,
+) {
+    for mip in 0..LOCAL_PROBE_MIPS {
+        let side = super::level_atmosphere::LOCAL_PROBE_SIDE >> mip;
+        // A probe baked smaller than this mip reuses its nearest stored level.
+        let Some(level) = probe
+            .cube
+            .levels
+            .iter()
+            .min_by_key(|level| level.side.abs_diff(side))
+        else {
+            continue;
+        };
+        for face in 0..6 {
+            let resampled;
+            let pixels: &[u16] = if level.side == side {
+                &level.faces[face]
+            } else {
+                resampled = (0..side * side)
+                    .flat_map(|at| {
+                        let (x, y) = (at % side, at / side);
+                        let from = (y * level.side / side * level.side + x * level.side / side)
+                            as usize
+                            * 4;
+                        level.faces[face][from..from + 4].to_vec()
+                    })
+                    .collect::<Vec<u16>>();
+                &resampled
+            };
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: mip,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: slot as u32 * 6 + face as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytemuck::cast_slice(pixels),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(side * 8),
+                    rows_per_image: Some(side),
+                },
+                wgpu::Extent3d {
+                    width: side,
+                    height: side,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1505,6 +1510,8 @@ const SHADOW_REFRESH_GROUPS: usize = 48;
 fn update_local_probes(
     queue: &wgpu::Queue,
     uniform: &wgpu::Buffer,
+    cubes: &wgpu::Texture,
+    slots: &mut [Option<usize>; LOCAL_PROBE_SLOTS],
     world: &World,
     position: [f32; 3],
 ) {
@@ -1516,7 +1523,7 @@ fn update_local_probes(
             .sqrt()
             - probe.half_diagonal
     };
-    let mut nearest = (0..world.local_probes.len().min(MAX_LOCAL_PROBES)).collect::<Vec<_>>();
+    let mut nearest = (0..world.local_probes.len()).collect::<Vec<_>>();
     nearest.sort_by(|&a, &b| reach(a).total_cmp(&reach(b)));
     nearest.truncate(LOCAL_PROBE_SLOTS);
     nearest.sort_by(|&a, &b| {
@@ -1524,16 +1531,35 @@ fn update_local_probes(
             .priority
             .total_cmp(&world.local_probes[b].priority)
     });
+    // Keep what is already resident, then load the rest into freed slots.
+    for slot in slots.iter_mut() {
+        if slot.is_some_and(|probe| !nearest.contains(&probe)) {
+            *slot = None;
+        }
+    }
+    for &probe in &nearest {
+        if slots.contains(&Some(probe)) {
+            continue;
+        }
+        if let Some(free) = slots.iter().position(Option::is_none) {
+            slots[free] = Some(probe);
+            write_local_probe(queue, cubes, free, &world.local_probes[probe]);
+        }
+    }
     let mut data = vec![[0.0_f32; 4]; 1 + LOCAL_PROBE_VEC4S * LOCAL_PROBE_SLOTS];
     data[0][0] = nearest.len() as f32;
     for (slot, &index) in nearest.iter().enumerate() {
         let probe = &world.local_probes[index];
         let at = 1 + slot * LOCAL_PROBE_VEC4S;
+        let cube = slots
+            .iter()
+            .position(|held| *held == Some(index))
+            .unwrap_or(0);
         data[at] = [
             probe.center[0],
             probe.center[1],
             probe.center[2],
-            index as f32,
+            cube as f32,
         ];
         data[at + 1..at + 4].copy_from_slice(&probe.axes);
         data[at + 4] = [probe.tint[0], probe.tint[1], probe.tint[2], probe.falloff];
@@ -1642,6 +1668,9 @@ pub(super) struct Renderer {
     shadow_compare: wgpu::Sampler,
     probe_sampler: wgpu::Sampler,
     local_probe_uniform: wgpu::Buffer,
+    local_probe_cubes: wgpu::Texture,
+    local_probe_view: wgpu::TextureView,
+    local_probe_slots: [Option<usize>; LOCAL_PROBE_SLOTS],
     device: wgpu::Device,
     water_screen_layout: wgpu::BindGroupLayout,
     particle_layout: wgpu::BindGroupLayout,
@@ -1858,6 +1887,26 @@ impl Renderer {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
+                    binding: 21,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 22,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
                     binding: 20,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
@@ -2009,6 +2058,7 @@ impl Renderer {
                     },
                 ],
             });
+        let (local_probe_cubes, local_probe_view) = create_local_probe_cubes(device);
         let local_probe_uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Nearest original local probes"),
             size: (16 + 16 * LOCAL_PROBE_VEC4S * LOCAL_PROBE_SLOTS) as u64,
@@ -2072,7 +2122,7 @@ impl Renderer {
             &upload_probe_cube(device, queue, None),
             &probe_sampler,
             &local_probe_uniform,
-            &upload_local_probes(device, queue, &[]),
+            &local_probe_view,
         );
         let shadow_pass_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2237,6 +2287,32 @@ impl Renderer {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
                 ],
             });
         let screen_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2283,7 +2359,7 @@ impl Renderer {
         });
         let water_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Authored water surface"),
-            bind_group_layouts: &[&water_layout, &shadow_sample_layout, &water_screen_layout],
+            bind_group_layouts: &[&water_layout, &water_screen_layout],
             push_constant_ranges: &[],
         });
         let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2901,6 +2977,9 @@ impl Renderer {
             reflection_view,
             reflection_depth,
             local_probe_uniform,
+            local_probe_cubes,
+            local_probe_view,
+            local_probe_slots: [None; LOCAL_PROBE_SLOTS],
             device: device.clone(),
             water_screen_layout,
             particle_layout,
@@ -3086,6 +3165,12 @@ impl Renderer {
                     .copied()
                     .filter(|n| n.iter().all(|component| component.is_finite()))
                     .unwrap_or([0.0; 3]),
+                paint: model
+                    .mesh
+                    .vertex_alpha
+                    .as_ref()
+                    .and_then(|s| s.get(i))
+                    .map_or(1.0, |alpha| f32::from(*alpha) / 255.0),
             })
             .collect();
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -3287,7 +3372,7 @@ impl Renderer {
                 if terrain && terrain_gpu.is_none() {
                     terrain_detail
                 } else {
-                    None
+                    surf.detail_map.as_ref()
                 },
                 6,
                 [128, 128, 128, 0],
@@ -3299,6 +3384,38 @@ impl Renderer {
                 hashes,
                 used_bytes,
             );
+            let (blend_layer_tex, blend_layer_view) = auxiliary_map(
+                device,
+                queue,
+                surf.blend_layer.as_ref(),
+                7,
+                [128, 128, 128, 255],
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                "Original Illum second layer diffuse",
+                full_textures,
+                limit_2d,
+                cache,
+                hashes,
+                used_bytes,
+            );
+            let (blend_mask_tex, blend_mask_view) = auxiliary_map(
+                device,
+                queue,
+                surf.blend_mask.as_ref(),
+                8,
+                [255, 255, 255, 255],
+                wgpu::TextureFormat::Rgba8Unorm,
+                "Original Illum layer blend mask",
+                full_textures,
+                limit_2d,
+                cache,
+                hashes,
+                used_bytes,
+            );
+            let layer = surf
+                .layer_params
+                .unwrap_or([0.0, 0.0, 0.0, 8.0, 1.0, 1.0, 1.0]);
+            let detail_tile = surf.detail_tile.unwrap_or([1.0, 1.0]);
             let params = surf
                 .distance_clouds
                 .or(surf.material_tint)
@@ -3334,6 +3451,18 @@ impl Renderer {
                     waterfall[8],
                     waterfall[9],
                     waterfall[10],
+                    0.0,
+                    detail_tile[0],
+                    detail_tile[1],
+                    layer[0],
+                    layer[1],
+                    layer[2],
+                    if surf.detail_map.is_some() { 1.0 } else { 0.0 },
+                    if surf.blend_layer.is_some() { 1.0 } else { 0.0 },
+                    layer[3],
+                    layer[4],
+                    layer[5],
+                    layer[6],
                     0.0,
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -3423,6 +3552,14 @@ impl Renderer {
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
                     },
                     wgpu::BindGroupEntry {
+                        binding: 21,
+                        resource: wgpu::BindingResource::TextureView(&blend_layer_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 22,
+                        resource: wgpu::BindingResource::TextureView(&blend_mask_view),
+                    },
+                    wgpu::BindGroupEntry {
                         binding: 20,
                         resource: wgpu::BindingResource::TextureView(&terrain_textures.height_view),
                     },
@@ -3446,6 +3583,8 @@ impl Renderer {
                 _normal_image: normal_tex,
                 _specular_image: specular_tex,
                 _gloss_image: gloss_tex,
+                _blend_layer_image: blend_layer_tex,
+                _blend_mask_image: blend_mask_tex,
                 _emissive_image: emissive_tex,
                 _detail_image: detail_tex,
                 _alpha_uniform: alpha_uniform,
@@ -3522,6 +3661,7 @@ impl Renderer {
             self.update_particles(device, queue, world);
             self.ambient_cube = world.ambient_cube;
             self.surface_darkening = 1.0 - world.rain_darkening;
+            self.local_probe_slots = [None; LOCAL_PROBE_SLOTS];
             self.probe_tint = world.probe_cube.as_ref().map_or([0.0; 4], |cube| {
                 [cube.tint[0], cube.tint[1], cube.tint[2], 0.0]
             });
@@ -3534,7 +3674,7 @@ impl Renderer {
                 &upload_probe_cube(device, queue, world.probe_cube.as_deref()),
                 &self.probe_sampler,
                 &self.local_probe_uniform,
-                &upload_local_probes(device, queue, &world.local_probes),
+                &self.local_probe_view,
             );
             self.last_camera = None;
             self.last_lighting_hour = f32::NAN;
@@ -3589,7 +3729,14 @@ impl Renderer {
         let camera_changed = self.last_camera != Some(uniform);
         if camera_changed {
             self.update_local_lights(queue, world, uniform);
-            update_local_probes(queue, &self.local_probe_uniform, world, camera.position);
+            update_local_probes(
+                queue,
+                &self.local_probe_uniform,
+                &self.local_probe_cubes,
+                &mut self.local_probe_slots,
+                world,
+                camera.position,
+            );
         }
         let mut cache = std::mem::take(&mut self.cache);
         let mut hashes = std::mem::take(&mut self.source_hashes);
@@ -4066,6 +4213,18 @@ impl Renderer {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&self.screen_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.shadow_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&self.shadow_array),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&self.shadow_compare),
+                },
             ],
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -4099,15 +4258,13 @@ impl Renderer {
             pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
         }
         pass.set_pipeline(&self.water_pipeline);
-        pass.set_bind_group(1, &self.shadow_group, &[]);
-        pass.set_bind_group(2, &screen, &[]);
+        pass.set_bind_group(1, &screen, &[]);
         for water in &self.water_surfaces {
             pass.set_bind_group(0, &water.bind, &[]);
             pass.set_vertex_buffer(0, water.vertices.slice(..));
             pass.draw(0..water.count, 0..1);
         }
         pass.set_pipeline(&self.particle_pipeline);
-        pass.set_bind_group(1, &screen, &[]);
         for batch in &self.particle_batches {
             pass.set_bind_group(0, &batch.bind, &[]);
             pass.set_vertex_buffer(0, batch.instances.slice(..));
@@ -4576,6 +4733,7 @@ mod tests {
     #[test]
     fn group_loading_priority_uses_position_not_camera_direction() {
         let dummy_mesh = Arc::new(RenderMesh {
+            vertex_alpha: None,
             info: evolve_core::ModelInfo {
                 format: "test".into(),
                 version: 1,
@@ -4932,6 +5090,7 @@ mod tests {
     #[test]
     fn terrain_is_identified_by_nonselectable_ground_instance_not_asset_name() {
         let mesh = Arc::new(RenderMesh {
+            vertex_alpha: None,
             info: evolve_core::ModelInfo {
                 format: "test".into(),
                 version: 1,

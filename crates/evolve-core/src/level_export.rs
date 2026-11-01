@@ -278,6 +278,7 @@ fn terrain_mesh(path: &Path) -> Result<RenderMesh, LevelExportError> {
     let points = terrain.vertices.len();
     let triangles = terrain.indices.len() / 3;
     Ok(RenderMesh {
+        vertex_alpha: None,
         info: ModelInfo {
             format: "CryEngine terrain surface".into(),
             version: 1,
@@ -400,6 +401,7 @@ mod tests {
     #[test]
     fn creates_distinct_instance_nodes_under_common_zup_basis() {
         let model = RenderMesh {
+            vertex_alpha: None,
             info: ModelInfo {
                 format: "test".into(),
                 version: 7,

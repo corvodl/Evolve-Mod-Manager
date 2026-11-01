@@ -1667,6 +1667,7 @@ impl Operation {
                 let terrain = read_terrain(&source, 129).map_err(|e| e.to_string())?;
                 let info = terrain.info.clone();
                 let preview = RenderMesh {
+                    vertex_alpha: None,
                     info: ModelInfo {
                         format: "CryEngine Heightmap.dat".into(),
                         version: 1,
@@ -15479,6 +15480,11 @@ mod project_edit_tests {
             material_tint: None,
             material_specular: None,
             waterfall: None,
+            detail_map: None,
+            blend_layer: None,
+            blend_mask: None,
+            detail_tile: None,
+            layer_params: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&pixels)),
             normal: None,
@@ -15541,6 +15547,11 @@ mod project_edit_tests {
             material_tint: None,
             material_specular: None,
             waterfall: None,
+            detail_map: None,
+            blend_layer: None,
+            blend_mask: None,
+            detail_tile: None,
+            layer_params: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
@@ -15554,6 +15565,7 @@ mod project_edit_tests {
             opacity: None,
         };
         let model = Arc::new(RenderMesh {
+            vertex_alpha: None,
             info: evolve_core::ModelInfo {
                 format: "test".into(),
                 version: 0,
@@ -15721,6 +15733,7 @@ mod project_edit_tests {
         let mut state = State {
             inventory: Some(scan_directory(dir.path()).unwrap()),
             model: Some(Arc::new(RenderMesh {
+                vertex_alpha: None,
                 info: evolve_core::ModelInfo {
                     format: "test".into(),
                     version: 7,

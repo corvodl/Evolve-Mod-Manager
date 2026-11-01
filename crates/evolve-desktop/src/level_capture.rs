@@ -79,7 +79,13 @@ fn capture_real_map_views() {
     println!("ADAPTER {:?}", adapter.get_info().name);
     let (device, queue) = runtime
         .block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_limits: adapter.limits(),
+            // The limits the application's own device runs under, so a capture
+            // fails on anything the real editor would reject.
+            required_limits: wgpu::Limits {
+                max_bind_groups: 2,
+                max_non_sampler_bindings: 2048,
+                ..wgpu::Limits::default()
+            },
             ..Default::default()
         }))
         .unwrap();

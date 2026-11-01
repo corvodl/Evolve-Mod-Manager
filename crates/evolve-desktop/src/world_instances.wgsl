@@ -24,6 +24,9 @@ struct SurfaceParams {
   waterfall_scroll: vec4<f32>, // TillingLayer0, TillingLayer1, SpeedLayer0, SpeedLayer1
   waterfall_surface: vec4<f32>, // BumpScaleLayer0, BumpScaleLayer1, ReflectionAmount, FresnelBias
   waterfall_blend: vec4<f32>, // AlphaBlendMul, FoamDeform, FoamMultiplier
+  detail: vec4<f32>,  // Detail tiling U and V, DetailBumpScale, DetailDiffuseScale
+  layers: vec4<f32>,  // DetailGlossScale, has detail, has second layer, BlendFactor
+  blend: vec4<f32>,   // BlendFalloff, BlendLayer2Tiling, BlendMaskTiling
 }
 @group(0) @binding(4) var<uniform> authored: SurfaceParams;
 // Viewport-only time-of-day lighting. Never reads or edits game engine state.
@@ -89,6 +92,9 @@ struct SourceTerrainParams {
 @group(0) @binding(18) var source_terrain_repeat: sampler;
 @group(0) @binding(19) var source_terrain_normals: texture_2d_array<f32>;
 @group(0) @binding(20) var source_terrain_heights: texture_2d_array<f32>;
+// BLENDLAYER's second diffuse and mask. Binding 12 is the Detail map on non-terrain.
+@group(0) @binding(21) var blend_layer: texture_2d<f32>;
+@group(0) @binding(22) var blend_mask: texture_2d<f32>;
 // Tangent XY of the blended terrain layers, read by the normal step in shade.
 var<private> terrain_normal_xy: vec2<f32>;
 var<private> blended_surface: f32;
@@ -206,12 +212,14 @@ struct Output {
   @location(0) uv: vec2<f32>,
   @location(1) normal: vec3<f32>,
   @location(2) world: vec3<f32>,
+  @location(3) paint: f32,
 }
 @vertex
 fn vs_main(
   @location(0) xyz: vec3<f32>,
   @location(1) uv: vec2<f32>,
   @location(2) normal: vec3<f32>,
+  @location(7) paint: f32,
   @location(3) col0: vec4<f32>,
   @location(4) col1: vec4<f32>,
   @location(5) col2: vec4<f32>,
@@ -242,6 +250,7 @@ fn vs_main(
   }
   out.normal=transformed_normal;
   out.world=world;
+  out.paint=paint;
   return out;
 }
 // Match ordinary implicit mip LOD while clamping to the source levels that
@@ -343,9 +352,27 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
     // squares the result back to linear.
     let display=blended_terrain(input,sqrt(max(base.rgb,vec3<f32>(0.0))));
     base=vec4<f32>(display*display,base.a);
-  } else {
+  } else if (authored.layers.y<0.5) {
     let detail=textureSample(terrain_detail,tex_sampler,input.uv);
     signed_detail=(detail.rgb-vec3<f32>(128.0/255.0))*detail.a;
+  }
+  // BLENDLAYER: vertex paint times the mask, shaped as the terrain blend is.
+  let layer_sample=textureSample(blend_layer,tex_sampler,input.uv*authored.blend.y);
+  let mask_sample=textureSample(blend_mask,tex_sampler,input.uv*authored.blend.z).r;
+  if (authored.layers.z>0.5) {
+    let weight=input.paint*mask_sample*(1.0+authored.layers.w);
+    let amount=min(pow(max(weight,0.0001),authored.blend.x),1.0);
+    base=vec4<f32>(mix(base.rgb,layer_sample.rgb,amount),base.a);
+  }
+  // The game's Detail map: green and alpha bend the normal, red scales diffuse,
+  // blue scales gloss.
+  let detail_map=textureSample(terrain_detail,tex_sampler,input.uv*authored.detail.xy);
+  var detail_gloss=1.0;
+  var detail_bend=vec2<f32>(0.0);
+  if (authored.layers.y>0.5) {
+    base=vec4<f32>(base.rgb*max(1.0+(detail_map.r*2.0-1.0)*authored.detail.w,0.0),base.a);
+    detail_bend=(detail_map.ga*2.0-vec2<f32>(1.0))*authored.detail.z;
+    detail_gloss=1.0+(detail_map.b*2.0-1.0)*authored.layers.x;
   }
   base=vec4<f32>(clamp(base.rgb+signed_detail,vec3<f32>(0.0),vec3<f32>(1.0))*authored.clouds.rgb*sun_shadows.control.w,base.a);
   if (use_opacity_mask) {
@@ -377,8 +404,9 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   let pos_dy=dpdy(input.world);
   let determinant=uv_dx.x*uv_dy.y-uv_dx.y*uv_dy.x;
   let encoded=textureSample(normal_map,tex_sampler,input.uv).rg;
-  let xy=encoded*2.0-vec2<f32>(1.0);
-  let tangent_z=sqrt(max(0.0,1.0-dot(xy,xy)));
+  let plain_xy=encoded*2.0-vec2<f32>(1.0);
+  let tangent_z=sqrt(max(0.0,1.0-dot(plain_xy,plain_xy)));
+  let xy=plain_xy+detail_bend;
   if (authored.cutoff.z>0.5 && abs(determinant)>0.000001) {
     let tangent_raw=(pos_dx*uv_dy.y-pos_dy*uv_dx.y)/determinant;
     let bitangent_raw=(pos_dy*uv_dx.x-pos_dx*uv_dy.x)/determinant;
@@ -404,7 +432,7 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // A missing specular map is black (never invent shiny materials).
   let reflectance=textureSample(specular_map,tex_sampler,input.uv).rgb*authored.specular.rgb;
   // A ddna normal map carries smoothness in alpha; other formats read as 1.
-  let gloss=textureSample(gloss_map,tex_sampler,input.uv).r*textureSample(normal_map,tex_sampler,input.uv).a;
+  let gloss=clamp(textureSample(gloss_map,tex_sampler,input.uv).r*textureSample(normal_map,tex_sampler,input.uv).a*detail_gloss,0.0,1.0);
   let view_direction=normalize(camera.origin.xyz-input.world);
   let half_direction=normalize(sun_direction+view_direction);
   let exponent=mix(8.0,120.0,clamp(gloss,0.0,1.0));
@@ -587,7 +615,7 @@ fn fs_waterfall(input:Output)->@location(0) vec4<f32> {
   let foam=textureSample(albedo,tex_sampler,uv0+deform)+textureSample(albedo,tex_sampler,uv1+deform);
   let alpha=clamp(foam.a*blend.x*0.5,0.0,1.0);
   // The game's object ambient input also carries sky and sun; this share is calibrated.
-  let incoming=probes.ambient+light.sun_color.rgb*light.sun.w*0.25;
+  let incoming=probes.ambient+light.sun_color.rgb*light.sun.w*0.8;
   let lit=foam.rgb*incoming*(n.z*0.25+0.75)*authored.clouds.rgb*blend.z*0.5;
   let fogged=distance_fog(input,vec4<f32>(lit+probes.environment*surface.z*fresnel,1.0)).rgb;
   return vec4<f32>(fogged*alpha,alpha*fresnel);

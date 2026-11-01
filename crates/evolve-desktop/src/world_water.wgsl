@@ -30,13 +30,13 @@ struct SunShadows {
 @group(0) @binding(5) var decal:texture_2d<f32>;
 @group(0) @binding(6) var water_sampler:sampler;
 @group(0) @binding(7) var gloss_map:texture_2d<f32>;
-@group(1) @binding(0) var<uniform> sun_shadows:SunShadows;
-@group(1) @binding(1) var shadow_depth:texture_depth_2d_array;
-@group(1) @binding(2) var shadow_compare:sampler_comparison;
-@group(2) @binding(0) var reflection:texture_2d<f32>;
-@group(2) @binding(1) var refraction:texture_2d<f32>;
-@group(2) @binding(2) var scene_depth:texture_depth_2d;
-@group(2) @binding(3) var screen_sampler:sampler;
+@group(1) @binding(0) var reflection:texture_2d<f32>;
+@group(1) @binding(1) var refraction:texture_2d<f32>;
+@group(1) @binding(2) var scene_depth:texture_depth_2d;
+@group(1) @binding(3) var screen_sampler:sampler;
+@group(1) @binding(4) var<uniform> sun_shadows:SunShadows;
+@group(1) @binding(5) var shadow_depth:texture_depth_2d_array;
+@group(1) @binding(6) var shadow_compare:sampler_comparison;
 
 struct Output {
   @builtin(position) position:vec4<f32>,

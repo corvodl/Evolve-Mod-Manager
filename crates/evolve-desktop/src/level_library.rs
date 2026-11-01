@@ -1230,6 +1230,7 @@ fn open_selected(
                 let info = data.info.clone();
                 Some((
                     RenderMesh {
+                        vertex_alpha: None,
                         info: ModelInfo {
                             format: "CryEngine Heightmap.dat".into(),
                             version: 1,

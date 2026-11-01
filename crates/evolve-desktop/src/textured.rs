@@ -109,6 +109,13 @@ pub struct Surface {
     pub material_specular: Option<[f32; 3]>,
     /// World meshes only: Waterfall shader params.
     pub waterfall: Option<[f32; 11]>,
+    /// World meshes only: Illum Detail map, then its tiling.
+    pub detail_map: Option<Arc<image::RgbaImage>>,
+    /// World meshes only: BLENDLAYER second diffuse and blend mask.
+    pub blend_layer: Option<Arc<image::RgbaImage>>,
+    pub blend_mask: Option<Arc<image::RgbaImage>>,
+    pub detail_tile: Option<[f32; 2]>,
+    pub layer_params: Option<[f32; 7]>,
     /// Original per-leaf AlphaTest threshold (normalized). Default preview 0.5.
     pub alpha_cutoff: f32,
     pub diffuse: Option<Arc<image::RgbaImage>>,

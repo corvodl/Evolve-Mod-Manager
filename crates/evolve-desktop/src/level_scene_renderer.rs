@@ -428,6 +428,11 @@ fn neutral(first_index: u32, index_count: u32) -> Surface {
         material_tint: None,
         material_specular: None,
         waterfall: None,
+        detail_map: None,
+        blend_layer: None,
+        blend_mask: None,
+        detail_tile: None,
+        layer_params: None,
         alpha_cutoff: 0.5,
         diffuse: None,
         normal: None,
@@ -528,6 +533,15 @@ fn append(
                 .copied()
                 .unwrap_or([0.0, 0.0]),
         );
+        if let Some(paint) = target.vertex_alpha.as_mut() {
+            paint.push(
+                part.vertex_alpha
+                    .as_ref()
+                    .and_then(|alpha| alpha.get(i))
+                    .copied()
+                    .unwrap_or(255),
+            );
+        }
         target.normals.as_mut().unwrap().push(transformed(
             transform,
             part.normals
@@ -754,6 +768,7 @@ pub(super) fn assemble(
         indices: Vec::new(),
         uv0: Some(Vec::new()),
         normals: Some(Vec::new()),
+        vertex_alpha: Some(Vec::new()),
     };
     let mut surfaces = Vec::new();
     let picks = Vec::new();
@@ -1252,6 +1267,7 @@ mod tests {
                     return Err("mesh lacks referenced vertex/index streams".into());
                 }
                 Ok(vec![RenderMesh {
+                    vertex_alpha: None,
                     info: ModelInfo {
                         format: "test".into(),
                         version: 7,
@@ -1318,6 +1334,7 @@ mod tests {
             },
             |_path| {
                 Ok(vec![RenderMesh {
+                    vertex_alpha: None,
                     info: ModelInfo {
                         format: "test".into(),
                         version: 7,
@@ -1397,6 +1414,7 @@ mod tests {
     #[test]
     fn combined_scene_offsets_indices_and_material_ranges_per_instance() {
         let source = RenderMesh {
+            vertex_alpha: None,
             info: ModelInfo {
                 format: "Fixture".into(),
                 version: 1,
@@ -1417,6 +1435,7 @@ mod tests {
             indices: Vec::new(),
             uv0: Some(Vec::new()),
             normals: Some(Vec::new()),
+            vertex_alpha: Some(Vec::new()),
         };
         let mut ranges = Vec::new();
         assert!(append(
