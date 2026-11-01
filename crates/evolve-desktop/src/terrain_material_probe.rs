@@ -1086,8 +1086,10 @@ mod composition_tests {
         assert_eq!(gpu.layers[0].image.as_raw(), a.as_raw());
         assert_eq!(gpu.layers[1].image.as_raw(), b.as_raw());
         assert_eq!(gpu.layers[1].tile, [0.15, 0.5]);
-        assert_eq!(gpu.paint.get_pixel(0, 0)[0], 1);
-        assert_eq!(gpu.paint.get_pixel(1, 0)[0], 2);
+        // Heightmap LayerId bitmap ordering is source-format-specific; test
+        // byte-for-byte preservation rather than assuming row-major IDs.
+        assert_eq!(gpu.paint.get_pixel(0, 0)[0], paint.id_at(0, 0).unwrap());
+        assert_eq!(gpu.paint.get_pixel(1, 0)[0], paint.id_at(1, 0).unwrap());
         assert_eq!(gpu.unit, 2.0);
     }
 
