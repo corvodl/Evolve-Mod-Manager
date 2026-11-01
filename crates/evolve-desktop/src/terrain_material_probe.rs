@@ -1041,6 +1041,47 @@ mod composition_tests {
         }
     }
     #[test]
+    fn source_gpu_layers_preserve_original_pixels_and_exact_layer_ids() {
+        let paint = fixture();
+        let mut layers = HashMap::new();
+        let a = image::RgbaImage::from_fn(4, 4, |x, y| {
+            image::Rgba([(x * 13 + y * 17) as u8, 60, 100, 255])
+        });
+        let b = image::RgbaImage::from_pixel(4, 4, image::Rgba([12, 180, 250, 255]));
+        layers.insert(2, DetailLayer {
+            image: b.clone(), height: None, tile: [0.15, 0.5],
+            strength: 0.8, blend_factor: 10.0, blend_falloff: 4.0,
+        });
+        layers.insert(1, DetailLayer {
+            image: a.clone(), height: None, tile: [0.25, 0.25],
+            strength: 1.0, blend_factor: 16.0, blend_falloff: 2.0,
+        });
+        let gpu = gpu_source(&paint, 2.0, &layers).unwrap();
+        assert_eq!(gpu.layers.iter().map(|layer| layer.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(gpu.layers[0].image.as_raw(), a.as_raw());
+        assert_eq!(gpu.layers[1].image.as_raw(), b.as_raw());
+        assert_eq!(gpu.layers[1].tile, [0.15, 0.5]);
+        assert_eq!(gpu.paint.get_pixel(0, 0)[0], 1);
+        assert_eq!(gpu.paint.get_pixel(1, 0)[0], 2);
+        assert_eq!(gpu.unit, 2.0);
+    }
+
+    #[test]
+    fn incompatible_terrain_array_falls_back_without_dropping_source_detail() {
+        let paint = fixture();
+        let mut layers = HashMap::new();
+        for (id, size) in [(1, 4), (2, 8)] {
+            layers.insert(id, DetailLayer {
+                image: image::RgbaImage::from_pixel(size, size, image::Rgba([127, 128, 129, 255])),
+                height: None, tile: [1.0, 1.0], strength: 1.0,
+                blend_factor: 16.0, blend_falloff: 2.0,
+            });
+        }
+        assert!(gpu_source(&paint, 1.0, &layers).is_none());
+        assert_eq!(compose_detail(&paint, (8, 8), 1.0, &layers).dimensions(), (8, 8));
+    }
+
+    #[test]
     fn terrain_diffuse_comes_from_verified_nested_mtl_leaf_not_optional_xml_scan() {
         let doc = evolve_core::parse_material(
             br#"<Material Name="Outer"><SubMaterials>
