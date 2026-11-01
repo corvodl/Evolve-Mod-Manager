@@ -134,11 +134,13 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // CryEngine 3.5 Terrain.Layer: high-pass diffuse is ADD-SIGNED over the
   // low-frequency baked terrain color, not an ordinary diffuse replacement.
   // 128/255 is neutral. Missing/ambiguous layers contribute zero alpha.
-  // 120-350 world-unit fade is an EDITOR preview while Evolve's real
-  // DetailLayersViewDistRatio remains unverified for this map/build.
-  let distance=length(input.world-camera.origin.xyz);
-  let detail_fade=1.0-smoothstep(120.0,350.0,distance);
-  let signed_detail=(detail.rgb-vec3<f32>(128.0/255.0))*detail.a*detail_fade;
+  // Do not zero genuine imported terrain detail at an arbitrary camera
+  // distance. The old 120-350 unit cutoff hid all Terrain.Layer textures
+  // in overhead views, leaving only flat baked macro colors even with
+  // complete DDS mips resident. GPU mip filtering naturally reduces
+  // high-frequency detail at distance. Evolve's authored distance fade is
+  // not verified here, so do not invent a replacement cutoff.
+  let signed_detail=(detail.rgb-vec3<f32>(128.0/255.0))*detail.a;
   base=vec4<f32>(clamp(base.rgb+signed_detail,vec3<f32>(0.0),vec3<f32>(1.0)),base.a);
   if (use_opacity_mask) {
     let coverage=textureSample(authored_opacity,tex_sampler,input.uv).r;
