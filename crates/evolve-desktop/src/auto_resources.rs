@@ -621,6 +621,71 @@ pub fn resolve_declared(
     exact(inventory, declared_path, imported, build)
 }
 
+/// Packed DBA directories identify the original virtual CAF *path*, not
+/// just a similarly named animation in another hunter or monster. Some
+/// Controller_905 records omit the .caf suffix; that is the only normalization
+/// permitted here. Never select from the basename alone.
+fn packed_animation_key(value: &str) -> String {
+    value.replace('\\', "/")
+        .trim_start_matches('/')
+        .trim_end_matches(".caf")
+        .to_ascii_lowercase()
+}
+
+fn packed_record_matches(declared_caf: &str, record: &str) -> bool {
+    let wanted = packed_animation_key(declared_caf);
+    let actual = packed_animation_key(record);
+    !wanted.is_empty() && wanted.contains('/') && actual == wanted
+}
+
+/// Look only in exact DBAs declared by the selected character's CHRPARAMS.
+/// The current Controller_905 parser validates the database's animation-name
+/// directory but does NOT decode compressed keyframes. A positive result is a
+/// converter candidate, never proof of native CAF or skeleton playback.
+pub fn find_declared_packed_caf(
+    inventory: &Inventory,
+    requested_caf: &str,
+    declared_databases: &[String],
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Option<(PathBuf, String)>, String> {
+    use evolve_core::index_native_dba_bytes;
+    const MAX_DATABASES: usize = 64;
+    const MAX_DBA: u64 = 512 * 1024 * 1024;
+    if declared_databases.len() > MAX_DATABASES {
+        return Err("Too many declared DBA databases to check safely".into());
+    }
+    let mut matched: Option<(PathBuf, String)> = None;
+    let mut seen = std::collections::HashSet::new();
+    for virtual_path in declared_databases {
+        if !seen.insert(virtual_path.to_ascii_lowercase()) {
+            continue;
+        }
+        let Some(path) = resolve_declared_dba(inventory, virtual_path, imported, build)? else {
+            continue;
+        };
+        let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if !meta.file_type().is_file() || meta.len() > MAX_DBA {
+            return Err(format!("Unsafe or oversized declared DBA: {virtual_path}"));
+        }
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        let records = index_native_dba_bytes(&bytes)
+            .map_err(|e| format!("Cannot index declared DBA {virtual_path}: {e}"))?;
+        for record in records {
+            if !packed_record_matches(requested_caf, &record.name) {
+                continue;
+            }
+            if matched.is_some() {
+                return Err(format!(
+                    "Animation {requested_caf} appears in multiple declared DBA records; refusing an ambiguous packed clip"
+                ));
+            }
+            matched = Some((path.clone(), record.name));
+        }
+    }
+    Ok(matched)
+}
+
 /// Resolve a DBA named in the selected character's own chrparams catalog.
 /// Refuse arbitrary filenames and let the converter independently validate
 /// its decoded GLB tracks before anything becomes playable.
@@ -640,6 +705,37 @@ pub fn resolve_declared_dba(
 mod tests {
     use super::*;
     use evolve_core::scan_directory;
+
+    #[test]
+    fn packed_dba_matches_only_exact_character_animation_paths() {
+        let path = "characters/hunters/merc_aberenegade/animations/3p/idle.caf";
+        assert!(packed_record_matches(path, path));
+        assert!(packed_record_matches(
+            path,
+            "Characters\\Hunters\\merc_aberenegade\\animations\\3p\\idle"
+        ));
+        assert!(!packed_record_matches(path, "idle.caf"));
+        assert!(!packed_record_matches(
+            path,
+            "characters/hunters/merc_abe/animations/3p/idle.caf"
+        ));
+        assert!(!packed_record_matches(path, "animations/3p/idle.caf"));
+    }
+
+    #[test]
+    fn packed_lookup_requires_declared_database_and_never_guesses_a_pak() {
+        let dir = tempfile::tempdir().unwrap();
+        let inv = scan_directory(dir.path()).unwrap();
+        assert!(find_declared_packed_caf(
+            &inv,
+            "characters/hunters/merc_aberenegade/animations/3p/idle.caf",
+            &[],
+            None,
+            None,
+        )
+        .unwrap()
+        .is_none());
+    }
 
     #[test]
     fn wildcard_expands_only_matching_character_cafs() {
