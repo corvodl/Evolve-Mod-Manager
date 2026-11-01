@@ -567,6 +567,9 @@ pub(super) struct World {
     /// Signed high-pass detail overlay; painted layer composition is prepared
     /// from verified same-install sources in the blocking map-open worker.
     pub terrain_detail: Option<Arc<image::RgbaImage>>,
+    /// Authored categorical terrain paint and full-resolution Terrain.Layer
+    /// DDS images; the baked atlas stays available independently.
+    pub terrain_gpu: Option<Arc<super::terrain_material_probe::GpuTerrainSource>>,
     pub sky_source: super::level_atmosphere::SkySource,
     pub static_sky: Option<Arc<super::level_atmosphere::StaticSky>>,
     pub local_lights: Arc<Vec<super::level_atmosphere::LocalLight>>,
@@ -864,6 +867,129 @@ fn all_group_instances(group: &ModelGroup) -> Vec<InstanceGpu> {
         .map(|instance| InstanceGpu::from_transform(instance.transform))
         .collect()
 }
+/// All original diffuse layer mips are uploaded at native decoded resolution
+/// as one D2 array. The categorical paint map uses unfiltered integer fetches
+/// inside the shader, so a bilinear ID blend cannot invent a third material.
+struct TerrainGpuTextures {
+    _layers: wgpu::Texture,
+    layer_view: wgpu::TextureView,
+    _paint: wgpu::Texture,
+    paint_view: wgpu::TextureView,
+    uniforms: wgpu::Buffer,
+    bytes: u64,
+}
+
+fn upload_terrain_layers(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    source: Option<&super::terrain_material_probe::GpuTerrainSource>,
+) -> TerrainGpuTextures {
+    let dimensions = source
+        .and_then(|s| s.layers.first())
+        .map_or((1, 1), |layer| layer.image.dimensions());
+    let depth = source.map_or(1, |s| s.layers.len().max(1)) as u32;
+    let count = dimensions.0.max(dimensions.1).ilog2() + 1;
+    let layers = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Full native-resolution original terrain material diffuse arrays"),
+        size: wgpu::Extent3d {
+            width: dimensions.0,
+            height: dimensions.1,
+            depth_or_array_layers: depth,
+        },
+        mip_level_count: count,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for layer in 0..depth {
+        let src = source.and_then(|s| s.layers.get(layer as usize));
+        for mip in 0..count {
+            let w = (dimensions.0 >> mip).max(1);
+            let h = (dimensions.1 >> mip).max(1);
+            let pixels = src.map(|l| next_diffuse_mip(&l.image, mip));
+            let fallback = [128u8, 128, 128, 255];
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &layers,
+                    mip_level: mip,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                pixels.as_ref().map_or(fallback.as_slice(), |img| img.as_raw()),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(w * 4),
+                    rows_per_image: Some(h),
+                },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+        }
+    }
+    let layer_view = layers.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    let paint = source.map_or_else(
+        || image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255])),
+        |s| s.paint.clone(),
+    );
+    let (pw, ph) = paint.dimensions();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Exact original categorical painted terrain IDs"),
+        size: wgpu::Extent3d { width: pw, height: ph, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        paint.as_raw(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(pw * 4),
+            rows_per_image: Some(ph),
+        },
+        wgpu::Extent3d { width: pw, height: ph, depth_or_array_layers: 1 },
+    );
+    let paint_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut desc = [[0.0f32; 4]; 17];
+    if let Some(s) = source {
+        desc[0] = [pw as f32, ph as f32, s.unit, s.layers.len() as f32];
+        for (index, layer) in s.layers.iter().enumerate() {
+            desc[index + 1] = [
+                layer.id as f32,
+                layer.tile[0],
+                layer.tile[1],
+                layer.strength,
+            ];
+        }
+    }
+    let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Original terrain layer IDs/tiling/strength"),
+        contents: bytemuck::cast_slice(&desc),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    TerrainGpuTextures {
+        _layers: layers,
+        layer_view,
+        _paint: texture,
+        paint_view,
+        uniforms,
+        bytes: depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
+            + pw as u64 * ph as u64 * 4,
+    }
+}
+
 struct GpuSurface {
     diffuse_key: TextureKey,
     first: u32,
@@ -887,6 +1013,7 @@ struct GpuGroup {
     visible: u32,
     surfaces: Vec<GpuSurface>,
     terrain: bool,
+    _terrain_source: Option<TerrainGpuTextures>,
     geometry_bytes: u64,
 }
 pub(super) struct Renderer {
@@ -917,6 +1044,7 @@ pub(super) struct Renderer {
     last_lighting_hour: f32,
     sampler: wgpu::Sampler,
     terrain_sampler: wgpu::Sampler,
+    empty_terrain: TerrainGpuTextures,
     world_identity: usize,
     last_full_textures: bool,
     groups: Vec<Option<GpuGroup>>,
