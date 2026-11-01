@@ -51,8 +51,47 @@ pub(super) fn likely_level_pak(pak: &ImportedPak) -> bool {
         || name.contains("_map")
 }
 
+/// Map-owned PAKs store paths relative to the source folder, while extracted
+/// all-map archives often contain <Map>/Layers/... and <Map>/LevelData/...
+/// Never interpret a layer subfolder (lighting, geometry, audio) as a map.
+fn map_relative_member(relative: &str) -> bool {
+    let lower = relative.replace('\\', "/").to_ascii_lowercase();
+    let lower = lower.strip_prefix("files/").unwrap_or(&lower);
+    lower.starts_with("layers/")
+        || lower.starts_with("leveldata/")
+        || matches!(
+            lower,
+            "mission.xml" | "heightmap.dat" | "vegetationmap.dat"
+                | "terraintexture.xml" | "terraintexture.pak"
+        )
+}
+
+/// The physical owner of a map-relative level.pak is authoritative only
+/// when its original path lies directly under Game/Levels/<map>/level.pak.
+fn source_map_owner(archive: &ImportedPak) -> Option<(String, String)> {
+    if !archive.name.eq_ignore_ascii_case("level.pak") {
+        return None;
+    }
+    let source = Path::new(&archive.source);
+    let map = source.parent()?;
+    let levels = map.parent()?;
+    let game = levels.parent()?;
+    if !source.file_name()?.to_string_lossy().eq_ignore_ascii_case("level.pak")
+        || !levels.file_name()?.to_string_lossy().eq_ignore_ascii_case("levels")
+        || !game.file_name()?.to_string_lossy().eq_ignore_ascii_case("game")
+    {
+        return None;
+    }
+    let name = map.file_name()?.to_str()?;
+    if name.is_empty() || name == "." || name == ".." {
+        return None;
+    }
+    Some((format!("levels/{name}").to_ascii_lowercase(), name.to_string()))
+}
+
 fn map_group(relative: &str) -> (String, String) {
-    let parts: Vec<&str> = relative.split('/').filter(|p| !p.is_empty()).collect();
+    let normalized = relative.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
     if let Some((index, name)) = parts.iter().enumerate().find_map(|(index, part)| {
         (part.eq_ignore_ascii_case("levels") || part.eq_ignore_ascii_case("maps"))
             .then(|| parts.get(index + 1).map(|name| (index, name)))
@@ -63,7 +102,24 @@ fn map_group(relative: &str) -> (String, String) {
             (*name).to_string(),
         );
     }
-    // A Layer subdirectory is not itself a separate map.
+    // A Layer or LevelData subtree belongs to its *outermost map owner*.
+    // This also catches deeply nested Layers/Geometry/Natural/*.lyr.
+    if let Some(index) = parts.iter().position(|part| {
+        part.eq_ignore_ascii_case("layers") || part.eq_ignore_ascii_case("leveldata")
+    }) {
+        if index > 0 {
+            return (
+                parts[..index].join("/").to_ascii_lowercase(),
+                parts[index - 1].to_string(),
+            );
+        }
+        return ("__archive_map__".into(), "Imported level".into());
+    }
+    // Root mission/heightmap assets in a single map-owned PAK also belong to
+    // the same map, even when the source lacks a verified Game/Levels parent.
+    if parts.len() == 1 && map_relative_member(&normalized) {
+        return ("__archive_map__".into(), "Imported level".into());
+    }
     let folder = parts.len().saturating_sub(1);
     let map_index = if folder > 0 && parts[folder - 1].eq_ignore_ascii_case("layers") {
         folder.saturating_sub(2)
@@ -80,12 +136,21 @@ fn map_group(relative: &str) -> (String, String) {
 /// Map-owned resources may be imported from a different same-build PAK.
 /// Derive the *exact* virtual folder from an authored layer/heightmap path;
 /// never use a map basename or a global terraintexture.pak search.
-fn map_virtual_folder(map: &MapCandidate) -> Option<String> {
+fn map_virtual_folder(map: &MapCandidate, archive: &ImportedPak) -> Option<String> {
+    let source_owner = source_map_owner(archive);
     map.terrain
         .iter()
         .chain(map.layers.iter())
         .chain(map.vegetation.iter())
-        .map(|path| map_group(&path.to_string_lossy()).0)
+        .map(|path| {
+            let relative = path.to_string_lossy();
+            if map_relative_member(&relative) {
+                if let Some((folder, _)) = &source_owner {
+                    return folder.clone();
+                }
+            }
+            map_group(&relative).0
+        })
         .find(|folder| !folder.is_empty())
 }
 
@@ -363,7 +428,7 @@ fn terrain_resource(
         return verified_source(source_root, relative, 2 * 1024 * 1024 * 1024)
             .map(|path| Some(TerrainResource::Cry(path)));
     }
-    let folder = map_virtual_folder(map)
+    let folder = map_virtual_folder(map, archive)
         .ok_or_else(|| "Cannot determine the original map's virtual folder".to_owned())?;
     let loaded_inventory = if inventory.is_none() {
         Some(imported_archive_files(selected).map_err(|e| e.to_string())?)
@@ -416,7 +481,7 @@ fn authored_time_of_day(
     map: &MapCandidate,
     inventory: &Inventory,
 ) -> Result<Option<PathBuf>, String> {
-    let folder = map_virtual_folder(map).ok_or("Unknown original map folder")?;
+    let folder = map_virtual_folder(map, archive).ok_or("Unknown original map folder")?;
     let build = (archive.builds.len() == 1).then(|| archive.builds[0].as_str());
     let library = build.and_then(|_| Path::new(&archive.directory).parent());
     for name in [
@@ -445,7 +510,7 @@ fn authored_environment(
     map: &MapCandidate,
     inventory: &Inventory,
 ) -> Result<Option<PathBuf>, String> {
-    let folder = map_virtual_folder(map).ok_or("Unknown original map folder")?;
+    let folder = map_virtual_folder(map, archive).ok_or("Unknown original map folder")?;
     let build = (archive.builds.len() == 1).then(|| archive.builds[0].as_str());
     let library = build.and_then(|_| Path::new(&archive.directory).parent());
     for name in [
@@ -531,10 +596,17 @@ fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), Strin
     // Revalidate the imported manifest and every original extracted file before
     // the editor uses a single byte.
     let inventory = imported_archive_files(archive).map_err(|e| e.to_string())?;
-    discover_inventory(&inventory)
+    discover_inventory_with_owner(&inventory, source_map_owner(archive).as_ref())
 }
 
 fn discover_inventory(inventory: &Inventory) -> Result<(PathBuf, Vec<MapCandidate>), String> {
+    discover_inventory_with_owner(inventory, None)
+}
+
+fn discover_inventory_with_owner(
+    inventory: &Inventory,
+    source_owner: Option<&(String, String)>,
+) -> Result<(PathBuf, Vec<MapCandidate>), String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let mut groups = BTreeMap::<String, MapCandidate>::new();
     for entry in &inventory.entries {
@@ -549,7 +621,11 @@ fn discover_inventory(inventory: &Inventory) -> Result<(PathBuf, Vec<MapCandidat
         if !(mission || layer || terrain || vegetation || surface_xml || surface_pak) {
             continue;
         }
-        let (key, name) = map_group(&relative);
+        let (key, name) = if map_relative_member(&relative) {
+            source_owner.cloned().unwrap_or_else(|| map_group(&relative))
+        } else {
+            map_group(&relative)
+        };
         let group = groups.entry(key).or_insert_with(|| MapCandidate {
             name,
             layers: Vec::new(),
@@ -604,6 +680,16 @@ fn discover_inventory(inventory: &Inventory) -> Result<(PathBuf, Vec<MapCandidat
             .cmp(&b.name.to_ascii_lowercase())
     });
     if maps.is_empty() {
+        let nested = inventory
+            .entries
+            .iter()
+            .filter(|entry| entry.relative_path.to_ascii_lowercase().ends_with(".pak"))
+            .count();
+        if nested > 0 {
+            return Err(format!(
+                "This archive contains {nested} nested PAK files but no directly loadable map XML, LYR, or Heightmap.dat. It is a map collection, not an extracted map: import each inner level.pak from its original Game/Levels/<map> folder, with its matching terraintexture.pak. Do not open the outer ZIP as a level."
+            ));
+        }
         return Err("This imported PAK contains no verified mission XML, LYR placements, or Heightmap.dat. Select a map archive instead.".into());
     }
     Ok((root, maps))
