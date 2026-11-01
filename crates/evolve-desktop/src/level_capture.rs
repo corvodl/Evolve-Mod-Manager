@@ -51,6 +51,7 @@ fn capture_real_map_views() {
             || note.contains("water volumes")
             || note.contains("celestial")
             || note.contains("terrain color")
+            || note.contains("baked terrain")
             || note.contains("olor chart")
             || note.contains("sun vector")
             || note.contains("Static Sky")

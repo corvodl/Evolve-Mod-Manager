@@ -381,6 +381,13 @@ fn imported_map_terrain(
                     }
                 }
             }
+        } else if member_name.eq_ignore_ascii_case("cover.ctc") && is_level_pak {
+            // The baked surface texture the engine renders, with its multiplier.
+            if let Some(path) = imported_terrain_member(&inventory, "terrain/cover.ctc")?
+                && read_terrain_texture_header(&path).is_ok()
+            {
+                found.push(TerrainResource::Cry(path));
+            }
         } else if member_name.eq_ignore_ascii_case("terraintexture.pak") && is_terrain_pak {
             // The imported 'terraintexture.pak' ZIP is a container, not an
             // extracted file named terraintexture.pak. Look inside *that exact
@@ -1271,7 +1278,28 @@ fn open_selected(
     {
         let decoded = match package {
             TerrainResource::Cry(path) => read_terrain_texture_atlas(path),
-            TerrainResource::Rgb24 { paths, side } => read_terrain_rgb24_tiles(paths, *side),
+            TerrainResource::Rgb24 { paths, side } => {
+                // Prefer the engine's own baked cover; the raw tiles carry no multiplier.
+                let cover = map_virtual_folder(chosen, &archive)
+                    .and_then(|folder| {
+                        imported_map_terrain(&archive, &folder, "cover.ctc")
+                            .ok()
+                            .flatten()
+                    })
+                    .and_then(|resource| match resource {
+                        TerrainResource::Cry(path) => read_terrain_texture_atlas(&path).ok(),
+                        TerrainResource::Rgb24 { .. } => None,
+                    });
+                diagnostics.push(format!(
+                    "Original baked terrain color from {}.",
+                    if cover.is_some() {
+                        "terrain/cover.ctc"
+                    } else {
+                        "raw RGB24 tiles"
+                    }
+                ));
+                cover.map_or_else(|| read_terrain_rgb24_tiles(paths, *side), Ok)
+            }
         };
         match decoded.map_err(|err| err.to_string()) {
             Ok(atlas) => {

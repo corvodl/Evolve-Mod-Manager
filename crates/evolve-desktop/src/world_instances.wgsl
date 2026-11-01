@@ -268,6 +268,11 @@ fn sample_source_albedo(uv:vec2<f32>)->vec4<f32> {
 
 // The game's Terrain.Layer blend: each painted layer adds its signed detail to
 // the display-encoded baked color, weighted by height. Returns display color.
+fn undo_srgb(c:vec3<f32>)->vec3<f32> {
+  let high=pow(max(c,vec3<f32>(0.0)),vec3<f32>(1.0/2.4))*1.055-vec3<f32>(0.055);
+  return select(high,c*12.92,c<vec3<f32>(0.003131));
+}
+
 fn blended_terrain(input:Output,baked:vec3<f32>)->vec3<f32> {
   let extents=max(source_terrain.info.xy-vec2<f32>(1.0),vec2<f32>(1.0));
   let coord=clamp(input.uv,vec2<f32>(0.0),vec2<f32>(1.0))*extents;
@@ -350,7 +355,7 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   if (source_terrain.info.w>0.5) {
     // The baked atlas arrives decoded; the game blends it display encoded and
     // squares the result back to linear.
-    let display=blended_terrain(input,sqrt(max(base.rgb,vec3<f32>(0.0))));
+    let display=blended_terrain(input,undo_srgb(base.rgb));
     base=vec4<f32>(display*display,base.a);
   } else if (authored.layers.y<0.5) {
     let detail=textureSample(terrain_detail,tex_sampler,input.uv);
