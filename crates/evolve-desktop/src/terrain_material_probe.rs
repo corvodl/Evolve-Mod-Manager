@@ -425,7 +425,7 @@ fn gpu_source(
         image::Rgba([paint.id_at(x, y).unwrap_or(255), 0, 0, 255])
     });
     let mut order = layers.iter().collect::<Vec<_>>();
-    order.sort_by_key(|(&id, _)| id);
+    order.sort_by_key(|item| *item.0);
     Some(GpuTerrainSource {
         paint: paint_image,
         unit,
