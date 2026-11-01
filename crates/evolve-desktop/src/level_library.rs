@@ -914,16 +914,21 @@ fn open_selected(
             chosen.layers.len()
         ));
     }
-    let ambient_cube = match crate::level_atmosphere::authored_ambient_cube(&archive, &sources) {
-        Ok(cube) => {
-            diagnostics.push(format!("Original global probe ambient: {cube:?}"));
-            cube
-        }
-        Err(error) => {
-            diagnostics.push(format!("Original global probe unavailable: {error}"));
-            None
-        }
-    };
+    let (ambient_cube, probe_cube) =
+        match crate::level_atmosphere::authored_ambient_cube(&archive, &sources) {
+            Ok(Some((ambient, cube))) => {
+                diagnostics.push(format!("Original global probe ambient: {ambient:?}"));
+                (Some(ambient), Some(std::sync::Arc::new(cube)))
+            }
+            Ok(None) => {
+                diagnostics.push("No original global probe cubemap resolved.".into());
+                (None, None)
+            }
+            Err(error) => {
+                diagnostics.push(format!("Original global probe unavailable: {error}"));
+                (None, None)
+            }
+        };
     let mut source = chosen.layers.first().map(|p| root.join(p));
     let mut scene = None;
     if !sources.is_empty() {
@@ -1259,6 +1264,7 @@ fn open_selected(
         world.static_sky = static_sky;
         world.authored_sun = authored_sun;
         world.ambient_cube = ambient_cube;
+        world.probe_cube = probe_cube;
         world.color_chart = color_chart;
         world.local_lights = std::sync::Arc::new(local_lights);
         world.time_of_day = original_time.map(std::sync::Arc::new);

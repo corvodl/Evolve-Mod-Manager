@@ -90,10 +90,13 @@ struct SunShadows {
   control: vec4<f32>, // enabled, texel size, ambient cube enabled, reserved
   // The map's global probe per direction: +X, -X, +Y, -Y, +Z, -Z.
   ambient_cube: array<vec4<f32>,6>,
+  probe_tint: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> sun_shadows: SunShadows;
 @group(1) @binding(1) var shadow_depth: texture_depth_2d_array;
 @group(1) @binding(2) var shadow_compare: sampler_comparison;
+@group(1) @binding(3) var probe_cube: texture_cube<f32>;
+@group(1) @binding(4) var probe_sampler: sampler;
 
 fn authored_ambient(n:vec3<f32>)->vec3<f32> {
   if (sun_shadows.control.z<0.5) { return light.ambient.rgb; }
@@ -314,6 +317,12 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   let exponent=mix(8.0,120.0,clamp(gloss,0.0,1.0));
   let highlight=pow(max(dot(n,half_direction),0.0),exponent);
   let specular=reflectance*light.sun_color.rgb*(light.sun.w*0.6*highlight*visibility);
+  // Reflect the map's baked probe. Only materials with authored specular do.
+  let view_angle=1.0-max(dot(n,view_direction),0.0);
+  let fresnel=reflectance+(vec3<f32>(1.0)-reflectance)*pow(view_angle,5.0);
+  let has_specular=step(0.001,max(reflectance.r,max(reflectance.g,reflectance.b)));
+  let reflected=textureSampleLevel(probe_cube,probe_sampler,
+    reflect(-view_direction,n),0.0).rgb*sun_shadows.probe_tint.rgb*fresnel*has_specular;
   var local_radiance=vec3<f32>(0.0);
   let sources=u32(clamp(local_lights.count.x,0.0,24.0));
   for (var i=0u;i<24u;i=i+1u) {
@@ -350,7 +359,7 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // the filmic output pass bounds highlights, while true bloom remains a
   // separate post-processing feature. No guessed emission for plain Illum.
   let preview_glow=emission*max(authored.cutoff.y,0.0)*0.65;
-  return vec4<f32>(base.rgb*(authored_ambient(n)*authored.clouds.w+sun)+specular+local_radiance+preview_glow,base.a);
+  return vec4<f32>(base.rgb*(authored_ambient(n)*authored.clouds.w+sun)+specular+reflected+local_radiance+preview_glow,base.a);
 }
 
 // A visually bounded preview heuristic, not an Evolve fog equation. Applying

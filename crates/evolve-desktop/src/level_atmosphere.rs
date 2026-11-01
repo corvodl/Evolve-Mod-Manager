@@ -723,11 +723,60 @@ fn cubemap_face_means(bytes: &[u8]) -> Result<[[f32; 3]; 6], String> {
     Ok(means)
 }
 
+/// The largest mip a BC6H cubemap head stores, as half-float RGBA per face.
+#[derive(Clone, Debug)]
+pub(super) struct ProbeCube {
+    pub side: u32,
+    pub faces: [Vec<u16>; 6],
+    pub tint: [f32; 3],
+}
+
+fn decode_probe_cube(bytes: &[u8], tint: [f32; 3]) -> Result<ProbeCube, String> {
+    const HEADER: usize = 148;
+    let payload = bytes.len().saturating_sub(HEADER);
+    let face_blocks = payload / 6 / 16;
+    // A mip tail ending at one block holds 1 + 4 + 16 + ... blocks per face.
+    let (mut top_blocks, mut total) = (1usize, 1usize);
+    while total < face_blocks {
+        top_blocks *= 4;
+        total += top_blocks;
+    }
+    if total != face_blocks {
+        return Err("Probe cubemap mip tail is not a whole chain".into());
+    }
+    let blocks_wide = top_blocks.isqrt();
+    let side = blocks_wide * 4;
+    let mut faces: [Vec<u16>; 6] = std::array::from_fn(|_| vec![0x3C00u16; side * side * 4]);
+    for (index, face) in faces.iter_mut().enumerate() {
+        let start = HEADER + index * face_blocks * 16;
+        for block in 0..top_blocks {
+            let source = &bytes[start + block * 16..start + (block + 1) * 16];
+            let mut pixels = [0u16; 48];
+            bcdec_rs::bc6h_half(source, &mut pixels, 12, false);
+            let (block_x, block_y) = (block % blocks_wide, block / blocks_wide);
+            for y in 0..4 {
+                for x in 0..4 {
+                    let to = ((block_y * 4 + y) * side + block_x * 4 + x) * 4;
+                    face[to..to + 3].copy_from_slice(&pixels[(y * 4 + x) * 3..(y * 4 + x) * 3 + 3]);
+                }
+            }
+        }
+    }
+    Ok(ProbeCube {
+        side: side as u32,
+        faces,
+        tint,
+    })
+}
+
+/// Ambient color per direction: +X, -X, +Y, -Y, +Z, -Z.
+pub(super) type AmbientCube = [[f32; 4]; 6];
+
 /// Baked ambient per direction from the widest EnvironmentLight in the layers.
 pub(super) fn authored_ambient_cube(
     archive: &evolve_core::ImportedPak,
     layers: &[(String, Vec<u8>)],
-) -> Result<Option<[[f32; 4]; 6]>, String> {
+) -> Result<Option<(AmbientCube, ProbeCube)>, String> {
     let mut best: Option<(f32, String, [f32; 3])> = None;
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
@@ -771,14 +820,18 @@ pub(super) fn authored_ambient_cube(
     };
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let means = cubemap_face_means(&bytes)?;
-    Ok(Some(std::array::from_fn(|face| {
-        [
-            means[face][0] * tint[0],
-            means[face][1] * tint[1],
-            means[face][2] * tint[2],
-            0.0,
-        ]
-    })))
+    let cube = decode_probe_cube(&bytes, tint)?;
+    Ok(Some((
+        std::array::from_fn(|face| {
+            [
+                means[face][0] * tint[0],
+                means[face][1] * tint[1],
+                means[face][2] * tint[2],
+                0.0,
+            ]
+        }),
+        cube,
+    )))
 }
 
 /// The map's authored color chart, read from the same installation.

@@ -591,6 +591,7 @@ pub(super) struct World {
     pub sky_source: super::level_atmosphere::SkySource,
     pub authored_sun: Option<super::level_atmosphere::AuthoredSun>,
     pub ambient_cube: Option<[[f32; 4]; 6]>,
+    pub probe_cube: Option<Arc<super::level_atmosphere::ProbeCube>>,
     pub color_chart: Option<Arc<image::RgbaImage>>,
     pub static_sky: Option<Arc<super::level_atmosphere::StaticSky>>,
     pub local_lights: Arc<Vec<super::level_atmosphere::LocalLight>>,
@@ -1114,6 +1115,99 @@ struct GpuGroup {
     _terrain_source: Option<TerrainGpuTextures>,
     geometry_bytes: u64,
 }
+/// Upload a map's probe mip. With no probe, a black cube reflects nothing.
+fn upload_probe_cube(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cube: Option<&super::level_atmosphere::ProbeCube>,
+) -> wgpu::TextureView {
+    let side = cube.map_or(1, |cube| cube.side);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Original map environment probe"),
+        size: wgpu::Extent3d {
+            width: side,
+            height: side,
+            depth_or_array_layers: 6,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let black = [0u16; 4];
+    for face in 0..6u32 {
+        let pixels = cube.map_or(black.as_slice(), |cube| {
+            cube.faces[face as usize].as_slice()
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: face,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(pixels),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(side * 8),
+                rows_per_image: Some(side),
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    })
+}
+
+fn shadow_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform: &wgpu::Buffer,
+    depth: &wgpu::TextureView,
+    compare: &wgpu::Sampler,
+    probe: &wgpu::TextureView,
+    probe_sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Sun shadow cascades and environment probe"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(depth),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(compare),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(probe),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(probe_sampler),
+            },
+        ],
+    })
+}
+
 // Half-widths of the sun shadow cascades in meters, nearest first.
 const SHADOW_CASCADES: usize = 4;
 const SHADOW_RADII: [f32; SHADOW_CASCADES] = [40.0, 160.0, 640.0, 2400.0];
@@ -1213,6 +1307,11 @@ pub(super) struct Renderer {
     shadow_sun: [f32; 3],
     shadow_stale: [AtomicBool; SHADOW_CASCADES],
     started: std::time::Instant,
+    shadow_sample_layout: wgpu::BindGroupLayout,
+    shadow_array: wgpu::TextureView,
+    shadow_compare: wgpu::Sampler,
+    probe_sampler: wgpu::Sampler,
+    probe_tint: [f32; 4],
     shadow_groups_seen: usize,
     ambient_cube: Option<[[f32; 4]; 6]>,
 }
@@ -1518,6 +1617,22 @@ impl Renderer {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::Cube,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                 ],
             });
         let shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1557,28 +1672,25 @@ impl Renderer {
         });
         let shadow_uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Sun shadow matrices"),
-            size: 64 * SHADOW_CASCADES as u64 + 16 + 16 * 6,
+            size: 64 * SHADOW_CASCADES as u64 + 16 + 16 * 6 + 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let shadow_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Sun shadow cascades"),
-            layout: &shadow_sample_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: shadow_uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&shadow_array),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&shadow_compare),
-                },
-            ],
+        let probe_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Environment probe reflection"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
         });
+        let shadow_group = shadow_bind_group(
+            device,
+            &shadow_sample_layout,
+            &shadow_uniform,
+            &shadow_array,
+            &shadow_compare,
+            &upload_probe_cube(device, queue, None),
+            &probe_sampler,
+        );
         let shadow_pass_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("One sun shadow cascade matrix"),
@@ -2174,6 +2286,11 @@ impl Renderer {
             shadow_sun: [0.0, 0.0, 1.0],
             shadow_stale: std::array::from_fn(|_| AtomicBool::new(true)),
             started: std::time::Instant::now(),
+            shadow_sample_layout,
+            shadow_array,
+            shadow_compare,
+            probe_sampler,
+            probe_tint: [0.0; 4],
             shadow_groups_seen: 0,
             ambient_cube: None,
         }
@@ -2631,6 +2748,18 @@ impl Renderer {
             self.last_camera = None;
             self.shadow_groups_seen = 0;
             self.ambient_cube = world.ambient_cube;
+            self.probe_tint = world.probe_cube.as_ref().map_or([0.0; 4], |cube| {
+                [cube.tint[0], cube.tint[1], cube.tint[2], 0.0]
+            });
+            self.shadow_group = shadow_bind_group(
+                device,
+                &self.shadow_sample_layout,
+                &self.shadow_uniform,
+                &self.shadow_array,
+                &self.shadow_compare,
+                &upload_probe_cube(device, queue, world.probe_cube.as_deref()),
+                &self.probe_sampler,
+            );
             self.last_lighting_hour = f32::NAN;
             self.update_sky_source(device, queue, world);
             self.update_light_point_sources(device, world);
@@ -2956,6 +3085,11 @@ impl Renderer {
                 &self.shadow_uniform,
                 64 * SHADOW_CASCADES as u64 + 16,
                 bytemuck::cast_slice(&self.ambient_cube.unwrap_or([[0.0; 4]; 6])),
+            );
+            queue.write_buffer(
+                &self.shadow_uniform,
+                64 * SHADOW_CASCADES as u64 + 16 + 16 * 6,
+                bytemuck::cast_slice(&self.probe_tint),
             );
         }
     }
