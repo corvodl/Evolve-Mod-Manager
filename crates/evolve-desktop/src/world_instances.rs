@@ -545,6 +545,14 @@ fn group_distance_sq(group: &ModelGroup, camera: level_camera::Camera) -> f32 {
         .fold(f32::INFINITY, f32::min)
 }
 
+fn resident_terrain_bytes(groups: &[Option<GpuGroup>]) -> u64 {
+    groups
+        .iter()
+        .flatten()
+        .filter_map(|group| group._terrain_source.as_ref())
+        .fold(0u64, |total, tex| total.saturating_add(tex.bytes))
+}
+
 fn resident_geometry_bytes(groups: &[Option<GpuGroup>]) -> u64 {
     groups.iter().flatten().fold(0u64, |total, group| {
         total.saturating_add(group.geometry_bytes)
@@ -2203,7 +2211,7 @@ impl Renderer {
             .retain(|key, _| cache.contains_key(key));
         self.mip_min_level.retain(|key, _| cache.contains_key(key));
         let target_bytes = residency_target_bytes(full_textures);
-        let mut used_bytes = cache_bytes(&cache);
+        let mut used_bytes = cache_bytes(&cache).saturating_add(resident_terrain_bytes(&self.groups));
         let mut deferred = 0usize;
         let mut pending = 0usize;
         let mut uploaded = 0usize;
@@ -2278,6 +2286,9 @@ impl Renderer {
                 &mut mip_min_level,
                 &mut used_bytes,
             );
+            used_bytes = used_bytes.saturating_add(
+                gpu._terrain_source.as_ref().map_or(0, |tex| tex.bytes),
+            );
             self.groups[idx] = Some(gpu);
             uploaded += 1;
         }
@@ -2346,7 +2357,7 @@ impl Renderer {
         if let Some(key) = finished_key {
             self.pending_diffuse.remove(&key);
         }
-        let texture_bytes = cache_bytes(&cache);
+        let texture_bytes = cache_bytes(&cache).saturating_add(resident_terrain_bytes(&self.groups));
         let geometry_bytes = resident_geometry_bytes(&self.groups);
         let resident = texture_bytes.saturating_add(geometry_bytes);
         self.peak_gpu_bytes = self.peak_gpu_bytes.max(resident);
