@@ -68,7 +68,8 @@ struct SourceLight {
   position_radius:vec4<f32>,
   direction_cone:vec4<f32>,
   color_strength:vec4<f32>,
-  bulb:vec4<f32>,
+  bulb:vec4<f32>,  // bulb size, cookie layer, projector half angle tangent
+  side:vec4<f32>,
 }
 struct SourceLights {
   count:vec4<f32>,
@@ -91,7 +92,8 @@ struct SourceTerrainParams {
 @group(0) @binding(17) var<uniform> source_terrain: SourceTerrainParams;
 @group(0) @binding(18) var source_terrain_repeat: sampler;
 @group(0) @binding(19) var source_terrain_normals: texture_2d_array<f32>;
-@group(0) @binding(20) var source_terrain_heights: texture_2d_array<f32>;
+// Projector cookies; the first layer is white for lights without one.
+@group(0) @binding(20) var light_cookies: texture_2d_array<f32>;
 // BLENDLAYER's second diffuse and mask. Binding 12 is the Detail map on non-terrain.
 @group(0) @binding(21) var blend_layer: texture_2d<f32>;
 @group(0) @binding(22) var blend_mask: texture_2d<f32>;
@@ -314,7 +316,7 @@ fn blended_terrain(input:Output,baked:vec3<f32>)->vec3<f32> {
       let offset=to_camera.xy/max(reach,0.001)*pom;
       var at=uv+offset;
       var level=1.0;
-      var sampled=textureSampleLevel(source_terrain_heights,source_terrain_repeat,at,layer,lod).r;
+      var sampled=textureSampleLevel(source_terrain_normals,source_terrain_repeat,at,layer,lod).b;
       var previous=at;
       var previous_gap=level-sampled;
       for (var i=0;i<15 && sampled<level;i=i+1) {
@@ -322,14 +324,14 @@ fn blended_terrain(input:Output,baked:vec3<f32>)->vec3<f32> {
         previous_gap=level-sampled;
         at-=offset/15.0;
         level-=1.0/15.0;
-        sampled=textureSampleLevel(source_terrain_heights,source_terrain_repeat,at,layer,lod).r;
+        sampled=textureSampleLevel(source_terrain_normals,source_terrain_repeat,at,layer,lod).b;
       }
       // One refinement between the last two samples.
       let over=max(sampled-level,0.0);
       uv=mix(at,previous,clamp(over/max(over+previous_gap,0.0001),0.0,1.0));
     }
     let detail=textureSampleLevel(source_terrain_layers,source_terrain_repeat,uv,layer,lod).rgb;
-    let height=textureSampleLevel(source_terrain_heights,source_terrain_repeat,uv,layer,lod).r;
+    let height=textureSampleLevel(source_terrain_normals,source_terrain_repeat,uv,layer,lod).b;
     let boost=clamp(height+clamp(2.0*weight-1.0,0.0,1.0),0.0,1.0);
     let blend=source_terrain.blend[layer];
     let alpha=min(pow(max(weight*boost*(1.0+blend.x),0.0001),blend.y),1.0);
@@ -488,12 +490,22 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
          min(source.direction_cone.w+0.08,1.0),
          projector);
     }
+    // The game projects its cookie through the light's own matrix.
+    var cookie=vec3<f32>(1.0);
+    if (source.bulb.y>0.5) {
+      let aim=normalize(source.direction_cone.xyz);
+      let side=source.side.xyz;
+      let reach=max(dot(-delta,aim),0.001)*source.bulb.z;
+      let cookie_uv=vec2<f32>(dot(-delta,side),dot(-delta,cross(aim,side)))/reach*0.5+vec2<f32>(0.5);
+      cookie=textureSampleLevel(light_cookies,probe_sampler,
+        clamp(cookie_uv,vec2<f32>(0.0),vec2<f32>(1.0)),i32(source.bulb.y),0.0).rgb;
+    }
     let diffuse=max(dot(n,incoming),0.0);
     let local_half=normalize(incoming+view_direction);
     let spec=reflectance*
        pow(max(dot(n,local_half),0.0),exponent)*0.15;
     local_radiance+=(base.rgb*diffuse+spec)*
-      source.color_strength.rgb*
+      source.color_strength.rgb*cookie*
       source.color_strength.w*attenuation;
   }
   // A bounded viewport preview only: original GlowAmount is not modified,

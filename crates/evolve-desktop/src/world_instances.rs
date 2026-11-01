@@ -600,6 +600,7 @@ pub(super) struct World {
     pub color_chart: Option<Arc<image::RgbaImage>>,
     pub static_sky: Option<Arc<super::level_atmosphere::StaticSky>>,
     pub local_lights: Arc<Vec<super::level_atmosphere::LocalLight>>,
+    pub light_cookies: Arc<Vec<Option<image::RgbaImage>>>,
     pub gpu_progress: Arc<GpuProgress>,
     // Prehashed by the existing map assembly worker, never by the UI thread.
     source_pixel_hashes: Arc<SourceKeys>,
@@ -981,8 +982,6 @@ struct TerrainGpuTextures {
     layer_view: wgpu::TextureView,
     _normals: wgpu::Texture,
     normal_view: wgpu::TextureView,
-    _heights: wgpu::Texture,
-    height_view: wgpu::TextureView,
     _paint: wgpu::Texture,
     paint_view: wgpu::TextureView,
     uniforms: wgpu::Buffer,
@@ -1067,19 +1066,35 @@ fn upload_terrain_layers(
             s.layers.iter().map(|l| Some(&l.image)).collect()
         }),
     );
+    // Height rides in blue, which a normal map's XY never reads. The world
+    // shader is at the texture limit, so it cannot have an array of its own.
+    let packed = source.map_or_else(Vec::new, |s| {
+        s.layers
+            .iter()
+            .map(|layer| {
+                layer.height.as_ref().map_or_else(
+                    || layer.normal.clone(),
+                    |height| {
+                        let mut merged = layer.normal.clone().unwrap_or_else(|| {
+                            image::RgbaImage::from_pixel(
+                                height.width(),
+                                height.height(),
+                                image::Rgba([128, 128, 255, 255]),
+                            )
+                        });
+                        for (normal, source) in merged.pixels_mut().zip(height.pixels()) {
+                            normal.0[2] = source.0[0];
+                        }
+                        Some(merged)
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    });
     let (normals, normal_view) = layer_array(
-        "Full native-resolution original terrain material normal arrays",
+        "Full native-resolution original terrain material normal and height arrays",
         [128, 128, 255, 255],
-        source.map_or_else(Vec::new, |s| {
-            s.layers.iter().map(|l| l.normal.as_ref()).collect()
-        }),
-    );
-    let (heights, height_view) = layer_array(
-        "Full native-resolution original terrain material height arrays",
-        [255, 255, 255, 255],
-        source.map_or_else(Vec::new, |s| {
-            s.layers.iter().map(|l| l.height.as_ref()).collect()
-        }),
+        packed.iter().map(Option::as_ref).collect(),
     );
     let paint = source.map_or_else(
         || image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255])),
@@ -1148,12 +1163,10 @@ fn upload_terrain_layers(
         layer_view,
         _normals: normals,
         normal_view,
-        _heights: heights,
-        height_view,
         _paint: texture,
         paint_view,
         uniforms,
-        bytes: 3 * depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
+        bytes: 2 * depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
             + pw as u64 * ph as u64 * 4,
     }
 }
@@ -1568,6 +1581,64 @@ fn update_local_probes(
     queue.write_buffer(uniform, 0, bytemuck::cast_slice(&data));
 }
 
+/// Up to 64 projector textures, with a white first layer for gaps.
+fn upload_light_cookies(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cookies: &[Option<image::RgbaImage>],
+) -> wgpu::TextureView {
+    const SIDE: u32 = 128;
+    let count = cookies.len().min(63) as u32 + 1;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Original projector light cookies"),
+        size: wgpu::Extent3d {
+            width: SIDE,
+            height: SIDE,
+            depth_or_array_layers: count,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let white = vec![255_u8; (SIDE * SIDE * 4) as usize];
+    for layer in 0..count {
+        let image = (layer > 0)
+            .then(|| cookies.get(layer as usize - 1))
+            .flatten()
+            .and_then(Option::as_ref);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: layer,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            image.map_or(white.as_slice(), |image| image.as_raw().as_slice()),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(SIDE * 4),
+                rows_per_image: Some(SIDE),
+            },
+            wgpu::Extent3d {
+                width: SIDE,
+                height: SIDE,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    })
+}
+
 fn shadow_matrix(center: [f32; 3], to_sun: [f32; 3], radius: f32) -> [[f32; 4]; 4] {
     let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let normalized = |v: [f32; 3]| {
@@ -1668,6 +1739,7 @@ pub(super) struct Renderer {
     shadow_compare: wgpu::Sampler,
     probe_sampler: wgpu::Sampler,
     local_probe_uniform: wgpu::Buffer,
+    cookie_view: wgpu::TextureView,
     local_probe_cubes: wgpu::Texture,
     local_probe_view: wgpu::TextureView,
     local_probe_slots: [Option<usize>; LOCAL_PROBE_SLOTS],
@@ -1952,7 +2024,7 @@ impl Renderer {
         });
         let local_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Map source local point/spot light GPU table"),
-            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 97]),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 121]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let hdr_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -2970,6 +3042,7 @@ impl Renderer {
             reflection_view,
             reflection_depth,
             local_probe_uniform,
+            cookie_view: upload_light_cookies(device, queue, &[]),
             local_probe_cubes,
             local_probe_view,
             local_probe_slots: [None; LOCAL_PROBE_SLOTS],
@@ -3558,7 +3631,7 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 20,
-                        resource: wgpu::BindingResource::TextureView(&terrain_textures.height_view),
+                        resource: wgpu::BindingResource::TextureView(&self.cookie_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 19,
@@ -3654,6 +3727,7 @@ impl Renderer {
             self.last_full_textures = full_textures;
             self.last_camera = None;
             self.shadow_groups_seen = 0;
+            self.cookie_view = upload_light_cookies(device, queue, &world.light_cookies);
             self.update_water(device, queue, world);
             self.update_particles(device, queue, world);
             self.ambient_cube = world.ambient_cube;
@@ -4349,7 +4423,12 @@ impl Renderer {
                             if water.gloss_map.is_some() { 1.0 } else { 0.0 },
                         ],
                         water.fog,
-                        [water.specular[0], water.specular[1], water.specular[2], 0.0],
+                        [
+                            water.specular[0],
+                            water.specular[1],
+                            water.specular[2],
+                            water.foam_tilling,
+                        ],
                     ]),
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
@@ -4625,10 +4704,10 @@ impl Renderer {
     fn update_local_lights(&self, queue: &wgpu::Queue, world: &World, camera: CameraGpu) {
         const LIMIT: usize = 24;
         let selected = select_visible_lights(&world.local_lights, camera, LIMIT);
-        let mut uniform = [[0.0_f32; 4]; 1 + LIMIT * 4];
+        let mut uniform = [[0.0_f32; 4]; 1 + LIMIT * 5];
         uniform[0][0] = selected.len() as f32;
         for (idx, light) in selected.into_iter().enumerate() {
-            let base = 1 + idx * 4;
+            let base = 1 + idx * 5;
             uniform[base] = [
                 light.position[0],
                 light.position[1],
@@ -4647,7 +4726,17 @@ impl Renderer {
                 light.color[2],
                 light.intensity,
             ];
-            uniform[base + 3] = [light.bulb, 0.0, 0.0, 0.0];
+            uniform[base + 3] = [
+                light.bulb,
+                if (0..63).contains(&light.cookie) {
+                    light.cookie as f32 + 1.0
+                } else {
+                    0.0
+                },
+                light.projector_tan,
+                0.0,
+            ];
+            uniform[base + 4] = [light.side[0], light.side[1], light.side[2], 0.0];
         }
         queue.write_buffer(&self.local_uniform, 0, bytemuck::cast_slice(&uniform));
     }
@@ -4885,6 +4974,9 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             intensity: 2.0,
             bulb: 0.05,
+            side: [0.0, 1.0, 0.0],
+            cookie: -1,
+            projector_tan: 1.0,
             radius,
             cone_cos: -1.0,
         };

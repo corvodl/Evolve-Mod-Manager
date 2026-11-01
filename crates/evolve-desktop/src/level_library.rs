@@ -1140,7 +1140,15 @@ fn open_selected(
                 Vec::new()
             }
         };
-    let (local_lights, light_warnings) = crate::level_atmosphere::lights(&sources, scene.as_ref());
+    let (local_lights, light_warnings, cookie_files) =
+        crate::level_atmosphere::lights(&sources, scene.as_ref());
+    let light_cookies = crate::level_atmosphere::authored_light_cookies(&archive, &cookie_files)
+        .unwrap_or_default();
+    diagnostics.push(format!(
+        "Original projector cookies: {} of {} named textures found.",
+        light_cookies.iter().flatten().count(),
+        cookie_files.len()
+    ));
     diagnostics.push(format!("Original map light entities with verified authored color, radius and strength: {}. GPU viewport uses nearby point/spot preview lighting; authored shadow maps and projector textures require separate verification.",local_lights.len()));
     diagnostics.extend(light_warnings.into_iter().take(5));
     let terrain_xml = if chosen.terrain.is_some() {
@@ -1376,6 +1384,7 @@ fn open_selected(
         world.celestial_bodies = std::sync::Arc::new(celestial_bodies);
         world.color_chart = color_chart;
         world.local_lights = std::sync::Arc::new(local_lights);
+        world.light_cookies = std::sync::Arc::new(light_cookies);
         world.time_of_day = original_time.map(std::sync::Arc::new);
         world.fog_profile = original_fog;
         world.source_resources = resources;
