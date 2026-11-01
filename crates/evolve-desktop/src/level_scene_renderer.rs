@@ -431,6 +431,7 @@ fn neutral(first_index: u32, index_count: u32) -> Surface {
         detail_map: None,
         blend_layer: None,
         blend_mask: None,
+        blend_normal: None,
         detail_tile: None,
         layer_params: None,
         alpha_cutoff: 0.5,

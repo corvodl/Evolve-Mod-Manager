@@ -1265,7 +1265,7 @@ fn upload_probe_cube(
 }
 
 // Authored Size 1.0 as an angular radius, calibrated to in-game captures.
-const CELESTIAL_RADIUS_DEGREES: f32 = 6.0;
+const CELESTIAL_RADIUS_DEGREES: f32 = 9.0;
 
 /// Up to four authored planets as one array, plus their placement uniforms.
 fn upload_celestial(
@@ -3348,7 +3348,7 @@ impl Renderer {
             let (emissive_tex, emissive_view) = auxiliary_map(
                 device,
                 queue,
-                surf.emissive.as_ref(),
+                surf.blend_normal.as_ref().or(surf.emissive.as_ref()),
                 5,
                 [0, 0, 0, 255],
                 wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -3456,7 +3456,11 @@ impl Renderer {
                     layer[4],
                     layer[5],
                     layer[6],
-                    0.0,
+                    if surf.blend_normal.is_some() {
+                        1.0
+                    } else {
+                        0.0
+                    },
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });

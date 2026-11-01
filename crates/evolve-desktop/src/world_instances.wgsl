@@ -26,7 +26,7 @@ struct SurfaceParams {
   waterfall_blend: vec4<f32>, // AlphaBlendMul, FoamDeform, FoamMultiplier
   detail: vec4<f32>,  // Detail tiling U and V, DetailBumpScale, DetailDiffuseScale
   layers: vec4<f32>,  // DetailGlossScale, has detail, has second layer, BlendFactor
-  blend: vec4<f32>,   // BlendFalloff, BlendLayer2Tiling, BlendMaskTiling
+  blend: vec4<f32>,   // BlendFalloff, BlendLayer2Tiling, BlendMaskTiling, normal in emissive slot
 }
 @group(0) @binding(4) var<uniform> authored: SurfaceParams;
 // Viewport-only time-of-day lighting. Never reads or edits game engine state.
@@ -364,10 +364,11 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // BLENDLAYER: vertex paint times the mask, shaped as the terrain blend is.
   let layer_sample=textureSample(blend_layer,tex_sampler,input.uv*authored.blend.y);
   let mask_sample=textureSample(blend_mask,tex_sampler,input.uv*authored.blend.z).r;
+  var layer_amount=0.0;
   if (authored.layers.z>0.5) {
     let weight=input.paint*mask_sample*(1.0+authored.layers.w);
-    let amount=min(pow(max(weight,0.0001),authored.blend.x),1.0);
-    base=vec4<f32>(mix(base.rgb,layer_sample.rgb,amount),base.a);
+    layer_amount=min(pow(max(weight,0.0001),authored.blend.x),1.0);
+    base=vec4<f32>(mix(base.rgb,layer_sample.rgb,layer_amount),base.a);
   }
   // The game's Detail map: green and alpha bend the normal, red scales diffuse,
   // blue scales gloss.
@@ -409,7 +410,9 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   let pos_dy=dpdy(input.world);
   let determinant=uv_dx.x*uv_dy.y-uv_dx.y*uv_dy.x;
   let encoded=textureSample(normal_map,tex_sampler,input.uv).rg;
-  let plain_xy=encoded*2.0-vec2<f32>(1.0);
+  var plain_xy=encoded*2.0-vec2<f32>(1.0);
+  let second_normal=textureSample(emissive_map,tex_sampler,input.uv*authored.blend.y).rg*2.0-vec2<f32>(1.0);
+  if (authored.blend.w>0.5) { plain_xy=mix(plain_xy,second_normal,layer_amount); }
   let tangent_z=sqrt(max(0.0,1.0-dot(plain_xy,plain_xy)));
   let xy=plain_xy+detail_bend;
   if (authored.cutoff.z>0.5 && abs(determinant)>0.000001) {
@@ -500,7 +503,7 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // channels. Do not divide it by three and normalize it away before HDR;
   // the filmic output pass bounds highlights, while true bloom remains a
   // separate post-processing feature. No guessed emission for plain Illum.
-  let preview_glow=emission*max(authored.cutoff.y,0.0)*0.65;
+  let preview_glow=emission*max(authored.cutoff.y,0.0)*0.65*(1.0-authored.blend.w);
   return vec4<f32>(base.rgb*(ambient_light*authored.clouds.w+sun)+specular+reflected+local_radiance+preview_glow,base.a);
 }
 
@@ -549,7 +552,13 @@ fn distance_fog(input:Output, color:vec4<f32>)->vec4<f32> {
     let lobe=pow(reach,1.0/fog.top.w)*pow(2.0,(toward_sun-1.0)*falloff);
     haze+=fog.radial.rgb*lobe;
     // The game's density term. Its 0.01 scale is inferred from the engine's usage.
-    let amount=(1.0-pow(2.0,-distance*fog.ramp.w*0.01))*ramp;
+    let bottom_density=max(height_fog.heights_density.z,0.000001);
+    let thinning=clamp(log(max(height_fog.heights_density.w,0.000001)/bottom_density)/max(height_fog.heights_density.y-height_fog.heights_density.x,0.01),-0.01,0.01);
+    let at_camera=bottom_density*exp(clamp(thinning*(camera.origin.z-height_fog.heights_density.x),-12.0,12.0));
+    let climb=thinning*(input.world.z-camera.origin.z);
+    var along_ray=1.0+0.5*climb+climb*climb/6.0;
+    if (abs(climb)>=0.001) { along_ray=(exp(clamp(climb,-12.0,12.0))-1.0)/climb; }
+    let amount=(1.0-pow(2.0,-distance*fog.ramp.w*0.01*at_camera*max(along_ray,0.0)))*ramp;
     return vec4<f32>(mix(color.rgb,haze,clamp(amount,0.0,1.0)),color.a);
   }
   let amount=clamp(1.0-exp(-depth),0.0,0.92);

@@ -1123,6 +1123,7 @@ fn load_authored_subset_surfaces(
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            blend_normal: None,
             detail_tile: None,
             layer_params: None,
             alpha_cutoff: 0.5,
@@ -1225,6 +1226,9 @@ fn load_authored_subset_surfaces(
                             if leaf.layer_params.is_some() {
                                 surface.blend_layer = layer("custom");
                                 surface.blend_mask = layer("opacity");
+                                if surface.emissive.is_none() && surface.blend_layer.is_some() {
+                                    surface.blend_normal = layer("[1] custom");
+                                }
                             }
                         }
                         surface.uv_transform = leaf
@@ -1530,6 +1534,7 @@ pub fn load_with_progress(
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            blend_normal: None,
             detail_tile: None,
             layer_params: None,
             alpha_cutoff: 0.5,
@@ -1750,6 +1755,7 @@ mod tests {
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            blend_normal: None,
             detail_tile: None,
             layer_params: None,
             alpha_cutoff: 0.5,
@@ -2022,6 +2028,7 @@ mod tests {
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            blend_normal: None,
             detail_tile: None,
             layer_params: None,
             alpha_cutoff: 0.5,
@@ -2068,6 +2075,7 @@ mod tests {
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            blend_normal: None,
             detail_tile: None,
             layer_params: None,
             alpha_cutoff: 0.5,
@@ -2311,6 +2319,7 @@ mod tests {
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            blend_normal: None,
             detail_tile: None,
             layer_params: None,
             alpha_cutoff: 0.5,
