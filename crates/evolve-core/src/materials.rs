@@ -134,6 +134,12 @@ pub struct MaterialSlot {
     /// BlendFalloff, BlendLayer2Tiling, BlendMaskTiling.
     #[serde(default)]
     pub layer_params: Option<[f32; 7]>,
+    /// TransmittanceColor scaled by BackDiffuseMultiplier, for leaves.
+    #[serde(default)]
+    pub foliage_transmit: Option<[f32; 3]>,
+    /// BlendLayer2Specular.
+    #[serde(default)]
+    pub layer_specular: Option<f32>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialDocument {
@@ -267,6 +273,18 @@ fn source_color(node: &BytesStart<'_>, name: &[u8]) -> Result<Option<[f32; 3]>, 
         return Ok(None);
     }
     Ok(Some([values[0], values[1], values[2]]))
+}
+
+fn authored_foliage_transmit(node: &BytesStart<'_>) -> Result<Option<[f32; 3]>, MaterialError> {
+    let Some(color) = source_color(node, b"TransmittanceColor")? else {
+        return Ok(None);
+    };
+    let back = attr(node, b"BackDiffuseMultiplier")?
+        .and_then(|raw| raw.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    Ok(Some(color.map(|channel| channel * back)))
 }
 
 fn authored_layer_params(node: &BytesStart<'_>) -> Result<Option<[f32; 7]>, MaterialError> {
@@ -565,6 +583,8 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         waterfall: None,
                         detail_tile: None,
                         layer_params: None,
+                        foliage_transmit: None,
+                        layer_specular: None,
                     });
                     nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
@@ -619,6 +639,15 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         })))
                     && let Some((_, index)) = material_indices.last()
                 {
+                    if let Some(transmit) = authored_foliage_transmit(&node)? {
+                        slots[*index].foliage_transmit = Some(transmit);
+                    }
+                    if let Some(specular) = attr(&node, b"BlendLayer2Specular")?
+                        .and_then(|raw| raw.trim().parse::<f32>().ok())
+                        .filter(|value| value.is_finite())
+                    {
+                        slots[*index].layer_specular = Some(specular);
+                    }
                     if let Some(layer) = authored_layer_params(&node)? {
                         slots[*index].layer_params = Some(layer);
                     }
@@ -684,6 +713,8 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         waterfall: None,
                         detail_tile: None,
                         layer_params: None,
+                        foliage_transmit: None,
+                        layer_specular: None,
                     });
                     nonleaf.push(false);
                 } else if tag.eq_ignore_ascii_case(b"Texture")
@@ -736,6 +767,15 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         })))
                     && let Some((_, index)) = material_indices.last()
                 {
+                    if let Some(transmit) = authored_foliage_transmit(&node)? {
+                        slots[*index].foliage_transmit = Some(transmit);
+                    }
+                    if let Some(specular) = attr(&node, b"BlendLayer2Specular")?
+                        .and_then(|raw| raw.trim().parse::<f32>().ok())
+                        .filter(|value| value.is_finite())
+                    {
+                        slots[*index].layer_specular = Some(specular);
+                    }
                     if let Some(layer) = authored_layer_params(&node)? {
                         slots[*index].layer_params = Some(layer);
                     }

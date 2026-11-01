@@ -119,6 +119,12 @@ fn parse_metadata(xml: &[u8]) -> Result<(u32, u32, f32, f32), TerrainError> {
     result.ok_or_else(|| TerrainError::Format("Heightmap root missing".into()))
 }
 
+/// The section header, written with format 3 or 4 depending on the map's export.
+fn section_header_matches(bytes: &[u8], at: usize) -> bool {
+    bytes.get(at + 4..at + 4 + SECTION.len()) == Some(SECTION)
+        && matches!(bytes.get(at..at + 4), Some([3 | 4, 0, 0, 0]))
+}
+
 fn parse_raw(source: &[u8]) -> Result<(TerrainInfo, Vec<u16>), TerrainError> {
     if !(24..=MAX_TERRAIN_FILE).contains(&source.len()) || source[0] != 0xff {
         return Err(TerrainError::Format("unsupported source header".into()));
@@ -131,9 +137,7 @@ fn parse_raw(source: &[u8]) -> Result<(TerrainInfo, Vec<u16>), TerrainError> {
     let count = usize::try_from(width * height).map_err(|_| TerrainError::Limits)?;
     let bytes_len = count.checked_mul(2).ok_or(TerrainError::Limits)?;
     let section_at = 3 + xml_length;
-    if source.get(section_at..section_at + 4 + SECTION.len())
-        != Some([&4u32.to_le_bytes()[..], SECTION].concat().as_slice())
-    {
+    if !section_header_matches(source, section_at) {
         return Err(TerrainError::Format(
             "HeightmapData section marker missing".into(),
         ));
@@ -334,7 +338,7 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
     let header = xml_end
         .checked_add(4 + SECTION.len())
         .ok_or(TerrainError::Limits)?;
-    if bytes.get(xml_end..header) != Some([&4u32.to_le_bytes()[..], SECTION].concat().as_slice())
+    if !section_header_matches(bytes, xml_end)
         || get_u32(bytes, header)? as usize != height_bytes
         || get_u32(bytes, header + 4)? as usize != height_bytes
         || get_u32(bytes, header + 8)? != 0
@@ -531,11 +535,10 @@ pub fn read_terrain_texture_header(path: &Path) -> Result<TerrainTextureHeader, 
         let mut record = [0u8; 12];
         file.read_exact(&mut record)?;
         let sector_pixels = u16::from_le_bytes([record[0], record[1]]);
-        let reserved = u16::from_le_bytes([record[2], record[3]]);
         let texture_format = u32::from_le_bytes(record[4..8].try_into().unwrap());
         let sector_bytes = u32::from_le_bytes(record[8..12].try_into().unwrap());
-        if reserved != 0
-            || !(4..=8192).contains(&sector_pixels)
+        // Bytes 2 and 3 hold uninitialized padding in shipped maps.
+        if !(4..=8192).contains(&sector_pixels)
             || !sector_pixels.is_power_of_two()
             || sector_bytes == 0
             || sector_bytes > 64 * 1024 * 1024

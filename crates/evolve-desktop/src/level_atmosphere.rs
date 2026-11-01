@@ -19,6 +19,12 @@ pub(super) struct LocalLight {
     pub cone_cos: f32,
     /// fAttenuationBulbSize, the distance inverse-square falloff starts from.
     pub bulb: f32,
+    /// World axis across the projector, for its cookie.
+    pub side: [f32; 3],
+    /// Index into the map's cookie list, or -1 without one.
+    pub cookie: i32,
+    /// Tangent of half the projector field of view.
+    pub projector_tan: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -87,6 +93,8 @@ struct PendingLight {
     color: Option<[f32; 3]>,
     cone: Option<f32>,
     bulb: Option<f32>,
+    cookie: Option<String>,
+    fov_tan: Option<f32>,
     enabled: bool,
 }
 impl PendingLight {
@@ -127,9 +135,13 @@ impl PendingLight {
         {
             self.color = Some(color);
         }
+        if let Some(cookie) = attr(e, b"texture_Texture").filter(|file| !file.is_empty()) {
+            self.cookie = Some(cookie);
+        }
         if let Some(fov) = val(e, &[b"ProjectorFov", b"fProjectorFov", b"FOV", b"fFov"])
             && (1.0..179.0).contains(&fov)
         {
+            self.fov_tan = Some((0.5 * fov.to_radians()).tan());
             self.cone = Some((0.5 * fov.to_radians()).cos());
         }
         if let Some(active) = attr(e, b"bActive").or_else(|| attr(e, b"Active"))
@@ -145,10 +157,11 @@ impl PendingLight {
 pub(super) fn lights(
     sources: &[(String, Vec<u8>)],
     scene: Option<&LevelScene>,
-) -> (Vec<LocalLight>, Vec<String>) {
+) -> (Vec<LocalLight>, Vec<String>, Vec<String>) {
     let Some(scene) = scene else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     };
+    let mut cookies = Vec::new();
     let objects: HashMap<_, _> = scene
         .objects
         .iter()
@@ -208,6 +221,8 @@ pub(super) fn lights(
                                 color: None,
                                 cone: None,
                                 bulb: None,
+                                cookie: None,
+                                fov_tan: None,
                                 enabled: true,
                             });
                             if let Some(ref mut p) = pending {
@@ -225,12 +240,12 @@ pub(super) fn lights(
                     // Only a self-closing Light entity, not a self-closing
                     // <Properties/>, can finish the pending light.
                     if !nested && is_entity && pending.as_ref().is_some_and(|p| p.depth == depth) {
-                        finalize(&mut pending, &objects, &mut result);
+                        finalize(&mut pending, &objects, &mut result, &mut cookies);
                     }
                 }
                 Event::End(_) => {
                     if pending.as_ref().is_some_and(|p| p.depth == depth) {
-                        finalize(&mut pending, &objects, &mut result);
+                        finalize(&mut pending, &objects, &mut result, &mut cookies);
                     }
                     depth = depth.saturating_sub(1);
                 }
@@ -248,12 +263,13 @@ pub(super) fn lights(
             }
         }
     }
-    (result, warnings)
+    (result, warnings, cookies)
 }
 fn finalize(
     pending: &mut Option<PendingLight>,
     objects: &HashMap<&str, &evolve_core::PlacedObject>,
     output: &mut Vec<LocalLight>,
+    cookies: &mut Vec<String>,
 ) {
     let Some(p) = pending.take() else {
         return;
@@ -270,7 +286,17 @@ fn finalize(
     if !o.world.position.iter().all(|v| v.is_finite()) {
         return;
     }
+    let cookie = p.cookie.filter(|_| p.cone.is_some()).map_or(-1, |file| {
+        let at = cookies.iter().position(|known| *known == file);
+        at.unwrap_or_else(|| {
+            cookies.push(file);
+            cookies.len() - 1
+        }) as i32
+    });
     output.push(LocalLight {
+        side: unit(rotate(o.world.quaternion, [0.0, 1.0, 0.0])),
+        cookie,
+        projector_tan: p.fov_tan.unwrap_or(1.0),
         position: o.world.position,
         direction: unit(rotate(o.world.quaternion, [1.0, 0.0, 0.0])),
         radius,
@@ -1250,6 +1276,153 @@ pub(super) fn authored_local_probes(
     Ok(decoded)
 }
 
+/// Each named projector texture, in list order; absent ones leave a gap.
+pub(super) fn authored_light_cookies(
+    archive: &evolve_core::ImportedPak,
+    files: &[String],
+) -> Result<Vec<Option<image::RgbaImage>>, String> {
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    Ok(files
+        .iter()
+        .map(|file| {
+            let stem = file
+                .rsplit_once('.')
+                .map_or(file.as_str(), |(stem, _)| stem);
+            let path = indexed_source(root, &build, &format!("{stem}.dds.0")).ok()??;
+            evolve_core::decode_dds_rgba(&path).ok().map(|(_, image)| {
+                image::imageops::resize(&image, 128, 128, image::imageops::FilterType::Triangle)
+            })
+        })
+        .collect())
+}
+
+/// Decals sharing one material. Each instance is the box's X, Y and Z world
+/// axes with half sizes, its center with DecalFalloff, then tint with opacity.
+#[derive(Clone, Debug)]
+pub(super) struct DecalBatch {
+    pub priority: f32,
+    pub image: std::sync::Arc<image::RgbaImage>,
+    pub instances: Vec<[f32; 20]>,
+}
+
+/// Every placed deferred decal, grouped by material and ordered by SortPriority.
+pub(super) fn authored_decals(
+    archive: &evolve_core::ImportedPak,
+    layers: &[(String, Vec<u8>)],
+) -> Result<Vec<DecalBatch>, String> {
+    const MAX_SIDE: u32 = 1024;
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    type Material = Option<(std::sync::Arc<image::RgbaImage>, [f32; 3], f32, f32)>;
+    let mut materials = HashMap::<String, Material>::new();
+    let mut batches = HashMap::<String, DecalBatch>::new();
+    for (_, bytes) in layers {
+        let text = String::from_utf8_lossy(bytes);
+        for (offset, _) in text.match_indices(" Type=\"Decal\"") {
+            let start = text[..offset].rfind("<Object").unwrap_or(offset);
+            let object = &text[start..];
+            let object = &object[..object.find('>').unwrap_or(object.len())];
+            let (Some(position), Some(material)) = (
+                xml_tuple(object, "Pos").filter(|pos| pos.len() == 3),
+                xml_attribute(object, "Material").filter(|name| !name.is_empty()),
+            ) else {
+                continue;
+            };
+            let key = material.to_ascii_lowercase();
+            let loaded = materials.entry(key.clone()).or_insert_with(|| {
+                let mtl = indexed_source(root, &build, &format!("{material}.mtl"))
+                    .ok()
+                    .flatten()
+                    .and_then(|path| std::fs::read(path).ok())
+                    .and_then(|raw| {
+                        evolve_core::cryxml::xml_bytes(&raw, 4 * 1024 * 1024)
+                            .ok()
+                            .map(|xml| String::from_utf8_lossy(xml.as_ref()).into_owned())
+                    })?;
+                let file = xml_attribute(&mtl[mtl.find("Map=\"Diffuse\"")?..], "File")?;
+                let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+                let path = indexed_source(root, &build, &format!("{stem}.dds.0")).ok()??;
+                let (_, image) = evolve_core::decode_dds_rgba(&path).ok()?;
+                let image = if image.width().max(image.height()) > MAX_SIDE {
+                    image::imageops::resize(
+                        &image,
+                        image.width().min(MAX_SIDE),
+                        image.height().min(MAX_SIDE),
+                        image::imageops::FilterType::Triangle,
+                    )
+                } else {
+                    image
+                };
+                let tint = xml_tuple(&mtl, "Diffuse").unwrap_or_default();
+                Some((
+                    std::sync::Arc::new(image),
+                    match tint.as_slice() {
+                        [r, g, b] => [*r, *g, *b],
+                        _ => [1.0; 3],
+                    },
+                    mtl_value(&mtl, "DecalFalloff", 1.0).max(0.01),
+                    mtl_value(&mtl, "DecalAlphaMult", 1.0)
+                        * mtl_value(&mtl, "DecalDiffuseOpacity", 1.0),
+                ))
+            });
+            let Some((image, tint, falloff, opacity)) = loaded.clone() else {
+                continue;
+            };
+            let rotation = xml_tuple(object, "Rotate")
+                .filter(|rotate| rotate.len() == 4)
+                .map_or([1.0, 0.0, 0.0, 0.0], |rotate| {
+                    [rotate[0], rotate[1], rotate[2], rotate[3]]
+                });
+            let scale = xml_tuple(object, "Scale")
+                .filter(|scale| scale.len() == 3)
+                .unwrap_or_else(|| vec![1.0; 3]);
+            let x = rotate(rotation, [1.0, 0.0, 0.0]);
+            let y = rotate(rotation, [0.0, 1.0, 0.0]);
+            let z = rotate(rotation, [0.0, 0.0, 1.0]);
+            let depth = mtl_value(object, "ProjectionDepth", 1.0).max(0.05);
+            let batch = batches.entry(key).or_insert_with(|| DecalBatch {
+                priority: mtl_value(object, "SortPriority", 16.0),
+                image,
+                instances: Vec::new(),
+            });
+            batch.instances.push([
+                x[0],
+                x[1],
+                x[2],
+                scale[0].abs().max(0.01),
+                y[0],
+                y[1],
+                y[2],
+                scale[1].abs().max(0.01),
+                z[0],
+                z[1],
+                z[2],
+                depth,
+                position[0],
+                position[1],
+                position[2],
+                falloff,
+                tint[0],
+                tint[1],
+                tint[2],
+                opacity,
+            ]);
+        }
+    }
+    let mut ordered = batches.into_values().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| a.priority.total_cmp(&b.priority));
+    Ok(ordered)
+}
+
 /// How much the map's Rain entity darkens wet surfaces, when it has one.
 pub(super) fn authored_rain_darkening(layers: &[(String, Vec<u8>)]) -> f32 {
     layers
@@ -1275,13 +1448,16 @@ pub(super) struct WaterSurface {
     pub decal_strength: f32,
     /// Tilling, DetailTilling, DecalTilling, NormalsScale.
     pub tiling: [f32; 4],
-    /// DetailNormalsScale, SoftIntersectionFactor, unused, unused.
+    /// DetailNormalsScale, SoftIntersectionFactor, FoamAmount, FoamSoftIntersectionFactor.
     pub surface: [f32; 4],
     /// GlossMapTilling, GlossMapScale, GlossMapBias, unused.
     pub gloss: [f32; 4],
     /// FogColor scaled by its multiplier, then FogDensity.
     pub fog: [f32; 4],
     pub specular: [f32; 3],
+    pub foam_tilling: f32,
+    pub decal_falloff: f32,
+    pub reflection: f32,
     pub decal: Option<std::sync::Arc<image::RgbaImage>>,
     pub gloss_map: Option<std::sync::Arc<image::RgbaImage>>,
 }
@@ -1364,12 +1540,20 @@ pub(super) fn authored_water(
             let Some(origin) = xml_tuple(object, "Pos").filter(|pos| pos.len() == 3) else {
                 continue;
             };
+            let rotation = xml_tuple(object, "Rotate")
+                .filter(|rotate| rotate.len() == 4)
+                .map_or([1.0, 0.0, 0.0, 0.0], |rotate| {
+                    [rotate[0], rotate[1], rotate[2], rotate[3]]
+                });
             let points = object
                 .match_indices("<Point ")
                 .filter_map(|(at, _)| xml_tuple(&object[at..], "Pos"))
                 .filter(|point| point.len() == 3)
                 // The polygon is flat: use the volume's own height everywhere.
-                .map(|point| [origin[0] + point[0], origin[1] + point[1], origin[2]])
+                .map(|point| {
+                    let turned = rotate(rotation, [point[0], point[1], 0.0]);
+                    [origin[0] + turned[0], origin[1] + turned[1], origin[2]]
+                })
                 .collect::<Vec<_>>();
             if points.len() < 3 {
                 continue;
@@ -1392,7 +1576,7 @@ pub(super) fn authored_water(
                     })
                     .map(|(_, image)| std::sync::Arc::new(image))
             };
-            let decal = material_map("Custom");
+            let decal = material_map("Decal").or_else(|| material_map("Custom"));
             let gloss_map = material_map("Specular");
             let fog_color = xml_tuple(object, "FogColor").unwrap_or_default();
             let fog_scale = mtl_value(object, "FogColorMultiplier", 1.0);
@@ -1413,9 +1597,12 @@ pub(super) fn authored_water(
                 surface: [
                     mtl_value(&mtl, "DetailNormalsScale", 1.0),
                     mtl_value(&mtl, "SoftIntersectionFactor", 1.0),
-                    0.0,
-                    0.0,
+                    mtl_value(&mtl, "FoamAmount", 0.0),
+                    mtl_value(&mtl, "FoamSoftIntersectionFactor", 1.0),
                 ],
+                foam_tilling: mtl_value(&mtl, "FoamTilling", 1.0),
+                decal_falloff: mtl_value(&mtl, "DecalFalloff", 1.0),
+                reflection: mtl_value(&mtl, "RealtimeReflMul", 1.0),
                 gloss: [
                     mtl_value(&mtl, "GlossMapTilling", 0.1),
                     mtl_value(&mtl, "GlossMapScale", 0.5),
@@ -1682,14 +1869,14 @@ mod tests {
             objects: Vec::new(),
             diagnostics: Vec::new(),
         };
-        let (lights,_) = lights(&[("map.lyr".into(),br#"<Objects><Object Id="a" EntityClass="Light"><Properties Radius="30"/></Object></Objects>"#.to_vec())],Some(&scene));
+        let (lights,_,_) = lights(&[("map.lyr".into(),br#"<Objects><Object Id="a" EntityClass="Light"><Properties Radius="30"/></Object></Objects>"#.to_vec())],Some(&scene));
         assert!(lights.is_empty());
     }
     #[test]
     fn authored_projector_light_uses_original_properties_and_world_position() {
         let xml = br#"<Objects><Object Id="light-a" EntityClass="Light" Pos="3,5,7"><Properties Radius="30" DiffuseColor="1,0.5,0.25" DiffuseMultiplier="2" ProjectorFov="60"/></Object></Objects>"#;
         let scene = evolve_core::parse_level_scene(&[("map.lyr", xml.as_slice())]).unwrap();
-        let (found, warnings) = lights(&[("map.lyr".into(), xml.to_vec())], Some(&scene));
+        let (found, warnings, _) = lights(&[("map.lyr".into(), xml.to_vec())], Some(&scene));
         assert!(warnings.is_empty());
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].position, [3.0, 5.0, 7.0]);

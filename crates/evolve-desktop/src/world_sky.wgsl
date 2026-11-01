@@ -42,7 +42,7 @@ fn over_celestial(direction:vec3<f32>,sky_color:vec3<f32>)->vec3<f32> {
     p=vec2<f32>(p.x*turn.x-p.y*turn.y,p.x*turn.y+p.y*turn.x);
     let sampled=textureSampleLevel(celestial_images,sky_sampler,p*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5),
       i32(celestial.rotations[i].z),0.0);
-    color=mix(color,sampled.rgb*sunlight.sun_color.rgb*1.2+sky_color*0.25,sampled.a);
+    color+=sampled.rgb*sunlight.sun_color.rgb*sampled.a;
   }
   return color;
 }

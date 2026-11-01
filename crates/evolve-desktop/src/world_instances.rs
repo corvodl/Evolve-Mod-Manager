@@ -594,12 +594,14 @@ pub(super) struct World {
     pub probe_cube: Option<Arc<super::level_atmosphere::ProbeCube>>,
     pub rain_darkening: f32,
     pub local_probes: Arc<Vec<super::level_atmosphere::LocalProbe>>,
+    pub decals: Arc<Vec<super::level_atmosphere::DecalBatch>>,
     pub particles: Arc<Vec<super::level_atmosphere::ParticleBatch>>,
     pub water: Arc<Vec<super::level_atmosphere::WaterSurface>>,
     pub celestial_bodies: Arc<Vec<super::level_atmosphere::CelestialBody>>,
     pub color_chart: Option<Arc<image::RgbaImage>>,
     pub static_sky: Option<Arc<super::level_atmosphere::StaticSky>>,
     pub local_lights: Arc<Vec<super::level_atmosphere::LocalLight>>,
+    pub light_cookies: Arc<Vec<Option<image::RgbaImage>>>,
     pub gpu_progress: Arc<GpuProgress>,
     // Prehashed by the existing map assembly worker, never by the UI thread.
     source_pixel_hashes: Arc<SourceKeys>,
@@ -981,8 +983,6 @@ struct TerrainGpuTextures {
     layer_view: wgpu::TextureView,
     _normals: wgpu::Texture,
     normal_view: wgpu::TextureView,
-    _heights: wgpu::Texture,
-    height_view: wgpu::TextureView,
     _paint: wgpu::Texture,
     paint_view: wgpu::TextureView,
     uniforms: wgpu::Buffer,
@@ -1067,19 +1067,35 @@ fn upload_terrain_layers(
             s.layers.iter().map(|l| Some(&l.image)).collect()
         }),
     );
+    // Height rides in blue, which a normal map's XY never reads. The world
+    // shader is at the texture limit, so it cannot have an array of its own.
+    let packed = source.map_or_else(Vec::new, |s| {
+        s.layers
+            .iter()
+            .map(|layer| {
+                layer.height.as_ref().map_or_else(
+                    || layer.normal.clone(),
+                    |height| {
+                        let mut merged = layer.normal.clone().unwrap_or_else(|| {
+                            image::RgbaImage::from_pixel(
+                                height.width(),
+                                height.height(),
+                                image::Rgba([128, 128, 255, 255]),
+                            )
+                        });
+                        for (normal, source) in merged.pixels_mut().zip(height.pixels()) {
+                            normal.0[2] = source.0[0];
+                        }
+                        Some(merged)
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    });
     let (normals, normal_view) = layer_array(
-        "Full native-resolution original terrain material normal arrays",
+        "Full native-resolution original terrain material normal and height arrays",
         [128, 128, 255, 255],
-        source.map_or_else(Vec::new, |s| {
-            s.layers.iter().map(|l| l.normal.as_ref()).collect()
-        }),
-    );
-    let (heights, height_view) = layer_array(
-        "Full native-resolution original terrain material height arrays",
-        [255, 255, 255, 255],
-        source.map_or_else(Vec::new, |s| {
-            s.layers.iter().map(|l| l.height.as_ref()).collect()
-        }),
+        packed.iter().map(Option::as_ref).collect(),
     );
     let paint = source.map_or_else(
         || image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255])),
@@ -1148,12 +1164,10 @@ fn upload_terrain_layers(
         layer_view,
         _normals: normals,
         normal_view,
-        _heights: heights,
-        height_view,
         _paint: texture,
         paint_view,
         uniforms,
-        bytes: 3 * depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
+        bytes: 2 * depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
             + pw as u64 * ph as u64 * 4,
     }
 }
@@ -1265,7 +1279,7 @@ fn upload_probe_cube(
 }
 
 // Authored Size 1.0 as an angular radius, calibrated to in-game captures.
-const CELESTIAL_RADIUS_DEGREES: f32 = 6.0;
+const CELESTIAL_RADIUS_DEGREES: f32 = 9.0;
 
 /// Up to four authored planets as one array, plus their placement uniforms.
 fn upload_celestial(
@@ -1568,6 +1582,64 @@ fn update_local_probes(
     queue.write_buffer(uniform, 0, bytemuck::cast_slice(&data));
 }
 
+/// Up to 64 projector textures, with a white first layer for gaps.
+fn upload_light_cookies(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cookies: &[Option<image::RgbaImage>],
+) -> wgpu::TextureView {
+    const SIDE: u32 = 128;
+    let count = cookies.len().min(63) as u32 + 1;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Original projector light cookies"),
+        size: wgpu::Extent3d {
+            width: SIDE,
+            height: SIDE,
+            depth_or_array_layers: count,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let white = vec![255_u8; (SIDE * SIDE * 4) as usize];
+    for layer in 0..count {
+        let image = (layer > 0)
+            .then(|| cookies.get(layer as usize - 1))
+            .flatten()
+            .and_then(Option::as_ref);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: layer,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            image.map_or(white.as_slice(), |image| image.as_raw().as_slice()),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(SIDE * 4),
+                rows_per_image: Some(SIDE),
+            },
+            wgpu::Extent3d {
+                width: SIDE,
+                height: SIDE,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    })
+}
+
 fn shadow_matrix(center: [f32; 3], to_sun: [f32; 3], radius: f32) -> [[f32; 4]; 4] {
     let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let normalized = |v: [f32; 3]| {
@@ -1668,6 +1740,7 @@ pub(super) struct Renderer {
     shadow_compare: wgpu::Sampler,
     probe_sampler: wgpu::Sampler,
     local_probe_uniform: wgpu::Buffer,
+    cookie_view: wgpu::TextureView,
     local_probe_cubes: wgpu::Texture,
     local_probe_view: wgpu::TextureView,
     local_probe_slots: [Option<usize>; LOCAL_PROBE_SLOTS],
@@ -1676,6 +1749,14 @@ pub(super) struct Renderer {
     particle_layout: wgpu::BindGroupLayout,
     particle_pipeline: wgpu::RenderPipeline,
     particle_batches: Vec<GpuParticles>,
+    decal_pipeline: wgpu::RenderPipeline,
+    occlusion_layout: wgpu::BindGroupLayout,
+    occlusion_apply_layout: wgpu::BindGroupLayout,
+    occlusion_pipeline: wgpu::RenderPipeline,
+    occlusion_apply: wgpu::RenderPipeline,
+    occlusion_uniform: wgpu::Buffer,
+    occlusion_target: std::sync::Mutex<Option<(wgpu::Texture, wgpu::TextureView)>>,
+    decal_batches: Vec<GpuParticles>,
     screen_sampler: wgpu::Sampler,
     reflection_view: wgpu::TextureView,
     reflection_depth: wgpu::TextureView,
@@ -1952,7 +2033,7 @@ impl Renderer {
         });
         let local_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Map source local point/spot light GPU table"),
-            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 97]),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 121]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let hdr_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -2928,6 +3009,159 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
+        let decal_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Authored decals"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "world_decals.wgsl"
+            ))),
+        });
+        let decal_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Authored decals"),
+            layout: Some(&particle_pipe_layout),
+            vertex: wgpu::VertexState {
+                module: &decal_shader,
+                entry_point: Some("vs_decal"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 80,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4],
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &decal_shader,
+                entry_point: Some("fs_decal"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    // Scene alpha marks open sky for the shaft pass.
+                    write_mask: wgpu::ColorWrites::COLOR,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            // Back faces only, so the box still draws with the camera inside it.
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let occlusion_entries = |raw: bool| {
+            let mut entries = vec![
+                water_uniform_entry(0),
+                water_uniform_entry(1),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ];
+            if raw {
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                });
+            }
+            entries
+        };
+        let occlusion_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Scene occlusion"),
+            entries: &occlusion_entries(false),
+        });
+        let occlusion_apply_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Scene occlusion blur"),
+                entries: &occlusion_entries(true),
+            });
+        let occlusion_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Authored occlusion amount and radius"),
+            contents: bytemuck::cast_slice(&[0.0_f32, 1.0, 0.1, 4.0]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let occlusion_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Scene occlusion"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "world_occlusion.wgsl"
+            ))),
+        });
+        let occlusion_pass = |layout: &wgpu::BindGroupLayout,
+                              entry: &str,
+                              target: wgpu::TextureFormat,
+                              blend: Option<wgpu::BlendState>| {
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Scene occlusion"),
+                bind_group_layouts: &[layout],
+                push_constant_ranges: &[],
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Scene occlusion"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &occlusion_shader,
+                    entry_point: Some("vs_fullscreen"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &occlusion_shader,
+                    entry_point: Some(entry),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: target,
+                        blend,
+                        write_mask: if blend.is_some() {
+                            wgpu::ColorWrites::COLOR
+                        } else {
+                            wgpu::ColorWrites::ALL
+                        },
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let occlusion_pipeline = occlusion_pass(
+            &occlusion_layout,
+            "fs_occlusion",
+            wgpu::TextureFormat::R8Unorm,
+            None,
+        );
+        let occlusion_apply = occlusion_pass(
+            &occlusion_apply_layout,
+            "fs_apply",
+            format,
+            Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Dst,
+                    dst_factor: wgpu::BlendFactor::Zero,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent::OVER,
+            }),
+        );
         let reflection_pipeline = |entry: &str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Planar water reflection geometry"),
@@ -2970,6 +3204,7 @@ impl Renderer {
             reflection_view,
             reflection_depth,
             local_probe_uniform,
+            cookie_view: upload_light_cookies(device, queue, &[]),
             local_probe_cubes,
             local_probe_view,
             local_probe_slots: [None; LOCAL_PROBE_SLOTS],
@@ -2978,6 +3213,14 @@ impl Renderer {
             particle_layout,
             particle_pipeline,
             particle_batches: Vec::new(),
+            decal_pipeline,
+            occlusion_layout,
+            occlusion_apply_layout,
+            occlusion_pipeline,
+            occlusion_apply,
+            occlusion_uniform,
+            occlusion_target: std::sync::Mutex::new(None),
+            decal_batches: Vec::new(),
             screen_sampler,
             refraction_copy: std::sync::Mutex::new(None),
             solid: make(false, false, false),
@@ -3348,7 +3591,7 @@ impl Renderer {
             let (emissive_tex, emissive_view) = auxiliary_map(
                 device,
                 queue,
-                surf.emissive.as_ref(),
+                surf.blend_normal.as_ref().or(surf.emissive.as_ref()),
                 5,
                 [0, 0, 0, 255],
                 wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -3409,6 +3652,7 @@ impl Renderer {
                 .layer_params
                 .unwrap_or([0.0, 0.0, 0.0, 8.0, 1.0, 1.0, 1.0]);
             let detail_tile = surf.detail_tile.unwrap_or([1.0, 1.0]);
+            let foliage = surf.foliage_transmit.unwrap_or([0.0; 3]);
             let params = surf
                 .distance_clouds
                 .or(surf.material_tint)
@@ -3456,7 +3700,15 @@ impl Renderer {
                     layer[4],
                     layer[5],
                     layer[6],
-                    0.0,
+                    if surf.blend_normal.is_some() {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    foliage[0],
+                    foliage[1],
+                    foliage[2],
+                    surf.layer_specular.unwrap_or(-1.0),
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -3554,7 +3806,7 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 20,
-                        resource: wgpu::BindingResource::TextureView(&terrain_textures.height_view),
+                        resource: wgpu::BindingResource::TextureView(&self.cookie_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 19,
@@ -3650,8 +3902,10 @@ impl Renderer {
             self.last_full_textures = full_textures;
             self.last_camera = None;
             self.shadow_groups_seen = 0;
+            self.cookie_view = upload_light_cookies(device, queue, &world.light_cookies);
             self.update_water(device, queue, world);
             self.update_particles(device, queue, world);
+            self.update_decals(device, queue, world);
             self.ambient_cube = world.ambient_cube;
             self.surface_darkening = 1.0 - world.rain_darkening;
             self.local_probe_slots = [None; LOCAL_PROBE_SLOTS];
@@ -3713,6 +3967,21 @@ impl Renderer {
                 profile.height_preview_uniform(world.time_of_day.as_deref(), hour)
             });
             queue.write_buffer(&self.height_fog_uniform, 0, bytemuck::cast_slice(&height));
+            let authored = |name: &str, fallback: f32| {
+                world
+                    .time_of_day
+                    .as_ref()
+                    .and_then(|profile| profile.scalar(name, hour))
+                    .filter(|value| value.is_finite())
+                    .unwrap_or(fallback)
+            };
+            let occlusion = [
+                authored("Amount Ambient", 1.0),
+                authored("Radius", 1.5),
+                authored("Radius Min", 0.1),
+                authored("Radius Max", 4.0).max(0.1),
+            ];
+            queue.write_buffer(&self.occlusion_uniform, 0, bytemuck::cast_slice(&occlusion));
             self.last_lighting_hour = hour;
         }
         let Some(camera) = camera else {
@@ -4154,10 +4423,15 @@ impl Renderer {
         depth: &wgpu::TextureView,
         clip: Option<iced::Rectangle<u32>>,
     ) {
-        if self.water_surfaces.is_empty() && self.particle_batches.is_empty() {
+        if self.water_surfaces.is_empty()
+            && self.particle_batches.is_empty()
+            && self.decal_batches.is_empty()
+            && self.groups.is_empty()
+        {
             return;
         }
         let source = scene.texture();
+        self.draw_occlusion(encoder, scene, depth, clip);
         let Ok(mut copy) = self.refraction_copy.lock() else {
             return;
         };
@@ -4250,8 +4524,14 @@ impl Renderer {
             );
             pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
         }
-        pass.set_pipeline(&self.water_pipeline);
         pass.set_bind_group(1, &screen, &[]);
+        pass.set_pipeline(&self.decal_pipeline);
+        for batch in &self.decal_batches {
+            pass.set_bind_group(0, &batch.bind, &[]);
+            pass.set_vertex_buffer(0, batch.instances.slice(..));
+            pass.draw(0..36, 0..batch.count);
+        }
+        pass.set_pipeline(&self.water_pipeline);
         for water in &self.water_surfaces {
             pass.set_bind_group(0, &water.bind, &[]);
             pass.set_vertex_buffer(0, water.vertices.slice(..));
@@ -4263,6 +4543,163 @@ impl Renderer {
             pass.set_vertex_buffer(0, batch.instances.slice(..));
             pass.draw(0..6, 0..batch.count);
         }
+    }
+
+    /// Darken the opaque scene where nearby geometry blocks ambient light.
+    fn draw_occlusion(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        scene: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        clip: Option<iced::Rectangle<u32>>,
+    ) {
+        let size = scene.texture().size();
+        let Ok(mut target) = self.occlusion_target.lock() else {
+            return;
+        };
+        if target
+            .as_ref()
+            .is_none_or(|(texture, _)| texture.size() != size)
+        {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Raw scene occlusion"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            *target = Some((texture, view));
+        }
+        let Some((_, raw)) = target.as_ref() else {
+            return;
+        };
+        let shared = [
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.camera_uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: self.occlusion_uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(depth),
+            },
+        ];
+        let measure = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Scene occlusion"),
+            layout: &self.occlusion_layout,
+            entries: &shared,
+        });
+        let apply = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Scene occlusion blur"),
+            layout: &self.occlusion_apply_layout,
+            entries: &[
+                shared[0].clone(),
+                shared[1].clone(),
+                shared[2].clone(),
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(raw),
+                },
+            ],
+        });
+        for (view, pipeline, bind, load) in [
+            (
+                raw,
+                &self.occlusion_pipeline,
+                &measure,
+                wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+            ),
+            (scene, &self.occlusion_apply, &apply, wgpu::LoadOp::Load),
+        ] {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Scene occlusion"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if let Some(clip) = clip {
+                pass.set_viewport(
+                    clip.x as f32,
+                    clip.y as f32,
+                    clip.width as f32,
+                    clip.height as f32,
+                    0.,
+                    1.,
+                );
+                pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
+            }
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
+    fn update_decals(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
+        self.decal_batches = world
+            .decals
+            .iter()
+            .filter(|batch| !batch.instances.is_empty())
+            .map(|batch| {
+                let instances = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Authored decals"),
+                    contents: bytemuck::cast_slice(&batch.instances),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let (sprite, sprite_view) = upload_rgba_mips(
+                    device,
+                    queue,
+                    Some(batch.image.as_ref()),
+                    [255, 255, 255, 0],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "Authored decal",
+                );
+                let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Authored decal"),
+                    layout: &self.particle_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.camera_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: self.lighting_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(&sprite_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Sampler(&self.screen_sampler),
+                        },
+                    ],
+                });
+                GpuParticles {
+                    instances,
+                    count: batch.instances.len() as u32,
+                    bind,
+                    _sprite: sprite,
+                }
+            })
+            .collect();
     }
 
     fn update_particles(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
@@ -4345,7 +4782,13 @@ impl Renderer {
                             if water.gloss_map.is_some() { 1.0 } else { 0.0 },
                         ],
                         water.fog,
-                        [water.specular[0], water.specular[1], water.specular[2], 0.0],
+                        [
+                            water.specular[0],
+                            water.specular[1],
+                            water.specular[2],
+                            water.foam_tilling,
+                        ],
+                        [water.decal_falloff, water.reflection, 0.0, 0.0],
                     ]),
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
@@ -4621,10 +5064,10 @@ impl Renderer {
     fn update_local_lights(&self, queue: &wgpu::Queue, world: &World, camera: CameraGpu) {
         const LIMIT: usize = 24;
         let selected = select_visible_lights(&world.local_lights, camera, LIMIT);
-        let mut uniform = [[0.0_f32; 4]; 1 + LIMIT * 4];
+        let mut uniform = [[0.0_f32; 4]; 1 + LIMIT * 5];
         uniform[0][0] = selected.len() as f32;
         for (idx, light) in selected.into_iter().enumerate() {
-            let base = 1 + idx * 4;
+            let base = 1 + idx * 5;
             uniform[base] = [
                 light.position[0],
                 light.position[1],
@@ -4643,7 +5086,17 @@ impl Renderer {
                 light.color[2],
                 light.intensity,
             ];
-            uniform[base + 3] = [light.bulb, 0.0, 0.0, 0.0];
+            uniform[base + 3] = [
+                light.bulb,
+                if (0..63).contains(&light.cookie) {
+                    light.cookie as f32 + 1.0
+                } else {
+                    0.0
+                },
+                light.projector_tan,
+                0.0,
+            ];
+            uniform[base + 4] = [light.side[0], light.side[1], light.side[2], 0.0];
         }
         queue.write_buffer(&self.local_uniform, 0, bytemuck::cast_slice(&uniform));
     }
@@ -4881,6 +5334,9 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             intensity: 2.0,
             bulb: 0.05,
+            side: [0.0, 1.0, 0.0],
+            cookie: -1,
+            projector_tan: 1.0,
             radius,
             cone_cos: -1.0,
         };

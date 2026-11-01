@@ -26,7 +26,8 @@ struct SurfaceParams {
   waterfall_blend: vec4<f32>, // AlphaBlendMul, FoamDeform, FoamMultiplier
   detail: vec4<f32>,  // Detail tiling U and V, DetailBumpScale, DetailDiffuseScale
   layers: vec4<f32>,  // DetailGlossScale, has detail, has second layer, BlendFactor
-  blend: vec4<f32>,   // BlendFalloff, BlendLayer2Tiling, BlendMaskTiling
+  blend: vec4<f32>,   // BlendFalloff, BlendLayer2Tiling, BlendMaskTiling, normal in emissive slot
+  foliage: vec4<f32>, // TransmittanceColor by BackDiffuseMultiplier, BlendLayer2Specular
 }
 @group(0) @binding(4) var<uniform> authored: SurfaceParams;
 // Viewport-only time-of-day lighting. Never reads or edits game engine state.
@@ -68,7 +69,8 @@ struct SourceLight {
   position_radius:vec4<f32>,
   direction_cone:vec4<f32>,
   color_strength:vec4<f32>,
-  bulb:vec4<f32>,
+  bulb:vec4<f32>,  // bulb size, cookie layer, projector half angle tangent
+  side:vec4<f32>,
 }
 struct SourceLights {
   count:vec4<f32>,
@@ -91,13 +93,15 @@ struct SourceTerrainParams {
 @group(0) @binding(17) var<uniform> source_terrain: SourceTerrainParams;
 @group(0) @binding(18) var source_terrain_repeat: sampler;
 @group(0) @binding(19) var source_terrain_normals: texture_2d_array<f32>;
-@group(0) @binding(20) var source_terrain_heights: texture_2d_array<f32>;
+// Projector cookies; the first layer is white for lights without one.
+@group(0) @binding(20) var light_cookies: texture_2d_array<f32>;
 // BLENDLAYER's second diffuse and mask. Binding 12 is the Detail map on non-terrain.
 @group(0) @binding(21) var blend_layer: texture_2d<f32>;
 @group(0) @binding(22) var blend_mask: texture_2d<f32>;
 // Tangent XY of the blended terrain layers, read by the normal step in shade.
 var<private> terrain_normal_xy: vec2<f32>;
 var<private> blended_surface: f32;
+var<private> foliage_surface: f32;
 
 // Sun shadow cascades, nearest first. Depth runs from 0 at the sun outward.
 struct SunShadows {
@@ -268,6 +272,11 @@ fn sample_source_albedo(uv:vec2<f32>)->vec4<f32> {
 
 // The game's Terrain.Layer blend: each painted layer adds its signed detail to
 // the display-encoded baked color, weighted by height. Returns display color.
+fn undo_srgb(c:vec3<f32>)->vec3<f32> {
+  let high=pow(max(c,vec3<f32>(0.0)),vec3<f32>(1.0/2.4))*1.055-vec3<f32>(0.055);
+  return select(high,c*12.92,c<vec3<f32>(0.003131));
+}
+
 fn blended_terrain(input:Output,baked:vec3<f32>)->vec3<f32> {
   let extents=max(source_terrain.info.xy-vec2<f32>(1.0),vec2<f32>(1.0));
   let coord=clamp(input.uv,vec2<f32>(0.0),vec2<f32>(1.0))*extents;
@@ -309,7 +318,7 @@ fn blended_terrain(input:Output,baked:vec3<f32>)->vec3<f32> {
       let offset=to_camera.xy/max(reach,0.001)*pom;
       var at=uv+offset;
       var level=1.0;
-      var sampled=textureSampleLevel(source_terrain_heights,source_terrain_repeat,at,layer,lod).r;
+      var sampled=textureSampleLevel(source_terrain_normals,source_terrain_repeat,at,layer,lod).b;
       var previous=at;
       var previous_gap=level-sampled;
       for (var i=0;i<15 && sampled<level;i=i+1) {
@@ -317,14 +326,14 @@ fn blended_terrain(input:Output,baked:vec3<f32>)->vec3<f32> {
         previous_gap=level-sampled;
         at-=offset/15.0;
         level-=1.0/15.0;
-        sampled=textureSampleLevel(source_terrain_heights,source_terrain_repeat,at,layer,lod).r;
+        sampled=textureSampleLevel(source_terrain_normals,source_terrain_repeat,at,layer,lod).b;
       }
       // One refinement between the last two samples.
       let over=max(sampled-level,0.0);
       uv=mix(at,previous,clamp(over/max(over+previous_gap,0.0001),0.0,1.0));
     }
     let detail=textureSampleLevel(source_terrain_layers,source_terrain_repeat,uv,layer,lod).rgb;
-    let height=textureSampleLevel(source_terrain_heights,source_terrain_repeat,uv,layer,lod).r;
+    let height=textureSampleLevel(source_terrain_normals,source_terrain_repeat,uv,layer,lod).b;
     let boost=clamp(height+clamp(2.0*weight-1.0,0.0,1.0),0.0,1.0);
     let blend=source_terrain.blend[layer];
     let alpha=min(pow(max(weight*boost*(1.0+blend.x),0.0001),blend.y),1.0);
@@ -350,7 +359,7 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   if (source_terrain.info.w>0.5) {
     // The baked atlas arrives decoded; the game blends it display encoded and
     // squares the result back to linear.
-    let display=blended_terrain(input,sqrt(max(base.rgb,vec3<f32>(0.0))));
+    let display=blended_terrain(input,undo_srgb(base.rgb));
     base=vec4<f32>(display*display,base.a);
   } else if (authored.layers.y<0.5) {
     let detail=textureSample(terrain_detail,tex_sampler,input.uv);
@@ -359,10 +368,11 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // BLENDLAYER: vertex paint times the mask, shaped as the terrain blend is.
   let layer_sample=textureSample(blend_layer,tex_sampler,input.uv*authored.blend.y);
   let mask_sample=textureSample(blend_mask,tex_sampler,input.uv*authored.blend.z).r;
+  var layer_amount=0.0;
   if (authored.layers.z>0.5) {
     let weight=input.paint*mask_sample*(1.0+authored.layers.w);
-    let amount=min(pow(max(weight,0.0001),authored.blend.x),1.0);
-    base=vec4<f32>(mix(base.rgb,layer_sample.rgb,amount),base.a);
+    layer_amount=min(pow(max(weight,0.0001),authored.blend.x),1.0);
+    base=vec4<f32>(mix(base.rgb,layer_sample.rgb,layer_amount),base.a);
   }
   // The game's Detail map: green and alpha bend the normal, red scales diffuse,
   // blue scales gloss.
@@ -404,7 +414,9 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   let pos_dy=dpdy(input.world);
   let determinant=uv_dx.x*uv_dy.y-uv_dx.y*uv_dy.x;
   let encoded=textureSample(normal_map,tex_sampler,input.uv).rg;
-  let plain_xy=encoded*2.0-vec2<f32>(1.0);
+  var plain_xy=encoded*2.0-vec2<f32>(1.0);
+  let second_normal=textureSample(emissive_map,tex_sampler,input.uv*authored.blend.y).rg*2.0-vec2<f32>(1.0);
+  if (authored.blend.w>0.5) { plain_xy=mix(plain_xy,second_normal,layer_amount); }
   let tangent_z=sqrt(max(0.0,1.0-dot(plain_xy,plain_xy)));
   let xy=plain_xy+detail_bend;
   if (authored.cutoff.z>0.5 && abs(determinant)>0.000001) {
@@ -425,13 +437,19 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   let sun_direction=normalize(light.sun.xyz);
   // Blended water sheets are two sided, so the sun lights either face.
   let lambert=mix(max(dot(n,sun_direction),0.0),abs(dot(n,sun_direction)),blended_surface);
+  // The game's leaves: wrapped sun through the blade, tinted by thickness.
+  let leaf_through=clamp(dot(-n,sun_direction)*0.6+0.4,0.0,1.0)
+    *textureSample(authored_opacity,tex_sampler,input.uv).rgb*authored.foliage.rgb;
   let visibility=sun_visibility(input.world,normalize(input.normal+vec3<f32>(0.0,0.0,0.0001)),lambert);
   // A bump cannot catch sun on a face that is turned away from it.
-  let facing_sun=mix(clamp(dot(geometric,sun_direction)*8.0+0.5,0.0,1.0),1.0,blended_surface);
+  let facing_sun=mix(clamp(dot(geometric,sun_direction)*8.0+0.5,0.0,1.0),1.0,max(blended_surface,foliage_surface));
   let sun=light.sun_color.rgb*(light.sun.w*lambert*visibility*facing_sun);
   // Source-authored specular reflectance and gloss are separate channels.
   // A missing specular map is black (never invent shiny materials).
-  let reflectance=textureSample(specular_map,tex_sampler,input.uv).rgb*authored.specular.rgb;
+  var reflectance=textureSample(specular_map,tex_sampler,input.uv).rgb*authored.specular.rgb;
+  if (authored.foliage.w>=0.0) {
+    reflectance=mix(reflectance,vec3<f32>(authored.foliage.w),layer_amount);
+  }
   // A ddna normal map carries smoothness in alpha; other formats read as 1.
   let gloss=clamp(textureSample(gloss_map,tex_sampler,input.uv).r*textureSample(normal_map,tex_sampler,input.uv).a*detail_gloss,0.0,1.0);
   let view_direction=normalize(camera.origin.xyz-input.world);
@@ -480,12 +498,22 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
          min(source.direction_cone.w+0.08,1.0),
          projector);
     }
+    // The game projects its cookie through the light's own matrix.
+    var cookie=vec3<f32>(1.0);
+    if (source.bulb.y>0.5) {
+      let aim=normalize(source.direction_cone.xyz);
+      let side=source.side.xyz;
+      let reach=max(dot(-delta,aim),0.001)*source.bulb.z;
+      let cookie_uv=vec2<f32>(dot(-delta,side),dot(-delta,cross(aim,side)))/reach*0.5+vec2<f32>(0.5);
+      cookie=textureSampleLevel(light_cookies,probe_sampler,
+        clamp(cookie_uv,vec2<f32>(0.0),vec2<f32>(1.0)),i32(source.bulb.y),0.0).rgb;
+    }
     let diffuse=max(dot(n,incoming),0.0);
     let local_half=normalize(incoming+view_direction);
     let spec=reflectance*
        pow(max(dot(n,local_half),0.0),exponent)*0.15;
     local_radiance+=(base.rgb*diffuse+spec)*
-      source.color_strength.rgb*
+      source.color_strength.rgb*cookie*
       source.color_strength.w*attenuation;
   }
   // A bounded viewport preview only: original GlowAmount is not modified,
@@ -495,8 +523,8 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // channels. Do not divide it by three and normalize it away before HDR;
   // the filmic output pass bounds highlights, while true bloom remains a
   // separate post-processing feature. No guessed emission for plain Illum.
-  let preview_glow=emission*max(authored.cutoff.y,0.0)*0.65;
-  return vec4<f32>(base.rgb*(ambient_light*authored.clouds.w+sun)+specular+reflected+local_radiance+preview_glow,base.a);
+  let preview_glow=emission*max(authored.cutoff.y,0.0)*0.65*(1.0-authored.blend.w);
+  return vec4<f32>(base.rgb*(ambient_light*authored.clouds.w*mix(1.0,n.z*0.25+0.75,foliage_surface)+sun+light.sun_color.rgb*light.sun.w*visibility*leaf_through*foliage_surface)+specular+reflected+local_radiance+preview_glow,base.a);
 }
 
 // A visually bounded preview heuristic, not an Evolve fog equation. Applying
@@ -544,7 +572,13 @@ fn distance_fog(input:Output, color:vec4<f32>)->vec4<f32> {
     let lobe=pow(reach,1.0/fog.top.w)*pow(2.0,(toward_sun-1.0)*falloff);
     haze+=fog.radial.rgb*lobe;
     // The game's density term. Its 0.01 scale is inferred from the engine's usage.
-    let amount=(1.0-pow(2.0,-distance*fog.ramp.w*0.01))*ramp;
+    let bottom_density=max(height_fog.heights_density.z,0.000001);
+    let thinning=clamp(log(max(height_fog.heights_density.w,0.000001)/bottom_density)/max(height_fog.heights_density.y-height_fog.heights_density.x,0.01),-0.01,0.01);
+    let at_camera=bottom_density*exp(clamp(thinning*(camera.origin.z-height_fog.heights_density.x),-12.0,12.0));
+    let climb=thinning*(input.world.z-camera.origin.z);
+    var along_ray=1.0+0.5*climb+climb*climb/6.0;
+    if (abs(climb)>=0.001) { along_ray=(exp(clamp(climb,-12.0,12.0))-1.0)/climb; }
+    let amount=(1.0-pow(2.0,-distance*fog.ramp.w*0.01*at_camera*max(along_ray,0.0)))*ramp;
     return vec4<f32>(mix(color.rgb,haze,clamp(amount,0.0,1.0)),color.a);
   }
   let amount=clamp(1.0-exp(-depth),0.0,0.92);
@@ -579,6 +613,7 @@ fn fs_foliage(input:Output)->@location(0) vec4<f32> {
   // fragments write opaque window alpha and regular world depth.
   let leaf_alpha=sample_source_albedo(input.uv).a;
   if (leaf_alpha < authored.cutoff.x) { discard; }
+  foliage_surface=1.0;
   let color=shade(input,false);
   let fogged=distance_fog(input,color);
   return vec4<f32>(authored_scene_linear(fogged.rgb),1.0);
@@ -636,6 +671,7 @@ fn fs_opaque_reflected(input:Output)->@location(0) vec4<f32> {
 fn fs_foliage_reflected(input:Output)->@location(0) vec4<f32> {
   if (input.world.z<camera.reflection_height.x) { discard; }
   if (sample_source_albedo(input.uv).a < authored.cutoff.x) { discard; }
+  foliage_surface=1.0;
   let fogged=distance_fog(input,shade(input,false));
   return vec4<f32>(authored_scene_linear(fogged.rgb),1.0);
 }

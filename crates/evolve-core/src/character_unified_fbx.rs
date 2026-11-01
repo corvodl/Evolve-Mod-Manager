@@ -1999,6 +1999,8 @@ mod tests {
             waterfall: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
         };
         assert!(opaque_historical_2012_diffuse(true, &opaque));
         assert!(!opaque_historical_2012_diffuse(false, &opaque));

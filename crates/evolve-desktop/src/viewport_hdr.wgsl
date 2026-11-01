@@ -33,7 +33,7 @@ fn adapted_exposure()->f32 {
     // The game scales its target by a runtime constant that is not in its
     // shaders; this value is calibrated to in-game captures.
     return clamp(composite.adaptation.x/(average+0.00001),
-        composite.adaptation.y,composite.adaptation.z)*0.7;
+        composite.adaptation.y,composite.adaptation.z)*0.85;
 }
 // The final-scene curve from the game's compiled HDR shader.
 fn filmic_curve(x:vec3<f32>)->vec3<f32>{
