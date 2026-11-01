@@ -232,15 +232,21 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
             })
             .take(80)
         {
+            // A CHRPARAMS declaration or matching manifest entry is not
+            // proof of an extracted CAF. Most entries are resolved lazily.
+            // Never label every unresolved clip as a missing extraction.
+            let availability = if clip.source.is_some() {
+                " · verified source"
+            } else if clip.kind == "caf" {
+                " · cataloged (check on selection)"
+            } else if clip.kind == "dba" {
+                " · declared DBA (check on selection)"
+            } else {
+                " · declared"
+            };
             let label = format!(
                 "{} · {}{}",
-                clip.label,
-                clip.kind.to_ascii_uppercase(),
-                if clip.source.is_none() {
-                    " (not extracted)"
-                } else {
-                    ""
-                }
+                clip.label, clip.kind.to_ascii_uppercase(), availability,
             );
             clips = clips.push(
                 row![
