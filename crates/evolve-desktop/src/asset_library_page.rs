@@ -34,8 +34,14 @@ fn header_cell(label: &'static str, width: u16) -> Element<'static, Message> {
 // tests run on Linux, so normalize only for display and comparison.
 fn source_label(source: &str) -> String {
     let normalized = source.replace('\\', "/");
-    let pieces = normalized.split('/').filter(|part| !part.is_empty()).collect::<Vec<_>>();
-    if let Some(game) = pieces.iter().rposition(|part| part.eq_ignore_ascii_case("game")) {
+    let pieces = normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if let Some(game) = pieces
+        .iter()
+        .rposition(|part| part.eq_ignore_ascii_case("game"))
+    {
         if game >= 1 {
             let parent = pieces[game - 1];
             if parent.to_ascii_lowercase().starts_with("build_") && game >= 2 {
@@ -44,8 +50,14 @@ fn source_label(source: &str) -> String {
             return parent.to_owned();
         }
     }
-    pieces.iter().rev().nth(1).or_else(|| pieces.last())
-        .copied().unwrap_or("Unknown source").to_owned()
+    pieces
+        .iter()
+        .rev()
+        .nth(1)
+        .or_else(|| pieces.last())
+        .copied()
+        .unwrap_or("Unknown source")
+        .to_owned()
 }
 
 fn archive_build_label(archive: &evolve_core::ImportedPak) -> String {
@@ -69,8 +81,17 @@ fn source_group_key(archive: &evolve_core::ImportedPak) -> String {
 
 #[derive(Debug)]
 enum BrowserRow {
-    Category { key: String, name: String, count: usize },
-    SourceGroup { key: String, name: String, source: String, count: usize },
+    Category {
+        key: String,
+        name: String,
+        count: usize,
+    },
+    SourceGroup {
+        key: String,
+        name: String,
+        source: String,
+        count: usize,
+    },
     Archive(usize),
 }
 
@@ -79,7 +100,12 @@ fn browser_rows(state: &State) -> Vec<BrowserRow> {
         return Vec::new();
     };
     if state.library_flat_list {
-        return state.library_matches.iter().copied().map(BrowserRow::Archive).collect();
+        return state
+            .library_matches
+            .iter()
+            .copied()
+            .map(BrowserRow::Archive)
+            .collect();
     }
     // Deterministic grouping from the CURRENT filtered match set; do not
     // mutate catalog order, identities, build memberships or selected indices.
@@ -89,9 +115,13 @@ fn browser_rows(state: &State) -> Vec<BrowserRow> {
             continue;
         };
         let category = archive.group.to_ascii_lowercase();
-        groups.entry(category)
+        groups
+            .entry(category)
             .or_insert_with(|| (archive.group.clone(), BTreeMap::new()))
-            .1.entry(source_group_key(archive)).or_default().push(index);
+            .1
+            .entry(source_group_key(archive))
+            .or_default()
+            .push(index);
     }
     let mut result = Vec::new();
     for (key, (name, sources)) in groups {
@@ -113,7 +143,10 @@ fn browser_rows(state: &State) -> Vec<BrowserRow> {
             let expanded = !state.library_search.trim().is_empty()
                 || state.library_expanded_sources.contains(&source_key);
             result.push(BrowserRow::SourceGroup {
-                key: source_key, name: label, source, count: members.len(),
+                key: source_key,
+                name: label,
+                source,
+                count: members.len(),
             });
             if expanded {
                 result.extend(members.into_iter().map(BrowserRow::Archive));
@@ -126,10 +159,13 @@ fn browser_rows(state: &State) -> Vec<BrowserRow> {
 /// Shift selection follows only the visible selectable archives, including
 /// across table pages. A collapsed category must never invisibly select PAKs.
 pub(super) fn visible_archive_indices(state: &State) -> Vec<usize> {
-    browser_rows(state).into_iter().filter_map(|row| match row {
-        BrowserRow::Archive(index) => Some(index),
-        _ => None,
-    }).collect()
+    browser_rows(state)
+        .into_iter()
+        .filter_map(|row| match row {
+            BrowserRow::Archive(index) => Some(index),
+            _ => None,
+        })
+        .collect()
 }
 
 fn archive_row<'a>(
@@ -145,9 +181,15 @@ fn archive_row<'a>(
             text(archive.group.as_str()).size(11).style(design::muted),
         ]
         .width(Length::FillPortion(6)),
-        text(source_label(&archive.source)).size(12).width(Length::FillPortion(4)),
-        text(archive_build_label(archive)).size(12).width(Length::FillPortion(3)),
-        text(archive.entries.to_string()).size(12).width(Length::FillPortion(1)),
+        text(source_label(&archive.source))
+            .size(12)
+            .width(Length::FillPortion(4)),
+        text(archive_build_label(archive))
+            .size(12)
+            .width(Length::FillPortion(3)),
+        text(archive.entries.to_string())
+            .size(12)
+            .width(Length::FillPortion(1)),
     ]
     .spacing(9)
     .align_y(iced::Center);
@@ -166,14 +208,26 @@ fn archive_row<'a>(
     let mut content = column![item].spacing(3);
     if details {
         content = content.push(
-            container(column![
-                text(format!("Original source: {}", archive.source)).size(11),
-                text(format!("Archive identity: {}  •  {}",
-                    archive.id, archive.description)).size(11),
-                text(format!("Build memberships: {}",
-                    if archive.builds.is_empty() { "none".into() }
-                    else { archive.builds.join(", ") })).size(11),
-            ].spacing(3))
+            container(
+                column![
+                    text(format!("Original source: {}", archive.source)).size(11),
+                    text(format!(
+                        "Archive identity: {}  •  {}",
+                        archive.id, archive.description
+                    ))
+                    .size(11),
+                    text(format!(
+                        "Build memberships: {}",
+                        if archive.builds.is_empty() {
+                            "none".into()
+                        } else {
+                            archive.builds.join(", ")
+                        }
+                    ))
+                    .size(11),
+                ]
+                .spacing(3),
+            )
             .padding([4, 12])
             .width(Fill)
             .style(|theme| container::Style {
@@ -209,14 +263,22 @@ fn browser_group_row<'a>(
         text(if nested { "    " } else { "" }).size(12),
         text(arrow).size(13),
         text(label).size(if nested { 12 } else { 14 }),
-    ].spacing(9).align_y(iced::Center);
+    ]
+    .spacing(9)
+    .align_y(iced::Center);
     container(
         design::button(content)
-            .style(if nested { design::text_button } else { design::secondary })
+            .style(if nested {
+                design::text_button
+            } else {
+                design::secondary
+            })
             .width(Fill)
             .padding([if compact { 2 } else { 6 }, 10])
-            .on_press(message)
-    ).width(Fill).into()
+            .on_press(message),
+    )
+    .width(Fill)
+    .into()
 }
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
@@ -533,13 +595,25 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let build = library.and_then(|c| c.builds.get(state.library_build_index));
     let tabs = row![
         design::button("By Category")
-            .style(if !by_build && !flat { design::secondary } else { design::text_button })
+            .style(if !by_build && !flat {
+                design::secondary
+            } else {
+                design::text_button
+            })
             .on_press(Message::LibrarySetByBuild(false)),
         design::button("By Build")
-            .style(if by_build { design::secondary } else { design::text_button })
+            .style(if by_build {
+                design::secondary
+            } else {
+                design::text_button
+            })
             .on_press(Message::LibrarySetByBuild(true)),
         design::button("All PAKs")
-            .style(if flat { design::secondary } else { design::text_button })
+            .style(if flat {
+                design::secondary
+            } else {
+                design::text_button
+            })
             .on_press(Message::LibrarySetFlat(true)),
         space().width(Fill),
         if by_build {
@@ -589,7 +663,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         false,
                     ));
                 }
-                BrowserRow::SourceGroup { key, name, source, count } => {
+                BrowserRow::SourceGroup {
+                    key,
+                    name,
+                    source,
+                    count,
+                } => {
                     let open = !state.library_search.trim().is_empty()
                         || state.library_expanded_sources.contains(key);
                     rows = rows.push(browser_group_row(
@@ -835,10 +914,30 @@ mod browser_tests {
 
     fn fixture() -> State {
         let items = vec![
-            archive("a", "Animations", "AnimationsCAF.pak", "C:\\Games\\Stage2\\Game\\AnimationsCAF.pak"),
-            archive("b", "Animations", "AnimationsCAF.pak", "C:\\Games\\Stage2\\Game\\AnimationsCAF.pak"),
-            archive("c", "Animations", "AnimationsCAF.pak", "C:\\Games\\Legacy\\Game\\AnimationsCAF.pak"),
-            archive("d", "Levels", "Levels_Tutorial.pak", "C:\\Games\\Stage2\\Game\\Levels_Tutorial.pak"),
+            archive(
+                "a",
+                "Animations",
+                "AnimationsCAF.pak",
+                "C:\\Games\\Stage2\\Game\\AnimationsCAF.pak",
+            ),
+            archive(
+                "b",
+                "Animations",
+                "AnimationsCAF.pak",
+                "C:\\Games\\Stage2\\Game\\AnimationsCAF.pak",
+            ),
+            archive(
+                "c",
+                "Animations",
+                "AnimationsCAF.pak",
+                "C:\\Games\\Legacy\\Game\\AnimationsCAF.pak",
+            ),
+            archive(
+                "d",
+                "Levels",
+                "Levels_Tutorial.pak",
+                "C:\\Games\\Stage2\\Game\\Levels_Tutorial.pak",
+            ),
         ];
         let mut state = State::default();
         state.library_catalog = Some(evolve_core::ImportedLibrary {
@@ -857,11 +956,19 @@ mod browser_tests {
         let mut state = fixture();
         let rows = browser_rows(&state);
         assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|row| matches!(row, BrowserRow::Category { .. })));
+        assert!(
+            rows.iter()
+                .all(|row| matches!(row, BrowserRow::Category { .. }))
+        );
         assert!(visible_archive_indices(&state).is_empty());
-        state.library_expanded_categories.insert("animations".to_owned());
+        state
+            .library_expanded_categories
+            .insert("animations".to_owned());
         let rows = browser_rows(&state);
-        assert!(rows.iter().any(|row| matches!(row, BrowserRow::SourceGroup { count: 2, .. })));
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row, BrowserRow::SourceGroup { count: 2, .. }))
+        );
         assert_eq!(visible_archive_indices(&state), vec![2]);
         assert_eq!(state.library_catalog.as_ref().unwrap().archives.len(), 4);
     }
@@ -869,20 +976,30 @@ mod browser_tests {
     #[test]
     fn duplicate_source_group_is_nondestructive_and_each_record_remains_selectable() {
         let mut state = fixture();
-        state.library_expanded_categories.insert("animations".to_owned());
+        state
+            .library_expanded_categories
+            .insert("animations".to_owned());
         let source_key = source_group_key(&state.library_catalog.as_ref().unwrap().archives[0]);
         state.library_expanded_sources.insert(source_key);
         assert_eq!(visible_archive_indices(&state), vec![0, 1, 2]);
-        assert_ne!(state.library_catalog.as_ref().unwrap().archives[0].id,
-                   state.library_catalog.as_ref().unwrap().archives[1].id);
+        assert_ne!(
+            state.library_catalog.as_ref().unwrap().archives[0].id,
+            state.library_catalog.as_ref().unwrap().archives[1].id
+        );
         state.library_flat_list = true;
         assert_eq!(visible_archive_indices(&state), vec![0, 1, 2, 3]);
     }
 
     #[test]
     fn source_labels_preserve_build_provenance_and_search_opens_matches() {
-        assert_eq!(source_label("C:\\Games\\ModdedEvolve\\EvolveGame\\Game\\X.pak"), "EvolveGame");
-        assert_eq!(source_label("C:/Games/2012 Evolve/build_3/Game/X.pak"), "2012 Evolve / build_3");
+        assert_eq!(
+            source_label("C:\\Games\\ModdedEvolve\\EvolveGame\\Game\\X.pak"),
+            "EvolveGame"
+        );
+        assert_eq!(
+            source_label("C:/Games/2012 Evolve/build_3/Game/X.pak"),
+            "2012 Evolve / build_3"
+        );
         let mut state = fixture();
         state.library_matches = vec![3];
         state.library_search = "tutorial".to_owned();
