@@ -1750,6 +1750,12 @@ pub(super) struct Renderer {
     particle_pipeline: wgpu::RenderPipeline,
     particle_batches: Vec<GpuParticles>,
     decal_pipeline: wgpu::RenderPipeline,
+    occlusion_layout: wgpu::BindGroupLayout,
+    occlusion_apply_layout: wgpu::BindGroupLayout,
+    occlusion_pipeline: wgpu::RenderPipeline,
+    occlusion_apply: wgpu::RenderPipeline,
+    occlusion_uniform: wgpu::Buffer,
+    occlusion_target: std::sync::Mutex<Option<(wgpu::Texture, wgpu::TextureView)>>,
     decal_batches: Vec<GpuParticles>,
     screen_sampler: wgpu::Sampler,
     reflection_view: wgpu::TextureView,
@@ -3049,6 +3055,113 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
+        let occlusion_entries = |raw: bool| {
+            let mut entries = vec![
+                water_uniform_entry(0),
+                water_uniform_entry(1),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ];
+            if raw {
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                });
+            }
+            entries
+        };
+        let occlusion_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Scene occlusion"),
+            entries: &occlusion_entries(false),
+        });
+        let occlusion_apply_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Scene occlusion blur"),
+                entries: &occlusion_entries(true),
+            });
+        let occlusion_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Authored occlusion amount and radius"),
+            contents: bytemuck::cast_slice(&[0.0_f32, 1.0, 0.1, 4.0]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let occlusion_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Scene occlusion"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "world_occlusion.wgsl"
+            ))),
+        });
+        let occlusion_pass = |layout: &wgpu::BindGroupLayout,
+                              entry: &str,
+                              target: wgpu::TextureFormat,
+                              blend: Option<wgpu::BlendState>| {
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Scene occlusion"),
+                bind_group_layouts: &[layout],
+                push_constant_ranges: &[],
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Scene occlusion"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &occlusion_shader,
+                    entry_point: Some("vs_fullscreen"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &occlusion_shader,
+                    entry_point: Some(entry),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: target,
+                        blend,
+                        write_mask: if blend.is_some() {
+                            wgpu::ColorWrites::COLOR
+                        } else {
+                            wgpu::ColorWrites::ALL
+                        },
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let occlusion_pipeline = occlusion_pass(
+            &occlusion_layout,
+            "fs_occlusion",
+            wgpu::TextureFormat::R8Unorm,
+            None,
+        );
+        let occlusion_apply = occlusion_pass(
+            &occlusion_apply_layout,
+            "fs_apply",
+            format,
+            Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Dst,
+                    dst_factor: wgpu::BlendFactor::Zero,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent::OVER,
+            }),
+        );
         let reflection_pipeline = |entry: &str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Planar water reflection geometry"),
@@ -3101,6 +3214,12 @@ impl Renderer {
             particle_pipeline,
             particle_batches: Vec::new(),
             decal_pipeline,
+            occlusion_layout,
+            occlusion_apply_layout,
+            occlusion_pipeline,
+            occlusion_apply,
+            occlusion_uniform,
+            occlusion_target: std::sync::Mutex::new(None),
             decal_batches: Vec::new(),
             screen_sampler,
             refraction_copy: std::sync::Mutex::new(None),
@@ -3843,6 +3962,21 @@ impl Renderer {
                 profile.height_preview_uniform(world.time_of_day.as_deref(), hour)
             });
             queue.write_buffer(&self.height_fog_uniform, 0, bytemuck::cast_slice(&height));
+            let authored = |name: &str, fallback: f32| {
+                world
+                    .time_of_day
+                    .as_ref()
+                    .and_then(|profile| profile.scalar(name, hour))
+                    .filter(|value| value.is_finite())
+                    .unwrap_or(fallback)
+            };
+            let occlusion = [
+                authored("Amount Ambient", 1.0),
+                authored("Radius", 1.5),
+                authored("Radius Min", 0.1),
+                authored("Radius Max", 4.0).max(0.1),
+            ];
+            queue.write_buffer(&self.occlusion_uniform, 0, bytemuck::cast_slice(&occlusion));
             self.last_lighting_hour = hour;
         }
         let Some(camera) = camera else {
@@ -4287,10 +4421,12 @@ impl Renderer {
         if self.water_surfaces.is_empty()
             && self.particle_batches.is_empty()
             && self.decal_batches.is_empty()
+            && self.groups.is_empty()
         {
             return;
         }
         let source = scene.texture();
+        self.draw_occlusion(encoder, scene, depth, clip);
         let Ok(mut copy) = self.refraction_copy.lock() else {
             return;
         };
@@ -4401,6 +4537,112 @@ impl Renderer {
             pass.set_bind_group(0, &batch.bind, &[]);
             pass.set_vertex_buffer(0, batch.instances.slice(..));
             pass.draw(0..6, 0..batch.count);
+        }
+    }
+
+    /// Darken the opaque scene where nearby geometry blocks ambient light.
+    fn draw_occlusion(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        scene: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        clip: Option<iced::Rectangle<u32>>,
+    ) {
+        let size = scene.texture().size();
+        let Ok(mut target) = self.occlusion_target.lock() else {
+            return;
+        };
+        if target
+            .as_ref()
+            .is_none_or(|(texture, _)| texture.size() != size)
+        {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Raw scene occlusion"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            *target = Some((texture, view));
+        }
+        let Some((_, raw)) = target.as_ref() else {
+            return;
+        };
+        let shared = [
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.camera_uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: self.occlusion_uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(depth),
+            },
+        ];
+        let measure = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Scene occlusion"),
+            layout: &self.occlusion_layout,
+            entries: &shared,
+        });
+        let apply = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Scene occlusion blur"),
+            layout: &self.occlusion_apply_layout,
+            entries: &[
+                shared[0].clone(),
+                shared[1].clone(),
+                shared[2].clone(),
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(raw),
+                },
+            ],
+        });
+        for (view, pipeline, bind, load) in [
+            (
+                raw,
+                &self.occlusion_pipeline,
+                &measure,
+                wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+            ),
+            (scene, &self.occlusion_apply, &apply, wgpu::LoadOp::Load),
+        ] {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Scene occlusion"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if let Some(clip) = clip {
+                pass.set_viewport(
+                    clip.x as f32,
+                    clip.y as f32,
+                    clip.width as f32,
+                    clip.height as f32,
+                    0.,
+                    1.,
+                );
+                pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
+            }
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind, &[]);
+            pass.draw(0..3, 0..1);
         }
     }
 
