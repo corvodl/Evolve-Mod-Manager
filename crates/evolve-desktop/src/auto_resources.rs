@@ -798,7 +798,8 @@ mod tests {
             matching_caf_paths(
                 "characters/hunters/merc_aberenegade/animations/3p/*.dba",
                 &names,
-            ).unwrap(),
+            )
+            .unwrap(),
             vec!["characters/hunters/merc_aberenegade/animations/3p/abe.dba"],
         );
     }
