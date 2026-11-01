@@ -626,13 +626,11 @@ pub fn resolve_declared(
 /// Controller_905 records omit the .caf suffix; that is the only normalization
 /// permitted here. Never select from the basename alone.
 fn packed_animation_key(value: &str) -> String {
-    value.replace('\\', "/")
-        .trim_start_matches('/')
-        .trim_end_matches(".caf")
-        .to_ascii_lowercase()
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    normalized.trim_start_matches('/').trim_end_matches(".caf").to_owned()
 }
 
-fn packed_record_matches(declared_caf: &str, record: &str) -> bool {
+pub(crate) fn packed_record_matches(declared_caf: &str, record: &str) -> bool {
     let wanted = packed_animation_key(declared_caf);
     let actual = packed_animation_key(record);
     !wanted.is_empty() && wanted.contains('/') && actual == wanted
