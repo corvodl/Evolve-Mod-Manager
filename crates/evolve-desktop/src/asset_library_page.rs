@@ -254,7 +254,7 @@ fn archive_row<'a>(
 fn browser_group_row<'a>(
     label: String,
     is_open: bool,
-    message: Message,
+    message: Option<Message>,
     compact: bool,
     nested: bool,
 ) -> Element<'a, Message> {
@@ -275,7 +275,7 @@ fn browser_group_row<'a>(
             })
             .width(Fill)
             .padding([if compact { 2 } else { 6 }, 10])
-            .on_press(message),
+            .on_press_maybe(message),
     )
     .width(Fill)
     .into()
@@ -658,7 +658,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     rows = rows.push(browser_group_row(
                         format!("{name}  •  {count} PAKs"),
                         open,
-                        Message::LibraryToggleCategory(key.clone()),
+                        state.library_search.trim().is_empty().then(|| Message::LibraryToggleCategory(key.clone())),
                         state.preferences.ui_density == "Compact",
                         false,
                     ));
@@ -674,7 +674,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     rows = rows.push(browser_group_row(
                         format!("{name}  •  {source}  •  {count} source records"),
                         open,
-                        Message::LibraryToggleSource(key.clone()),
+                        state.library_search.trim().is_empty().then(|| Message::LibraryToggleSource(key.clone())),
                         state.preferences.ui_density == "Compact",
                         true,
                     ));
