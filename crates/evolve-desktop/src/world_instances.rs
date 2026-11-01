@@ -511,14 +511,14 @@ fn group_new_bytes(
             }));
         }
     }
-    if is_ground(group) {
-        if let Some(source) = terrain_gpu {
-            let dims = source.layers[0].image.dimensions();
-            bytes = bytes.saturating_add(
-                source.layers.len() as u64 * mip_chain_bytes(dims.0, dims.1)
-                    + source.paint.width() as u64 * source.paint.height() as u64 * 4,
-            );
-        }
+    if is_ground(group)
+        && let Some(source) = terrain_gpu
+    {
+        let dims = source.layers[0].image.dimensions();
+        bytes = bytes.saturating_add(
+            source.layers.len() as u64 * mip_chain_bytes(dims.0, dims.1)
+                + source.paint.width() as u64 * source.paint.height() as u64 * 4,
+        );
     }
     bytes
 }
