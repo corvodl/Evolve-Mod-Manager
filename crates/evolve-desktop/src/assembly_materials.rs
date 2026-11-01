@@ -578,6 +578,39 @@ struct MaterialLookup<'a> {
 // The original material provenance, texture budget, and Kala-only viewer
 // state are intentionally explicit: never resolve a texture by filename alone.
 #[allow(clippy::too_many_arguments)]
+/// One optional map of a leaf that the six main channels do not cover.
+fn authored_layer_map(
+    slot: &evolve_core::MaterialSlot,
+    role: &str,
+    material_source: &Path,
+    material_binding: &str,
+    lookup: MaterialLookup<'_>,
+    cache: &SharedCache,
+) -> Option<Arc<image::RgbaImage>> {
+    let map = slot.maps.iter().find(|map| map.role == role)?;
+    let (path, virtual_path) = authored_texture(
+        &map.path,
+        material_source,
+        material_binding,
+        lookup.inventory,
+        lookup.imported,
+        lookup.build,
+    )
+    .ok()?;
+    let canonical = std::fs::canonicalize(&path).ok()?;
+    decoded_dds_indexed(
+        cache,
+        &canonical,
+        &virtual_path,
+        lookup.inventory,
+        lookup.imported,
+        lookup.build,
+    )
+    .ok()
+    .map(|(_, image)| image)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn authored_maps(
     document: &MaterialDocument,
     material_source: &Path,
@@ -1085,6 +1118,13 @@ fn load_authored_subset_surfaces(
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
+            detail_map: None,
+            blend_layer: None,
+            blend_mask: None,
+            detail_tile: None,
+            layer_params: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
@@ -1163,6 +1203,30 @@ fn load_authored_subset_surfaces(
                             tint[2],
                             leaf.indirect_color.unwrap_or(0.25) / 0.25,
                         ]);
+                        surface.material_specular = leaf.specular_tint;
+                        if leaf.shader.eq_ignore_ascii_case("Illum") {
+                            let layer = |role: &str| {
+                                authored_layer_map(
+                                    leaf,
+                                    role,
+                                    material,
+                                    &source.to_string_lossy(),
+                                    MaterialLookup {
+                                        inventory: lookup.inventory,
+                                        imported: lookup.imported,
+                                        build: lookup.build,
+                                    },
+                                    cache,
+                                )
+                            };
+                            surface.layer_params = leaf.layer_params;
+                            surface.detail_tile = leaf.detail_tile;
+                            surface.detail_map = layer("detail");
+                            if leaf.layer_params.is_some() {
+                                surface.blend_layer = layer("custom");
+                                surface.blend_mask = layer("opacity");
+                            }
+                        }
                         surface.uv_transform = leaf
                             .diffuse_tex_mod
                             .as_ref()
@@ -1173,6 +1237,13 @@ fn load_authored_subset_surfaces(
                             let tint = leaf.diffuse_tint.unwrap_or([1.0; 3]);
                             surface.distance_clouds =
                                 Some([tint[0], tint[1], tint[2], authored_exposure(material)]);
+                        }
+                        surface.waterfall = leaf
+                            .waterfall
+                            .filter(|_| leaf.shader.eq_ignore_ascii_case("Waterfall"));
+                        if surface.waterfall.is_some() {
+                            // Its own shader scrolls both layers; TexMod does not apply.
+                            surface.uv_transform = None;
                         }
                         surface.foliage_cutout =
                             source_vegetation_cutout(leaf) && surface.diffuse.is_some();
@@ -1454,6 +1525,13 @@ pub fn load_with_progress(
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
+            detail_map: None,
+            blend_layer: None,
+            blend_mask: None,
+            detail_tile: None,
+            layer_params: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
@@ -1667,6 +1745,13 @@ mod tests {
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
+            detail_map: None,
+            blend_layer: None,
+            blend_mask: None,
+            detail_tile: None,
+            layer_params: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&base_pixels)),
             normal: None,
@@ -1747,9 +1832,13 @@ mod tests {
             alpha_glow: true,
             shader_gen_mask: None,
             diffuse_tint: None,
+            specular_tint: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
             indirect_color: None,
+            waterfall: None,
+            detail_tile: None,
+            layer_params: None,
         };
         let mask = legacy_alpha_emission(&slot, &diffuse).unwrap();
         assert!(mask.get_pixel(0, 0)[0] > 150);
@@ -1928,6 +2017,13 @@ mod tests {
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
+            detail_map: None,
+            blend_layer: None,
+            blend_mask: None,
+            detail_tile: None,
+            layer_params: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
                 2,
@@ -1967,6 +2063,13 @@ mod tests {
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
+            detail_map: None,
+            blend_layer: None,
+            blend_mask: None,
+            detail_tile: None,
+            layer_params: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::new(image::RgbaImage::from_pixel(
                 2,
@@ -2062,9 +2165,13 @@ mod tests {
             alpha_glow: false,
             shader_gen_mask: None,
             diffuse_tint: None,
+            specular_tint: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
             indirect_color: None,
+            waterfall: None,
+            detail_tile: None,
+            layer_params: None,
             maps: if with_mask {
                 vec![evolve_core::TextureReference {
                     role: "opacity".into(),
@@ -2199,6 +2306,13 @@ mod tests {
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
+            detail_map: None,
+            blend_layer: None,
+            blend_mask: None,
+            detail_tile: None,
+            layer_params: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&image)),
             normal: None,
@@ -2336,6 +2450,7 @@ mod tests {
         )
         .unwrap();
         let mesh = evolve_core::RenderMesh {
+            vertex_alpha: None,
             info: evolve_core::ModelInfo {
                 format: "test".into(),
                 version: 7,
@@ -2698,9 +2813,13 @@ mod tests {
             alpha_glow: false,
             shader_gen_mask: None,
             diffuse_tint: None,
+            specular_tint: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
             indirect_color: None,
+            waterfall: None,
+            detail_tile: None,
+            layer_params: None,
         };
         assert!(!needs_alpha_blending(&ordinary));
         let mut transparent = ordinary;

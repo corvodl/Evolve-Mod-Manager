@@ -45,6 +45,8 @@ pub struct RenderMesh {
     pub indices: Vec<u32>,
     pub uv0: Option<Vec<[f32; 2]>>,
     pub normals: Option<Vec<[f32; 3]>>,
+    /// Authored vertex color alpha, which drives Illum layer blending.
+    pub vertex_alpha: Option<Vec<u8>>,
 }
 
 /// A decoded source-authored world mesh with its own index ranges and
@@ -241,7 +243,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         }
         let base = offset + if legacy { 16 } else { 0 };
         let stream_type = endian_u32(data, base + 4, swapped)?;
-        if !matches!(stream_type, 0 | 1 | 2 | 5 | 6 | 15) {
+        if !matches!(stream_type, 0 | 1 | 2 | 3 | 5 | 6 | 15) {
             continue;
         }
         let count = endian_u32(data, base + 8, swapped)? as usize;
@@ -266,6 +268,10 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
             stride,
             big_endian: swapped,
         };
+        if stream_type == 3 && streams.contains_key(&3) {
+            // Paint is optional and must not make otherwise valid geometry fail.
+            continue;
+        }
         if let Some(previous) = streams.get(&stream_type) {
             // Some compiled assets repeat byte-identical datastream chunks.
             // They cannot change the resolved geometry. Distinct streams
@@ -310,6 +316,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     }
     let mut positions = Vec::with_capacity(nv);
     let mut packed_uv = Vec::new();
+    let mut packed_alpha = Vec::new();
     for i in 0..nv {
         let at = positions_stream.offset + i * positions_stream.stride;
         let v = if packed {
@@ -344,6 +351,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
             ))
             .to_f32();
             packed_uv.push([u, v]);
+            packed_alpha.push(data[at + 11]);
             [x, y, z]
         } else if positions_stream.stride == 8 {
             let mut v = [0f32; 4];
@@ -498,6 +506,15 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         None
     }
     .or(tangent_normals);
+    let vertex_alpha = match streams.get(&3) {
+        Some(stream) if stream.count == nv && stream.stride == 4 => Some(
+            (0..nv)
+                .map(|i| data[stream.offset + i * 4 + 3])
+                .collect::<Vec<_>>(),
+        ),
+        _ if packed => Some(packed_alpha),
+        _ => None,
+    };
     let bounds = (0..3)
         .map(|i| {
             let lo = positions.iter().map(|v| v[i]).fold(f32::INFINITY, f32::min);
@@ -526,6 +543,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         indices,
         uv0,
         normals,
+        vertex_alpha,
     })
 }
 
@@ -732,6 +750,15 @@ pub fn parse_world_model_parts_with_subsets(
                 ));
             }
             selected.push((reference, stream_at, stream_size));
+        }
+        // Optional paint: anything unexpected at this reference is left out.
+        let colors = u32at(data, at + 40)?;
+        if let Some(&(kind, stream_at, stream_size)) = directory.get(&colors)
+            && kind == CRCHF_STREAM
+            && stream_size >= 24
+            && u32at(data, stream_at + 4)? == 3
+        {
+            selected.push((colors, stream_at, stream_size));
         }
         let has_position = selected
             .iter()

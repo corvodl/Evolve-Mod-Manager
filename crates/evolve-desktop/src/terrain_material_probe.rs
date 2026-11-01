@@ -372,6 +372,7 @@ struct DetailLayer {
     strength: f32,
     blend_factor: f32,
     blend_falloff: f32,
+    pom_displacement: f32,
 }
 /// Decoded original diffuse maps stay at their own source resolution until
 /// the GPU texture-array upload. No source material is sampled into the
@@ -381,6 +382,10 @@ pub(super) struct GpuTerrainLayer {
     pub id: u8,
     pub image: image::RgbaImage,
     pub normal: Option<image::RgbaImage>,
+    pub height: Option<image::RgbaImage>,
+    pub blend_factor: f32,
+    pub blend_falloff: f32,
+    pub pom_displacement: f32,
     pub tile: [f32; 2],
     pub strength: f32,
 }
@@ -449,6 +454,21 @@ fn gpu_source(
                         )
                     }
                 }),
+                height: layer.height.as_ref().map(|height| {
+                    if height.dimensions() == dimensions {
+                        height.clone()
+                    } else {
+                        image::imageops::resize(
+                            height,
+                            dimensions.0,
+                            dimensions.1,
+                            image::imageops::FilterType::Triangle,
+                        )
+                    }
+                }),
+                blend_factor: layer.blend_factor,
+                blend_falloff: layer.blend_falloff,
+                pom_displacement: layer.pom_displacement,
                 tile: layer.tile,
                 strength: layer.strength,
             })
@@ -464,6 +484,7 @@ struct AuthoredDetail {
     strength: f32,
     blend_factor: f32,
     blend_falloff: f32,
+    pom_displacement: f32,
 }
 
 fn attr(element: &quick_xml::events::BytesStart<'_>, wanted: &[u8]) -> Option<String> {
@@ -485,6 +506,7 @@ fn authored_detail(bytes: &[u8]) -> Result<AuthoredDetail, String> {
         strength: 1.0,
         blend_factor: 16.0,
         blend_falloff: 2.0,
+        pom_displacement: 0.0,
         ..Default::default()
     };
     // CryEngine material XML may be stored as CryXmlB in imported PAKs.
@@ -531,6 +553,9 @@ fn authored_detail(bytes: &[u8]) -> Result<AuthoredDetail, String> {
                 }
                 if let Some(v) = finite_attr(&e, b"BlendFactor") {
                     parsed.blend_factor = v.clamp(0.0, 128.0);
+                }
+                if let Some(v) = finite_attr(&e, b"PomDisplacement") {
+                    parsed.pom_displacement = v.clamp(0.0, 1.0);
                 }
                 if let Some(v) = finite_attr(&e, b"BlendFalloff") {
                     parsed.blend_falloff = v.clamp(0.0, 128.0);
@@ -968,6 +993,7 @@ pub(super) fn compose(
                     strength: 1.0,
                     blend_factor: 16.0,
                     blend_falloff: 2.0,
+                    pom_displacement: 0.0,
                     ..Default::default()
                 }
             }
@@ -1002,6 +1028,7 @@ pub(super) fn compose(
                         strength: authored.strength,
                         blend_factor: authored.blend_factor,
                         blend_falloff: authored.blend_falloff,
+                        pom_displacement: authored.pom_displacement,
                     },
                 );
             }
@@ -1093,6 +1120,7 @@ mod composition_tests {
                 strength: 0.8,
                 blend_factor: 10.0,
                 blend_falloff: 4.0,
+                pom_displacement: 0.0,
             },
         );
         layers.insert(
@@ -1105,6 +1133,7 @@ mod composition_tests {
                 strength: 1.0,
                 blend_factor: 16.0,
                 blend_falloff: 2.0,
+                pom_displacement: 0.0,
             },
         );
         let gpu = gpu_source(&paint, 2.0, &layers).unwrap();
@@ -1141,6 +1170,7 @@ mod composition_tests {
                     strength: 1.0,
                     blend_factor: 16.0,
                     blend_falloff: 2.0,
+                    pom_displacement: 0.0,
                 },
             );
         }
@@ -1268,6 +1298,7 @@ mod composition_tests {
                 strength: 1.0,
                 blend_factor: 16.0,
                 blend_falloff: 2.0,
+                pom_displacement: 0.0,
             },
         );
         let overlay = compose_detail(&paint, (8, 8), 1.0, &layers);
