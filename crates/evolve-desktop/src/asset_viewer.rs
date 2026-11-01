@@ -260,7 +260,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                         (!state.busy
                             && (state.skin_preview.is_some() || state.cdf_caf_preview.is_some())
                             && clip.kind.eq_ignore_ascii_case("caf")
-                            && clip.source.is_some())
+                            && (clip.source.is_some() || state.inventory.is_some()))
                         .then_some(Message::ViewerLayerClip(index))
                     ),
                 ]
