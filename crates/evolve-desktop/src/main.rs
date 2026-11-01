@@ -798,8 +798,13 @@ enum Operation {
     InspectIndexedModel(PathBuf, String, Inventory, Option<PathBuf>, Option<String>),
     DiscoverModelResources(String, Inventory, Option<PathBuf>, Option<String>),
     LoadDeclaredClip(
-        usize, String, Inventory, Option<PathBuf>, Option<String>,
-        Vec<String>, Option<PathBuf>,
+        usize,
+        String,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+        Vec<String>,
+        Option<PathBuf>,
     ),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
     InspectLevel(PathBuf),
@@ -928,8 +933,13 @@ enum Completed {
     MotionConverted(ConvertedMotion, PathBuf),
     DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
     DeclaredPackedDba(
-        usize, String, String, ConvertedMotion, PathBuf,
-        Arc<tempfile::TempDir>, Option<PathBuf>,
+        usize,
+        String,
+        String,
+        ConvertedMotion,
+        PathBuf,
+        Arc<tempfile::TempDir>,
+        Option<PathBuf>,
     ),
     MotionGlb(AnimatedGlb),
     BoundConvertedGlb(PathBuf, AnimatedGlb, usize),
@@ -1031,9 +1041,12 @@ fn verified_motion_asset_root(
     if !source.starts_with(&imported) {
         return Err("DBA escaped verified local and imported asset roots".into());
     }
-    source.ancestors().find(|part| {
-        part.starts_with(&imported) && part.file_name().is_some_and(|name| name == "files")
-    }).map(Path::to_path_buf)
+    source
+        .ancestors()
+        .find(|part| {
+            part.starts_with(&imported) && part.file_name().is_some_and(|name| name == "files")
+        })
+        .map(Path::to_path_buf)
         .ok_or_else(|| "Imported DBA has no verified extracted files root".into())
 }
 
@@ -1452,12 +1465,20 @@ impl Operation {
                 Ok(Completed::ModelResources(relative, discovery))
             }
             Self::LoadDeclaredClip(
-                index, virtual_path, inventory, library_root, build,
-                declared_databases, converter,
+                index,
+                virtual_path,
+                inventory,
+                library_root,
+                build,
+                declared_databases,
+                converter,
             ) => {
                 let _lookup = model_preview_lookup(library_root.as_deref(), build.as_deref())?;
                 if let Some(file) = auto_resources::resolve_declared(
-                    &inventory, &virtual_path, library_root.as_deref(), build.as_deref(),
+                    &inventory,
+                    &virtual_path,
+                    library_root.as_deref(),
+                    build.as_deref(),
                 )? {
                     let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
                     return Ok(Completed::DeclaredClip(index, virtual_path, file, motion));
@@ -1466,21 +1487,26 @@ impl Operation {
                 // DBA, rather than a standalone file. Only search character-
                 // declared databases, with exact virtual paths and build scope.
                 let Some((source, record)) = auto_resources::find_declared_packed_caf(
-                    &inventory, &virtual_path, &declared_databases,
-                    library_root.as_deref(), build.as_deref(),
-                )? else {
+                    &inventory,
+                    &virtual_path,
+                    &declared_databases,
+                    library_root.as_deref(),
+                    build.as_deref(),
+                )?
+                else {
                     return Err(format!(
                         "Declared CAF not found as a loose file or an exact track in the selected character's declared DBAs: {virtual_path} (build: {})",
-                        build.as_deref().unwrap_or("unselected; choose an exact game build"),
+                        build
+                            .as_deref()
+                            .unwrap_or("unselected; choose an exact game build"),
                     ));
                 };
                 let converter = converter.ok_or_else(|| format!(
                     "CAF {virtual_path} exists as an indexed animation in {} but its packed tracks require the bundled Cryengine-Converter. Check the converter installation.",
                     source.display()
                 ))?;
-                let root = verified_motion_asset_root(
-                    &source, &inventory, library_root.as_deref(),
-                )?;
+                let root =
+                    verified_motion_asset_root(&source, &inventory, library_root.as_deref())?;
                 let temp = Arc::new(
                     tempfile::Builder::new()
                         .prefix("evolve-declared-packed-caf-")
@@ -1496,12 +1522,10 @@ impl Operation {
                 let mut exact_output: Option<PathBuf> = None;
                 for name in &report.glb_files {
                     let file = target.join(name);
-                    let motion = evolve_core::AnimatedGlb::read(&file)
-                        .map_err(|e| e.to_string())?;
+                    let motion =
+                        evolve_core::AnimatedGlb::read(&file).map_err(|e| e.to_string())?;
                     if motion.list_clips().iter().any(|clip| {
-                        auto_resources::packed_record_matches(
-                            &virtual_path, &clip.name,
-                        )
+                        auto_resources::packed_record_matches(&virtual_path, &clip.name)
                     }) {
                         if exact_output.is_some() {
                             return Err(format!(
@@ -1512,7 +1536,13 @@ impl Operation {
                     }
                 }
                 Ok(Completed::DeclaredPackedDba(
-                    index, virtual_path, record, report, target, temp, exact_output,
+                    index,
+                    virtual_path,
+                    record,
+                    report,
+                    target,
+                    temp,
+                    exact_output,
                 ))
             }
             Self::InspectModel(source) => {
@@ -8559,15 +8589,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Index extracted assets before loading character animations.".into();
                 return Task::none();
             };
-            let declared_databases = state.auto_clips.iter()
-                .filter(|item| item.kind == "dba" && item.label.eq_ignore_ascii_case("$TracksDatabase"))
+            let declared_databases = state
+                .auto_clips
+                .iter()
+                .filter(|item| {
+                    item.kind == "dba" && item.label.eq_ignore_ascii_case("$TracksDatabase")
+                })
                 .map(|item| item.virtual_path.clone())
                 .collect();
             let operation = Operation::LoadDeclaredClip(
                 index,
                 clip.virtual_path.clone(),
                 inventory,
-                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                state
+                    .library_catalog
+                    .as_ref()
+                    .map(|c| PathBuf::from(&c.root)),
                 resource_build(state),
                 declared_databases,
                 (!state.converter_path.trim().is_empty())
@@ -12378,7 +12415,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::DeclaredPackedDba(
-                    index, virtual_path, record, report, dir, temp, exact_output,
+                    index,
+                    virtual_path,
+                    record,
+                    report,
+                    dir,
+                    temp,
+                    exact_output,
                 )) => {
                     let still_selected = state.viewer_queued_preview.is_none()
                         && state.auto_clips.get(index).is_some_and(|clip| {
@@ -12387,8 +12430,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if still_selected {
                         let count = report.clips.len();
                         state.converted_dba_cache = Some(temp);
-                        state.converted_glbs = report
-                            .glb_files.iter().map(|name| dir.join(name)).collect();
+                        state.converted_glbs =
+                            report.glb_files.iter().map(|name| dir.join(name)).collect();
                         state.native_caf = None;
                         state.caf_layer = None;
                         state.caf_layer_label.clear();
