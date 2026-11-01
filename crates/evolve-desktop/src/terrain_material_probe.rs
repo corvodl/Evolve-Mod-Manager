@@ -1019,8 +1019,16 @@ pub(super) fn compose(
             "unsupported layer dimensions/count; mip-filtered CPU atlas fallback"
         }
     );
+    // Do not spend minutes rasterizing millions of CPU atlas pixels if
+    // full-resolution authored DDS layers are already headed to the GPU.
+    // The neutral fallback still binds safely for all other meshes.
+    let fallback = if gpu.is_some() {
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([128, 128, 128, 0]))
+    } else {
+        compose_detail(paint, atlas_size, terrain_unit, &layers)
+    };
     Ok(Some(Preview {
-        fallback: compose_detail(paint, atlas_size, terrain_unit, &layers),
+        fallback,
         gpu,
         report,
     }))
