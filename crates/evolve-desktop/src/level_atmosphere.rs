@@ -1418,12 +1418,20 @@ pub(super) fn authored_water(
             let Some(origin) = xml_tuple(object, "Pos").filter(|pos| pos.len() == 3) else {
                 continue;
             };
+            let rotation = xml_tuple(object, "Rotate")
+                .filter(|rotate| rotate.len() == 4)
+                .map_or([1.0, 0.0, 0.0, 0.0], |rotate| {
+                    [rotate[0], rotate[1], rotate[2], rotate[3]]
+                });
             let points = object
                 .match_indices("<Point ")
                 .filter_map(|(at, _)| xml_tuple(&object[at..], "Pos"))
                 .filter(|point| point.len() == 3)
                 // The polygon is flat: use the volume's own height everywhere.
-                .map(|point| [origin[0] + point[0], origin[1] + point[1], origin[2]])
+                .map(|point| {
+                    let turned = rotate(rotation, [point[0], point[1], 0.0]);
+                    [origin[0] + turned[0], origin[1] + turned[1], origin[2]]
+                })
                 .collect::<Vec<_>>();
             if points.len() < 3 {
                 continue;
