@@ -627,7 +627,10 @@ pub fn resolve_declared(
 /// permitted here. Never select from the basename alone.
 fn packed_animation_key(value: &str) -> String {
     let normalized = value.replace('\\', "/").to_ascii_lowercase();
-    normalized.trim_start_matches('/').trim_end_matches(".caf").to_owned()
+    normalized
+        .trim_start_matches('/')
+        .trim_end_matches(".caf")
+        .to_owned()
 }
 
 pub(crate) fn packed_record_matches(declared_caf: &str, record: &str) -> bool {
@@ -724,15 +727,17 @@ mod tests {
     fn packed_lookup_requires_declared_database_and_never_guesses_a_pak() {
         let dir = tempfile::tempdir().unwrap();
         let inv = scan_directory(dir.path()).unwrap();
-        assert!(find_declared_packed_caf(
-            &inv,
-            "characters/hunters/merc_aberenegade/animations/3p/idle.caf",
-            &[],
-            None,
-            None,
-        )
-        .unwrap()
-        .is_none());
+        assert!(
+            find_declared_packed_caf(
+                &inv,
+                "characters/hunters/merc_aberenegade/animations/3p/idle.caf",
+                &[],
+                None,
+                None,
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]
