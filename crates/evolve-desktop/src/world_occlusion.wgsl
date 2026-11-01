@@ -3,7 +3,7 @@
 // and bias are this renderer's own. It darkens the finished opaque scene, so
 // sunlit surfaces darken a little too, where the game affects mainly ambient.
 struct Camera { origin:vec4<f32>, forward:vec4<f32>, right:vec4<f32>, up:vec4<f32>, }
-struct Occlusion { params:vec4<f32>, } // amount, radius, radius min, radius max
+struct Occlusion { params:vec4<f32>, } // amount, radius, screen radius min and max
 @group(0) @binding(0) var<uniform> camera:Camera;
 @group(0) @binding(1) var<uniform> occlusion:Occlusion;
 @group(0) @binding(2) var scene_depth:texture_depth_2d;
@@ -40,7 +40,10 @@ fn fs_occlusion(input:Output)->@location(0) vec4<f32> {
   if (dot(n,camera.origin.xyz-world)<0.0) { n=-n; }
   let t=normalize(select(cross(n,vec3<f32>(0.0,0.0,1.0)),cross(n,vec3<f32>(1.0,0.0,0.0)),abs(n.z)>0.9));
   let b=cross(n,t);
-  let radius=clamp(occlusion.params.y,occlusion.params.z,occlusion.params.w);
+  // The authored limits are fractions of the screen height, so the world radius
+  // grows with distance until it reaches them.
+  let screen_height=depth*camera.up.w*2.0;
+  let radius=clamp(occlusion.params.y/screen_height,occlusion.params.z,occlusion.params.w)*screen_height;
   // The viewport may be a part of the target, so scale by its measured size.
   let pixels_per_ndc=vec2<f32>(1.0/max(abs(dpdx(input.ndc.x)),0.000001),-1.0/max(abs(dpdy(input.ndc.y)),0.000001));
   // Interleaved gradient noise turns the fixed spiral per pixel; the blur removes it.
@@ -86,6 +89,6 @@ fn fs_apply(input:Output)->@location(0) vec4<f32> {
       weight+=w;
     }
   }
-  let shade=mix(1.0,sum/weight,clamp(occlusion.params.x,0.0,1.0));
+  let shade=pow(sum/weight,max(occlusion.params.x,0.0));
   return vec4<f32>(vec3<f32>(shade),1.0);
 }
