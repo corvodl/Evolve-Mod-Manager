@@ -296,11 +296,12 @@ pub(super) struct ParticlePlacement {
 /// Particles sharing one sprite. Each instance is origin and phase, velocity
 /// and life, birth and full size with gravity and alpha, tint and spin, tiles
 /// across and down with framerate and first tile, then diffuse, emissive, the
-/// radius it wraps around the camera (0 stays put) and whether it adds light.
+/// radius it wraps around the camera (0 stays put), whether it adds light, its
+/// X and Y scale with whether it stretches along its motion, and its fade.
 #[derive(Clone, Debug)]
 pub(super) struct ParticleBatch {
     pub sprite: std::sync::Arc<image::RgbaImage>,
-    pub instances: Vec<[f32; 24]>,
+    pub instances: Vec<[f32; 32]>,
 }
 
 // Across the whole map. Effects past this draw nothing instead of stalling.
@@ -457,6 +458,14 @@ pub(super) fn authored_particles(
                     emitter.emissive_lighting,
                     if is_rain { RAIN_WRAP_RADIUS } else { 0.0 },
                     if emitter.additive { 1.0 } else { 0.0 },
+                    emitter.scale[0],
+                    emitter.scale[1],
+                    if emitter.oriented { 1.0 } else { 0.0 },
+                    0.0,
+                    emitter.fade[0],
+                    emitter.fade[1],
+                    emitter.fade[2],
+                    emitter.fade[3],
                 ]);
             }
         }

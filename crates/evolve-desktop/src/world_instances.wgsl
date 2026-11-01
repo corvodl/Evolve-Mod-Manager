@@ -423,10 +423,11 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   }
 
   let sun_direction=normalize(light.sun.xyz);
-  let lambert=max(dot(n,sun_direction),0.0);
+  // Blended water sheets are two sided, so the sun lights either face.
+  let lambert=mix(max(dot(n,sun_direction),0.0),abs(dot(n,sun_direction)),blended_surface);
   let visibility=sun_visibility(input.world,normalize(input.normal+vec3<f32>(0.0,0.0,0.0001)),lambert);
   // A bump cannot catch sun on a face that is turned away from it.
-  let facing_sun=clamp(dot(geometric,sun_direction)*8.0+0.5,0.0,1.0);
+  let facing_sun=mix(clamp(dot(geometric,sun_direction)*8.0+0.5,0.0,1.0),1.0,blended_surface);
   let sun=light.sun_color.rgb*(light.sun.w*lambert*visibility*facing_sun);
   // Source-authored specular reflectance and gloss are separate channels.
   // A missing specular map is black (never invent shiny materials).

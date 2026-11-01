@@ -2897,16 +2897,9 @@ impl Renderer {
                 module: &particle_shader,
                 entry_point: Some("vs_particle"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: 96,
+                    array_stride: 128,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x4,
-                        1 => Float32x4,
-                        2 => Float32x4,
-                        3 => Float32x4,
-                        4 => Float32x4,
-                        5 => Float32x4,
-                    ],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4],
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
