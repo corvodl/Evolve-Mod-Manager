@@ -39,6 +39,7 @@ pub mod model;
 pub mod native_caf;
 pub mod native_dba;
 pub mod native_offline_launch;
+pub mod particle_preview;
 pub mod policy;
 pub mod profiles;
 pub mod rig;
@@ -119,9 +120,10 @@ pub use library_build_updates::{
 };
 pub use library_catalog::{
     ImportedLibrary, ImportedLookupGuard, ImportedPak, LibraryError, LibraryReference,
-    LibraryReferenceStatus, begin_imported_lookup_session,
-    begin_imported_lookup_session_for_source, describe_archive, imported_archive_files,
-    imported_archive_preview_inventory, imported_library, resolve_imported_reference,
+    LibraryReferenceStatus, SharedImportedLookup, begin_imported_lookup_session,
+    begin_imported_lookup_session_any_build, begin_imported_lookup_session_for_source,
+    describe_archive, imported_archive_files, imported_archive_preview_inventory, imported_library,
+    resolve_imported_reference,
 };
 pub use library_import::{
     LibraryBatchImportReport, LibraryImportFailure, LibraryImportPlan, LibraryImportReport,
@@ -145,6 +147,10 @@ pub use native_dba::{
 pub use native_offline_launch::{
     NativeOfflineReadiness, NativeOfflineSwapPlan, NativeOfflineTarget, NativeRecoveryState,
     audit_native_offline_swap, inspect_native_offline_readiness, plan_native_offline_swap,
+};
+pub use particle_preview::{
+    MAX_LIVE_PARTICLES, ParticleEmitter, ParticlePreview, ParticlePreviewSimulation,
+    decode_particle_library,
 };
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
 pub use rig::{

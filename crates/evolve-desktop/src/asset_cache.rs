@@ -6,35 +6,58 @@ use evolve_core::{
     decode_dds_rgba_with_layout, resolve_imported_reference, resolve_virtual,
 };
 use image::RgbaImage;
-use std::collections::VecDeque;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::SystemTime;
 
 const LIMIT_BYTES: u64 = 384 * 1024 * 1024;
 const MAX_ENTRIES: usize = 64;
+// One map shares each decoded image across every model that references it.
+// Surfaces retain those Arcs anyway, so evicting mid-load only re-decodes.
+const SCENE_LIMIT_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+const SCENE_MAX_ENTRIES: usize = 65_536;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct SourceKey {
     canonical: PathBuf,
     size: u64,
     modified: SystemTime,
     layout: DdsLayout,
+    // Every numbered mip fragment of a split DDS. A changed fragment must
+    // invalidate the reconstructed image even when its .dds.0 head is intact.
+    parts: Vec<(PathBuf, u64, SystemTime)>,
 }
 #[derive(Debug)]
 struct CachedImage {
-    key: SourceKey,
     info: DdsInfo,
     image: Arc<RgbaImage>,
     bytes: u64,
+    used: u64,
 }
 #[derive(Debug, Default)]
+struct Flight {
+    finished: Mutex<bool>,
+    done: Condvar,
+}
+#[derive(Debug)]
 pub struct PreviewCache {
-    entries: VecDeque<CachedImage>,
+    entries: HashMap<SourceKey, CachedImage>,
+    sources: HashMap<(PathBuf, DdsLayout), SourceKey>,
+    in_flight: HashMap<SourceKey, Arc<Flight>>,
     bytes: u64,
+    clock: u64,
+    limit_bytes: u64,
+    max_entries: usize,
 }
 pub type SharedCache = Arc<Mutex<PreviewCache>>;
+
+impl Default for PreviewCache {
+    fn default() -> Self {
+        Self::with_limits(LIMIT_BYTES, MAX_ENTRIES)
+    }
+}
 
 fn key(path: &Path, layout: DdsLayout) -> Result<SourceKey, String> {
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
@@ -46,42 +69,150 @@ fn key(path: &Path, layout: DdsLayout) -> Result<SourceKey, String> {
         size: meta.len(),
         modified: meta.modified().map_err(|e| e.to_string())?,
         layout,
+        parts: Vec::new(),
     })
 }
 impl PreviewCache {
+    fn with_limits(limit_bytes: u64, max_entries: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            sources: HashMap::new(),
+            in_flight: HashMap::new(),
+            bytes: 0,
+            clock: 0,
+            limit_bytes,
+            max_entries,
+        }
+    }
+    /// A cache for one map load, dropped with the load once surfaces own
+    /// their images. Bounded only by limits no real map is expected to reach.
+    pub fn for_scene() -> SharedCache {
+        Arc::new(Mutex::new(Self::with_limits(
+            SCENE_LIMIT_BYTES,
+            SCENE_MAX_ENTRIES,
+        )))
+    }
     fn lookup(&mut self, wanted: &SourceKey) -> Option<(DdsInfo, Arc<RgbaImage>)> {
-        let index = self.entries.iter().position(|entry| entry.key == *wanted)?;
-        let entry = self.entries.remove(index)?;
-        let result = (entry.info.clone(), Arc::clone(&entry.image));
-        self.entries.push_front(entry);
-        Some(result)
+        self.clock += 1;
+        let clock = self.clock;
+        let entry = self.entries.get_mut(wanted)?;
+        entry.used = clock;
+        Some((entry.info.clone(), Arc::clone(&entry.image)))
+    }
+    fn remove(&mut self, key: &SourceKey) {
+        if let Some(old) = self.entries.remove(key) {
+            self.bytes = self.bytes.saturating_sub(old.bytes);
+        }
+        let source = (key.canonical.clone(), key.layout);
+        if self.sources.get(&source) == Some(key) {
+            self.sources.remove(&source);
+        }
     }
     fn insert(&mut self, key: SourceKey, info: DdsInfo, image: Arc<RgbaImage>) {
         let bytes = image.as_raw().len() as u64;
-        if bytes > LIMIT_BYTES {
+        if bytes > self.limit_bytes {
             return;
         }
-        if let Some(index) = self.entries.iter().position(|entry| {
-            entry.key.canonical == key.canonical && entry.key.layout == key.layout
-        }) && let Some(old) = self.entries.remove(index)
-        {
-            self.bytes = self.bytes.saturating_sub(old.bytes);
+        let source = (key.canonical.clone(), key.layout);
+        if let Some(old) = self.sources.get(&source).cloned() {
+            self.remove(&old);
         }
         while !self.entries.is_empty()
-            && (self.bytes.saturating_add(bytes) > LIMIT_BYTES || self.entries.len() >= MAX_ENTRIES)
+            && (self.bytes.saturating_add(bytes) > self.limit_bytes
+                || self.entries.len() >= self.max_entries)
         {
-            if let Some(old) = self.entries.pop_back() {
-                self.bytes = self.bytes.saturating_sub(old.bytes);
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.remove(&oldest);
+        }
+        self.clock += 1;
+        self.bytes += bytes;
+        self.sources.insert(source, key.clone());
+        self.entries.insert(
+            key,
+            CachedImage {
+                info,
+                image,
+                bytes,
+                used: self.clock,
+            },
+        );
+    }
+}
+
+/// Release waiting threads even if a decode returns early or panics.
+struct FlightGuard<'a> {
+    cache: &'a SharedCache,
+    key: &'a SourceKey,
+    flight: Arc<Flight>,
+}
+impl Drop for FlightGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.in_flight.remove(self.key);
+        }
+        if let Ok(mut finished) = self.flight.finished.lock() {
+            *finished = true;
+        }
+        self.flight.done.notify_all();
+    }
+}
+
+/// Decode one source at most once at a time. Parallel map workers often need
+/// the same shared texture; latecomers wait for the first decode to finish.
+fn decode_once(
+    cache: &SharedCache,
+    wanted: &SourceKey,
+    decode: impl FnOnce() -> Result<(DdsInfo, RgbaImage), String>,
+) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
+    let flight = loop {
+        let waiting = {
+            let Ok(mut guard) = cache.lock() else {
+                let (info, pixels) = decode()?;
+                return Ok((info, Arc::new(pixels)));
+            };
+            if let Some(found) = guard.lookup(wanted) {
+                return Ok(found);
+            }
+            match guard.in_flight.get(wanted).cloned() {
+                Some(active) => active,
+                None => {
+                    let flight = Arc::new(Flight::default());
+                    guard.in_flight.insert(wanted.clone(), Arc::clone(&flight));
+                    break flight;
+                }
+            }
+        };
+        let Ok(mut finished) = waiting.finished.lock() else {
+            continue;
+        };
+        while !*finished {
+            let Ok(next) = waiting.done.wait(finished) else {
+                break;
+            };
+            finished = next;
+            if *finished {
+                break;
             }
         }
-        self.bytes += bytes;
-        self.entries.push_front(CachedImage {
-            key,
-            info,
-            image,
-            bytes,
-        });
+    };
+    let _flight = FlightGuard {
+        cache,
+        key: wanted,
+        flight,
+    };
+    let (info, pixels) = decode()?;
+    let pixels = Arc::new(pixels);
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(wanted.clone(), info.clone(), Arc::clone(&pixels));
     }
+    Ok((info, pixels))
 }
 /// Reuse verified decoded pixels without blocking the UI. A changed source
 /// invalidates a cached entry; only current decoded pixels remain in memory.
@@ -193,11 +324,8 @@ pub fn decoded_dds_indexed(
     let header = resolve(0)?.ok_or_else(|| format!(
         "Cannot preview {virtual_path}: missing original {base}.0 header. Import the matching dds_low.pak alongside dds_high.pak in the same Asset Library build."
     ))?;
-    // Stage verified raw bytes in a private temporary folder; never write to
-    // the extracted files, guessed file paths or installed game. All source
-    // fragments have been checked against their indexed/manifest provenance.
-    let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let mut count = 0usize;
+    let mut fragments = Vec::new();
+    let mut parts = Vec::new();
     let mut staged_bytes = 0u64;
     for i in 0..20 {
         let Some(original) = (if i == 0 {
@@ -217,28 +345,43 @@ pub fn decoded_dds_indexed(
         if staged_bytes > 256 * 1024 * 1024 {
             return Err("DDS fragment aggregate exceeds 256 MiB".into());
         }
-        let dest = staging.path().join(format!("preview.dds.{i}"));
-        if alpha && i == 0 {
-            let mut headerless = fs::read(&original).map_err(|e| e.to_string())?;
-            if headerless.len() < 124 || headerless[..4] != 124u32.to_le_bytes() {
-                return Err("The .dds.0a file does not contain a verified DDS header".into());
-            }
-            let mut wrapped = b"DDS ".to_vec();
-            wrapped.append(&mut headerless);
-            fs::write(&dest, wrapped).map_err(|e| e.to_string())?;
-        } else {
-            fs::copy(&original, &dest).map_err(|e| e.to_string())?;
-        }
-        count += 1;
+        parts.push((
+            original.clone(),
+            meta.len(),
+            meta.modified().map_err(|e| e.to_string())?,
+        ));
+        fragments.push((i, original));
     }
-    if source_index.is_some_and(|index| count <= 1 && index != 0) {
+    if source_index.is_some_and(|index| fragments.len() <= 1 && index != 0) {
         return Err(format!("No contiguous DDS mip chain for {virtual_path}"));
     }
-    let staged = staging.path().join("preview.dds.0");
-    let layout = detect_source_layout(&staged)?;
-    let (info, pixels) = decode_preview_image(&staged, layout)
-        .map_err(|e| format!("Cannot reconstruct {virtual_path} from imported DDS mips: {e}"))?;
-    Ok((info, Arc::new(pixels)))
+    let mut wanted = key(&header, DdsLayout::Linear)?;
+    wanted.parts = parts;
+    decode_once(cache, &wanted, || {
+        // Stage verified raw bytes in a private temporary folder; never write
+        // to the extracted files, guessed file paths or installed game. All
+        // source fragments have been checked against their indexed/manifest
+        // provenance. Links avoid copying them; the decoder only reads.
+        let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
+        for (i, original) in &fragments {
+            let dest = staging.path().join(format!("preview.dds.{i}"));
+            if alpha && *i == 0 {
+                let mut headerless = fs::read(original).map_err(|e| e.to_string())?;
+                if headerless.len() < 124 || headerless[..4] != 124u32.to_le_bytes() {
+                    return Err("The .dds.0a file does not contain a verified DDS header".into());
+                }
+                let mut wrapped = b"DDS ".to_vec();
+                wrapped.append(&mut headerless);
+                fs::write(&dest, wrapped).map_err(|e| e.to_string())?;
+            } else if fs::hard_link(original, &dest).is_err() {
+                fs::copy(original, &dest).map_err(|e| e.to_string())?;
+            }
+        }
+        let staged = staging.path().join("preview.dds.0");
+        let layout = detect_source_layout(&staged)?;
+        decode_preview_image(&staged, layout)
+            .map_err(|e| format!("Cannot reconstruct {virtual_path} from imported DDS mips: {e}"))
+    })
 }
 
 /// Display every face of a verified six-face cube DDS as an ordinary 3x2
@@ -404,25 +547,62 @@ pub fn decoded_dds_with_layout(
     layout: DdsLayout,
 ) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
     let before = key(path, layout)?;
-    if let Ok(mut cache) = cache.lock()
-        && let Some(found) = cache.lookup(&before)
-    {
-        return Ok(found);
-    }
-    let (info, pixels) = decode_preview_image(path, layout)?;
-    if key(path, layout)? != before {
-        return Err("Source DDS changed while being decoded; try again.".into());
-    }
-    let pixels = Arc::new(pixels);
-    if let Ok(mut cache) = cache.lock() {
-        cache.insert(before, info.clone(), Arc::clone(&pixels));
-    }
-    Ok((info, pixels))
+    decode_once(cache, &before, || {
+        let decoded = decode_preview_image(path, layout)?;
+        if key(path, layout)? != before {
+            return Err("Source DDS changed while being decoded; try again.".into());
+        }
+        Ok(decoded)
+    })
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     use evolve_core::DdsFormat;
+    #[test]
+    fn split_dds_decodes_once_and_a_changed_fragment_invalidates_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let head = temp.path().join("shared.dds.0");
+        let mut header = rgba_header(4, 4, 1, false);
+        header.extend_from_slice(&[9u8; 64]);
+        fs::write(&head, &header).unwrap();
+        let inventory = evolve_core::scan_directory(temp.path()).unwrap();
+        let cache = SharedCache::default();
+        let decode = || {
+            decoded_dds_indexed(&cache, &head, "shared.dds.0", &inventory, None, None)
+                .unwrap()
+                .1
+        };
+        let first = decode();
+        assert!(Arc::ptr_eq(&first, &decode()));
+        header.extend_from_slice(&[0u8; 4]);
+        fs::write(&head, &header).unwrap();
+        let inventory = evolve_core::scan_directory(temp.path()).unwrap();
+        let reread =
+            decoded_dds_indexed(&cache, &head, "shared.dds.0", &inventory, None, None).map(|r| r.1);
+        assert!(reread.is_err() || !Arc::ptr_eq(&first, &reread.unwrap()));
+    }
+
+    #[test]
+    fn parallel_requests_for_one_texture_share_a_single_decode() {
+        let temp = tempfile::tempdir().unwrap();
+        let head = temp.path().join("shared.dds");
+        let mut header = rgba_header(4, 4, 1, false);
+        header.extend_from_slice(&[9u8; 64]);
+        fs::write(&head, &header).unwrap();
+        let cache = PreviewCache::for_scene();
+        let images = std::thread::scope(|scope| {
+            let workers = (0..8)
+                .map(|_| scope.spawn(|| decoded_dds(&cache, &head).unwrap().1))
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(images.iter().all(|image| Arc::ptr_eq(image, &images[0])));
+    }
+
     #[test]
     fn xbox_header_detection_does_not_treat_pc_dds_as_console() {
         let temp = tempfile::tempdir().unwrap();

@@ -147,6 +147,148 @@ pub(super) fn shared_effect_sources(selected: &ImportedPak) -> Vec<String> {
     lines
 }
 
+/// Resolve only map-requested particle libraries, by original exact
+/// namespace, from the SAME installation and uniquely selected build.
+/// This is an inventory/decoder step, not yet a live GPU particle renderer.
+pub(super) fn verify_source_particle_placements(
+    selected: &ImportedPak,
+    placed: &[crate::level_atmosphere::ParticlePlacement],
+) -> Vec<String> {
+    if placed.is_empty() {
+        return Vec::new();
+    }
+    let Some(install) = installation_root(selected) else {
+        return vec![
+            "Particle library matching blocked: original Game installation unverified".into(),
+        ];
+    };
+    let Some(library_root) = Path::new(&selected.directory).parent() else {
+        return vec![
+            "Particle library matching blocked: imported Asset Library root missing".into(),
+        ];
+    };
+    let Ok(catalog) = imported_library(library_root) else {
+        return vec!["Particle library matching blocked: Asset Library metadata unreadable".into()];
+    };
+    let build = (selected.builds.len() == 1).then(|| selected.builds[0].as_str());
+    let matches = catalog
+        .archives
+        .iter()
+        .filter(|pak| {
+            pak.name.eq_ignore_ascii_case("libs.pak")
+                && installation_root(pak).as_deref() == Some(install.as_path())
+                && build.is_none_or(|label| {
+                    pak.builds.is_empty() || pak.builds.iter().any(|p| p == label)
+                })
+                && (build.is_some() || pak.builds.len() <= 1)
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return vec![format!(
+            "Particle libraries: {} same-install libs.pak imports (require exactly 1); no effect alias or cross-build fallback",
+            matches.len()
+        )];
+    }
+    let Ok(inv) = imported_archive_preview_inventory(matches[0]) else {
+        return vec!["Original libs.pak imported manifest is invalid or unreadable".into()];
+    };
+    let root = PathBuf::from(inv.root);
+    let requests = placed
+        .iter()
+        .filter_map(|p| {
+            p.effect
+                .split_once('.')
+                .map(|(lib, _)| lib.to_ascii_lowercase())
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut found = std::collections::HashMap::<String, Vec<evolve_core::ParticleEmitter>>::new();
+    let mut warnings = Vec::new();
+    for lib in requests.into_iter().take(32) {
+        // Do not join an authored untrusted XML value into a filesystem path.
+        // Search only already validated import manifest virtual names.
+        let path = format!("libs/particles/{lib}.xml");
+        let candidates = inv
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .relative_path
+                    .replace('\\', "/")
+                    .eq_ignore_ascii_case(&path)
+                    && entry.byte_size <= 32 * 1024 * 1024
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            warnings.push(format!(
+                "{lib}: exact source particle XML missing or ambiguous"
+            ));
+            continue;
+        }
+        let source = root.join(&candidates[0].relative_path);
+        let verified = std::fs::canonicalize(&source)
+            .ok()
+            .filter(|resolved| resolved.starts_with(&root))
+            .filter(|resolved| {
+                std::fs::metadata(resolved)
+                    .ok()
+                    .is_some_and(|m| m.len() == candidates[0].byte_size)
+            });
+        let Some(source) = verified else {
+            warnings.push(format!("{lib}: particle library bytes missing/modified"));
+            continue;
+        };
+        match std::fs::read(source)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| evolve_core::decode_particle_library(&bytes))
+        {
+            Ok(emitters) => {
+                found.insert(lib, emitters);
+            }
+            Err(e) => warnings.push(format!(
+                "{lib}: original CryXmlB emitter decode failed: {e}"
+            )),
+        }
+    }
+    let mut matched = 0usize;
+    let mut missing = 0usize;
+    let mut child_definitions = 0usize;
+    for place in placed.iter().take(2048) {
+        let Some((library, effect)) = place.effect.split_once('.') else {
+            missing += 1;
+            continue;
+        };
+        let Some(emitters) = found.get(&library.to_ascii_lowercase()) else {
+            missing += 1;
+            continue;
+        };
+        if emitters
+            .iter()
+            .any(|e| e.effect.eq_ignore_ascii_case(effect))
+        {
+            matched += 1;
+            child_definitions += emitters
+                .iter()
+                .filter(|e| {
+                    e.effect.len() > effect.len()
+                        && e.effect
+                            .to_ascii_lowercase()
+                            .starts_with(&effect.to_ascii_lowercase())
+                        && e.effect.as_bytes().get(effect.len()) == Some(&b'.')
+                })
+                .count();
+        } else {
+            missing += 1;
+        }
+    }
+    let mut out = vec![format!(
+        "Exact same-build libs.pak particle references: {matched}/{} map placements resolve to original ParticleLibrary entries; {} nested effect definitions; {missing} unresolved (not substituted). CPU simulation source parser available; sprite rendering still pending.",
+        placed.len(),
+        child_definitions
+    )];
+    out.extend(warnings.into_iter().take(8));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

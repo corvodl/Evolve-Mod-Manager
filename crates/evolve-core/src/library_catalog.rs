@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const MAX_ARCHIVES: usize = 4096;
 const MAX_MANIFEST_BYTES: u64 = 32 * 1024 * 1024;
@@ -541,17 +542,35 @@ struct IndexedMember {
 
 struct LookupSession {
     root: PathBuf,
-    build: String,
+    // None indexes every imported archive for a lookup without a selected build.
+    // Duplicates then stay ambiguous, exactly as in the unindexed resolver.
+    build: Option<String>,
     members: HashMap<String, Vec<IndexedMember>>,
 }
 
 thread_local! {
-    static LOOKUP_SESSION: RefCell<Option<LookupSession>> = const { RefCell::new(None) };
+    static LOOKUP_SESSION: RefCell<Option<Arc<LookupSession>>> = const { RefCell::new(None) };
 }
 
 /// Restore any previous session on scope exit, including a failed level load.
 pub struct ImportedLookupGuard {
-    previous: Option<LookupSession>,
+    previous: Option<Arc<LookupSession>>,
+}
+
+/// The current thread's lookup table, for entering it on parallel workers.
+/// The session stays thread-local so unrelated operations never observe it.
+#[derive(Clone)]
+pub struct SharedImportedLookup(Arc<LookupSession>);
+
+impl SharedImportedLookup {
+    pub fn current() -> Option<Self> {
+        LOOKUP_SESSION.with(|scope| scope.borrow().clone().map(Self))
+    }
+
+    pub fn enter(&self) -> ImportedLookupGuard {
+        let previous = LOOKUP_SESSION.with(|scope| scope.replace(Some(Arc::clone(&self.0))));
+        ImportedLookupGuard { previous }
+    }
 }
 
 impl Drop for ImportedLookupGuard {
@@ -569,9 +588,18 @@ pub fn begin_imported_lookup_session(
     root: &Path,
     build_label: &str,
 ) -> Result<ImportedLookupGuard, LibraryError> {
-    begin_indexed_lookup_session(root, build_label, |archive| {
+    begin_indexed_lookup_session(root, Some(build_label), |archive| {
         archive.builds.iter().any(|label| label == build_label)
     })
+}
+
+/// Index every imported archive for callers with no selected build, such as a
+/// model opened outside the by-build library view. Without this each DDS/MTL
+/// lookup re-read all manifests, which took minutes for one character.
+pub fn begin_imported_lookup_session_any_build(
+    root: &Path,
+) -> Result<ImportedLookupGuard, LibraryError> {
+    begin_indexed_lookup_session(root, None, |_| true)
 }
 
 fn game_root_from_source(source: &str) -> Option<PathBuf> {
@@ -595,7 +623,7 @@ pub fn begin_imported_lookup_session_for_source(
     let key = selected_game.to_string_lossy().to_ascii_lowercase();
     let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
     let build_token = format!("source-game-{}", &digest[..24]);
-    let guard = begin_indexed_lookup_session(root, &build_token, |archive| {
+    let guard = begin_indexed_lookup_session(root, Some(&build_token), |archive| {
         game_root_from_source(&archive.source).as_ref() == Some(&selected_game)
     })?;
     Ok((build_token, guard))
@@ -603,39 +631,59 @@ pub fn begin_imported_lookup_session_for_source(
 
 fn begin_indexed_lookup_session(
     root: &Path,
-    build_label: &str,
+    build_label: Option<&str>,
     mut include: impl FnMut(&ImportedPak) -> bool,
 ) -> Result<ImportedLookupGuard, LibraryError> {
-    if build_label.trim().is_empty() {
+    if build_label.is_some_and(|label| label.trim().is_empty()) {
         return Err(LibraryError::UnsafeArchive);
     }
     let library = imported_library(root)?;
     let mut members = HashMap::<String, Vec<IndexedMember>>::new();
     let mut total = 0usize;
+    // An index of every archive spans unrelated historical imports. One odd
+    // archive must not break lookups into the others, so it is skipped, and a
+    // member listed twice stays ambiguous rather than failing the whole index.
+    let strict = build_label.is_some();
     for archive in library.archives.iter().filter(|archive| include(archive)) {
         let folder = Path::new(&archive.directory);
-        let manifest: Manifest = serde_json::from_slice(&read_bounded(
-            &folder.join("asset-library.json"),
-            MAX_MANIFEST_BYTES,
-        )?)?;
+        let manifest = read_bounded(&folder.join("asset-library.json"), MAX_MANIFEST_BYTES)
+            .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).map_err(Into::into));
+        let manifest = match manifest {
+            Ok(manifest) => manifest,
+            Err(_) if !strict => continue,
+            Err(error) => return Err(error),
+        };
         if manifest.version != 1
             || manifest.name != archive.name
             || manifest.entries.len() > MAX_MEMBERS
         {
-            return Err(LibraryError::UnsafeArchive);
+            if strict {
+                return Err(LibraryError::UnsafeArchive);
+            }
+            continue;
         }
         // This is a manifest index, not blanket trust in extracted paths.
         // Validate each actual match before returning its absolute filename.
         let file_root = folder.join("files");
-        if !fs::symlink_metadata(&file_root)?.file_type().is_dir() {
-            return Err(LibraryError::UnsafeArchive);
+        let usable_root = fs::symlink_metadata(&file_root)
+            .ok()
+            .is_some_and(|meta| meta.file_type().is_dir());
+        if !usable_root {
+            if strict {
+                return Err(LibraryError::UnsafeArchive);
+            }
+            continue;
         }
         let file_root = fs::canonicalize(&file_root)?;
         let mut seen = HashSet::new();
         for entry in manifest.entries {
-            let path = safe_member_name(&entry.path).map_err(|_| LibraryError::UnsafeArchive)?;
+            let path = match safe_member_name(&entry.path) {
+                Ok(path) => path,
+                Err(_) if !strict => continue,
+                Err(_) => return Err(LibraryError::UnsafeArchive),
+            };
             let key = path.to_ascii_lowercase();
-            if !seen.insert(key.clone()) {
+            if !seen.insert(key.clone()) && strict {
                 return Err(LibraryError::UnsafeArchive);
             }
             total += 1;
@@ -653,10 +701,10 @@ fn begin_indexed_lookup_session(
     }
     let session = LookupSession {
         root: root.to_path_buf(),
-        build: build_label.to_owned(),
+        build: build_label.map(str::to_owned),
         members,
     };
-    let previous = LOOKUP_SESSION.with(|scope| scope.replace(Some(session)));
+    let previous = LOOKUP_SESSION.with(|scope| scope.replace(Some(Arc::new(session))));
     Ok(ImportedLookupGuard { previous })
 }
 
@@ -669,7 +717,7 @@ fn indexed_reference(
     LOOKUP_SESSION.with(|scope| {
         let scope = scope.borrow();
         let session = scope.as_ref()?;
-        if session.root != root || build_label != Some(session.build.as_str()) {
+        if session.root != root || build_label != session.build.as_deref() {
             return None;
         }
         let source = match safe_member_name(&authored_path.replace('\\', "/")) {
@@ -715,7 +763,10 @@ fn indexed_reference(
                 }
             }
             if !hits.is_empty() {
-                return Some(Ok(resolve_verified_duplicate_textures(hits, true)));
+                return Some(Ok(resolve_verified_duplicate_textures(
+                    hits,
+                    session.build.is_some(),
+                )));
             }
         }
         Some(Ok(LibraryReferenceStatus::Missing))
@@ -1167,6 +1218,65 @@ mod tests {
         assert_ne!(labels[0], labels[1]);
         assert!(labels.iter().any(|l| l.contains("LegacyModdedEvolve")));
         assert!(labels.iter().any(|l| l.contains("ModdedEvolve")));
+    }
+
+    #[test]
+    fn any_build_index_keeps_duplicates_ambiguous_and_skips_broken_archives() {
+        let root = tempfile::tempdir().unwrap();
+        for id in ["33333333333333333333", "44444444444444444444"] {
+            let name = format!("shared{id}.pak");
+            let folder = root.path().join(format!("{name}__{id}"));
+            fs::create_dir_all(folder.join("files/textures")).unwrap();
+            fs::write(folder.join("files/textures/both.dds.0"), b"same").unwrap();
+            fs::write(
+                folder.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version":1,"name":name,"source":"/unused",
+                    "entries":[
+                        {"path":"textures/both.dds.0","bytes":4},
+                        {"path":"textures/BOTH.dds.0","bytes":4}
+                    ]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        // Listed by the catalog, but its extracted files are gone.
+        let broken = root.path().join("broken.pak__55555555555555555555");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(
+            broken.join("asset-library.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,"name":"broken.pak","source":"/unused","entries":[]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let _scope = begin_imported_lookup_session_any_build(root.path()).unwrap();
+        assert!(matches!(
+            resolve_imported_reference(root.path(), "textures/both.tif", None).unwrap(),
+            LibraryReferenceStatus::Ambiguous(found) if found.len() >= 2
+        ));
+        assert!(matches!(
+            resolve_imported_reference(root.path(), "textures/missing.tif", None).unwrap(),
+            LibraryReferenceStatus::Missing
+        ));
+    }
+
+    #[test]
+    fn shared_lookup_session_is_visible_only_on_threads_that_enter_it() {
+        let root = tempfile::tempdir().unwrap();
+        let _scope = begin_imported_lookup_session_any_build(root.path()).unwrap();
+        let shared = SharedImportedLookup::current().unwrap();
+        std::thread::spawn(move || {
+            assert!(SharedImportedLookup::current().is_none());
+            let guard = shared.enter();
+            assert!(SharedImportedLookup::current().is_some());
+            drop(guard);
+            assert!(SharedImportedLookup::current().is_none());
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

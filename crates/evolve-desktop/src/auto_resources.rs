@@ -248,21 +248,23 @@ fn idle_priority(name: &str) -> Option<(bool, bool, bool, String)> {
 /// Collect source-declared CAF candidates only once per model-resource discovery.
 /// A character can declare many wildcards; rereading and parsing the same large
 /// AnimationsCAF.pak manifest for each wildcard makes every model open expensive.
-fn caf_catalog_paths(
+fn archive_animation_catalog_paths(
     inv: &Inventory,
     imported: Option<&Path>,
     build: Option<&str>,
+    archive_name: &str,
+    extension: &str,
 ) -> Result<Vec<String>, String> {
     const MAX_MANIFEST: u64 = 32 * 1024 * 1024;
     let mut paths = std::collections::BTreeMap::<String, String>::new();
     let mut consider = |path: &str| -> Result<(), String> {
         let normalized = path.replace('\\', "/");
-        if normalized.to_ascii_lowercase().ends_with(".caf") {
+        if normalized.to_ascii_lowercase().ends_with(extension) {
             paths
                 .entry(normalized.to_ascii_lowercase())
                 .or_insert(normalized);
             if paths.len() > 250_000 {
-                return Err("Animation catalog exceeds 250000 distinct CAFs".into());
+                return Err("Animation catalog exceeds 250000 distinct paths".into());
             }
         }
         Ok(())
@@ -273,7 +275,7 @@ fn caf_catalog_paths(
     if let Some(root) = imported {
         let catalog = imported_library(root).map_err(|e| e.to_string())?;
         for archive in &catalog.archives {
-            if !archive.name.eq_ignore_ascii_case("AnimationsCAF.pak")
+            if !archive.name.eq_ignore_ascii_case(archive_name)
                 || build.is_some_and(|label| !archive.builds.iter().any(|b| b == label))
             {
                 continue;
@@ -309,6 +311,22 @@ fn caf_catalog_paths(
     Ok(paths.into_values().collect())
 }
 
+fn caf_catalog_paths(
+    inv: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Vec<String>, String> {
+    archive_animation_catalog_paths(inv, imported, build, "AnimationsCAF.pak", ".caf")
+}
+
+fn dba_catalog_paths(
+    inv: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Vec<String>, String> {
+    archive_animation_catalog_paths(inv, imported, build, "AnimationsDBA.pak", ".dba")
+}
+
 /// Expand an authored wildcard against the already verified exact-build
 /// candidates, not by rereading the source archive for each pattern.
 fn matching_caf_paths(pattern: &str, candidates: &[String]) -> Result<Vec<String>, String> {
@@ -318,7 +336,7 @@ fn matching_caf_paths(pattern: &str, candidates: &[String]) -> Result<Vec<String
         if animation_wildcard_matches(pattern, path) {
             matches.push(path.clone());
             if matches.len() > MAX_MATCHES {
-                return Err("Animation wildcard exceeds 12000 matching CAFs".into());
+                return Err("Animation wildcard exceeds 12000 matching paths".into());
             }
         }
     }
@@ -501,6 +519,7 @@ pub fn discover(
     // default; clicking a different clip resolves it on demand.
     // Lazily decode the large animation archive manifest once for all CAF wildcards.
     let mut caf_candidates: Option<Result<Vec<String>, String>> = None;
+    let mut dba_candidates: Option<Result<Vec<String>, String>> = None;
     let mut preferred: Vec<(usize, (bool, bool, bool, String))> = Vec::new();
     let mut declared_event_databases = 0;
     for r in &references {
@@ -565,6 +584,28 @@ pub fn discover(
             }
             continue;
         }
+        if r.kind == "dba_glob" && r.database {
+            let candidates =
+                dba_candidates.get_or_insert_with(|| dba_catalog_paths(inv, imported, build));
+            match candidates
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|paths| matching_caf_paths(&r.path, paths))
+            {
+                Ok(paths) => {
+                    for path in paths {
+                        found.clips.push(AutoClip {
+                            label: r.name.clone(),
+                            kind: "dba".into(),
+                            virtual_path: path,
+                            source: None,
+                        });
+                    }
+                }
+                Err(error) => found.warnings.push(format!("DBA wildcard: {error}")),
+            }
+            continue;
+        }
         let path = if r.kind == "caf" {
             match exact(inv, &r.path, None, None) {
                 Ok(path) => path,
@@ -621,6 +662,72 @@ pub fn resolve_declared(
     exact(inventory, declared_path, imported, build)
 }
 
+/// Packed DBA directories identify the original virtual CAF *path*, not
+/// just a similarly named animation in another hunter or monster. Some
+/// Controller_905 records omit the .caf suffix; that is the only normalization
+/// permitted here. Never select from the basename alone.
+fn packed_animation_key(value: &str) -> String {
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    normalized
+        .trim_start_matches('/')
+        .trim_end_matches(".caf")
+        .to_owned()
+}
+
+pub(crate) fn packed_record_matches(declared_caf: &str, record: &str) -> bool {
+    let wanted = packed_animation_key(declared_caf);
+    let actual = packed_animation_key(record);
+    !wanted.is_empty() && wanted.contains('/') && actual == wanted
+}
+
+/// Look only in exact DBAs declared by the selected character's CHRPARAMS.
+/// The current Controller_905 parser validates the database's animation-name
+/// directory but does NOT decode compressed keyframes. A positive result is a
+/// converter candidate, never proof of native CAF or skeleton playback.
+pub fn find_declared_packed_caf(
+    inventory: &Inventory,
+    requested_caf: &str,
+    declared_databases: &[String],
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Option<(PathBuf, String)>, String> {
+    use evolve_core::index_native_dba_bytes;
+    const MAX_DATABASES: usize = 64;
+    const MAX_DBA: u64 = 512 * 1024 * 1024;
+    if declared_databases.len() > MAX_DATABASES {
+        return Err("Too many declared DBA databases to check safely".into());
+    }
+    let mut matched: Option<(PathBuf, String)> = None;
+    let mut seen = std::collections::HashSet::new();
+    for virtual_path in declared_databases {
+        if !seen.insert(virtual_path.to_ascii_lowercase()) {
+            continue;
+        }
+        let Some(path) = resolve_declared_dba(inventory, virtual_path, imported, build)? else {
+            continue;
+        };
+        let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if !meta.file_type().is_file() || meta.len() > MAX_DBA {
+            return Err(format!("Unsafe or oversized declared DBA: {virtual_path}"));
+        }
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        let records = index_native_dba_bytes(&bytes)
+            .map_err(|e| format!("Cannot index declared DBA {virtual_path}: {e}"))?;
+        for record in records {
+            if !packed_record_matches(requested_caf, &record.name) {
+                continue;
+            }
+            if matched.is_some() {
+                return Err(format!(
+                    "Animation {requested_caf} appears in multiple declared DBA records; refusing an ambiguous packed clip"
+                ));
+            }
+            matched = Some((path.clone(), record.name));
+        }
+    }
+    Ok(matched)
+}
+
 /// Resolve a DBA named in the selected character's own chrparams catalog.
 /// Refuse arbitrary filenames and let the converter independently validate
 /// its decoded GLB tracks before anything becomes playable.
@@ -640,6 +747,62 @@ pub fn resolve_declared_dba(
 mod tests {
     use super::*;
     use evolve_core::scan_directory;
+
+    #[test]
+    fn packed_dba_matches_only_exact_character_animation_paths() {
+        let path = "characters/hunters/merc_aberenegade/animations/3p/idle.caf";
+        assert!(packed_record_matches(path, path));
+        assert!(packed_record_matches(
+            path,
+            "Characters\\Hunters\\merc_aberenegade\\animations\\3p\\idle"
+        ));
+        assert!(!packed_record_matches(path, "idle.caf"));
+        assert!(!packed_record_matches(
+            path,
+            "characters/hunters/merc_abe/animations/3p/idle.caf"
+        ));
+        assert!(!packed_record_matches(path, "animations/3p/idle.caf"));
+    }
+
+    #[test]
+    fn packed_lookup_requires_declared_database_and_never_guesses_a_pak() {
+        let dir = tempfile::tempdir().unwrap();
+        let inv = scan_directory(dir.path()).unwrap();
+        assert!(
+            find_declared_packed_caf(
+                &inv,
+                "characters/hunters/merc_aberenegade/animations/3p/idle.caf",
+                &[],
+                None,
+                None,
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn dba_catalog_paths_never_borrow_other_character_or_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        for relative in [
+            "characters/hunters/merc_aberenegade/animations/3p/abe.dba",
+            "characters/hunters/merc_abe/animations/3p/abe.dba",
+        ] {
+            let path = dir.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"test").unwrap();
+        }
+        let inv = scan_directory(dir.path()).unwrap();
+        let names = dba_catalog_paths(&inv, None, None).unwrap();
+        assert_eq!(
+            matching_caf_paths(
+                "characters/hunters/merc_aberenegade/animations/3p/*.dba",
+                &names,
+            )
+            .unwrap(),
+            vec!["characters/hunters/merc_aberenegade/animations/3p/abe.dba"],
+        );
+    }
 
     #[test]
     fn wildcard_expands_only_matching_character_cafs() {

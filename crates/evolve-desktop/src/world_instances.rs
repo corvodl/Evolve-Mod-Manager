@@ -453,6 +453,7 @@ fn auxiliary_map(
 fn group_new_bytes(
     group: &ModelGroup,
     terrain_detail: Option<&Arc<image::RgbaImage>>,
+    terrain_gpu: Option<&Arc<super::terrain_material_probe::GpuTerrainSource>>,
     cache: &TextureCache,
     hashes: &mut SourceKeys,
     gpu_max_dimension: u32,
@@ -510,6 +511,15 @@ fn group_new_bytes(
             }));
         }
     }
+    if is_ground(group)
+        && let Some(source) = terrain_gpu
+    {
+        let dims = source.layers[0].image.dimensions();
+        bytes = bytes.saturating_add(
+            source.layers.len() as u64 * mip_chain_bytes(dims.0, dims.1)
+                + source.paint.width() as u64 * source.paint.height() as u64 * 4,
+        );
+    }
     bytes
 }
 
@@ -533,6 +543,14 @@ fn group_distance_sq(group: &ModelGroup, camera: level_camera::Camera) -> f32 {
         })
         .filter(|distance| distance.is_finite())
         .fold(f32::INFINITY, f32::min)
+}
+
+fn resident_terrain_bytes(groups: &[Option<GpuGroup>]) -> u64 {
+    groups
+        .iter()
+        .flatten()
+        .filter_map(|group| group._terrain_source.as_ref())
+        .fold(0u64, |total, tex| total.saturating_add(tex.bytes))
 }
 
 fn resident_geometry_bytes(groups: &[Option<GpuGroup>]) -> u64 {
@@ -567,6 +585,9 @@ pub(super) struct World {
     /// Signed high-pass detail overlay; painted layer composition is prepared
     /// from verified same-install sources in the blocking map-open worker.
     pub terrain_detail: Option<Arc<image::RgbaImage>>,
+    /// Authored categorical terrain paint and full-resolution Terrain.Layer
+    /// DDS images; the baked atlas stays available independently.
+    pub terrain_gpu: Option<Arc<super::terrain_material_probe::GpuTerrainSource>>,
     pub sky_source: super::level_atmosphere::SkySource,
     pub static_sky: Option<Arc<super::level_atmosphere::StaticSky>>,
     pub local_lights: Arc<Vec<super::level_atmosphere::LocalLight>>,
@@ -864,6 +885,147 @@ fn all_group_instances(group: &ModelGroup) -> Vec<InstanceGpu> {
         .map(|instance| InstanceGpu::from_transform(instance.transform))
         .collect()
 }
+/// All original diffuse layer mips are uploaded at native decoded resolution
+/// as one D2 array. The categorical paint map uses unfiltered integer fetches
+/// inside the shader, so a bilinear ID blend cannot invent a third material.
+struct TerrainGpuTextures {
+    _layers: wgpu::Texture,
+    layer_view: wgpu::TextureView,
+    _paint: wgpu::Texture,
+    paint_view: wgpu::TextureView,
+    uniforms: wgpu::Buffer,
+    bytes: u64,
+}
+
+fn upload_terrain_layers(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    source: Option<&super::terrain_material_probe::GpuTerrainSource>,
+) -> TerrainGpuTextures {
+    let dimensions = source
+        .and_then(|s| s.layers.first())
+        .map_or((1, 1), |layer| layer.image.dimensions());
+    let depth = source.map_or(1, |s| s.layers.len().max(1)) as u32;
+    let count = dimensions.0.max(dimensions.1).ilog2() + 1;
+    let layers = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Full native-resolution original terrain material diffuse arrays"),
+        size: wgpu::Extent3d {
+            width: dimensions.0,
+            height: dimensions.1,
+            depth_or_array_layers: depth,
+        },
+        mip_level_count: count,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for layer in 0..depth {
+        let src = source.and_then(|s| s.layers.get(layer as usize));
+        for mip in 0..count {
+            let w = (dimensions.0 >> mip).max(1);
+            let h = (dimensions.1 >> mip).max(1);
+            let pixels = src.map(|l| next_diffuse_mip(&l.image, mip));
+            let fallback = [128u8, 128, 128, 255];
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &layers,
+                    mip_level: mip,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                pixels
+                    .as_ref()
+                    .map_or(fallback.as_slice(), |img| img.as_raw()),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(w * 4),
+                    rows_per_image: Some(h),
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+    let layer_view = layers.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    let paint = source.map_or_else(
+        || image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255])),
+        |s| s.paint.clone(),
+    );
+    let (pw, ph) = paint.dimensions();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Exact original categorical painted terrain IDs"),
+        size: wgpu::Extent3d {
+            width: pw,
+            height: ph,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        paint.as_raw(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(pw * 4),
+            rows_per_image: Some(ph),
+        },
+        wgpu::Extent3d {
+            width: pw,
+            height: ph,
+            depth_or_array_layers: 1,
+        },
+    );
+    let paint_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut desc = [[0.0f32; 4]; 17];
+    if let Some(s) = source {
+        desc[0] = [pw as f32, ph as f32, s.unit, s.layers.len() as f32];
+        for (index, layer) in s.layers.iter().enumerate() {
+            desc[index + 1] = [
+                layer.id as f32,
+                layer.tile[0],
+                layer.tile[1],
+                layer.strength,
+            ];
+        }
+    }
+    let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Original terrain layer IDs/tiling/strength"),
+        contents: bytemuck::cast_slice(&desc),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    TerrainGpuTextures {
+        _layers: layers,
+        layer_view,
+        _paint: texture,
+        paint_view,
+        uniforms,
+        bytes: depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
+            + pw as u64 * ph as u64 * 4,
+    }
+}
+
 struct GpuSurface {
     diffuse_key: TextureKey,
     first: u32,
@@ -887,6 +1049,7 @@ struct GpuGroup {
     visible: u32,
     surfaces: Vec<GpuSurface>,
     terrain: bool,
+    _terrain_source: Option<TerrainGpuTextures>,
     geometry_bytes: u64,
 }
 pub(super) struct Renderer {
@@ -906,6 +1069,10 @@ pub(super) struct Renderer {
     light_point_group: wgpu::BindGroup,
     light_point_buffer: wgpu::Buffer,
     light_point_count: u32,
+    beam_pipeline: wgpu::RenderPipeline,
+    beam_group: wgpu::BindGroup,
+    beam_buffer: wgpu::Buffer,
+    beam_count: u32,
     sky_uniform: wgpu::Buffer,
     local_uniform: wgpu::Buffer,
     hdr_uniform: wgpu::Buffer,
@@ -917,6 +1084,7 @@ pub(super) struct Renderer {
     last_lighting_hour: f32,
     sampler: wgpu::Sampler,
     terrain_sampler: wgpu::Sampler,
+    empty_terrain: TerrainGpuTextures,
     world_identity: usize,
     last_full_textures: bool,
     groups: Vec<Option<GpuGroup>>,
@@ -1088,6 +1256,45 @@ impl Renderer {
                     },
                     count: None,
                 },
+                // Source DDS terrain array, categorical LayerId map, authored
+                // tiling/strength and repeat sampler. Original level materials
+                // retain complete mips; no baked detail downsampling.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 16,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 17,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 18,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let camera_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1136,6 +1343,7 @@ impl Renderer {
         });
         // Baked terrain UVs are normalized across the entire map: an edge
         // at exactly 1.0 must not repeat the opposite side of the atlas.
+        let empty_terrain = upload_terrain_layers(device, queue, None);
         let terrain_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -1501,6 +1709,77 @@ impl Renderer {
             ],
         });
 
+        let beam_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Original map source spotlight scattering preview"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "world_beam_preview.wgsl"
+            ))),
+        });
+        let beam_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Depth-tested source spotlight scattering sheets"),
+            layout: Some(&light_point_pipe_layout),
+            vertex: wgpu::VertexState {
+                module: &beam_shader,
+                entry_point: Some("vs_beam"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &beam_shader,
+                entry_point: Some("fs_beam"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let beam_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Empty original spotlight preview"),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 3]),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let beam_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Original spotlight camera and geometry"),
+            layout: &light_point_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: beam_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         Self {
             solid: make(false, false, false),
             terrain_source: make(false, false, true),
@@ -1518,6 +1797,10 @@ impl Renderer {
             light_point_group,
             light_point_buffer,
             light_point_count: 0,
+            beam_pipeline,
+            beam_group,
+            beam_buffer,
+            beam_count: 0,
             sky_uniform,
             local_uniform,
             hdr_uniform,
@@ -1529,6 +1812,7 @@ impl Renderer {
             last_lighting_hour: f32::NAN,
             sampler,
             terrain_sampler,
+            empty_terrain,
             world_identity: 0,
             last_full_textures: true,
             groups: Vec::new(),
@@ -1551,6 +1835,7 @@ impl Renderer {
         queue: &wgpu::Queue,
         model: &ModelGroup,
         terrain_detail: Option<&Arc<image::RgbaImage>>,
+        terrain_gpu: Option<&Arc<super::terrain_material_probe::GpuTerrainSource>>,
         full_textures: bool,
         cache: &mut TextureCache,
         hashes: &mut SourceKeys,
@@ -1608,6 +1893,12 @@ impl Renderer {
         let mut surfaces = Vec::new();
         let fallback = [210u8, 205, 205, 255];
         let terrain = is_ground(model);
+        let terrain_pack = if terrain {
+            terrain_gpu.map(|source| upload_terrain_layers(device, queue, Some(source)))
+        } else {
+            None
+        };
+        let terrain_textures = terrain_pack.as_ref().unwrap_or(&self.empty_terrain);
         let limit_2d = device.limits().max_texture_dimension_2d;
         for surf in &model.surfaces {
             if !surf.visible
@@ -1774,7 +2065,11 @@ impl Renderer {
             let (detail_tex, detail_view) = auxiliary_map(
                 device,
                 queue,
-                if terrain { terrain_detail } else { None },
+                if terrain && terrain_gpu.is_none() {
+                    terrain_detail
+                } else {
+                    None
+                },
                 6,
                 [128, 128, 128, 0],
                 wgpu::TextureFormat::Rgba8Unorm,
@@ -1863,6 +2158,22 @@ impl Renderer {
                         binding: 14,
                         resource: self.hdr_uniform.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 15,
+                        resource: wgpu::BindingResource::TextureView(&terrain_textures.layer_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 16,
+                        resource: wgpu::BindingResource::TextureView(&terrain_textures.paint_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 17,
+                        resource: terrain_textures.uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 18,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
                 ],
             });
             surfaces.push(GpuSurface {
@@ -1893,6 +2204,7 @@ impl Renderer {
             visible: model.instances.len().min(u32::MAX as usize) as u32,
             surfaces,
             terrain,
+            _terrain_source: terrain_pack,
             geometry_bytes: (vert.len() * std::mem::size_of::<Vertex>()
                 + model.mesh.indices.len() * std::mem::size_of::<u32>()
                 + capacity * std::mem::size_of::<InstanceGpu>()
@@ -1917,6 +2229,7 @@ impl Renderer {
         let Some(world) = world else {
             self.sky_active = false;
             self.light_point_count = 0;
+            self.beam_count = 0;
             self.groups.clear();
             self.cache.clear();
             self.source_hashes.clear();
@@ -1949,6 +2262,7 @@ impl Renderer {
             self.last_lighting_hour = f32::NAN;
             self.update_sky_source(device, queue, world);
             self.update_light_point_sources(device, world);
+            self.update_source_spotlight_beams(device, world);
             world.gpu_progress.pending.store(1, Ordering::Relaxed);
         }
         let hour = if hour.is_finite() {
@@ -1997,7 +2311,8 @@ impl Renderer {
             .retain(|key, _| cache.contains_key(key));
         self.mip_min_level.retain(|key, _| cache.contains_key(key));
         let target_bytes = residency_target_bytes(full_textures);
-        let mut used_bytes = cache_bytes(&cache);
+        let mut used_bytes =
+            cache_bytes(&cache).saturating_add(resident_terrain_bytes(&self.groups));
         let mut deferred = 0usize;
         let mut pending = 0usize;
         let mut uploaded = 0usize;
@@ -2023,8 +2338,13 @@ impl Renderer {
             }
             let requested = group_new_bytes(
                 &world.groups[idx],
-                if is_ground(&world.groups[idx]) {
+                if is_ground(&world.groups[idx]) && world.terrain_gpu.is_none() {
                     world.terrain_detail.as_ref()
+                } else {
+                    None
+                },
+                if is_ground(&world.groups[idx]) {
+                    world.terrain_gpu.as_ref()
                 } else {
                     None
                 },
@@ -2050,8 +2370,13 @@ impl Renderer {
                 device,
                 queue,
                 &world.groups[idx],
-                if is_ground(&world.groups[idx]) {
+                if is_ground(&world.groups[idx]) && world.terrain_gpu.is_none() {
                     world.terrain_detail.as_ref()
+                } else {
+                    None
+                },
+                if is_ground(&world.groups[idx]) {
+                    world.terrain_gpu.as_ref()
                 } else {
                     None
                 },
@@ -2062,6 +2387,8 @@ impl Renderer {
                 &mut mip_min_level,
                 &mut used_bytes,
             );
+            used_bytes =
+                used_bytes.saturating_add(gpu._terrain_source.as_ref().map_or(0, |tex| tex.bytes));
             self.groups[idx] = Some(gpu);
             uploaded += 1;
         }
@@ -2130,7 +2457,8 @@ impl Renderer {
         if let Some(key) = finished_key {
             self.pending_diffuse.remove(&key);
         }
-        let texture_bytes = cache_bytes(&cache);
+        let texture_bytes =
+            cache_bytes(&cache).saturating_add(resident_terrain_bytes(&self.groups));
         let geometry_bytes = resident_geometry_bytes(&self.groups);
         let resident = texture_bytes.saturating_add(geometry_bytes);
         self.peak_gpu_bytes = self.peak_gpu_bytes.max(resident);
@@ -2295,6 +2623,69 @@ impl Renderer {
         pass.set_pipeline(&self.light_point_pipeline);
         pass.set_bind_group(0, &self.light_point_group, &[]);
         pass.draw(0..6, 0..self.light_point_count);
+    }
+
+    fn update_source_spotlight_beams(&mut self, device: &wgpu::Device, world: &World) {
+        // These are a bounded, non-native transparent approximation of
+        // source-authored spotlight scattering. Never render omni lights as
+        // cones, and never extend their original radius/half angle.
+        const MAX_BEAMS: usize = 64;
+        let sources = world
+            .local_lights
+            .iter()
+            .filter(|l| {
+                l.cone_cos.is_finite()
+                    && (0.1..1.0).contains(&l.cone_cos)
+                    && l.radius.is_finite()
+                    && l.radius > 0.0
+                    && l.intensity.is_finite()
+                    && l.intensity > 0.0
+                    && l.direction.iter().all(|v| v.is_finite())
+                    && l.position.iter().all(|v| v.is_finite())
+                    && l.color.iter().all(|v| v.is_finite())
+                    && l.direction.iter().map(|v| v * v).sum::<f32>() > 0.01
+            })
+            .take(MAX_BEAMS)
+            .flat_map(|l| {
+                [
+                    [l.position[0], l.position[1], l.position[2], l.radius],
+                    [l.direction[0], l.direction[1], l.direction[2], l.cone_cos],
+                    [l.color[0], l.color[1], l.color[2], l.intensity],
+                ]
+            })
+            .collect::<Vec<_>>();
+        self.beam_count = (sources.len() / 3) as u32;
+        if sources.is_empty() {
+            return;
+        }
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Original spotlights as bounded scattering preview"),
+            contents: bytemuck::cast_slice(&sources),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        self.beam_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Original spotlight scattering camera"),
+            layout: &self.light_point_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.camera_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buffer.as_entire_binding(),
+                },
+            ],
+        });
+        self.beam_buffer = buffer;
+    }
+    pub fn draw_spotlight_beams<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        if self.beam_count == 0 {
+            return;
+        }
+        pass.set_pipeline(&self.beam_pipeline);
+        pass.set_bind_group(0, &self.beam_group, &[]);
+        pass.draw(0..6, 0..self.beam_count);
     }
 
     fn update_local_lights(&self, queue: &wgpu::Queue, world: &World, camera: CameraGpu) {
@@ -2521,6 +2912,14 @@ mod tests {
             MAX_SCENE_BALANCED_TEXTURE_BYTES
         );
         assert_eq!(MAX_NEW_GROUPS_PER_FRAME, 2);
+    }
+
+    #[test]
+    fn original_spotlight_beam_preview_shader_parses() {
+        let source = include_str!("world_beam_preview.wgsl");
+        naga::front::wgsl::parse_str(source).expect("spotlight preview WGSL");
+        assert!(source.contains("fn vs_beam("));
+        assert!(source.contains("fn fs_beam("));
     }
 
     #[test]
