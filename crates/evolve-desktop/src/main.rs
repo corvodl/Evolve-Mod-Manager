@@ -571,6 +571,12 @@ struct State {
     project_copy_progress: Option<Arc<ProjectCopyProgress>>,
     library_search: String,
     library_by_build: bool,
+    // Presentation-only grouping. Original imported records and build IDs
+    // are never deduplicated, deleted or rewritten by the browser.
+    library_flat_list: bool,
+    library_expanded_categories: HashSet<String>,
+    library_expanded_sources: HashSet<String>,
+    library_expanded_details: HashSet<usize>,
     library_build_index: usize,
     library_page: usize,
     settings_tab: settings_page::Tab,
@@ -2057,6 +2063,10 @@ enum Message {
     LibraryExport,
     StartupLibraryIndexed(PathBuf, Result<ImportedLibrary, String>),
     LibrarySetByBuild(bool),
+    LibrarySetFlat(bool),
+    LibraryToggleCategory(String),
+    LibraryToggleSource(String),
+    LibraryToggleDetails(usize),
     LibraryNextBuild,
     LibrarySelect(usize),
     LibraryOpenMap(usize),
@@ -3359,6 +3369,7 @@ fn refresh_library_matches(state: &mut State) {
                 && !entry.description.to_ascii_lowercase().contains(&needle)
                 && !entry.group.to_ascii_lowercase().contains(&needle)
                 && !entry.source.to_ascii_lowercase().contains(&needle)
+                && !entry.builds.iter().any(|label| label.to_ascii_lowercase().contains(&needle))
             {
                 return None;
             }
@@ -4794,8 +4805,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LibrarySetByBuild(value) => {
             state.library_by_build = value;
+            state.library_flat_list = false;
             state.library_page = 0;
             refresh_library_matches(state);
+        }
+        Message::LibrarySetFlat(flat) => {
+            state.library_flat_list = flat;
+            if flat {
+                state.library_by_build = false;
+            }
+            state.library_page = 0;
+            refresh_library_matches(state);
+        }
+        Message::LibraryToggleCategory(key) => {
+            if !state.library_expanded_categories.insert(key.clone()) {
+                state.library_expanded_categories.remove(&key);
+            }
+            state.library_page = 0;
+        }
+        Message::LibraryToggleSource(key) => {
+            if !state.library_expanded_sources.insert(key.clone()) {
+                state.library_expanded_sources.remove(&key);
+            }
+            state.library_page = 0;
+        }
+        Message::LibraryToggleDetails(index) => {
+            if !state.library_expanded_details.insert(index) {
+                state.library_expanded_details.remove(&index);
+            }
         }
         Message::LibraryNextBuild => {
             if let Some(catalog) = &state.library_catalog
@@ -4945,7 +4982,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 // The full filtered catalog, not the current 110-row page,
                 // defines Shift range selection. Anchors survive page changes
                 // without selecting entries excluded by the active filter.
-                let visible = state.library_matches.clone();
+                let visible = asset_library_page::visible_archive_indices(state);
                 state.library_selection.click(
                     &visible,
                     index,
