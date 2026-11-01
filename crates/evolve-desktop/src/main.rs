@@ -13158,9 +13158,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.emissive_map = None;
                     state.specular_map = None;
                     state.gloss_map = None;
+                    // Keep the entire source audit in level_diagnostics and
+                    // the scrollable Diagnostics tab. The bottom status row
+                    // must never render hundreds of paragraphs and collapse
+                    // the editor viewport.
                     state.status = format!(
-                        "Map {map_name} opened read-only. {}",
-                        loaded.diagnostics.join(" ")
+                        "Map {map_name} opened {} · {} source notes (see Diagnostics)",
+                        if state.level_read_only { "read-only" } else { "as project" },
+                        state.level_diagnostics.len(),
                     );
                     state.page = Some(Page::Levels);
                     state.level_zoom = 1.0;
@@ -14222,14 +14227,17 @@ fn view(state: &State) -> Element<'_, Message> {
         tools,
         workspace,
         row![
-            text(state.status.as_str()).size(12).width(Fill),
+            text(compact_footer_status(&state.status))
+                .size(12)
+                .width(Fill),
             footer_progress,
             text(format!("v{}", env!("CARGO_PKG_VERSION")))
                 .size(12)
                 .style(design::muted),
         ]
         .spacing(12)
-        .align_y(iced::Alignment::Center),
+        .align_y(iced::Alignment::Center)
+        .height(Length::Fixed(22.0)),
     ]
     .spacing(16)
     .padding([24, 24])
@@ -14240,6 +14248,31 @@ fn view(state: &State) -> Element<'_, Message> {
         .width(Fill)
         .height(Fill)
         .into()
+}
+
+/// Keep the application status bar a small, single-line summary even if
+/// a worker reports a verbose multi-paragraph audit or an error message.
+/// The complete Level Editor audit is retained in the Diagnostics inspector.
+fn compact_footer_status(status: &str) -> String {
+    const LIMIT: usize = 110;
+    let mut result = String::new();
+    let mut previous_space = false;
+    for ch in status.chars() {
+        if result.chars().count() >= LIMIT {
+            result.push('…');
+            break;
+        }
+        if ch.is_whitespace() {
+            if !previous_space && !result.is_empty() {
+                result.push(' ');
+            }
+            previous_space = true;
+        } else {
+            result.push(ch);
+            previous_space = false;
+        }
+    }
+    result.trim_end().to_owned()
 }
 
 fn initial_state() -> State {
@@ -14974,6 +15007,21 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn verbose_level_report_does_not_expand_footer() {
+        let full = format!(
+            "Map Forest_Cliffs opened read-only. {}",
+            "Layer data & original material audit. ".repeat(2000)
+        );
+        let short = compact_footer_status(&full);
+        assert!(short.chars().count() <= 111);
+        assert!(short.ends_with('…'));
+        assert!(!short.contains('\n'));
+        assert_eq!(compact_footer_status("Map opened read-only · 28 notes"),
+                   "Map opened read-only · 28 notes");
+        assert_eq!(compact_footer_status("a\r\n b\t c"), "a b c");
+    }
 
     #[test]
     fn teleport_buttons_only_need_write_arm_not_armor_or_network_mode() {
