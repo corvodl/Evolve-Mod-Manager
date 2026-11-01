@@ -119,9 +119,10 @@ pub use library_build_updates::{
 };
 pub use library_catalog::{
     ImportedLibrary, ImportedLookupGuard, ImportedPak, LibraryError, LibraryReference,
-    LibraryReferenceStatus, begin_imported_lookup_session,
-    begin_imported_lookup_session_for_source, describe_archive, imported_archive_files,
-    imported_archive_preview_inventory, imported_library, resolve_imported_reference,
+    LibraryReferenceStatus, SharedImportedLookup, begin_imported_lookup_session,
+    begin_imported_lookup_session_any_build, begin_imported_lookup_session_for_source,
+    describe_archive, imported_archive_files, imported_archive_preview_inventory, imported_library,
+    resolve_imported_reference,
 };
 pub use library_import::{
     LibraryBatchImportReport, LibraryImportFailure, LibraryImportPlan, LibraryImportReport,

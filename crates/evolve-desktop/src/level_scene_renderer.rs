@@ -3,18 +3,25 @@
 //! Reuse the verified imported inventory and original material loader, rather
 //! than drawing a guessed map mesh or borrowing same-named files from another
 //! game build. All loads run in the existing blocking Operation worker.
-use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface, world_instances};
+use crate::{
+    assembly_materials,
+    asset_cache::{PreviewCache, SharedCache},
+    textured::Surface,
+    world_instances,
+};
 use evolve_core::{
-    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform,
-    begin_imported_lookup_session, begin_imported_lookup_session_for_source,
-    imported_archive_files, imported_archive_preview_inventory, imported_library,
-    read_world_model_parts_with_subsets,
+    ImportedPak, Inventory, LevelScene, ModelInfo, PlacedObject, RenderMesh, SharedImportedLookup,
+    Transform, WorldModelPart, begin_imported_lookup_session,
+    begin_imported_lookup_session_for_source, imported_archive_files,
+    imported_archive_preview_inventory, imported_library, read_world_model_parts_with_subsets,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 const MAX_ARCHIVES: usize = 1_024;
@@ -596,11 +603,134 @@ fn surface_batch_ranges(costs: &[u64], geometry: u64) -> Vec<std::ops::Range<usi
     result
 }
 
+type WorldSurfaces = (Vec<Vec<Surface>>, Vec<String>);
+
+struct DecodedMaterial {
+    virtual_source: String,
+    path: Result<Option<PathBuf>, String>,
+    surfaces: Option<Result<WorldSurfaces, String>>,
+}
+
+/// One model/material pair, resolved once on a worker thread and consumed once
+/// by the ordered assembly. Repeating this work serially dominated map loads.
+struct DecodedPair {
+    render: Result<(AssetLocation, Vec<WorldModelPart>, Option<String>), Vec<String>>,
+    material: Option<DecodedMaterial>,
+}
+
+type DecodedPairs = HashMap<(String, String), DecodedPair>;
+
+/// Decode every unique scene model and its textures on worker threads. Results
+/// are applied in authored order below, so diagnostics, budgets and group
+/// order stay exactly as they were when this ran serially.
+fn decode_scene_sources(
+    scene: &LevelScene,
+    sources: &Index,
+    library_root: Option<&Path>,
+    build: Option<&str>,
+) -> DecodedPairs {
+    let cache = PreviewCache::for_scene();
+    let mut unique = HashSet::new();
+    let pairs = scene
+        .objects
+        .iter()
+        .filter(|object| !object.hidden && !object.model.is_empty())
+        .filter(|object| unique.insert((object.model.as_str(), object.material.as_str())))
+        .collect::<Vec<_>>();
+    let decoded = Mutex::new(DecodedPairs::with_capacity(pairs.len()));
+    let next = AtomicUsize::new(0);
+    let lookup = SharedImportedLookup::current();
+    // Leave the interface and GPU upload threads room to stay responsive.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get().saturating_sub(2))
+        .clamp(1, 16);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                let _lookup = lookup.as_ref().map(SharedImportedLookup::enter);
+                while let Some(object) = pairs.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let pair = decode_scene_pair(object, sources, library_root, build, &cache);
+                    if let Ok(mut table) = decoded.lock() {
+                        table.insert((object.model.clone(), object.material.clone()), pair);
+                    }
+                }
+            });
+        }
+    });
+    decoded.into_inner().unwrap_or_default()
+}
+
+fn decode_scene_pair(
+    object: &PlacedObject,
+    sources: &Index,
+    library_root: Option<&Path>,
+    build: Option<&str>,
+    cache: &SharedCache,
+) -> DecodedPair {
+    // Source metadata/physics chunks may not contain render streams even though
+    // a verified same-stem compiled companion does. Decode candidates in order,
+    // retaining exact paths and the selected build rather than guessing objects.
+    let render = decodable_render_source(
+        &object.model,
+        |candidate| sources.lookup(candidate).map(|found| found.cloned()),
+        |path| read_world_model_parts_with_subsets(path).map_err(|error| error.to_string()),
+    );
+    let material = render.as_ref().ok().and_then(|(source, meshes, _)| {
+        let inventory = sources.inventories.get(&source.archive)?;
+        // A world model may declare MtlName in its compiled mesh, even when
+        // there is NO same-stem .mtl. Reuse the Model Viewer's exact original
+        // material resolver rather than assuming the geometry filename is the
+        // material name. For a compiled fallback, inspect that verified virtual
+        // owner so its own embedded material hint can be used.
+        let virtual_source = render_candidates(&object.model)
+            .into_iter()
+            .find(|candidate| {
+                let candidate_extension = Path::new(candidate).extension().and_then(|e| e.to_str());
+                candidate_extension.is_some_and(|extension| {
+                    source
+                        .path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|actual| actual.eq_ignore_ascii_case(extension))
+                })
+            })
+            .unwrap_or_else(|| object.model.clone());
+        let explicit = (!object.material.trim().is_empty()).then_some(object.material.as_str());
+        let path = assembly_materials::material_for_part(
+            &virtual_source,
+            explicit,
+            inventory,
+            library_root,
+            build,
+        );
+        // Each MeshChunk's referenced SUBSETS table is preserved by the world
+        // decoder. No material leaf may be guessed from mesh order or the number
+        // of extracted mesh nodes.
+        let surfaces = match &path {
+            Ok(Some(material)) => Some(assembly_materials::load_world_model_surfaces(
+                &source.path,
+                material,
+                meshes,
+                inventory,
+                library_root,
+                build,
+                cache,
+            )),
+            _ => None,
+        };
+        Some(DecodedMaterial {
+            virtual_source,
+            path,
+            surfaces,
+        })
+    });
+    DecodedPair { render, material }
+}
+
 pub(super) fn assemble(
     archive: &ImportedPak,
     scene: Option<&LevelScene>,
     terrain: Option<&RenderMesh>,
-    cache: &SharedCache,
     project_inventory: Option<&Inventory>,
 ) -> Result<Option<Assembled>, String> {
     let mut report = Report::default();
@@ -693,6 +823,18 @@ pub(super) fn assemble(
             "Exact-build material lookup index initialized in {} ms.",
             lookup_started.elapsed().as_millis()
         ));
+        let decode_started = Instant::now();
+        let mut decoded_pairs = decode_scene_sources(
+            scene,
+            &sources,
+            sources.library_root.as_deref(),
+            sources.build.as_deref(),
+        );
+        report.note(format!(
+            "Decoded {} scene model/material pairs and their textures in {} ms.",
+            decoded_pairs.len(),
+            decode_started.elapsed().as_millis()
+        ));
         // Geometry is decoded once per exact model/material pair; each authored
         // actor transform creates a distinct visible scene instance.
         let mut resolved = HashMap::<(String, String), Vec<usize>>::new();
@@ -718,17 +860,11 @@ pub(super) fn assemble(
                     budget_hit = true;
                     break;
                 }
-                // Source metadata/physics chunks may not contain render
-                // streams even though a verified same-stem compiled companion
-                // does. Decode candidates in order, retaining exact paths and
-                // the selected build rather than guessing alternate objects.
-                let (source, meshes, fallback_note) = match decodable_render_source(
-                    &object.model,
-                    |candidate| sources.lookup(candidate).map(|found| found.cloned()),
-                    |path| {
-                        read_world_model_parts_with_subsets(path).map_err(|error| error.to_string())
-                    },
-                ) {
+                let Some(decoded) = decoded_pairs.remove(&key) else {
+                    failures.insert(key);
+                    continue;
+                };
+                let (source, meshes, fallback_note) = match decoded.render {
                     Ok(loaded) => loaded,
                     Err(reasons) => {
                         report.unresolved += 1;
@@ -758,57 +894,19 @@ pub(super) fn assemble(
                     budget_hit = true;
                     break;
                 }
-                let original_inventory = sources.inventories.get(&source.archive);
                 let mut per_mesh_materials: Vec<Vec<Surface>> = Vec::new();
                 // Preserve the actual resolver/decoder reason for every
                 // material pair lacking diffuse pixels. The summary counter
                 // cannot distinguish missing MTL, missing DDS, unsupported
                 // format or an ambiguous high-mip fragment.
                 let mut diffuse_reasons = Vec::<String>::new();
-                if let Some(inventory) = original_inventory {
-                    // A world model may declare MtlName in its compiled mesh,
-                    // even when there is NO same-stem .mtl. Reuse the Model
-                    // Viewer's exact original-material resolver rather than
-                    // assuming the geometry filename is the material name.
-                    // For a compiled fallback, inspect that verified virtual
-                    // owner so its own embedded material hint can be used.
-                    let source_virtual = render_candidates(&object.model)
-                        .into_iter()
-                        .find(|candidate| {
-                            let candidate_extension =
-                                Path::new(candidate).extension().and_then(|e| e.to_str());
-                            candidate_extension.is_some_and(|extension| {
-                                source
-                                    .path
-                                    .extension()
-                                    .and_then(|e| e.to_str())
-                                    .is_some_and(|actual| actual.eq_ignore_ascii_case(extension))
-                            })
-                        })
-                        .unwrap_or_else(|| object.model.clone());
-                    let explicit =
-                        (!object.material.trim().is_empty()).then_some(object.material.as_str());
-                    match assembly_materials::material_for_part(
-                        &source_virtual,
-                        explicit,
-                        inventory,
-                        sources.library_root.as_deref(),
-                        sources.build.as_deref(),
-                    ) {
+                if let Some(outcome) = decoded.material {
+                    let source_virtual = outcome.virtual_source;
+                    match outcome.path {
                         Ok(Some(material)) => {
-                            // Each MeshChunk's referenced SUBSETS table is
-                            // preserved by the world decoder. No material
-                            // leaf may be guessed from mesh order or the
-                            // number of extracted mesh nodes.
-                            let resolved = assembly_materials::load_world_model_surfaces(
-                                &source.path,
-                                &material,
-                                &meshes,
-                                inventory,
-                                sources.library_root.as_deref(),
-                                sources.build.as_deref(),
-                                cache,
-                            );
+                            let resolved = outcome.surfaces.unwrap_or_else(|| {
+                                Err("Material surfaces were not decoded".into())
+                            });
                             match resolved {
                                 Ok((parts, warnings)) => {
                                     let has_diffuse =

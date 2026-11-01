@@ -800,8 +800,8 @@ enum Operation {
     LoadDeclaredClip(usize, String, Inventory, Option<PathBuf>, Option<String>),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
     InspectLevel(PathBuf),
-    OpenImportedMap(evolve_core::ImportedPak, usize, SharedCache),
-    OpenProjectLevel(modding_projects::ProjectRow, usize, SharedCache, PathBuf),
+    OpenImportedMap(evolve_core::ImportedPak, usize),
+    OpenProjectLevel(modding_projects::ProjectRow, usize, PathBuf),
     SaveProjectLevel(
         modding_projects::ProjectRow,
         PathBuf,
@@ -993,11 +993,16 @@ fn model_preview_lookup(
     imported: Option<&Path>,
     build: Option<&str>,
 ) -> Result<Option<evolve_core::ImportedLookupGuard>, String> {
-    imported
-        .zip(build)
-        .map(|(root, build)| evolve_core::begin_imported_lookup_session(root, build))
-        .transpose()
-        .map_err(|error| format!("Cannot index exact-build model dependencies: {error}"))
+    let Some(root) = imported else {
+        return Ok(None);
+    };
+    match build {
+        Some(build) => evolve_core::begin_imported_lookup_session(root, build)
+            .map(Some)
+            .map_err(|error| format!("Cannot index exact-build model dependencies: {error}")),
+        // Only a speed-up here: without it, lookups use the unindexed resolver.
+        None => Ok(evolve_core::begin_imported_lookup_session_any_build(root).ok()),
+    }
 }
 
 impl Operation {
@@ -1448,12 +1453,11 @@ impl Operation {
                         render_source.display(),
                     ))
             }
-            Self::OpenImportedMap(archive, index, cache) => {
-                level_library::open(archive, index, &cache)
-                    .map(|map| Completed::ImportedMap(Box::new(map)))
+            Self::OpenImportedMap(archive, index) => {
+                level_library::open(archive, index).map(|map| Completed::ImportedMap(Box::new(map)))
             }
-            Self::OpenProjectLevel(project, index, cache, library_root) => {
-                level_library::open_project(project, index, &cache, &library_root)
+            Self::OpenProjectLevel(project, index, library_root) => {
+                level_library::open_project(project, index, &library_root)
                     .map(|map| Completed::ImportedMap(Box::new(map)))
             }
             Self::SaveProjectLevel(project, source, expected, edits, projects_root) => {
@@ -4820,8 +4824,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Finish the current operation before opening a map.".into();
                 return Task::none();
             }
-            let cache = state.preview_cache.clone();
-            return launch(state, Operation::OpenImportedMap(archive, 0, cache));
+            return launch(state, Operation::OpenImportedMap(archive, 0));
         }
         Message::OpenLevelEditorWindow => return Task::none(),
         Message::LevelToggleOverview => state.level_show_overview = !state.level_show_overview,
@@ -4912,9 +4915,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.busy {
                 return Task::none();
             }
-            let cache = state.preview_cache.clone();
             let root = PathBuf::from(&state.library_root);
-            return launch(state, Operation::OpenProjectLevel(project, 0, cache, root));
+            return launch(state, Operation::OpenProjectLevel(project, 0, root));
         }
         Message::LevelMapSelect(index) => {
             let Some((archive, maps, _)) = &state.library_map else {
@@ -4925,15 +4927,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let project = state.level_project.clone();
             let archive = archive.clone();
-            let cache = state.preview_cache.clone();
             return if let Some(project) = project {
                 let root = PathBuf::from(&state.library_root);
-                launch(
-                    state,
-                    Operation::OpenProjectLevel(project, index, cache, root),
-                )
+                launch(state, Operation::OpenProjectLevel(project, index, root))
             } else {
-                launch(state, Operation::OpenImportedMap(archive, index, cache))
+                launch(state, Operation::OpenImportedMap(archive, index))
             };
         }
         Message::LibrarySelect(index) => {
@@ -4963,8 +4961,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     && level_library::likely_level_pak(&archive)
                     && !state.busy
                 {
-                    let cache = state.preview_cache.clone();
-                    return launch(state, Operation::OpenImportedMap(archive, 0, cache));
+                    return launch(state, Operation::OpenImportedMap(archive, 0));
                 }
             }
         }
@@ -11760,12 +11757,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .and_then(|index| state.modding_projects.as_ref()?.get(index))
                             .cloned()
                         {
-                            let cache = state.preview_cache.clone();
                             let root = PathBuf::from(&state.library_root);
-                            return launch(
-                                state,
-                                Operation::OpenProjectLevel(project, 0, cache, root),
-                            );
+                            return launch(state, Operation::OpenProjectLevel(project, 0, root));
                         }
                     }
                     state.modding_name_input = state
@@ -12832,11 +12825,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     };
                     let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
                     let root = PathBuf::from(&state.library_root);
-                    let cache = state.preview_cache.clone();
-                    return launch(
-                        state,
-                        Operation::OpenProjectLevel(project, index, cache, root),
-                    );
+                    return launch(state, Operation::OpenProjectLevel(project, index, root));
                 }
                 Ok(Completed::ImportedMap(loaded)) => {
                     let loaded = *loaded;
