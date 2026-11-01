@@ -3007,9 +3007,9 @@ fn operation_label(operation: &Operation) -> &'static str {
             "Inspecting original model"
         }
         Operation::DiscoverModelResources(..) => "Discovering model dependencies",
-        Operation::LoadDeclaredClip(..) | Operation::LoadDeclaredDba(..) => {
-            "Loading original animation clip"
-        }
+        Operation::LoadDeclaredClip(..)
+        | Operation::LoadDeclaredCafLayer(..)
+        | Operation::LoadDeclaredDba(..) => "Loading original animation clip",
         Operation::InspectLevel(..) | Operation::InspectTerrain(..) => "Inspecting level resources",
         Operation::OpenImportedMap(..) | Operation::OpenProjectLevel(..) => {
             "Assembling level scene"
