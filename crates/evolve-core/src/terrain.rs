@@ -531,11 +531,10 @@ pub fn read_terrain_texture_header(path: &Path) -> Result<TerrainTextureHeader, 
         let mut record = [0u8; 12];
         file.read_exact(&mut record)?;
         let sector_pixels = u16::from_le_bytes([record[0], record[1]]);
-        let reserved = u16::from_le_bytes([record[2], record[3]]);
         let texture_format = u32::from_le_bytes(record[4..8].try_into().unwrap());
         let sector_bytes = u32::from_le_bytes(record[8..12].try_into().unwrap());
-        if reserved != 0
-            || !(4..=8192).contains(&sector_pixels)
+        // Bytes 2 and 3 hold uninitialized padding in shipped maps.
+        if !(4..=8192).contains(&sector_pixels)
             || !sector_pixels.is_power_of_two()
             || sector_bytes == 0
             || sector_bytes > 64 * 1024 * 1024

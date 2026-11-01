@@ -1281,23 +1281,19 @@ fn open_selected(
             TerrainResource::Rgb24 { paths, side } => {
                 // Prefer the engine's own baked cover; the raw tiles carry no multiplier.
                 let cover = map_virtual_folder(chosen, &archive)
-                    .and_then(|folder| {
-                        imported_map_terrain(&archive, &folder, "cover.ctc")
-                            .ok()
-                            .flatten()
-                    })
+                    .ok_or_else(|| "no map folder".to_owned())
+                    .and_then(|folder| imported_map_terrain(&archive, &folder, "cover.ctc"))
                     .and_then(|resource| match resource {
-                        TerrainResource::Cry(path) => read_terrain_texture_atlas(&path).ok(),
-                        TerrainResource::Rgb24 { .. } => None,
+                        Some(TerrainResource::Cry(path)) => {
+                            read_terrain_texture_atlas(&path).map_err(|e| e.to_string())
+                        }
+                        _ => Err("no terrain/cover.ctc in the map's level.pak".to_owned()),
                     });
-                diagnostics.push(format!(
-                    "Original baked terrain color from {}.",
-                    if cover.is_some() {
-                        "terrain/cover.ctc"
-                    } else {
-                        "raw RGB24 tiles"
-                    }
-                ));
+                diagnostics.push(match &cover {
+                    Ok(_) => "Original baked terrain color from terrain/cover.ctc.".to_owned(),
+                    Err(error) => format!("Original baked terrain color from raw tiles: {error}"),
+                });
+                let cover = cover.ok();
                 cover.map_or_else(|| read_terrain_rgb24_tiles(paths, *side), Ok)
             }
         };
