@@ -62,8 +62,11 @@ fn map_relative_member(relative: &str) -> bool {
         || (lower.ends_with(".lyr") && !lower.contains('/'))
         || matches!(
             lower,
-            "mission.xml" | "heightmap.dat" | "vegetationmap.dat"
-                | "terraintexture.xml" | "terraintexture.pak"
+            "mission.xml"
+                | "heightmap.dat"
+                | "vegetationmap.dat"
+                | "terraintexture.xml"
+                | "terraintexture.pak"
         )
 }
 
@@ -77,9 +80,18 @@ fn source_map_owner(archive: &ImportedPak) -> Option<(String, String)> {
     let map = source.parent()?;
     let levels = map.parent()?;
     let game = levels.parent()?;
-    if !source.file_name()?.to_string_lossy().eq_ignore_ascii_case("level.pak")
-        || !levels.file_name()?.to_string_lossy().eq_ignore_ascii_case("levels")
-        || !game.file_name()?.to_string_lossy().eq_ignore_ascii_case("game")
+    if !source
+        .file_name()?
+        .to_string_lossy()
+        .eq_ignore_ascii_case("level.pak")
+        || !levels
+            .file_name()?
+            .to_string_lossy()
+            .eq_ignore_ascii_case("levels")
+        || !game
+            .file_name()?
+            .to_string_lossy()
+            .eq_ignore_ascii_case("game")
     {
         return None;
     }
@@ -87,7 +99,10 @@ fn source_map_owner(archive: &ImportedPak) -> Option<(String, String)> {
     if name.is_empty() || name == "." || name == ".." {
         return None;
     }
-    Some((format!("levels/{name}").to_ascii_lowercase(), name.to_string()))
+    Some((
+        format!("levels/{name}").to_ascii_lowercase(),
+        name.to_string(),
+    ))
 }
 
 fn map_group(relative: &str) -> (String, String) {
@@ -108,9 +123,7 @@ fn map_group(relative: &str) -> (String, String) {
     if let Some(index) = parts.iter().position(|part| {
         part.eq_ignore_ascii_case("layers") || part.eq_ignore_ascii_case("leveldata")
     }) {
-        if index > 0
-            && !(index == 1 && parts[0].eq_ignore_ascii_case("files"))
-        {
+        if index > 0 && !(index == 1 && parts[0].eq_ignore_ascii_case("files")) {
             return (
                 parts[..index].join("/").to_ascii_lowercase(),
                 parts[index - 1].to_string(),
@@ -625,7 +638,9 @@ fn discover_inventory_with_owner(
             continue;
         }
         let (key, name) = if map_relative_member(&relative) {
-            source_owner.cloned().unwrap_or_else(|| map_group(&relative))
+            source_owner
+                .cloned()
+                .unwrap_or_else(|| map_group(&relative))
         } else {
             map_group(&relative)
         };
@@ -1672,7 +1687,13 @@ mod tests {
         assert_eq!(maps.len(), 2);
         let tutorial = maps.iter().find(|map| map.name == "Tutorial").unwrap();
         assert_eq!(tutorial.layers.len(), 5);
-        assert!(tutorial.terrain.as_ref().unwrap().ends_with("Heightmap.dat"));
+        assert!(
+            tutorial
+                .terrain
+                .as_ref()
+                .unwrap()
+                .ends_with("Heightmap.dat")
+        );
         assert!(tutorial.vegetation.is_some());
     }
 
@@ -1713,7 +1734,10 @@ mod tests {
         assert_eq!(maps[0].name, "Forest_Rapids");
         assert_eq!(maps[0].layers.len(), 2);
         assert!(maps[0].terrain.is_some());
-        assert_eq!(map_virtual_folder(&maps[0], &archive).as_deref(), Some("levels/forest_rapids"));
+        assert_eq!(
+            map_virtual_folder(&maps[0], &archive).as_deref(),
+            Some("levels/forest_rapids")
+        );
         // The archive's arbitrary original folder cannot authorize a map.
         let mut unrelated = archive.clone();
         unrelated.source = dir.path().join("unrelated/level.pak").display().to_string();
