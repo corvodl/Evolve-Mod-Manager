@@ -372,6 +372,75 @@ struct DetailLayer {
     blend_factor: f32,
     blend_falloff: f32,
 }
+/// Decoded original diffuse maps stay at their own source resolution until
+/// the GPU texture-array upload. No source material is sampled into the
+/// low-resolution baked atlas when this verified path is supported.
+#[derive(Clone)]
+pub(super) struct GpuTerrainLayer {
+    pub id: u8,
+    pub image: image::RgbaImage,
+    pub tile: [f32; 2],
+    pub strength: f32,
+}
+
+#[derive(Clone)]
+pub(super) struct GpuTerrainSource {
+    /// Categorical LayerId map; RGBA8 red channel is the exact ID byte.
+    pub paint: image::RgbaImage,
+    pub unit: f32,
+    pub layers: Vec<GpuTerrainLayer>,
+}
+
+pub(super) struct Preview {
+    pub fallback: image::RgbaImage,
+    pub gpu: Option<GpuTerrainSource>,
+    pub report: String,
+}
+
+/// An array texture requires equal source dimensions and at most 16 layers.
+fn gpu_source(
+    paint: &TerrainPaintMap,
+    unit: f32,
+    layers: &HashMap<u8, DetailLayer>,
+) -> Option<GpuTerrainSource> {
+    if layers.is_empty() || layers.len() > 16 {
+        return None;
+    }
+    let dimensions = layers.values().next()?.image.dimensions();
+    if dimensions.0 > 2048
+        || dimensions.1 > 2048
+        || dimensions.0 == 0
+        || dimensions.1 == 0
+        || layers
+            .values()
+            .any(|layer| layer.image.dimensions() != dimensions)
+    {
+        return None;
+    }
+    let bytes = (dimensions.0 as u64) * (dimensions.1 as u64) * 4 * layers.len() as u64;
+    if bytes > 256 * 1024 * 1024 {
+        return None;
+    }
+    let paint_image = image::RgbaImage::from_fn(paint.width, paint.height, |x, y| {
+        image::Rgba([paint.id_at(x, y).unwrap_or(255), 0, 0, 255])
+    });
+    let mut order = layers.iter().collect::<Vec<_>>();
+    order.sort_by_key(|item| *item.0);
+    Some(GpuTerrainSource {
+        paint: paint_image,
+        unit,
+        layers: order
+            .into_iter()
+            .map(|(&id, layer)| GpuTerrainLayer {
+                id,
+                image: layer.image.clone(),
+                tile: layer.tile,
+                strength: layer.strength,
+            })
+            .collect(),
+    })
+}
+
 #[derive(Default)]
 struct AuthoredDetail {
     height: Option<String>,
@@ -589,6 +658,52 @@ fn bilinear_wrap(image: &image::RgbaImage, uv: [f32; 2]) -> [f32; 3] {
     result
 }
 
+// CPU-only terrain overlays cover an entire map at the baked atlas resolution,
+// but the original Terrain.Layer DDS may repeat dozens of texels per atlas
+// pixel. Sampling level zero once aliases those texels into colored speckles.
+// Prefilter by the exact atlas-to-source footprint; this fixes minification,
+// not the missing native per-fragment high-resolution terrain sampling.
+fn detail_mips(source: &image::RgbaImage) -> Vec<image::RgbaImage> {
+    let mut chain = vec![source.clone()];
+    while let Some(last) = chain.last() {
+        if last.width() == 1 && last.height() == 1 {
+            break;
+        }
+        chain.push(image::imageops::resize(
+            last,
+            (last.width() / 2).max(1),
+            (last.height() / 2).max(1),
+            image::imageops::FilterType::Triangle,
+        ));
+    }
+    chain
+}
+
+fn detail_sample(mips: &[image::RgbaImage], uv: [f32; 2], footprint_texels: f32) -> [f32; 3] {
+    let maximum = (mips.len() - 1) as f32;
+    let lod = footprint_texels.max(1.0).log2().clamp(0.0, maximum);
+    let low = lod.floor() as usize;
+    let high = (low + 1).min(mips.len() - 1);
+    let amount = lod - low as f32;
+    let a = bilinear_wrap(&mips[low], uv);
+    let b = bilinear_wrap(&mips[high], uv);
+    std::array::from_fn(|channel| a[channel] * (1.0 - amount) + b[channel] * amount)
+}
+
+fn detail_footprint(
+    image: &image::RgbaImage,
+    tile: [f32; 2],
+    paint: &TerrainPaintMap,
+    atlas_size: (u32, u32),
+    terrain_unit: f32,
+) -> f32 {
+    let x = (paint.width - 1) as f32 * terrain_unit * tile[0].abs() * image.width() as f32
+        / atlas_size.0 as f32;
+    let y = (paint.height - 1) as f32 * terrain_unit * tile[1].abs() * image.height() as f32
+        / atlas_size.1 as f32;
+    x.max(y).max(1.0)
+}
+
 fn painted_neighbors(paint: &TerrainPaintMap, uv: [f32; 2]) -> [Option<(u8, f32)>; 4] {
     let x = uv[0].clamp(0.0, 1.0) * (paint.width - 1) as f32;
     let y = uv[1].clamp(0.0, 1.0) * (paint.height - 1) as f32;
@@ -631,6 +746,24 @@ fn compose_detail(
 ) -> image::RgbaImage {
     let (width, height) = atlas_size;
     let neutral = 128.0 / 255.0;
+    // Prepare each complete authored image's mip chain once, not per pixel.
+    // This keeps the existing format-verified source DDS unchanged.
+    let filtered: HashMap<_, _> = layers
+        .iter()
+        .map(|(&id, layer)| {
+            (
+                id,
+                (
+                    detail_mips(&layer.image),
+                    layer.height.as_ref().map(detail_mips),
+                    detail_footprint(&layer.image, layer.tile, paint, atlas_size, terrain_unit),
+                    layer.height.as_ref().map(|img| {
+                        detail_footprint(img, layer.tile, paint, atlas_size, terrain_unit)
+                    }),
+                ),
+            )
+        })
+        .collect();
     let mut bytes = vec![0u8; width as usize * height as usize * 4];
     for y in 0..height {
         for x in 0..width {
@@ -654,11 +787,12 @@ fn compose_detail(
                     uv[1] * (paint.height - 1) as f32 * terrain_unit,
                 ];
                 let tiled = [world[0] * layer.tile[0], world[1] * layer.tile[1]];
-                let detail = bilinear_wrap(&layer.image, tiled);
-                let height = layer
-                    .height
+                let (color_mips, height_mips, color_footprint, height_footprint) = &filtered[&id];
+                let detail = detail_sample(color_mips, tiled, *color_footprint);
+                let height = height_mips
                     .as_ref()
-                    .map(|img| bilinear_wrap(img, tiled)[0]);
+                    .zip(height_footprint.as_ref())
+                    .map(|(mips, footprint)| detail_sample(mips, tiled, *footprint)[0]);
                 // Original layer IDs are categorical. Preserve the authored
                 // fractional coverage of resolved neighbors at boundaries.
                 coverage += original_weight;
@@ -740,7 +874,7 @@ pub(super) fn compose(
     paint: &TerrainPaintMap,
     atlas_size: (u32, u32),
     terrain_unit: f32,
-) -> Result<Option<(image::RgbaImage, String)>, String> {
+) -> Result<Option<Preview>, String> {
     if paint.width < 2
         || paint.height < 2
         || atlas_size.0 == 0
@@ -865,7 +999,7 @@ pub(super) fn compose(
         ));
     }
     let report = format!(
-        "Terrain.Layer high-pass preview: {}/{} authored painted material IDs reconstructed from complete same-install DDS streams; {} unresolved/unsupported. Original RGB ground atlas preserved. Detail add-signed shader enabled; categorical layer borders use interpolated coverage (not original engine blend masks). Source resolutions: {}. Unresolved examples: {}",
+        "Terrain.Layer high-pass preview: {}/{} authored painted material IDs reconstructed from complete same-install DDS streams; {} unresolved/unsupported. Original RGB ground atlas preserved. CPU-baked detail is now mip-prefiltered for atlas minification (avoids colored aliasing; does NOT retain native close-up resolution). Add-signed shader enabled; categorical layer borders use interpolated coverage (not original engine blend masks). Source resolutions: {}. Unresolved examples: {}",
         layers.len(),
         active.len(),
         failures.len(),
@@ -876,10 +1010,28 @@ pub(super) fn compose(
             .join("; "),
         failures.into_iter().take(5).collect::<Vec<_>>().join("; ")
     );
-    Ok(Some((
-        compose_detail(paint, atlas_size, terrain_unit, &layers),
+    let gpu = gpu_source(paint, terrain_unit, &layers);
+    let report = format!(
+        "{report} GPU source-material detail: {}.",
+        if gpu.is_some() {
+            "original full-resolution DDS array with categorical paint ID sampling"
+        } else {
+            "unsupported layer dimensions/count; mip-filtered CPU atlas fallback"
+        }
+    );
+    // Do not spend minutes rasterizing millions of CPU atlas pixels if
+    // full-resolution authored DDS layers are already headed to the GPU.
+    // The neutral fallback still binds safely for all other meshes.
+    let fallback = if gpu.is_some() {
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([128, 128, 128, 0]))
+    } else {
+        compose_detail(paint, atlas_size, terrain_unit, &layers)
+    };
+    Ok(Some(Preview {
+        fallback,
+        gpu,
         report,
-    )))
+    }))
 }
 
 #[cfg(test)]
@@ -896,6 +1048,79 @@ mod composition_tests {
             ids: vec![1, 2, 1, 2],
         }
     }
+    #[test]
+    fn source_gpu_layers_preserve_original_pixels_and_exact_layer_ids() {
+        let paint = fixture();
+        let mut layers = HashMap::new();
+        let a = image::RgbaImage::from_fn(4, 4, |x, y| {
+            image::Rgba([(x * 13 + y * 17) as u8, 60, 100, 255])
+        });
+        let b = image::RgbaImage::from_pixel(4, 4, image::Rgba([12, 180, 250, 255]));
+        layers.insert(
+            2,
+            DetailLayer {
+                image: b.clone(),
+                height: None,
+                tile: [0.15, 0.5],
+                strength: 0.8,
+                blend_factor: 10.0,
+                blend_falloff: 4.0,
+            },
+        );
+        layers.insert(
+            1,
+            DetailLayer {
+                image: a.clone(),
+                height: None,
+                tile: [0.25, 0.25],
+                strength: 1.0,
+                blend_factor: 16.0,
+                blend_falloff: 2.0,
+            },
+        );
+        let gpu = gpu_source(&paint, 2.0, &layers).unwrap();
+        assert_eq!(
+            gpu.layers.iter().map(|layer| layer.id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(gpu.layers[0].image.as_raw(), a.as_raw());
+        assert_eq!(gpu.layers[1].image.as_raw(), b.as_raw());
+        assert_eq!(gpu.layers[1].tile, [0.15, 0.5]);
+        // Heightmap LayerId bitmap ordering is source-format-specific; test
+        // byte-for-byte preservation rather than assuming row-major IDs.
+        assert_eq!(gpu.paint.get_pixel(0, 0)[0], paint.id_at(0, 0).unwrap());
+        assert_eq!(gpu.paint.get_pixel(1, 0)[0], paint.id_at(1, 0).unwrap());
+        assert_eq!(gpu.unit, 2.0);
+    }
+
+    #[test]
+    fn incompatible_terrain_array_falls_back_without_dropping_source_detail() {
+        let paint = fixture();
+        let mut layers = HashMap::new();
+        for (id, size) in [(1, 4), (2, 8)] {
+            layers.insert(
+                id,
+                DetailLayer {
+                    image: image::RgbaImage::from_pixel(
+                        size,
+                        size,
+                        image::Rgba([127, 128, 129, 255]),
+                    ),
+                    height: None,
+                    tile: [1.0, 1.0],
+                    strength: 1.0,
+                    blend_factor: 16.0,
+                    blend_falloff: 2.0,
+                },
+            );
+        }
+        assert!(gpu_source(&paint, 1.0, &layers).is_none());
+        assert_eq!(
+            compose_detail(&paint, (8, 8), 1.0, &layers).dimensions(),
+            (8, 8)
+        );
+    }
+
     #[test]
     fn terrain_diffuse_comes_from_verified_nested_mtl_leaf_not_optional_xml_scan() {
         let doc = evolve_core::parse_material(
@@ -980,6 +1205,25 @@ mod composition_tests {
         assert_eq!(adjacent.len(), 2);
         assert!(adjacent.iter().all(|(_, w)| (*w - 0.5).abs() < 0.0001));
     }
+    #[test]
+    fn minified_highpass_checkerboard_does_not_alias_into_false_colors() {
+        let mut image = image::RgbaImage::new(16, 16);
+        for y in 0..16 {
+            for x in 0..16 {
+                let value = if (x + y) % 2 == 0 { 0 } else { 255 };
+                image.put_pixel(x, y, image::Rgba([value, value, value, 255]));
+            }
+        }
+        let mipmaps = detail_mips(&image);
+        assert_eq!(mipmaps.last().unwrap().dimensions(), (1, 1));
+        // One source texel per pixel sees original detail, but a 16-texel
+        // footprint should converge to the neutral source average.
+        let filtered = detail_sample(&mipmaps, [0.123, 0.738], 16.0);
+        assert!(filtered.iter().all(|v| (*v - 0.5).abs() < 0.03));
+        let sample = detail_sample(&mipmaps, [0.0, 0.0], 1.0);
+        assert!(sample.iter().all(|v| v.is_finite()));
+    }
+
     #[test]
     fn neutral_highpass_composition_does_not_recolor_macro_source() {
         let paint = fixture();
