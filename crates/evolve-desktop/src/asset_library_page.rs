@@ -658,7 +658,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     rows = rows.push(browser_group_row(
                         format!("{name}  •  {count} PAKs"),
                         open,
-                        state.library_search.trim().is_empty().then(|| Message::LibraryToggleCategory(key.clone())),
+                        state
+                            .library_search
+                            .trim()
+                            .is_empty()
+                            .then(|| Message::LibraryToggleCategory(key.clone())),
                         state.preferences.ui_density == "Compact",
                         false,
                     ));
@@ -674,7 +678,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     rows = rows.push(browser_group_row(
                         format!("{name}  •  {source}  •  {count} source records"),
                         open,
-                        state.library_search.trim().is_empty().then(|| Message::LibraryToggleSource(key.clone())),
+                        state
+                            .library_search
+                            .trim()
+                            .is_empty()
+                            .then(|| Message::LibraryToggleSource(key.clone())),
                         state.preferences.ui_density == "Compact",
                         true,
                     ));
