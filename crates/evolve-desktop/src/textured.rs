@@ -1263,10 +1263,12 @@ impl Pipeline {
             }
             return;
         };
-        super::crash_diagnostics::record(
-            "gpu_material_upload_begin",
-            &format!("{} sections, {} indices", surfaces.len(), index_count),
-        );
+        if changed {
+            super::crash_diagnostics::record(
+                "gpu_material_upload_begin",
+                &format!("{} sections, {} indices", surfaces.len(), index_count),
+            );
+        }
         // Validate the complete contiguous index coverage before rendering;
         // an incomplete table must never paint unknown faces with a random map.
         let mut cursor = 0u32;

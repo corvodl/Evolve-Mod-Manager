@@ -3,8 +3,7 @@
 //! Only manifest-listed files in the selected archive are used. There is no
 //! guessed global map root, automatic editing, or modification of game files.
 use crate::{
-    asset_cache::SharedCache, auto_resources, level_environment, level_scene_renderer,
-    modding_projects::ProjectRow,
+    auto_resources, level_environment, level_scene_renderer, modding_projects::ProjectRow,
 };
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, TerrainPaintMap,
@@ -713,13 +712,9 @@ fn discover_inventory_with_owner(
     Ok((root, maps))
 }
 
-pub(super) fn open(
-    archive: ImportedPak,
-    index: usize,
-    cache: &SharedCache,
-) -> Result<LoadedMap, String> {
+pub(super) fn open(archive: ImportedPak, index: usize) -> Result<LoadedMap, String> {
     let (root, maps) = discover(&archive)?;
-    open_selected(archive, root, maps, index, cache, None, None)
+    open_selected(archive, root, maps, index, None, None)
 }
 
 /// Open a verified copy owned by the Modding project. The caller supplies the
@@ -728,7 +723,6 @@ pub(super) fn open(
 pub(super) fn open_project(
     project: ProjectRow,
     index: usize,
-    cache: &SharedCache,
     library_root: &Path,
 ) -> Result<LoadedMap, String> {
     let inventory = scan_directory(&project.workspace.join("files")).map_err(|e| e.to_string())?;
@@ -753,15 +747,7 @@ pub(super) fn open_project(
         warnings: 0,
         builds: build,
     };
-    open_selected(
-        archive,
-        root,
-        maps,
-        index,
-        cache,
-        Some(inventory),
-        Some(project),
-    )
+    open_selected(archive, root, maps, index, Some(inventory), Some(project))
 }
 
 fn open_selected(
@@ -769,7 +755,6 @@ fn open_selected(
     root: PathBuf,
     maps: Vec<MapCandidate>,
     index: usize,
-    cache: &SharedCache,
     project_inventory: Option<Inventory>,
     project: Option<ProjectRow>,
 ) -> Result<LoadedMap, String> {
@@ -1090,7 +1075,7 @@ fn open_selected(
                     header.version,
                     header.layers.len(),
                     header.layers.iter().map(|layer| format!(
-                        "{}×{} / format {} / {} bytes",
+                        "{}Ã—{} / format {} / {} bytes",
                         layer.sector_pixels, layer.sector_pixels,
                         layer.texture_format, layer.sector_bytes,
                     )).collect::<Vec<_>>().join("; ")
@@ -1101,7 +1086,7 @@ fn open_selected(
                 )),
             },
             Some(TerrainResource::Rgb24 { paths, side }) => diagnostics.push(format!(
-                "Original map-owned baked terrain RGB24 tile grid: {side}×{side} ({} verified imported raw members).",
+                "Original map-owned baked terrain RGB24 tile grid: {side}Ã—{side} ({} verified imported raw members).",
                 paths.len()
             )),
             None => diagnostics.push(
@@ -1151,7 +1136,6 @@ fn open_selected(
         &archive,
         scene.as_ref(),
         terrain.as_ref().map(|(mesh, _)| mesh),
-        cache,
         project_inventory.as_ref(),
     )?;
     if terrain.is_some()
@@ -1207,7 +1191,7 @@ fn open_selected(
                     assembled.world = std::sync::Arc::new(world);
                 }
                 diagnostics.push(format!(
-                    "Original baked terrain: decoded {} tiles ({}) into {}×{} ground-color atlas. {}",
+                    "Original baked terrain: decoded {} tiles ({}) into {}Ã—{} ground-color atlas. {}",
                     atlas.decoded_tiles,
                     if atlas.color_format == 3 { "RGB24".to_owned() }
                     else { format!("CRY format {}", atlas.color_format) },
