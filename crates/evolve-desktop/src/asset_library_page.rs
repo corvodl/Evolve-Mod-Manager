@@ -176,7 +176,10 @@ fn archive_row<'a>(
             ].spacing(3))
             .padding([4, 12])
             .width(Fill)
-            .style(design::muted_panel),
+            .style(|theme| container::Style {
+                background: Some(Background::Color(design::field(theme))),
+                ..container::Style::default()
+            }),
         );
     }
     container(content)
@@ -809,4 +812,81 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
         content = content.push(panel(container(item).padding(12)));
     }
     content.into()
+}
+
+#[cfg(test)]
+mod browser_tests {
+    use super::*;
+
+    fn archive(id: &str, group: &str, name: &str, source: &str) -> evolve_core::ImportedPak {
+        evolve_core::ImportedPak {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            source: source.to_owned(),
+            directory: format!("/library/{id}"),
+            group: group.to_owned(),
+            description: "Authoritative imported record".to_owned(),
+            entries: 30,
+            extracted_bytes: 300,
+            warnings: 0,
+            builds: vec!["Stage 2".to_owned()],
+        }
+    }
+
+    fn fixture() -> State {
+        let items = vec![
+            archive("a", "Animations", "AnimationsCAF.pak", "C:\\Games\\Stage2\\Game\\AnimationsCAF.pak"),
+            archive("b", "Animations", "AnimationsCAF.pak", "C:\\Games\\Stage2\\Game\\AnimationsCAF.pak"),
+            archive("c", "Animations", "AnimationsCAF.pak", "C:\\Games\\Legacy\\Game\\AnimationsCAF.pak"),
+            archive("d", "Levels", "Levels_Tutorial.pak", "C:\\Games\\Stage2\\Game\\Levels_Tutorial.pak"),
+        ];
+        let mut state = State::default();
+        state.library_catalog = Some(evolve_core::ImportedLibrary {
+            root: "/library".to_owned(),
+            archives: items,
+            builds: vec!["Stage 2".to_owned()],
+            total_bytes: 1200,
+            ignored: 0,
+        });
+        state.library_matches = vec![0, 1, 2, 3];
+        state
+    }
+
+    #[test]
+    fn categories_collapsed_by_default_without_losing_underlying_records() {
+        let mut state = fixture();
+        let rows = browser_rows(&state);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| matches!(row, BrowserRow::Category { .. })));
+        assert!(visible_archive_indices(&state).is_empty());
+        state.library_expanded_categories.insert("animations".to_owned());
+        let rows = browser_rows(&state);
+        assert!(rows.iter().any(|row| matches!(row, BrowserRow::SourceGroup { count: 2, .. })));
+        assert_eq!(visible_archive_indices(&state), vec![2]);
+        assert_eq!(state.library_catalog.as_ref().unwrap().archives.len(), 4);
+    }
+
+    #[test]
+    fn duplicate_source_group_is_nondestructive_and_each_record_remains_selectable() {
+        let mut state = fixture();
+        state.library_expanded_categories.insert("animations".to_owned());
+        let source_key = source_group_key(&state.library_catalog.as_ref().unwrap().archives[0]);
+        state.library_expanded_sources.insert(source_key);
+        assert_eq!(visible_archive_indices(&state), vec![0, 1, 2]);
+        assert_ne!(state.library_catalog.as_ref().unwrap().archives[0].id,
+                   state.library_catalog.as_ref().unwrap().archives[1].id);
+        state.library_flat_list = true;
+        assert_eq!(visible_archive_indices(&state), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn source_labels_preserve_build_provenance_and_search_opens_matches() {
+        assert_eq!(source_label("C:\\Games\\ModdedEvolve\\EvolveGame\\Game\\X.pak"), "EvolveGame");
+        assert_eq!(source_label("C:/Games/2012 Evolve/build_3/Game/X.pak"), "2012 Evolve / build_3");
+        let mut state = fixture();
+        state.library_matches = vec![3];
+        state.library_search = "tutorial".to_owned();
+        assert_eq!(visible_archive_indices(&state), vec![3]);
+        assert_eq!(state.library_catalog.as_ref().unwrap().archives.len(), 4);
+    }
 }
