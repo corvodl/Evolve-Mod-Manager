@@ -453,6 +453,7 @@ fn auxiliary_map(
 fn group_new_bytes(
     group: &ModelGroup,
     terrain_detail: Option<&Arc<image::RgbaImage>>,
+    terrain_gpu: Option<&Arc<super::terrain_material_probe::GpuTerrainSource>>,
     cache: &TextureCache,
     hashes: &mut SourceKeys,
     gpu_max_dimension: u32,
@@ -508,6 +509,15 @@ fn group_new_bytes(
                 .unwrap_or((1, 1));
                 mip_chain_bytes(w, h)
             }));
+        }
+    }
+    if is_ground(group) {
+        if let Some(source) = terrain_gpu {
+            let dims = source.layers[0].image.dimensions();
+            bytes = bytes.saturating_add(
+                source.layers.len() as u64 * mip_chain_bytes(dims.0, dims.1)
+                    + source.paint.width() as u64 * source.paint.height() as u64 * 4,
+            );
         }
     }
     bytes
@@ -1216,6 +1226,45 @@ impl Renderer {
                     },
                     count: None,
                 },
+                // Source DDS terrain array, categorical LayerId map, authored
+                // tiling/strength and repeat sampler. Original level materials
+                // retain complete mips; no baked detail downsampling.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 16,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 17,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 18,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let camera_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1264,6 +1313,7 @@ impl Renderer {
         });
         // Baked terrain UVs are normalized across the entire map: an edge
         // at exactly 1.0 must not repeat the opposite side of the atlas.
+        let empty_terrain = upload_terrain_layers(device, queue, None);
         let terrain_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -1657,6 +1707,7 @@ impl Renderer {
             last_lighting_hour: f32::NAN,
             sampler,
             terrain_sampler,
+            empty_terrain,
             world_identity: 0,
             last_full_textures: true,
             groups: Vec::new(),
@@ -1679,6 +1730,7 @@ impl Renderer {
         queue: &wgpu::Queue,
         model: &ModelGroup,
         terrain_detail: Option<&Arc<image::RgbaImage>>,
+        terrain_gpu: Option<&Arc<super::terrain_material_probe::GpuTerrainSource>>,
         full_textures: bool,
         cache: &mut TextureCache,
         hashes: &mut SourceKeys,
@@ -1736,6 +1788,12 @@ impl Renderer {
         let mut surfaces = Vec::new();
         let fallback = [210u8, 205, 205, 255];
         let terrain = is_ground(model);
+        let terrain_pack = if terrain {
+            terrain_gpu.map(|source| upload_terrain_layers(device, queue, Some(source)))
+        } else {
+            None
+        };
+        let terrain_textures = terrain_pack.as_ref().unwrap_or(&self.empty_terrain);
         let limit_2d = device.limits().max_texture_dimension_2d;
         for surf in &model.surfaces {
             if !surf.visible
@@ -1902,7 +1960,11 @@ impl Renderer {
             let (detail_tex, detail_view) = auxiliary_map(
                 device,
                 queue,
-                if terrain { terrain_detail } else { None },
+                if terrain && terrain_gpu.is_none() {
+                    terrain_detail
+                } else {
+                    None
+                },
                 6,
                 [128, 128, 128, 0],
                 wgpu::TextureFormat::Rgba8Unorm,
@@ -1990,6 +2052,21 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 14,
                         resource: self.hdr_uniform.as_entire_binding(),
+                    },                    wgpu::BindGroupEntry {
+                        binding: 15,
+                        resource: wgpu::BindingResource::TextureView(&terrain_textures.layer_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 16,
+                        resource: wgpu::BindingResource::TextureView(&terrain_textures.paint_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 17,
+                        resource: terrain_textures.uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 18,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
                     },
                 ],
             });
@@ -2021,6 +2098,7 @@ impl Renderer {
             visible: model.instances.len().min(u32::MAX as usize) as u32,
             surfaces,
             terrain,
+            _terrain_source: terrain_pack,
             geometry_bytes: (vert.len() * std::mem::size_of::<Vertex>()
                 + model.mesh.indices.len() * std::mem::size_of::<u32>()
                 + capacity * std::mem::size_of::<InstanceGpu>()
@@ -2151,8 +2229,13 @@ impl Renderer {
             }
             let requested = group_new_bytes(
                 &world.groups[idx],
-                if is_ground(&world.groups[idx]) {
+                if is_ground(&world.groups[idx]) && world.terrain_gpu.is_none() {
                     world.terrain_detail.as_ref()
+                } else {
+                    None
+                },
+                if is_ground(&world.groups[idx]) {
+                    world.terrain_gpu.as_ref()
                 } else {
                     None
                 },
@@ -2178,8 +2261,13 @@ impl Renderer {
                 device,
                 queue,
                 &world.groups[idx],
-                if is_ground(&world.groups[idx]) {
+                if is_ground(&world.groups[idx]) && world.terrain_gpu.is_none() {
                     world.terrain_detail.as_ref()
+                } else {
+                    None
+                },
+                if is_ground(&world.groups[idx]) {
+                    world.terrain_gpu.as_ref()
                 } else {
                     None
                 },
