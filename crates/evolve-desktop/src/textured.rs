@@ -1587,6 +1587,20 @@ impl Pipeline {
                 [0.18, 1.0, 1.0, 0.0],
             ),
         }
+        let aspect = size.0 as f32 / size.1.max(1) as f32;
+        self.hdr.set_sun_shafts(
+            queue,
+            primitive.world.as_ref().map_or([0.0; 4], |world| {
+                world.sun_shafts(
+                    primitive.camera,
+                    primitive.yaw,
+                    primitive.pitch,
+                    aspect,
+                    primitive.zoom,
+                    hour,
+                )
+            }),
+        );
         self.world_renderer.prepare(
             device,
             queue,

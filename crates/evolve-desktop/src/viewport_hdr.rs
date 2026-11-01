@@ -8,6 +8,9 @@ pub(super) const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16
 const BLOOM_DIVISOR: u32 = 4;
 
 struct Frames {
+    _shafts: wgpu::Texture,
+    shafts: wgpu::TextureView,
+    shaft_group: wgpu::BindGroup,
     _luminance: wgpu::Texture,
     luminance: wgpu::TextureView,
     size: (u32, u32),
@@ -35,6 +38,8 @@ pub(super) struct ViewportHdr {
     luminance: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     composite_uniform: wgpu::Buffer,
+    shaft_uniform: wgpu::Buffer,
+    shafts: wgpu::RenderPipeline,
     chart_view: wgpu::TextureView,
     chart_identity: usize,
     frames: Frames,
@@ -97,6 +102,7 @@ fn bind_composite(
     uniform: &wgpu::Buffer,
     chart: &wgpu::TextureView,
     luminance: &wgpu::TextureView,
+    shafts: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("HDR scene and bloom into Iced window"),
@@ -125,6 +131,10 @@ fn bind_composite(
             wgpu::BindGroupEntry {
                 binding: 5,
                 resource: wgpu::BindingResource::TextureView(luminance),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(shafts),
             },
         ],
     })
@@ -189,6 +199,7 @@ fn build_frames(
     composite_layout: &wgpu::BindGroupLayout,
     composite_uniform: &wgpu::Buffer,
     chart: &wgpu::TextureView,
+    shaft_uniform: &wgpu::Buffer,
 ) -> Frames {
     let size = (size.0.max(1), size.1.max(1));
     let small = (
@@ -200,6 +211,8 @@ fn build_frames(
     let (_horizontal, horizontal) = surface(device, small, "Bloom horizontal Gaussian pass");
     let (_blurred, blurred) = surface(device, small, "Bloom vertical Gaussian pass");
     let (_luminance, luminance) = surface(device, (1, 1), "Scene mean log luminance");
+    let (_shafts, shafts) = surface(device, small, "Sun shafts");
+    let shaft_group = bind_filter(device, filter_layout, &scene, sampler, shaft_uniform);
     let upload = |values: [f32; 4], label| {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(label),
@@ -239,8 +252,12 @@ fn build_frames(
         composite_uniform,
         chart,
         &luminance,
+        &shafts,
     );
     Frames {
+        _shafts,
+        shafts,
+        shaft_group,
         _luminance,
         luminance,
         size,
@@ -312,6 +329,7 @@ impl ViewportHdr {
                 sampling(2),
                 uniform(3),
                 sampled(4),
+                sampled(6),
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -394,6 +412,13 @@ impl ViewportHdr {
             "fs_luminance",
             SCENE_FORMAT,
         );
+        let shafts = pipeline(
+            "Sun shafts",
+            &filter_pipeline,
+            &bloom_source,
+            "fs_shafts",
+            SCENE_FORMAT,
+        );
         let composite = pipeline(
             "Linear HDR scene bloom composite",
             &composite_pipeline,
@@ -408,10 +433,16 @@ impl ViewportHdr {
                 [0.20_f32, 1.0, 0.0, 0.0],
                 [1.0, 1.0, 1.0, 4.0],
                 [0.18, 1.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0],
             ]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let chart_view = upload_color_chart(device, queue, None);
+        let shaft_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Sun shaft screen position"),
+            contents: bytemuck::cast_slice(&[0.0_f32; 4]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let frames = build_frames(
             device,
             (1, 1),
@@ -420,6 +451,7 @@ impl ViewportHdr {
             &composite_layout,
             &composite_uniform,
             &chart_view,
+            &shaft_uniform,
         );
         Self {
             sampler,
@@ -430,6 +462,8 @@ impl ViewportHdr {
             luminance,
             composite,
             composite_uniform,
+            shaft_uniform,
+            shafts,
             chart_view,
             chart_identity: 0,
             frames,
@@ -447,6 +481,7 @@ impl ViewportHdr {
             &self.composite_layout,
             &self.composite_uniform,
             &self.chart_view,
+            &self.shaft_uniform,
         );
     }
     /// Apply a map's authored film curve and color chart. Neutral with no map.
@@ -474,6 +509,16 @@ impl ViewportHdr {
             &self.composite_layout,
             &self.composite_uniform,
             &self.chart_view,
+            &self.shaft_uniform,
+        );
+    }
+    /// The sun's screen position and authored shaft strength; zero turns off.
+    pub(super) fn set_sun_shafts(&self, queue: &wgpu::Queue, shafts: [f32; 4]) {
+        queue.write_buffer(&self.shaft_uniform, 0, bytemuck::cast_slice(&shafts));
+        queue.write_buffer(
+            &self.composite_uniform,
+            48,
+            bytemuck::cast_slice(&[shafts[2], 0.0, 0.0, 0.0]),
         );
     }
     pub(super) fn set_source_unlit(&self, queue: &wgpu::Queue, unlit: bool) {
@@ -502,6 +547,12 @@ impl ViewportHdr {
                 &self.frames.luminance,
                 &self.luminance,
                 &self.frames.extract_group,
+            ),
+            (
+                "Sun shafts",
+                &self.frames.shafts,
+                &self.shafts,
+                &self.frames.shaft_group,
             ),
             (
                 "Bloom extract",

@@ -693,49 +693,90 @@ fn xml_tuple(text: &str, name: &str) -> Option<Vec<f32>> {
         .collect()
 }
 
-/// Mean HDR color of the smallest stored mip on each of a BC6H cubemap's faces.
-/// Each face's mip tail is stored largest first in the `.dds.0` head.
-fn cubemap_face_means(bytes: &[u8]) -> Result<[[f32; 3]; 6], String> {
-    const HEADER: usize = 148;
-    if bytes.len() <= HEADER || &bytes[84..88] != b"DX10" {
+const DX10_HEADER: usize = 148;
+
+fn bc6h_format(bytes: &[u8]) -> Result<bool, String> {
+    if bytes.len() <= DX10_HEADER || &bytes[84..88] != b"DX10" {
         return Err("Probe cubemap is not a DX10 DDS".into());
     }
-    let format = u32::from_le_bytes(bytes[128..132].try_into().unwrap());
-    if format != 95 && format != 96 {
-        return Err(format!("Unsupported probe cubemap format {format}"));
+    match u32::from_le_bytes(bytes[128..132].try_into().unwrap()) {
+        95 => Ok(false),
+        96 => Ok(true),
+        format => Err(format!("Unsupported probe cubemap format {format}")),
     }
-    let payload = bytes.len() - HEADER;
+}
+
+/// Mean HDR color of every stored block on each cubemap face.
+fn cubemap_face_means(bytes: &[u8]) -> Result<[[f32; 3]; 6], String> {
+    let signed = bc6h_format(bytes)?;
+    let payload = bytes.len() - DX10_HEADER;
     let face = payload / 6;
     if !payload.is_multiple_of(6) || !face.is_multiple_of(16) || face == 0 {
-        return Err("Probe cubemap mip tail has an unexpected size".into());
+        return Err("Probe cubemap has an unexpected size".into());
     }
     let mut means = [[0.0_f32; 3]; 6];
     for (index, mean) in means.iter_mut().enumerate() {
-        let start = HEADER + face * (index + 1) - 16;
-        let mut pixels = [0.0_f32; 48];
-        bcdec_rs::bc6h_float(&bytes[start..start + 16], &mut pixels, 12, format == 96);
-        for pixel in pixels.as_chunks::<3>().0 {
-            for (channel, value) in mean.iter_mut().zip(pixel) {
-                *channel += value.max(0.0) / 16.0;
+        let start = DX10_HEADER + face * index;
+        let blocks = face / 16;
+        for block in 0..blocks {
+            let mut pixels = [0.0_f32; 48];
+            let at = start + block * 16;
+            bcdec_rs::bc6h_float(&bytes[at..at + 16], &mut pixels, 12, signed);
+            for pixel in pixels.as_chunks::<3>().0 {
+                for (channel, value) in mean.iter_mut().zip(pixel) {
+                    *channel += value.max(0.0) / (16.0 * blocks as f32);
+                }
             }
         }
     }
     Ok(means)
 }
 
-/// The largest mip a BC6H cubemap head stores, as half-float RGBA per face.
+/// One cubemap mip as half-float RGBA per face, largest level first.
 #[derive(Clone, Debug)]
-pub(super) struct ProbeCube {
+pub(super) struct ProbeLevel {
     pub side: u32,
     pub faces: [Vec<u16>; 6],
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ProbeCube {
+    pub levels: Vec<ProbeLevel>,
     pub tint: [f32; 3],
 }
 
-fn decode_probe_cube(bytes: &[u8], tint: [f32; 3]) -> Result<ProbeCube, String> {
-    const HEADER: usize = 148;
-    let payload = bytes.len().saturating_sub(HEADER);
+fn decode_probe_level(blocks: &[u8], blocks_wide: usize, signed: bool) -> Vec<u16> {
+    let side = blocks_wide * 4;
+    let mut face = vec![0x3C00u16; side * side * 4];
+    for block in 0..blocks_wide * blocks_wide {
+        let mut pixels = [0u16; 48];
+        bcdec_rs::bc6h_half(
+            &blocks[block * 16..(block + 1) * 16],
+            &mut pixels,
+            12,
+            signed,
+        );
+        let (block_x, block_y) = (block % blocks_wide, block / blocks_wide);
+        for y in 0..4 {
+            for x in 0..4 {
+                let to = ((block_y * 4 + y) * side + block_x * 4 + x) * 4;
+                face[to..to + 3].copy_from_slice(&pixels[(y * 4 + x) * 3..(y * 4 + x) * 3 + 3]);
+            }
+        }
+    }
+    face
+}
+
+/// Every mip stored for a probe: numbered files hold one level across all six
+/// faces, and the `.dds.0` head holds each face's remaining tail.
+fn decode_probe_cube(
+    head_path: &std::path::Path,
+    head: &[u8],
+    tint: [f32; 3],
+) -> Result<ProbeCube, String> {
+    let signed = bc6h_format(head)?;
+    let payload = head.len() - DX10_HEADER;
     let face_blocks = payload / 6 / 16;
-    // A mip tail ending at one block holds 1 + 4 + 16 + ... blocks per face.
     let (mut top_blocks, mut total) = (1usize, 1usize);
     while total < face_blocks {
         top_blocks *= 4;
@@ -744,31 +785,56 @@ fn decode_probe_cube(bytes: &[u8], tint: [f32; 3]) -> Result<ProbeCube, String> 
     if total != face_blocks {
         return Err("Probe cubemap mip tail is not a whole chain".into());
     }
-    let blocks_wide = top_blocks.isqrt();
-    let side = blocks_wide * 4;
-    let mut faces: [Vec<u16>; 6] = std::array::from_fn(|_| vec![0x3C00u16; side * side * 4]);
-    for (index, face) in faces.iter_mut().enumerate() {
-        let start = HEADER + index * face_blocks * 16;
-        for block in 0..top_blocks {
-            let source = &bytes[start + block * 16..start + (block + 1) * 16];
-            let mut pixels = [0u16; 48];
-            bcdec_rs::bc6h_half(source, &mut pixels, 12, false);
-            let (block_x, block_y) = (block % blocks_wide, block / blocks_wide);
-            for y in 0..4 {
-                for x in 0..4 {
-                    let to = ((block_y * 4 + y) * side + block_x * 4 + x) * 4;
-                    face[to..to + 3].copy_from_slice(&pixels[(y * 4 + x) * 3..(y * 4 + x) * 3 + 3]);
-                }
-            }
+    let mut levels = Vec::new();
+    let name = head_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".0"))
+        .ok_or("Probe cubemap head is not a numbered DDS")?
+        .to_owned();
+    let mut blocks_wide = top_blocks.isqrt() * 2;
+    let mut part = 1;
+    let mut upper = Vec::new();
+    loop {
+        let path = head_path.with_file_name(format!("{name}.{part}"));
+        let Ok(bytes) = std::fs::read(path) else {
+            break;
+        };
+        if bytes.len() != 6 * blocks_wide * blocks_wide * 16 {
+            break;
         }
+        let per_face = bytes.len() / 6;
+        upper.push(ProbeLevel {
+            side: (blocks_wide * 4) as u32,
+            faces: std::array::from_fn(|face| {
+                decode_probe_level(
+                    &bytes[face * per_face..(face + 1) * per_face],
+                    blocks_wide,
+                    signed,
+                )
+            }),
+        });
+        blocks_wide *= 2;
+        part += 1;
     }
-    Ok(ProbeCube {
-        side: side as u32,
-        faces,
-        tint,
-    })
+    upper.reverse();
+    levels.extend(upper);
+    let mut wide = top_blocks.isqrt();
+    let mut offset = 0usize;
+    while wide >= 1 {
+        let size = wide * wide * 16;
+        levels.push(ProbeLevel {
+            side: (wide * 4) as u32,
+            faces: std::array::from_fn(|face| {
+                let at = DX10_HEADER + face * face_blocks * 16 + offset;
+                decode_probe_level(&head[at..at + size], wide, signed)
+            }),
+        });
+        offset += size;
+        wide /= 2;
+    }
+    Ok(ProbeCube { levels, tint })
 }
-
 /// Ambient color per direction: +X, -X, +Y, -Y, +Z, -Z.
 pub(super) type AmbientCube = [[f32; 4]; 6];
 
@@ -818,9 +884,12 @@ pub(super) fn authored_ambient_cube(
     let Some(path) = indexed_source(root, &build, &format!("{stem}.dds.0"))? else {
         return Ok(None);
     };
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let means = cubemap_face_means(&bytes)?;
-    let cube = decode_probe_cube(&bytes, tint)?;
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    // The `_diff` companion is the probe's baked irradiance.
+    let diffuse = indexed_source(root, &build, &format!("{stem}_diff.dds.0"))?
+        .and_then(|path| std::fs::read(path).ok());
+    let means = cubemap_face_means(diffuse.as_deref().unwrap_or(&bytes))?;
+    let cube = decode_probe_cube(&path, &bytes, tint)?;
     Ok(Some((
         std::array::from_fn(|face| {
             [
@@ -832,6 +901,196 @@ pub(super) fn authored_ambient_cube(
         }),
         cube,
     )))
+}
+
+/// One authored WaterVolume, as triangles at its world height.
+#[derive(Clone, Debug)]
+pub(super) struct WaterSurface {
+    pub triangles: Vec<[f32; 3]>,
+    pub tint: [f32; 3],
+    pub decal_strength: f32,
+    /// Tilling, DetailTilling, DecalTilling, NormalsScale.
+    pub tiling: [f32; 4],
+    pub decal: Option<std::sync::Arc<image::RgbaImage>>,
+}
+
+/// Ear clipping for the simple polygons authored as water outlines.
+fn triangulate(points: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    let cross = |a: [f32; 3], b: [f32; 3], c: [f32; 3]| {
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    };
+    let mut ring = points.to_vec();
+    let area = (0..ring.len())
+        .map(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum::<f32>();
+    if area < 0.0 {
+        ring.reverse();
+    }
+    let mut triangles = Vec::with_capacity(points.len().saturating_sub(2) * 3);
+    while ring.len() > 3 {
+        let count = ring.len();
+        let ear = (0..count).find(|&i| {
+            let (a, b, c) = (
+                ring[(i + count - 1) % count],
+                ring[i],
+                ring[(i + 1) % count],
+            );
+            cross(a, b, c) > 0.0
+                && !ring.iter().any(|&p| {
+                    p != a
+                        && p != b
+                        && p != c
+                        && cross(a, b, p) >= 0.0
+                        && cross(b, c, p) >= 0.0
+                        && cross(c, a, p) >= 0.0
+                })
+        });
+        let Some(index) = ear else {
+            break;
+        };
+        triangles.extend([
+            ring[(index + count - 1) % count],
+            ring[index],
+            ring[(index + 1) % count],
+        ]);
+        ring.remove(index);
+    }
+    if ring.len() == 3 {
+        triangles.extend_from_slice(&ring);
+    }
+    triangles
+}
+
+fn mtl_value(text: &str, name: &str, default: f32) -> f32 {
+    xml_attribute(text, name)
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(default)
+}
+
+/// Every authored WaterVolume in the map's layers, with its material values.
+pub(super) fn authored_water(
+    archive: &evolve_core::ImportedPak,
+    layers: &[(String, Vec<u8>)],
+) -> Result<Vec<WaterSurface>, String> {
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    let mut surfaces = Vec::new();
+    for (_, bytes) in layers {
+        let text = String::from_utf8_lossy(bytes);
+        for (offset, _) in text.match_indices(" Type=\"WaterVolume\"") {
+            let object = &text[offset..];
+            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let Some(origin) = xml_tuple(object, "Pos").filter(|pos| pos.len() == 3) else {
+                continue;
+            };
+            let points = object
+                .match_indices("<Point ")
+                .filter_map(|(at, _)| xml_tuple(&object[at..], "Pos"))
+                .filter(|point| point.len() == 3)
+                // The polygon is flat: use the volume's own height everywhere.
+                .map(|point| [origin[0] + point[0], origin[1] + point[1], origin[2]])
+                .collect::<Vec<_>>();
+            if points.len() < 3 {
+                continue;
+            }
+            let material = xml_attribute(object, "Material").unwrap_or_default();
+            let mtl = indexed_source(root, &build, &format!("{material}.mtl"))
+                .ok()
+                .flatten()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .unwrap_or_default();
+            let tint = xml_tuple(&mtl, "Diffuse").unwrap_or_default();
+            let decal = mtl
+                .find("Map=\"Custom\"")
+                .and_then(|at| xml_attribute(&mtl[at..], "File"))
+                .and_then(|file| {
+                    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+                    let path = indexed_source(root, &build, &format!("{stem}.dds.0")).ok()??;
+                    evolve_core::decode_dds_rgba(&path).ok()
+                })
+                .map(|(_, image)| std::sync::Arc::new(image));
+            surfaces.push(WaterSurface {
+                triangles: triangulate(&points),
+                tint: match tint.as_slice() {
+                    [r, g, b] => [*r, *g, *b],
+                    _ => [0.06, 0.07, 0.05],
+                },
+                decal_strength: mtl_value(&mtl, "DecalStrength", 0.5),
+                tiling: [
+                    mtl_value(&mtl, "Tilling", 0.1),
+                    mtl_value(&mtl, "DetailTilling", 3.0),
+                    mtl_value(&mtl, "DecalTilling", 0.05),
+                    mtl_value(&mtl, "NormalsScale", 1.0),
+                ],
+                decal,
+            });
+        }
+    }
+    Ok(surfaces)
+}
+
+/// One planet or moon from Environment.xml.
+#[derive(Clone, Debug)]
+pub(super) struct CelestialBody {
+    /// Unit direction, then authored Size.
+    pub direction_size: [f32; 4],
+    pub rotation_degrees: f32,
+    pub image: std::sync::Arc<image::RgbaImage>,
+}
+
+/// CelestialBody1..N. The placement convention and size scale are calibrated
+/// to in-game captures; only the authored numbers come from the map.
+pub(super) fn authored_celestial_bodies(
+    archive: &evolve_core::ImportedPak,
+    environment: &[u8],
+) -> Result<Vec<CelestialBody>, String> {
+    let text = String::from_utf8_lossy(environment);
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    let mut bodies = Vec::new();
+    for index in 1..=4 {
+        let Some(at) = text.find(&format!("<CelestialBody{index} ")) else {
+            continue;
+        };
+        let element = &text[at..];
+        let element = &element[..element.find("/>").unwrap_or(element.len())];
+        let Some(file) = xml_attribute(element, "Texture").filter(|file| !file.is_empty()) else {
+            continue;
+        };
+        let number = |name: &str| mtl_value(element, name, 0.0);
+        let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+        let Some(path) = indexed_source(root, &build, &format!("{stem}.dds.0"))? else {
+            continue;
+        };
+        let (_, image) = evolve_core::decode_dds_rgba(&path).map_err(|e| e.to_string())?;
+        let (azimuth, polar) = (
+            number("Latitude").to_radians(),
+            number("Longitude").to_radians(),
+        );
+        bodies.push(CelestialBody {
+            direction_size: [
+                polar.sin() * azimuth.cos(),
+                polar.sin() * azimuth.sin(),
+                polar.cos(),
+                number("Size"),
+            ],
+            rotation_degrees: number("Rotation"),
+            image: std::sync::Arc::new(image),
+        });
+    }
+    Ok(bodies)
 }
 
 /// The map's authored color chart, read from the same installation.

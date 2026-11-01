@@ -592,6 +592,8 @@ pub(super) struct World {
     pub authored_sun: Option<super::level_atmosphere::AuthoredSun>,
     pub ambient_cube: Option<[[f32; 4]; 6]>,
     pub probe_cube: Option<Arc<super::level_atmosphere::ProbeCube>>,
+    pub water: Arc<Vec<super::level_atmosphere::WaterSurface>>,
+    pub celestial_bodies: Arc<Vec<super::level_atmosphere::CelestialBody>>,
     pub color_chart: Option<Arc<image::RgbaImage>>,
     pub static_sky: Option<Arc<super::level_atmosphere::StaticSky>>,
     pub local_lights: Arc<Vec<super::level_atmosphere::LocalLight>>,
@@ -800,6 +802,53 @@ impl World {
             .max(0.001);
         let high = profile.scalar("Max exposure", hour).unwrap_or(1.0).max(low);
         [key, low, high, 1.0]
+    }
+
+    fn lighting_at(&self, hour: f32) -> super::level_lighting::Lighting {
+        self.time_of_day.as_ref().map_or_else(
+            || super::level_lighting::Lighting::at(hour),
+            |profile| {
+                super::level_lighting::Lighting::from_original(hour, profile).with_authored_sun(
+                    self.authored_sun,
+                    hour,
+                    profile,
+                )
+            },
+        )
+    }
+
+    /// The sun's position on screen and the map's authored shaft strength.
+    pub fn sun_shafts(
+        &self,
+        camera: Option<level_camera::Camera>,
+        yaw: f32,
+        pitch: f32,
+        aspect: f32,
+        zoom: f32,
+        hour: f32,
+    ) -> [f32; 4] {
+        let Some(camera) = camera else {
+            return [0.0; 4];
+        };
+        let view = CameraGpu::make(camera, yaw, pitch, aspect, zoom);
+        let sun = self.lighting_at(hour).sun;
+        let along = |axis: [f32; 4]| sun[0] * axis[0] + sun[1] * axis[1] + sun[2] * axis[2];
+        let depth = along(view.forward);
+        if depth <= 0.05 || sun[2] <= 0.0 {
+            return [0.0; 4];
+        }
+        let strength = self
+            .time_of_day
+            .as_ref()
+            .and_then(|profile| profile.scalar("Sun rays visibility", hour))
+            .unwrap_or(0.0)
+            .max(0.0);
+        [
+            along(view.right) / view.right[3] / depth * 0.5 + 0.5,
+            0.5 - along(view.up) / view.up[3] / depth * 0.5,
+            strength * depth.min(1.0) * 0.35,
+            0.0,
+        ]
     }
 
     pub fn precompute_gpu_source_hashes(&mut self) {
@@ -1088,6 +1137,14 @@ fn upload_terrain_layers(
     }
 }
 
+struct GpuWater {
+    vertices: wgpu::Buffer,
+    count: u32,
+    bind: wgpu::BindGroup,
+    _decal: wgpu::Texture,
+    _params: wgpu::Buffer,
+}
+
 struct GpuSurface {
     distance_clouds: bool,
     diffuse_key: TextureKey,
@@ -1121,26 +1178,99 @@ fn upload_probe_cube(
     queue: &wgpu::Queue,
     cube: Option<&super::level_atmosphere::ProbeCube>,
 ) -> wgpu::TextureView {
-    let side = cube.map_or(1, |cube| cube.side);
+    let black = [super::level_atmosphere::ProbeLevel {
+        side: 1,
+        faces: std::array::from_fn(|_| vec![0u16; 4]),
+    }];
+    let levels = cube.map_or(black.as_slice(), |cube| cube.levels.as_slice());
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Original map environment probe"),
         size: wgpu::Extent3d {
-            width: side,
-            height: side,
+            width: levels[0].side,
+            height: levels[0].side,
             depth_or_array_layers: 6,
         },
-        mip_level_count: 1,
+        mip_level_count: levels.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let black = [0u16; 4];
-    for face in 0..6u32 {
-        let pixels = cube.map_or(black.as_slice(), |cube| {
-            cube.faces[face as usize].as_slice()
-        });
+    for (mip, level) in levels.iter().enumerate() {
+        for (face, pixels) in level.faces.iter().enumerate() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: mip as u32,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: face as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytemuck::cast_slice(pixels),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(level.side * 8),
+                    rows_per_image: Some(level.side),
+                },
+                wgpu::Extent3d {
+                    width: level.side,
+                    height: level.side,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    })
+}
+
+// Authored Size 1.0 as an angular radius, calibrated to in-game captures.
+const CELESTIAL_RADIUS_DEGREES: f32 = 6.0;
+
+/// Up to four authored planets as one array, plus their placement uniforms.
+fn upload_celestial(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    bodies: &[super::level_atmosphere::CelestialBody],
+) -> (wgpu::TextureView, [[f32; 4]; 8]) {
+    let bodies = &bodies[..bodies.len().min(4)];
+    let (width, height) = bodies
+        .first()
+        .map_or((1, 1), |body| body.image.dimensions());
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Original map celestial bodies"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: bodies.len().max(1) as u32,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let mut uniform = [[0.0_f32; 4]; 8];
+    for (index, body) in bodies.iter().enumerate() {
+        let resized;
+        let image = if body.image.dimensions() == (width, height) {
+            body.image.as_ref()
+        } else {
+            resized = image::imageops::resize(
+                body.image.as_ref(),
+                width,
+                height,
+                image::imageops::FilterType::Triangle,
+            );
+            &resized
+        };
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -1148,27 +1278,48 @@ fn upload_probe_cube(
                 origin: wgpu::Origin3d {
                     x: 0,
                     y: 0,
-                    z: face,
+                    z: index as u32,
                 },
                 aspect: wgpu::TextureAspect::All,
             },
-            bytemuck::cast_slice(pixels),
+            image.as_raw(),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(side * 8),
-                rows_per_image: Some(side),
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
             },
             wgpu::Extent3d {
-                width: side,
-                height: side,
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let [x, y, z, size] = body.direction_size;
+        uniform[index] = [x, y, z, (size * CELESTIAL_RADIUS_DEGREES).to_radians()];
+        let (sin, cos) = body.rotation_degrees.to_radians().sin_cos();
+        uniform[index + 4] = [cos, sin, index as f32, 1.0];
+    }
+    if bodies.is_empty() {
+        queue.write_texture(
+            texture.as_image_copy(),
+            &[0, 0, 0, 0],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
                 depth_or_array_layers: 1,
             },
         );
     }
-    texture.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::Cube),
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
-    })
+    });
+    (view, uniform)
 }
 
 fn shadow_bind_group(
@@ -1307,6 +1458,11 @@ pub(super) struct Renderer {
     shadow_sun: [f32; 3],
     shadow_stale: [AtomicBool; SHADOW_CASCADES],
     started: std::time::Instant,
+    water_pipeline: wgpu::RenderPipeline,
+    water_layout: wgpu::BindGroupLayout,
+    water_sampler: wgpu::Sampler,
+    water_surfaces: Vec<GpuWater>,
+    celestial_uniform: wgpu::Buffer,
     shadow_sample_layout: wgpu::BindGroupLayout,
     shadow_array: wgpu::TextureView,
     shadow_compare: wgpu::Sampler,
@@ -1680,6 +1836,7 @@ impl Renderer {
             label: Some("Environment probe reflection"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let shadow_group = shadow_bind_group(
@@ -1776,6 +1933,100 @@ impl Renderer {
         };
         let shadow_opaque = shadow_pipeline(false);
         let shadow_cutout = shadow_pipeline(true);
+        let water_uniform_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let water_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Authored water surface"),
+            entries: &[
+                water_uniform_entry(0),
+                water_uniform_entry(1),
+                water_uniform_entry(2),
+                water_uniform_entry(3),
+                water_uniform_entry(4),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let water_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Authored water surface"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "world_water.wgsl"
+            ))),
+        });
+        let water_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Authored water surface"),
+            bind_group_layouts: &[&water_layout, &shadow_sample_layout],
+            push_constant_ranges: &[],
+        });
+        let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Authored water surface"),
+            layout: Some(&water_pipe_layout),
+            vertex: wgpu::VertexState {
+                module: &water_shader,
+                entry_point: Some("vs_water"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 12,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3],
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &water_shader,
+                entry_point: Some("fs_water"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let water_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Authored water decal"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Instanced level model pipeline"),
             bind_group_layouts: &[&layout, &shadow_sample_layout],
@@ -1841,9 +2092,34 @@ impl Renderer {
             })
         };
 
+        let celestial_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Original map celestial bodies"),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 8]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let sky_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Source map Sky box and procedural scattering bindings"),
             entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -1984,10 +2260,19 @@ impl Renderer {
                 view
             })
             .collect::<Vec<_>>();
+        let (no_celestial, _) = upload_celestial(device, queue, &[]);
         let sky_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Original map sky source faces"),
             layout: &sky_layout,
             entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: celestial_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&no_celestial),
+                },
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: camera_uniform.as_entire_binding(),
@@ -2286,6 +2571,11 @@ impl Renderer {
             shadow_sun: [0.0, 0.0, 1.0],
             shadow_stale: std::array::from_fn(|_| AtomicBool::new(true)),
             started: std::time::Instant::now(),
+            water_pipeline,
+            water_layout,
+            water_sampler,
+            water_surfaces: Vec::new(),
+            celestial_uniform,
             shadow_sample_layout,
             shadow_array,
             shadow_compare,
@@ -2747,6 +3037,7 @@ impl Renderer {
             self.last_full_textures = full_textures;
             self.last_camera = None;
             self.shadow_groups_seen = 0;
+            self.update_water(device, queue, world);
             self.ambient_cube = world.ambient_cube;
             self.probe_tint = world.probe_cube.as_ref().map_or([0.0; 4], |cube| {
                 [cube.tint[0], cube.tint[1], cube.tint[2], 0.0]
@@ -3144,6 +3435,83 @@ impl Renderer {
         }
     }
 
+    fn update_water(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
+        self.water_surfaces = world
+            .water
+            .iter()
+            .filter(|water| !water.triangles.is_empty())
+            .map(|water| {
+                let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Authored water polygon"),
+                    contents: bytemuck::cast_slice(&water.triangles),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Authored water material"),
+                    contents: bytemuck::cast_slice(&[
+                        [
+                            water.tint[0],
+                            water.tint[1],
+                            water.tint[2],
+                            water.decal_strength,
+                        ],
+                        water.tiling,
+                    ]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+                let (decal, decal_view) = upload_rgba_mips(
+                    device,
+                    queue,
+                    water.decal.as_deref(),
+                    [128, 128, 128, 0],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "Authored water decal",
+                );
+                let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Authored water surface"),
+                    layout: &self.water_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.camera_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: self.lighting_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.fog_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: self.hdr_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: params.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: wgpu::BindingResource::TextureView(&decal_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 6,
+                            resource: wgpu::BindingResource::Sampler(&self.water_sampler),
+                        },
+                    ],
+                });
+                GpuWater {
+                    vertices,
+                    count: water.triangles.len() as u32,
+                    bind,
+                    _decal: decal,
+                    _params: params,
+                }
+            })
+            .collect();
+    }
+
     fn update_sky_source(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
         let images: [(wgpu::Texture, wgpu::TextureView); 3] = std::array::from_fn(|index| {
             let original = world
@@ -3159,10 +3527,20 @@ impl Renderer {
                 "Verified original map static Sky face",
             )
         });
+        let (celestial_view, celestial) = upload_celestial(device, queue, &world.celestial_bodies);
+        queue.write_buffer(&self.celestial_uniform, 0, bytemuck::cast_slice(&celestial));
         let sky_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Per-map sky box/static or dynamic"),
             layout: &self.sky_layout,
             entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.celestial_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&celestial_view),
+                },
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: self.camera_uniform.as_entire_binding(),
@@ -3372,7 +3750,16 @@ impl Renderer {
         // Opaque, masked foliage, then blended glass/water. Alpha-tested
         // vegetation writes depth, unlike translucent overlays.
         pass.set_bind_group(1, &self.shadow_group, &[]);
-        for mode in [3, 0, 1, 2] {
+        for mode in [3, 0, 1, 4, 2] {
+            if mode == 4 {
+                pass.set_pipeline(&self.water_pipeline);
+                for water in &self.water_surfaces {
+                    pass.set_bind_group(0, &water.bind, &[]);
+                    pass.set_vertex_buffer(0, water.vertices.slice(..));
+                    pass.draw(0..water.count, 0..1);
+                }
+                continue;
+            }
             for group in self.groups.iter().flatten() {
                 if group.visible == 0 {
                     continue;

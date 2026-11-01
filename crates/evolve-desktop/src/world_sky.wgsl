@@ -16,6 +16,36 @@ struct TimeOfDayLight {sun:vec4<f32>,ambient:vec4<f32>,sun_color:vec4<f32>,}
 @group(0) @binding(4) var sky_34:texture_2d<f32>;
 @group(0) @binding(5) var sky_5:texture_2d<f32>;
 @group(0) @binding(6) var<uniform> sunlight:TimeOfDayLight;
+struct Celestial {
+  bodies:array<vec4<f32>,4>,    // unit direction, angular radius in radians
+  rotations:array<vec4<f32>,4>, // cos, sin of authored rotation, layer, enabled
+}
+@group(0) @binding(7) var<uniform> celestial:Celestial;
+@group(0) @binding(8) var celestial_images:texture_2d_array<f32>;
+
+// Planets sit behind the cloud dome and pick up the atmosphere in front of them.
+fn over_celestial(direction:vec3<f32>,sky_color:vec3<f32>)->vec3<f32> {
+  var color=sky_color;
+  for (var i=0;i<4;i=i+1) {
+    if (celestial.rotations[i].w<0.5) { continue; }
+    let center=celestial.bodies[i].xyz;
+    let facing=dot(direction,center);
+    if (facing<=0.0) { continue; }
+    var up=vec3<f32>(0.0,0.0,1.0);
+    if (abs(center.z)>0.99) { up=vec3<f32>(0.0,1.0,0.0); }
+    let right=normalize(cross(up,center));
+    let top=cross(center,right);
+    let scale=tan(celestial.bodies[i].w);
+    var p=vec2<f32>(dot(direction,right),dot(direction,top))/(facing*scale);
+    if (dot(p,p)>1.0) { continue; }
+    let turn=celestial.rotations[i].xy;
+    p=vec2<f32>(p.x*turn.x-p.y*turn.y,p.x*turn.y+p.y*turn.x);
+    let sampled=textureSampleLevel(celestial_images,sky_sampler,p*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5),
+      i32(celestial.rotations[i].z),0.0);
+    color=mix(color,sampled.rgb*sunlight.sun_color.rgb*1.2+sky_color*0.25,sampled.a);
+  }
+  return color;
+}
 
 struct SkyVertex { @builtin(position) position:vec4<f32>, @location(0) ndc:vec2<f32>, }
 @vertex
@@ -108,7 +138,7 @@ fn dynamic_sky(direction:vec3<f32>)->vec3<f32> {
       (vec3<f32>(1.0)-extinction)/
       max(beta_ray+vec3<f32>(beta_mie),vec3<f32>(0.001));
   let sun_rad=sky.params[0].rgb*(sky.params[0].a*sunlight.sun.w);
-  let natural=(scattering*sun_rad*3.0 +
+  let natural=(scattering*sun_rad*0.2 +
       sky.params[3].rgb*(0.10+0.22*max(direction.z,0.0)))*max(sun_dir.z+0.08,0.0);
   let disk=smoothstep(0.9993,0.99995,mu)*max(sun_dir.z+0.04,0.0);
   // Maps author these gradient colors for daytime as well as night, which is
@@ -132,7 +162,9 @@ fn fs_sky(input:SkyVertex)->@location(0) vec4<f32> {
   if (sky.params[1].w>0.5) {
     linear=static_sky(direction);
   }
+  linear=over_celestial(direction,linear);
   // Sky is written to the linear HDR render target; one final filmic
   // transform follows after bloom, never per-source double tonemapping.
-  return vec4<f32>(linear,1.0);
+  // Zero alpha marks open sky for the sun shaft pass.
+  return vec4<f32>(linear,0.0);
 }

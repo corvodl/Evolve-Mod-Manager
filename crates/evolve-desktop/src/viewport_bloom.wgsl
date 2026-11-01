@@ -53,3 +53,22 @@ fn fs_luminance(input:FsOut)->@location(0) vec4<f32> {
     }
     return vec4<f32>(sum/256.0,0.0,0.0,1.0);
 }
+// Light from open sky, smeared toward the sun. filter_params: sun uv, strength.
+@fragment
+fn fs_shafts(input:FsOut)->@location(0) vec4<f32> {
+    if (filter_params.z<=0.0) { return vec4<f32>(0.0,0.0,0.0,1.0); }
+    let to_sun=filter_params.xy-input.uv;
+    var sum=vec3<f32>(0.0);
+    var weight=1.0;
+    var total=0.0;
+    for (var i=0;i<48;i=i+1) {
+        let uv=input.uv+to_sun*(f32(i)/48.0);
+        if (all(uv>=vec2<f32>(0.0)) && all(uv<=vec2<f32>(1.0))) {
+            let sampled=textureSampleLevel(source_texture,source_sampler,uv,0.0);
+            sum+=min(sampled.rgb,vec3<f32>(8.0))*(1.0-clamp(sampled.a,0.0,1.0))*weight;
+        }
+        total+=weight;
+        weight*=0.97;
+    }
+    return vec4<f32>(sum/total,1.0);
+}

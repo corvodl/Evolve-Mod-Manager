@@ -20,15 +20,19 @@ struct CompositeParams {
     params:vec4<f32>,
     film:vec4<f32>, // authored shoulder, midtones, toe, whitepoint
     adaptation:vec4<f32>, // authored scene key, min exposure, max exposure, enabled
+    shafts:vec4<f32>, // strength
 }
 @group(0) @binding(3) var<uniform> composite:CompositeParams;
 @group(0) @binding(4) var color_chart:texture_2d<f32>;
 @group(0) @binding(5) var scene_log_luminance:texture_2d<f32>;
+@group(0) @binding(6) var sun_shafts:texture_2d<f32>;
 // Exposure that brings the measured scene to its authored key, within limits.
 fn adapted_exposure()->f32 {
     if (composite.adaptation.w<0.5) { return 1.0; }
     let average=exp(textureLoad(scene_log_luminance,vec2<i32>(0,0),0).r);
-    return clamp(composite.adaptation.x/max(average,0.0001),
+    // Eyes only partly adapt: a dark or bright view stays somewhat dark or bright.
+    let partial=sqrt(max(average,0.0001)*composite.adaptation.x);
+    return clamp(composite.adaptation.x/partial,
         composite.adaptation.y,composite.adaptation.z);
 }
 fn filmic_curve(x:vec3<f32>)->vec3<f32>{
@@ -43,7 +47,8 @@ fn filmic_curve(x:vec3<f32>)->vec3<f32>{
 // Calibrated to the film variables each map authors. Evolve's compiled curve
 // has not been decoded, so the coefficients here are not verified engine data.
 fn film_map(radiance:vec3<f32>)->vec3<f32>{
-    let v=max(radiance*composite.params.y*adapted_exposure(),vec3<f32>(0.0));
+    // 0.6 is calibrated to in-game screenshots; the engine's scale is unverified.
+    let v=max(radiance*composite.params.y*adapted_exposure()*0.6,vec3<f32>(0.0));
     let white=max(composite.film.w,0.01);
     return clamp(filmic_curve(v)/filmic_curve(vec3<f32>(white)),vec3<f32>(0.0),vec3<f32>(1.0));
 }
@@ -74,6 +79,7 @@ fn fs_composite(input:FsOut)->@location(0) vec4<f32> {
         return vec4<f32>(source,1.0);
     }
     let bloom=textureSampleLevel(hdr_bloom,hdr_sampler,uv,0.0).rgb;
-    let combined=source+bloom*max(composite.params.x,0.0);
+    let shafts=textureSampleLevel(sun_shafts,hdr_sampler,uv,0.0).rgb;
+    let combined=source+bloom*max(composite.params.x,0.0)+shafts*composite.shafts.x;
     return vec4<f32>(graded(film_map(combined)),1.0);
 }

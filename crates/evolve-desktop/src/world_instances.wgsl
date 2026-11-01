@@ -83,6 +83,7 @@ struct SourceTerrainParams {
 @group(0) @binding(19) var source_terrain_normals: texture_2d_array<f32>;
 // Tangent XY of the blended terrain layers, read by the normal step in shade.
 var<private> terrain_normal_xy: vec2<f32>;
+var<private> blended_surface: f32;
 
 // Sun shadow cascades, nearest first. Depth runs from 0 at the sun outward.
 struct SunShadows {
@@ -321,8 +322,11 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   let view_angle=1.0-max(dot(n,view_direction),0.0);
   let fresnel=reflectance+(vec3<f32>(1.0)-reflectance)*pow(view_angle,5.0);
   let has_specular=step(0.001,max(reflectance.r,max(reflectance.g,reflectance.b)));
-  let reflected=textureSampleLevel(probe_cube,probe_sampler,
-    reflect(-view_direction,n),0.0).rgb*sun_shadows.probe_tint.rgb*fresnel*has_specular;
+  let raw_reflected=textureSampleLevel(probe_cube,probe_sampler,
+    reflect(-view_direction,n),(1.0-clamp(gloss,0.0,1.0))*4.0+2.5).rgb*sun_shadows.probe_tint.rgb*fresnel*has_specular;
+  // Blended water reads paler than the warm probe suggests; calibrated by eye.
+  let reflected_luma=dot(raw_reflected,vec3<f32>(0.2126,0.7152,0.0722));
+  let reflected=mix(raw_reflected,vec3<f32>(reflected_luma)*0.8,blended_surface*0.7);
   var local_radiance=vec3<f32>(0.0);
   let sources=u32(clamp(local_lights.count.x,0.0,24.0));
   for (var i=0u;i<24u;i=i+1u) {
@@ -456,6 +460,7 @@ fn fs_main(input:Output)->@location(0) vec4<f32> {
   // Glass/water opacity is continuous coverage, not an alpha-cutout test.
   // A 20% source opacity must stay visible as 20% blended glass instead of
   // being discarded by the solid-surface 50% mask threshold.
+  blended_surface=1.0;
   let color=shade(input,false);
   let fogged=distance_fog(input,color);
   let alpha=textureSample(authored_opacity,tex_sampler,input.uv).r;

@@ -44,6 +44,8 @@ fn capture_real_map_views() {
     let map = level_library::open(archive, 0).unwrap();
     for note in map.diagnostics.iter().filter(|note| {
         note.contains("global probe")
+            || note.contains("water volumes")
+            || note.contains("celestial")
             || note.contains("terrain color")
             || note.contains("olor chart")
             || note.contains("sun vector")
@@ -135,6 +137,10 @@ fn capture_real_map_views() {
             world.color_chart.as_ref(),
             world.film_curve(hour),
             world.eye_adaptation(hour),
+        );
+        hdr.set_sun_shafts(
+            &queue,
+            world.sun_shafts(Some(camera), yaw, pitch, aspect, 1.0, hour),
         );
         let frames = if uploaded { 2 } else { 40_000 };
         for frame in 0..frames {
