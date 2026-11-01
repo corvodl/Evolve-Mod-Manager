@@ -8559,15 +8559,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Index extracted assets before loading character animations.".into();
                 return Task::none();
             };
+            let declared_databases = state.auto_clips.iter()
+                .filter(|item| item.kind == "dba" && item.label.eq_ignore_ascii_case("$TracksDatabase"))
+                .map(|item| item.virtual_path.clone())
+                .collect();
             let operation = Operation::LoadDeclaredClip(
                 index,
                 clip.virtual_path.clone(),
                 inventory,
-                state
-                    .library_catalog
-                    .as_ref()
-                    .map(|c| PathBuf::from(&c.root)),
+                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
                 resource_build(state),
+                declared_databases,
+                (!state.converter_path.trim().is_empty())
+                    .then(|| PathBuf::from(&state.converter_path)),
             );
             return launch(state, operation);
         }
@@ -12373,12 +12377,39 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                     }
                 }
+                Ok(Completed::DeclaredPackedDba(
+                    index, virtual_path, record, report, dir, temp, exact_output,
+                )) => {
+                    let still_selected = state.viewer_queued_preview.is_none()
+                        && state.auto_clips.get(index).is_some_and(|clip| {
+                            clip.virtual_path.eq_ignore_ascii_case(&virtual_path)
+                        });
+                    if still_selected {
+                        let count = report.clips.len();
+                        state.converted_dba_cache = Some(temp);
+                        state.converted_glbs = report
+                            .glb_files.iter().map(|name| dir.join(name)).collect();
+                        state.native_caf = None;
+                        state.caf_layer = None;
+                        state.caf_layer_label.clear();
+                        state.playing = false;
+                        state.status = format!(
+                            "CAF {virtual_path} found in a verified DBA directory ({record}). Converted {count} tracks. Converted GLB playback uses its own verified rig; binding to the selected original CDF is NOT yet validated."
+                        );
+                        if let Some(file) = exact_output {
+                            return launch(state, Operation::LoadGlbMotion(file));
+                        }
+                    }
+                }
                 Ok(Completed::DeclaredClip(index, virtual_path, source, motion)) => {
                     let selected = state.viewer_queued_preview.is_none()
                         && state.auto_clips.get(index).is_some_and(|clip| {
                             clip.virtual_path.eq_ignore_ascii_case(&virtual_path)
                         });
                     if selected && !motion.additive {
+                        if let Some(clip) = state.auto_clips.get_mut(index) {
+                            clip.source = Some(source.clone());
+                        }
                         state.caf_path = source.to_string_lossy().into_owned();
                         state.current_caf_virtual_path = Some(virtual_path.clone());
                         state.skin_preview = None;
