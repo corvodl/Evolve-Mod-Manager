@@ -1249,8 +1249,11 @@ fn load_authored_subset_surfaces(
                             // Its own shader scrolls both layers; TexMod does not apply.
                             surface.uv_transform = None;
                         }
-                        surface.foliage_cutout =
-                            source_vegetation_cutout(leaf) && surface.diffuse.is_some();
+                        // World Illum surfaces cut by diffuse alpha too when they author AlphaTest.
+                        surface.foliage_cutout = (source_vegetation_cutout(leaf)
+                            || (leaf.shader.eq_ignore_ascii_case("Illum")
+                                && leaf.alpha_test.is_some_and(|test| test > 0.0)))
+                            && surface.diffuse.is_some();
                         surface.alpha_cutoff = leaf.alpha_test.unwrap_or(0.5);
                         surface.opacity = if surface.foliage_cutout {
                             None
