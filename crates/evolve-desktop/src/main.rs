@@ -748,6 +748,15 @@ enum Operation {
     ),
     LoadCaf(PathBuf),
     LoadCafLayer(String, Arc<NativeCafMotion>, String, PathBuf),
+    LoadDeclaredCafLayer(
+        String,
+        Arc<NativeCafMotion>,
+        String,
+        String,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+    ),
     BindCafPreview(PathBuf, PathBuf, NativeCafMotion),
     BindCdfCafPreview(
         PathBuf,
@@ -799,7 +808,15 @@ enum Operation {
     InspectModel(PathBuf),
     InspectIndexedModel(PathBuf, String, Inventory, Option<PathBuf>, Option<String>),
     DiscoverModelResources(String, Inventory, Option<PathBuf>, Option<String>),
-    LoadDeclaredClip(usize, String, Inventory, Option<PathBuf>, Option<String>),
+    LoadDeclaredClip(
+        usize,
+        String,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+        Vec<String>,
+        Option<PathBuf>,
+    ),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
     InspectLevel(PathBuf),
     OpenImportedMap(evolve_core::ImportedPak, usize),
@@ -926,6 +943,15 @@ enum Completed {
     BundleExported(evolve_core::ExportBundleReport),
     MotionConverted(ConvertedMotion, PathBuf),
     DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
+    DeclaredPackedDba(
+        usize,
+        String,
+        String,
+        ConvertedMotion,
+        PathBuf,
+        Arc<tempfile::TempDir>,
+        Option<PathBuf>,
+    ),
     MotionGlb(AnimatedGlb),
     BoundConvertedGlb(PathBuf, AnimatedGlb, usize),
     Character(CdfDefinition),
@@ -1005,6 +1031,34 @@ fn model_preview_lookup(
         // Only a speed-up here: without it, lookups use the unindexed resolver.
         None => Ok(evolve_core::begin_imported_lookup_session_any_build(root).ok()),
     }
+}
+
+/// A verified source may come from the selected local inventory or from a
+/// single, independently verified imported-PAK extraction root. Never execute
+/// a converter against an arbitrarily guessed or cross-build game directory.
+fn verified_motion_asset_root(
+    source: &Path,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let local_root = std::fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+    if source.starts_with(&local_root) {
+        return Ok(local_root);
+    }
+    let Some(imported) = imported else {
+        return Err("DBA has no verified extracted source root".into());
+    };
+    let imported = std::fs::canonicalize(imported).map_err(|e| e.to_string())?;
+    if !source.starts_with(&imported) {
+        return Err("DBA escaped verified local and imported asset roots".into());
+    }
+    source
+        .ancestors()
+        .find(|part| {
+            part.starts_with(&imported) && part.file_name().is_some_and(|name| name == "files")
+        })
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "Imported DBA has no verified extracted files root".into())
 }
 
 impl Operation {
@@ -1214,6 +1268,31 @@ impl Operation {
                 }
                 Ok(Completed::CafLayer(source, base, label, layer))
             }
+            Self::LoadDeclaredCafLayer(
+                source,
+                base,
+                label,
+                virtual_path,
+                inventory,
+                imported,
+                build,
+            ) => {
+                let _lookup = model_preview_lookup(imported.as_deref(), build.as_deref())?;
+                let file = auto_resources::resolve_declared(
+                    &inventory, &virtual_path, imported.as_deref(), build.as_deref(),
+                )?
+                .ok_or_else(|| format!(
+                    "Native layer CAF not found in the selected build: {virtual_path}. Packed DBA conversion does not yet provide native CDF layering."
+                ))?;
+                let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
+                if motion.additive {
+                    return Err(
+                        "Additive CAF layers require an independently verified additive convention"
+                            .into(),
+                    );
+                }
+                Ok(Completed::CafLayer(source, base, label, motion))
+            }
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(|motion| Completed::Caf(source, motion))
                 .map_err(|e| e.to_string()),
@@ -1421,17 +1500,86 @@ impl Operation {
                 );
                 Ok(Completed::ModelResources(relative, discovery))
             }
-            Self::LoadDeclaredClip(index, virtual_path, inventory, library_root, build) => {
+            Self::LoadDeclaredClip(
+                index,
+                virtual_path,
+                inventory,
+                library_root,
+                build,
+                declared_databases,
+                converter,
+            ) => {
                 let _lookup = model_preview_lookup(library_root.as_deref(), build.as_deref())?;
-                let file = auto_resources::resolve_declared(
+                if let Some(file) = auto_resources::resolve_declared(
                     &inventory,
                     &virtual_path,
                     library_root.as_deref(),
                     build.as_deref(),
+                )? {
+                    let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
+                    return Ok(Completed::DeclaredClip(index, virtual_path, file, motion));
+                }
+                // A CAF reference can be a named track inside a Controller_905
+                // DBA, rather than a standalone file. Only search character-
+                // declared databases, with exact virtual paths and build scope.
+                let Some((source, record)) = auto_resources::find_declared_packed_caf(
+                    &inventory,
+                    &virtual_path,
+                    &declared_databases,
+                    library_root.as_deref(),
+                    build.as_deref(),
                 )?
-                .ok_or_else(|| format!("Declared CAF is not available: {virtual_path}"))?;
-                let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
-                Ok(Completed::DeclaredClip(index, virtual_path, file, motion))
+                else {
+                    return Err(format!(
+                        "Declared CAF not found as a loose file or an exact track in the selected character's declared DBAs: {virtual_path} (build: {})",
+                        build
+                            .as_deref()
+                            .unwrap_or("unselected; choose an exact game build"),
+                    ));
+                };
+                let converter = converter.ok_or_else(|| format!(
+                    "CAF {virtual_path} exists as an indexed animation in {} but its packed tracks require the bundled Cryengine-Converter. Check the converter installation.",
+                    source.display()
+                ))?;
+                let root =
+                    verified_motion_asset_root(&source, &inventory, library_root.as_deref())?;
+                let temp = Arc::new(
+                    tempfile::Builder::new()
+                        .prefix("evolve-declared-packed-caf-")
+                        .tempdir()
+                        .map_err(|e| e.to_string())?,
+                );
+                let target = temp.path().join("tracks");
+                let report = convert_original_motion(&converter, &source, &root, &target)
+                    .map_err(|e| e.to_string())?;
+                // Converter output is a distinct representation. Locate only
+                // the matching full virtual path; a same-basename clip is NOT
+                // evidence of the source character or matching skeleton.
+                let mut exact_output: Option<PathBuf> = None;
+                for name in &report.glb_files {
+                    let file = target.join(name);
+                    let motion =
+                        evolve_core::AnimatedGlb::read(&file).map_err(|e| e.to_string())?;
+                    if motion.list_clips().iter().any(|clip| {
+                        auto_resources::packed_record_matches(&virtual_path, &clip.name)
+                    }) {
+                        if exact_output.is_some() {
+                            return Err(format!(
+                                "Converter produced multiple matches for {virtual_path}; refusing ambiguous packed tracks"
+                            ));
+                        }
+                        exact_output = Some(file);
+                    }
+                }
+                Ok(Completed::DeclaredPackedDba(
+                    index,
+                    virtual_path,
+                    record,
+                    report,
+                    target,
+                    temp,
+                    exact_output,
+                ))
             }
             Self::InspectModel(source) => {
                 let render_source = preferred_render_source(&source);
@@ -2861,9 +3009,9 @@ fn operation_label(operation: &Operation) -> &'static str {
             "Inspecting original model"
         }
         Operation::DiscoverModelResources(..) => "Discovering model dependencies",
-        Operation::LoadDeclaredClip(..) | Operation::LoadDeclaredDba(..) => {
-            "Loading original animation clip"
-        }
+        Operation::LoadDeclaredClip(..)
+        | Operation::LoadDeclaredCafLayer(..)
+        | Operation::LoadDeclaredDba(..) => "Loading original animation clip",
         Operation::InspectLevel(..) | Operation::InspectTerrain(..) => "Inspecting level resources",
         Operation::OpenImportedMap(..) | Operation::OpenProjectLevel(..) => {
             "Assembling level scene"
@@ -8477,6 +8625,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Index extracted assets before loading character animations.".into();
                 return Task::none();
             };
+            let declared_databases = state
+                .auto_clips
+                .iter()
+                .filter(|item| {
+                    item.kind == "dba" && item.label.eq_ignore_ascii_case("$TracksDatabase")
+                })
+                .map(|item| item.virtual_path.clone())
+                .collect();
             let operation = Operation::LoadDeclaredClip(
                 index,
                 clip.virtual_path.clone(),
@@ -8486,6 +8642,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .as_ref()
                     .map(|c| PathBuf::from(&c.root)),
                 resource_build(state),
+                declared_databases,
+                (!state.converter_path.trim().is_empty())
+                    .then(|| PathBuf::from(&state.converter_path)),
             );
             return launch(state, operation);
         }
@@ -11122,18 +11281,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let Some(clip) = state.auto_clips.get(index) else {
                 return Task::none();
             };
-            let Some(path) = clip
+            if let Some(path) = clip
                 .source
                 .clone()
                 .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("caf")))
-            else {
-                state.status = "Layer playback requires an extracted native CAF.".into();
+            {
+                return launch(
+                    state,
+                    Operation::LoadCafLayer(state.input.clone(), base, clip.label.clone(), path),
+                );
+            }
+            let Some(inventory) = state.inventory.clone() else {
+                state.status = "Index extracted assets to resolve this CAF layer.".into();
                 return Task::none();
             };
-            return launch(
-                state,
-                Operation::LoadCafLayer(state.input.clone(), base, clip.label.clone(), path),
+            let operation = Operation::LoadDeclaredCafLayer(
+                state.input.clone(),
+                base,
+                clip.label.clone(),
+                clip.virtual_path.clone(),
+                inventory,
+                state
+                    .library_catalog
+                    .as_ref()
+                    .map(|c| PathBuf::from(&c.root)),
+                resource_build(state),
             );
+            return launch(state, operation);
         }
         Message::ViewerLayerWeight(weight) => {
             if weight.is_finite() && (0.0..=1.0).contains(&weight) {
@@ -12291,12 +12465,45 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                     }
                 }
+                Ok(Completed::DeclaredPackedDba(
+                    index,
+                    virtual_path,
+                    record,
+                    report,
+                    dir,
+                    temp,
+                    exact_output,
+                )) => {
+                    let still_selected = state.viewer_queued_preview.is_none()
+                        && state.auto_clips.get(index).is_some_and(|clip| {
+                            clip.virtual_path.eq_ignore_ascii_case(&virtual_path)
+                        });
+                    if still_selected {
+                        let count = report.clips.len();
+                        state.converted_dba_cache = Some(temp);
+                        state.converted_glbs =
+                            report.glb_files.iter().map(|name| dir.join(name)).collect();
+                        state.native_caf = None;
+                        state.caf_layer = None;
+                        state.caf_layer_label.clear();
+                        state.playing = false;
+                        state.status = format!(
+                            "CAF {virtual_path} found in a verified DBA directory ({record}). Converted {count} tracks. Converted GLB playback uses its own verified rig; binding to the selected original CDF is NOT yet validated."
+                        );
+                        if let Some(file) = exact_output {
+                            return launch(state, Operation::LoadGlbMotion(file));
+                        }
+                    }
+                }
                 Ok(Completed::DeclaredClip(index, virtual_path, source, motion)) => {
                     let selected = state.viewer_queued_preview.is_none()
                         && state.auto_clips.get(index).is_some_and(|clip| {
                             clip.virtual_path.eq_ignore_ascii_case(&virtual_path)
                         });
                     if selected && !motion.additive {
+                        if let Some(clip) = state.auto_clips.get_mut(index) {
+                            clip.source = Some(source.clone());
+                        }
                         state.caf_path = source.to_string_lossy().into_owned();
                         state.current_caf_virtual_path = Some(virtual_path.clone());
                         state.skin_preview = None;
