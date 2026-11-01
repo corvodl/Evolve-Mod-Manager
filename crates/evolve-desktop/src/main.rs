@@ -576,7 +576,7 @@ struct State {
     library_flat_list: bool,
     library_expanded_categories: HashSet<String>,
     library_expanded_sources: HashSet<String>,
-    library_expanded_details: HashSet<usize>,
+    library_expanded_details: HashSet<String>,
     library_build_index: usize,
     library_page: usize,
     settings_tab: settings_page::Tab,
@@ -2066,7 +2066,7 @@ enum Message {
     LibrarySetFlat(bool),
     LibraryToggleCategory(String),
     LibraryToggleSource(String),
-    LibraryToggleDetails(usize),
+    LibraryToggleDetails(String),
     LibraryNextBuild,
     LibrarySelect(usize),
     LibraryOpenMap(usize),
@@ -4832,9 +4832,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.library_page = 0;
         }
-        Message::LibraryToggleDetails(index) => {
-            if !state.library_expanded_details.insert(index) {
-                state.library_expanded_details.remove(&index);
+        Message::LibraryToggleDetails(id) => {
+            if !state.library_expanded_details.insert(id.clone()) {
+                state.library_expanded_details.remove(&id);
             }
         }
         Message::LibraryNextBuild => {
@@ -4982,9 +4982,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .as_ref()
                 .is_some_and(|catalog| index < catalog.archives.len())
             {
-                // The full filtered catalog, not the current 110-row page,
-                // defines Shift range selection. Anchors survive page changes
-                // without selecting entries excluded by the active filter.
+                // Shift ranges use only expanded, visible archive records,
+                // across pages. Collapsed groups must not select hidden PAKs.
                 let visible = asset_library_page::visible_archive_indices(state);
                 state.library_selection.click(
                     &visible,
