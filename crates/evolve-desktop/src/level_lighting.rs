@@ -97,7 +97,10 @@ impl Lighting {
             self.sun[0] = x * cos + cross[0] * sin + axis[0] * along * (1.0 - cos);
             self.sun[1] = y * cos + cross[1] * sin + axis[1] * along * (1.0 - cos);
             self.sun[2] = z * cos + cross[2] * sin;
-            self.sun[3] = ((self.sun[2] + 0.08) / 0.18).clamp(0.0, 1.0);
+            // The mission SunVector specifies direction, not brightness.
+            // Keep the light strength sampled from the map's TimeOfDay
+            // "Sun intensity" curve by from_original; a made-up elevation
+            // multiplier here discarded that authored intensity entirely.
         }
         if source.color("Sky color", hour).is_none()
             && source.color("Sky light color", hour).is_none()
@@ -136,6 +139,38 @@ mod tests {
         assert!(noon.ambient[0] > night.ambient[0]);
         assert!(Lighting::at(6.5).sun_color[2] < noon.sun_color[2]);
     }
+    #[test]
+    fn mission_sun_direction_does_not_override_original_sun_intensity() {
+        // The source TimeOfDay curve is authoritative for intensity. The
+        // mission's SunVector is used only for direction; neither the level's
+        // authored hour nor a scrub to another hour may replace brightness
+        // with a fixed elevation heuristic.
+        let tod = super::super::level_environment::TimeOfDay::parse(
+            br#"<TimeOfDay Time="12">
+                <Variable Name="Sun intensity" Value="120000">
+                    <Spline Keys="0:0:36,0.5:120000:36,1:0:36,"/>
+                </Variable>
+            </TimeOfDay>"#,
+        )
+        .unwrap();
+        let source_sun = super::super::level_atmosphere::AuthoredSun {
+            to_sun: [0.0, 0.6, 0.8],
+            hour: 12.0,
+        };
+        for hour in [9.0, 12.0, 15.0] {
+            let authored = Lighting::from_original(hour, &tod);
+            let positioned = authored.with_authored_sun(Some(source_sun), hour, &tod);
+            assert_eq!(
+                positioned.sun[3], authored.sun[3],
+                "SunVector must not overwrite authored intensity at hour {hour}"
+            );
+        }
+        assert_eq!(
+            Lighting::from_original(12.0, &tod).with_authored_sun(Some(source_sun), 12.0, &tod).sun[3],
+            1.2
+        );
+    }
+
     #[test]
     fn time_scrubbing_is_bounded_and_deterministic() {
         assert_eq!(Lighting::at(-10.0), Lighting::at(0.0));
