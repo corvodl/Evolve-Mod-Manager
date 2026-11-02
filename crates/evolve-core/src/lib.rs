@@ -6,6 +6,7 @@ pub mod animation_events;
 pub mod archive;
 pub mod asset_compare;
 pub mod batch;
+pub mod blendspace;
 pub mod caf_layers;
 pub mod cdf;
 pub mod character_assembly;

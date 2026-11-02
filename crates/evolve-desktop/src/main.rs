@@ -255,6 +255,75 @@ enum LevelSidebarTab {
     Diagnostics,
 }
 
+/// Playback of a source-annotated 1D/2D/3D blendspace. Original clips are
+/// resolved by this character's declarations, never by global basename.
+#[derive(Clone, Debug)]
+struct ActiveBlendSpace {
+    path: String,
+    space: evolve_core::blendspace::BlendSpace,
+    motions: Vec<NativeCafMotion>,
+    values: Vec<f32>,
+    duration: f32,
+}
+
+impl ActiveBlendSpace {
+    fn at_initial_parameters(
+        path: String,
+        space: evolve_core::blendspace::BlendSpace,
+        motions: Vec<NativeCafMotion>,
+    ) -> Result<Self, String> {
+        let first = space
+            .faces
+            .first()
+            .ok_or("Blendspace has no source faces")?;
+        let values = (0..space.dimensions.len())
+            .map(|axis| {
+                first
+                    .vertices
+                    .iter()
+                    .map(|&i| space.examples[i].coordinates[axis].unwrap_or(0.0))
+                    .sum::<f32>()
+                    / first.vertices.len() as f32
+            })
+            .collect::<Vec<_>>();
+        evolve_core::blendspace::authored_blend_weights(&space, &values)?;
+        let duration = motions
+            .iter()
+            .map(NativeCafMotion::duration_seconds)
+            .fold(0.0_f32, f32::max);
+        if !duration.is_finite() || duration <= 0.0 {
+            return Err("Blendspace has no positive source motion duration".into());
+        }
+        Ok(Self {
+            path,
+            space,
+            motions,
+            values,
+            duration,
+        })
+    }
+
+    fn weighted_sources(
+        &self,
+        time: f32,
+    ) -> Result<Vec<evolve_core::caf_layers::WeightedCaf<'_>>, String> {
+        let weights = evolve_core::blendspace::authored_blend_weights(&self.space, &self.values)?;
+        let phase = (time / self.duration).clamp(0.0, 1.0);
+        Ok(weights
+            .into_iter()
+            .map(|item| {
+                let motion = &self.motions[item.example];
+                let duration = motion.duration_seconds();
+                evolve_core::caf_layers::WeightedCaf {
+                    motion,
+                    seconds: phase * duration * self.space.examples[item.example].playback_scale,
+                    weight: item.weight,
+                }
+            })
+            .collect())
+    }
+}
+
 #[derive(Default)]
 struct State {
     sidebar_hovered: bool,
@@ -364,6 +433,7 @@ struct State {
     selected_glb_overlay: Option<usize>,
     glb_overlay_weight: f32,
     native_caf: Option<Arc<NativeCafMotion>>,
+    active_blendspace: Option<Arc<ActiveBlendSpace>>,
     caf_layer: Option<Arc<NativeCafMotion>>,
     caf_layer_label: String,
     caf_layer_weight: f32,
@@ -827,6 +897,15 @@ enum Operation {
         Vec<String>,
     ),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
+    LoadBlendSpace(
+        usize,
+        String,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+        Vec<auto_resources::AutoClip>,
+        Vec<String>,
+    ),
     InspectLevel(PathBuf),
     OpenImportedMap(evolve_core::ImportedPak, usize),
     OpenProjectLevel(modding_projects::ProjectRow, usize, PathBuf),
@@ -967,6 +1046,7 @@ enum Completed {
     Model(RenderMesh, PathBuf),
     ModelResources(String, auto_resources::AutoDiscovery),
     DeclaredClip(usize, String, Option<PathBuf>, NativeCafMotion),
+    BlendSpace(usize, String, ActiveBlendSpace),
     Level(LevelScene, PathBuf, String),
     ImportedMap(Box<level_library::LoadedMap>),
     ProjectLevelSaved(modding_projects::ProjectRow, bool),
@@ -1269,6 +1349,89 @@ impl Operation {
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(|motion| Completed::Caf(source, motion))
                 .map_err(|e| e.to_string()),
+            Self::LoadBlendSpace(
+                index,
+                virtual_path,
+                inventory,
+                imported_root,
+                build,
+                catalog,
+                databases,
+            ) => {
+                let _lookup = model_preview_lookup(imported_root.as_deref(), build.as_deref())?;
+                let path = auto_resources::exact(
+                    &inventory,
+                    &virtual_path,
+                    imported_root.as_deref(),
+                    build.as_deref(),
+                )?
+                .ok_or_else(|| format!("Source blendspace not found: {virtual_path}"))?;
+                let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+                if meta.len() > 2 * 1024 * 1024 {
+                    return Err("Blendspace definition exceeds bounded size".into());
+                }
+                let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+                let space = match evolve_core::blendspace::parse_blend_document(&bytes)? {
+                    evolve_core::blendspace::BlendDocument::Space(space) => space,
+                    evolve_core::blendspace::BlendDocument::Combined(combined) => {
+                        return Err(format!(
+                            "Combined .comb source has {} child blendspaces and an authored selector, \
+                             but native COMB selection/transition evaluation is not verified yet. \
+                             Select a declared .bspace directly.",
+                            combined.children.len()
+                        ));
+                    }
+                };
+                // Bounding I/O and sample cost matters: each source animation is
+                // decoded once in a worker, not in the 40ms viewport tick.
+                if space.examples.len() > 64 {
+                    return Err(
+                        "Blendspace declares more than 64 sources; bounded preview unavailable"
+                            .into(),
+                    );
+                }
+                let mut motions = Vec::with_capacity(space.examples.len());
+                for example in &space.examples {
+                    let matches = catalog
+                        .iter()
+                        .filter(|candidate| {
+                            candidate.kind == "caf"
+                                && (candidate.label.eq_ignore_ascii_case(&example.animation)
+                                    || candidate
+                                        .virtual_path
+                                        .eq_ignore_ascii_case(&example.animation))
+                        })
+                        .collect::<Vec<_>>();
+                    if matches.len() != 1 {
+                        return Err(format!(
+                            "Blendspace source {} is not uniquely declared for the selected character ({} matches); never match by basename",
+                            example.animation,
+                            matches.len()
+                        ));
+                    }
+                    let virtual_caf = &matches[0].virtual_path;
+                    let Some((_, motion)) = load_declared_motion(
+                        virtual_caf,
+                        &inventory,
+                        &databases,
+                        imported_root.as_deref(),
+                        build.as_deref(),
+                    )?
+                    else {
+                        return Err(format!("Blendspace source CAF unavailable: {virtual_caf}"));
+                    };
+                    if motion.additive {
+                        return Err(format!(
+                            "Source {} is additive; cannot treat it as an absolute blend vertex",
+                            example.animation
+                        ));
+                    }
+                    motions.push(motion);
+                }
+                let loaded =
+                    ActiveBlendSpace::at_initial_parameters(virtual_path.clone(), space, motions)?;
+                Ok(Completed::BlendSpace(index, virtual_path, loaded))
+            }
             Self::LoadDeclaredDba(virtual_path, inventory, imported_root, build, converter) => {
                 let _lookup = model_preview_lookup(imported_root.as_deref(), build.as_deref())?;
                 let source = auto_resources::resolve_declared_dba(
@@ -2304,6 +2467,7 @@ enum Message {
     PlaybackSpeedChanged(f32),
     PlaybackLoopChanged,
     MotionInPlaceChanged,
+    BlendspaceParameterChanged(usize, f32),
     ViewerToggleWireframe,
     ViewerFullTexturesToggled,
     LightStrengthChanged(f32),
@@ -2660,6 +2824,32 @@ fn apply_current_skin_frame(state: &mut State) {
         })
         .into_iter()
         .collect::<Vec<_>>();
+    if let Some(blend) = &state.active_blendspace
+        && (state.cdf_caf_preview.is_some() || state.skin_preview.is_some())
+    {
+        let result = blend
+            .weighted_sources(state.motion_time)
+            .and_then(|weights| {
+                if let Some(assembly) = &state.cdf_caf_preview {
+                    assembly
+                        .mesh_at_weighted(&weights, state.motion_in_place)
+                        .map_err(|e| e.to_string())
+                } else if let Some(skin) = &state.skin_preview {
+                    skin.mesh_at_weighted(&weights, state.motion_in_place)
+                        .map_err(|e| e.to_string())
+                } else {
+                    Err("No verified character skin".into())
+                }
+            });
+        match result {
+            Ok(mesh) => state.model = Some(Arc::new(mesh)),
+            Err(error) => {
+                state.playing = false;
+                state.status = format!("Authored blendspace pose unavailable: {error}");
+            }
+        }
+        return;
+    }
     if let Some(assembly) = &state.cdf_caf_preview {
         match assembly.mesh_at_layers(state.motion_time, &layers, state.motion_in_place) {
             Ok(mesh) => state.model = Some(Arc::new(mesh)),
@@ -2959,6 +3149,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::ResolveMaterial(..) => "Resolving CryEngine materials",
         Operation::LoadModelSurfaces(..) => "Loading model surface materials",
         Operation::LoadCaf(..) | Operation::LoadCafLayer(..) => "Loading character animation",
+        Operation::LoadBlendSpace(..) => "Resolving authored blendspace and source animations",
         Operation::BindCafPreview(..) | Operation::BindCdfCafPreview(..) => {
             "Binding character animation"
         }
@@ -3272,6 +3463,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.specular_map = None;
     state.gloss_map = None;
     state.native_caf = None;
+    state.active_blendspace = None;
     // A CAF selected for another model must never silently become an FBX export source.
     state.caf_path.clear();
     state.skin_preview = None;
@@ -8618,6 +8810,38 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let Some(clip) = state.auto_clips.get(index) else {
                 return Task::none();
             };
+            if clip.kind == "bspace" || clip.kind == "comb" {
+                let Some(inventory) = state.inventory.clone() else {
+                    state.status =
+                        "Index the selected character's exact build before loading a blendspace"
+                            .into();
+                    return Task::none();
+                };
+                let databases = state
+                    .auto_clips
+                    .iter()
+                    .filter(|item| {
+                        item.kind == "dba" && item.label.eq_ignore_ascii_case("$TracksDatabase")
+                    })
+                    .map(|item| item.virtual_path.clone())
+                    .collect();
+                return launch(
+                    state,
+                    Operation::LoadBlendSpace(
+                        index,
+                        clip.virtual_path.clone(),
+                        inventory,
+                        state
+                            .library_catalog
+                            .as_ref()
+                            .map(|lib| PathBuf::from(&lib.root)),
+                        resource_build(state),
+                        state.auto_clips.clone(),
+                        databases,
+                    ),
+                );
+            }
+            state.active_blendspace = None;
             state.auto_play_native_caf = clip.kind == "caf";
             if clip.kind == "dba" {
                 let Some(inventory) = state.inventory.clone() else {
@@ -11139,6 +11363,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Operation::BindConvertedGlb(converted, source, skeleton),
             );
         }
+        Message::BlendspaceParameterChanged(axis, value) => {
+            if let Some(space) = state.active_blendspace.as_ref()
+                && let Some(dimension) = space.space.dimensions.get(axis)
+                && value.is_finite()
+            {
+                let mut updated = (**space).clone();
+                updated.values[axis] = value.clamp(dimension.min, dimension.max);
+                state.active_blendspace = Some(Arc::new(updated));
+                apply_current_skin_frame(state);
+            }
+        }
         Message::MotionScrub(value) => {
             state.motion_time = value;
             state.motion_tick = None;
@@ -11167,9 +11402,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 let resume = !state.playing && can_play;
                 if resume {
                     let duration = state
-                        .native_caf
+                        .active_blendspace
                         .as_ref()
-                        .map(|clip| clip.duration_seconds())
+                        .map(|blend| blend.duration)
+                        .or_else(|| {
+                            state
+                                .native_caf
+                                .as_ref()
+                                .map(|clip| clip.duration_seconds())
+                        })
                         .or_else(|| {
                             state.glb_motion.as_ref().and_then(|motion| {
                                 motion
@@ -11214,7 +11455,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.decal_time = (state.decal_time + 0.04).rem_euclid(3600.0);
             }
             if state.playing {
-                let duration = if let Some(motion) = &state.native_caf {
+                let duration = if let Some(blend) = &state.active_blendspace {
+                    Some(blend.duration)
+                } else if let Some(motion) = &state.native_caf {
                     Some(motion.duration_seconds())
                 } else {
                     state.glb_motion.as_ref().and_then(|m| {
@@ -12527,6 +12770,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             state.auto_play_native_caf = false;
                             return launch(state, Operation::LoadCaf(idle));
                         }
+                    }
+                }
+                Ok(Completed::BlendSpace(index, virtual_path, loaded)) => {
+                    let selected = state.viewer_queued_preview.is_none()
+                        && state.auto_clips.get(index).is_some_and(|clip| {
+                            clip.virtual_path.eq_ignore_ascii_case(&virtual_path)
+                        });
+                    if selected && !loaded.motions.is_empty() {
+                        state.caf_layer = None;
+                        state.caf_layer_label.clear();
+                        state.skin_preview = None;
+                        state.cdf_caf_preview = None;
+                        if let Some(rest) = &state.cdf_rest_mesh {
+                            state.model = Some(rest.clone());
+                        }
+                        state.native_caf = Some(Arc::new(loaded.motions[0].clone()));
+                        state.active_blendspace = Some(Arc::new(loaded));
+                        state.playing = false;
+                        state.motion_time = 0.0;
+                        state.motion_tick = None;
+                        state.auto_play_native_caf = true;
+                        if let Some(task) = bind_current_native_caf(state) {
+                            state.status = format!(
+                                "Authored blendspace {virtual_path}: validating the exact source skeleton..."
+                            );
+                            return task;
+                        }
+                        state.status = "Blendspace definition loaded, but no verified compatible character skeleton is available".into();
                     }
                 }
                 Ok(Completed::DeclaredClip(index, virtual_path, source, motion)) => {
