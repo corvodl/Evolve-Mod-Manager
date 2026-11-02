@@ -155,6 +155,41 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
             .spacing(8),
         ]
         .spacing(5);
+        if let Some(active) = &state.active_blendspace {
+            clips = clips.push(
+                text(format!(
+                    "AUTHORED BLENDSPACE · {}D · {} source CAF/DBA clips",
+                    active.space.dimensions.len(), active.motions.len()
+                ))
+                .size(12)
+                .style(design::muted),
+            );
+            clips = clips.push(
+                text(format!(
+                    "{} · Source-annotated simplex preview (not engine motion extraction)",
+                    active.path
+                ))
+                .size(11)
+                .style(design::muted),
+            );
+            for (axis, dimension) in active.space.dimensions.iter().enumerate() {
+                clips = clips.push(
+                    row![
+                        text(format!("{} {:.2}", dimension.name, active.values[axis]))
+                            .size(12)
+                            .width(iced::Length::Fixed(160.0)),
+                        slider(
+                            dimension.min..=dimension.max,
+                            active.values[axis],
+                            move |value| Message::BlendspaceParameterChanged(axis, value),
+                        )
+                        .width(Fill),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Center),
+                );
+            }
+        }
         if state.caf_layer.is_some() {
             clips = clips.push(
                 row![
@@ -1757,9 +1792,12 @@ fn viewport(state: &State) -> Element<'_, Message> {
     .height(Fill);
 
     let duration = state
-        .native_caf
+        .active_blendspace
         .as_ref()
-        .map(|clip| clip.duration_seconds())
+        .map(|active| active.duration)
+        .or_else(|| state.native_caf
+        .as_ref()
+        .map(|clip| clip.duration_seconds()))
         .or_else(|| {
             state.glb_motion.as_ref().and_then(|motion| {
                 motion
