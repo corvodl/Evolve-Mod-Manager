@@ -2521,10 +2521,10 @@ impl Renderer {
                     // Solid world meshes must NOT forward packed diffuse alpha
                     // into the Iced window target; it can make the actual
                     // window transparent to applications beneath it.
-                    entry_point: Some(if marked {
-                        "fs_opaque_terrain"
-                    } else if raw_terrain {
+                    entry_point: Some(if raw_terrain {
                         "fs_terrain_source"
+                    } else if marked {
+                        "fs_opaque_terrain"
                     } else if cutout {
                         "fs_foliage"
                     } else if blend {
