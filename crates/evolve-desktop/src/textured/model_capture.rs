@@ -539,15 +539,21 @@ fn captured_clip_must_be_declared_by_the_loaded_character() {
         virtual_path: "characters/monsters/grounder/animations/idle.caf".into(),
         source: None,
     }];
-    assert!(check_capture_clip_declaration(
-        "kraken1_idle",
-        "Characters\\Monsters\\Grounder\\Animations\\IDLE.CAF",
-        &declared
-    ).is_ok());
-    assert!(check_capture_clip_declaration(
-        "kraken1_idle",
-        "characters/monsters/rocky/animations/idle.caf",
-        &declared
-    ).is_err());
+    assert!(
+        check_capture_clip_declaration(
+            "kraken1_idle",
+            "Characters\\Monsters\\Grounder\\Animations\\IDLE.CAF",
+            &declared
+        )
+        .is_ok()
+    );
+    assert!(
+        check_capture_clip_declaration(
+            "kraken1_idle",
+            "characters/monsters/rocky/animations/idle.caf",
+            &declared
+        )
+        .is_err()
+    );
     assert!(check_capture_clip_declaration("kraken1_idle", "idle.caf", &declared).is_err());
 }
