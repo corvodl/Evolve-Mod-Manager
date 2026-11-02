@@ -71,8 +71,35 @@ pub(crate) fn exact(
                 .map_err(|e| e.to_string())?
             {
                 LibraryReferenceStatus::Missing => Ok(None),
-                LibraryReferenceStatus::Ambiguous(_) => {
-                    Err(format!("Ambiguous imported asset: {virtual_name}"))
+                LibraryReferenceStatus::Ambiguous(hits) => {
+                    // A DBA can be repeated across imported PAKs. The core
+                    // resolver already accepts hash-identical copies only
+                    // inside a selected build; any remaining ambiguity must
+                    // be visible rather than silently choosing an archive.
+                    if virtual_name.to_ascii_lowercase().ends_with(".dba") {
+                        let names = hits
+                            .iter()
+                            .map(|hit| hit.archive_name.as_str())
+                            .take(4)
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if build.is_none() {
+                            Err(format!(
+                                "Ambiguous imported DBA: {virtual_name} ({names}). \
+                                 Select the character's game build in Asset Library \
+                                 before loading animations."
+                            ))
+                        } else {
+                            Err(format!(
+                                "Conflicting or unverified DBA copies in the selected build: \
+                                 {virtual_name} ({names}). Import the correct \
+                                 AnimationsDBA.pak for this build; different database \
+                                 contents cannot be substituted."
+                            ))
+                        }
+                    } else {
+                        Err(format!("Ambiguous imported asset: {virtual_name}"))
+                    }
                 }
                 LibraryReferenceStatus::Found(hit) => {
                     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
