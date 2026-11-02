@@ -1683,6 +1683,13 @@ impl Pipeline {
                 [0.18, 1.0, 1.0, 0.0],
             ),
         }
+        self.hdr.set_bloom(
+            queue,
+            primitive
+                .world
+                .as_ref()
+                .map_or(1.0, |world| world.bloom_amount(hour)),
+        );
         let aspect = size.0 as f32 / size.1.max(1) as f32;
         self.hdr.set_sun_shafts(
             queue,

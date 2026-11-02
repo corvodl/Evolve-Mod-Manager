@@ -796,6 +796,15 @@ impl World {
         ]
     }
 
+    /// The map's authored Bloom amount at this hour.
+    pub fn bloom_amount(&self, hour: f32) -> f32 {
+        self.time_of_day
+            .as_ref()
+            .and_then(|profile| profile.scalar("Bloom amount", hour))
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or(1.0)
+    }
+
     /// The map's authored scene key and exposure limits at this hour.
     pub fn eye_adaptation(&self, hour: f32) -> [f32; 4] {
         let Some(profile) = self.time_of_day.as_ref() else {

@@ -151,6 +151,7 @@ fn capture_real_map_views() {
             world.film_curve(hour),
             world.eye_adaptation(hour),
         );
+        hdr.set_bloom(&queue, world.bloom_amount(hour));
         hdr.set_sun_shafts(
             &queue,
             world.sun_shafts(Some(camera), yaw, pitch, aspect, 1.0, hour),

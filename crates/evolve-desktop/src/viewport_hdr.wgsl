@@ -86,7 +86,8 @@ fn fs_composite(input:FsOut)->@location(0) vec4<f32> {
     }
     let bloom=textureSampleLevel(hdr_bloom,hdr_sampler,uv,0.0).rgb;
     let shafts=textureSampleLevel(sun_shafts,hdr_sampler,uv,0.0).rgb;
-    let combined=source+bloom*max(composite.params.x,0.0);
+    // The game blends toward its bloom rather than adding it.
+    let combined=mix(source,bloom,clamp(composite.params.x,0.0,1.0));
     // The game screens shafts over the display-encoded image.
     let display=to_display(film_map(combined));
     let lit=display+min(shafts*composite.shafts.x,vec3<f32>(1.0))*(vec3<f32>(1.0)-display);

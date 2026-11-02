@@ -16,29 +16,37 @@ fn vs_fullscreen(@builtin(vertex_index) idx:u32)->FsOut {
 @group(0) @binding(0) var source_texture:texture_2d<f32>;
 @group(0) @binding(1) var source_sampler:sampler;
 @group(0) @binding(2) var<uniform> filter_params:vec4<f32>;
+@group(0) @binding(3) var scene_log_luminance:texture_2d<f32>;
 
+// The game has no bright pass: it blurs the whole scene, downscaled.
 @fragment
-fn fs_extract(input:FsOut)->@location(0) vec4<f32> {
-    let radiance=max(textureSampleLevel(source_texture,source_sampler,input.uv,0.0).rgb,
-        vec3<f32>(0.0));
-    // Smooth HDR threshold avoids a hard halo seam. Keep the original linear
-    // source untouched; discard only dim photons from the bloom branch.
-    let brightness=dot(radiance,vec3<f32>(0.2126,0.7152,0.0722));
-    let knee=smoothstep(0.85,1.6,brightness);
-    let weight=knee * max(brightness-0.8,0.0) / max(brightness,0.0001);
-    return vec4<f32>(min(radiance*weight,vec3<f32>(64.0)),1.0);
+fn fs_downscale(input:FsOut)->@location(0) vec4<f32> {
+    let half_texel=filter_params.xy;
+    var color=vec3<f32>(0.0);
+    for (var i=0;i<4;i=i+1) {
+        let side=vec2<f32>(f32(i&1)*2.0-1.0,f32(i>>1u)*2.0-1.0);
+        color+=max(textureSampleLevel(source_texture,source_sampler,input.uv+side*half_texel,0.0).rgb,vec3<f32>(0.0));
+    }
+    return vec4<f32>(color*0.25,1.0);
 }
+// HDRBloomGaussianPS: 15 taps, each limited to 200 times a luminance texture. That
+// texture is unnamed in the compiled shader; it is taken to be the scene's average.
 @fragment
 fn fs_blur(input:FsOut)->@location(0) vec4<f32> {
-    let offsets=array<f32,5>(0.0,1.0,2.0,3.0,4.0);
-    let weights=array<f32,5>(0.227027,0.1945946,0.1216216,0.054054,0.016216);
-    var color=textureSampleLevel(source_texture,source_sampler,input.uv,0.0).rgb*weights[0];
-    for (var i=1u;i<5u;i=i+1u) {
-        let delta=filter_params.xy*offsets[i];
-        color+=(textureSampleLevel(source_texture,source_sampler,input.uv+delta,0.0).rgb+
-                textureSampleLevel(source_texture,source_sampler,input.uv-delta,0.0).rgb)*weights[i];
+    let weights=array<f32,15>(0.000584,0.003113,0.011675,0.032689,0.070826,0.121417,0.166948,
+        0.185497,0.166948,0.121417,0.070826,0.032689,0.011675,0.003113,0.000584);
+    let limit=vec3<f32>(exp(textureLoad(scene_log_luminance,vec2<i32>(0,0),0).r)*200.0);
+    var color=vec3<f32>(0.0);
+    for (var i=0;i<15;i=i+1) {
+        let uv=input.uv+filter_params.xy*(f32(i)-7.0);
+        color+=min(textureSampleLevel(source_texture,source_sampler,uv,0.0).rgb*weights[i],limit);
     }
     return vec4<f32>(color,1.0);
+}
+// One blurred level's share of the final bloom, added by the blend state.
+@fragment
+fn fs_combine(input:FsOut)->@location(0) vec4<f32> {
+    return vec4<f32>(textureSampleLevel(source_texture,source_sampler,input.uv,0.0).rgb*filter_params.z,1.0);
 }
 // Mean log luminance of the scene, for authored eye adaptation.
 @fragment
