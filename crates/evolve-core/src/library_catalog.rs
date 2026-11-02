@@ -23,6 +23,11 @@ const MAX_MEMBERS: usize = 250_000;
 // arbitrary conflicting copy (or perform unlimited hashing during a scan).
 const MAX_IDENTICAL_TEXTURE_COPIES: usize = 8;
 const MAX_IDENTICAL_TEXTURE_BYTES: u64 = 32 * 1024 * 1024;
+// Character animation databases can be repeated across source PAK imports.
+// Byte-equal copies within an explicitly selected build are equivalent, but
+// DBAs can be substantially larger than DDS fragments: keep separate bounds.
+const MAX_IDENTICAL_DBA_COPIES: usize = 4;
+const MAX_IDENTICAL_DBA_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LibraryError {
@@ -804,9 +809,11 @@ fn is_cooked_dds_member(path: &str) -> bool {
 }
 
 /// Keep exact selected-build provenance: only byte-identical instances of
-/// the same authored cooked DDS may be treated as one asset. The fast cached
-/// lookup and the normal imported resolver use identical conflict semantics.
-/// Missing, oversized, unsafe, or different textures still fail closed.
+/// the same authored cooked DDS or declared .dba source path may be treated as
+/// one asset. Different build versions, conflicting contents and unexpected
+/// asset types remain ambiguous. The indexed and uncached resolvers agree.
+/// DBA verification is streamed with separate size/copy limits, never decoded
+/// into RAM just to compare imports.
 fn resolve_verified_duplicate_textures(
     mut hits: Vec<LibraryReference>,
     selected_build: bool,
@@ -819,11 +826,20 @@ fn resolve_verified_duplicate_textures(
         return LibraryReferenceStatus::Missing;
     }
     let path = hits[0].relative_path.to_ascii_lowercase();
-    // No build selection means hits may belong to different game versions:
-    // even byte-identical files must remain ambiguous in that case.
+    // Without build selection, even byte-identical matches may originate
+    // from different game versions. Do not silently cross that boundary.
+    let limits = if is_cooked_dds_member(&path) {
+        Some((MAX_IDENTICAL_TEXTURE_COPIES, MAX_IDENTICAL_TEXTURE_BYTES))
+    } else if path.ends_with(".dba") {
+        Some((MAX_IDENTICAL_DBA_COPIES, MAX_IDENTICAL_DBA_BYTES))
+    } else {
+        None
+    };
+    let Some((max_copies, max_bytes)) = limits else {
+        return LibraryReferenceStatus::Ambiguous(hits);
+    };
     if !selected_build
-        || hits.len() > MAX_IDENTICAL_TEXTURE_COPIES
-        || !is_cooked_dds_member(&path)
+        || hits.len() > max_copies
         || !hits
             .iter()
             .all(|hit| hit.relative_path.eq_ignore_ascii_case(&path))
@@ -833,10 +849,10 @@ fn resolve_verified_duplicate_textures(
     // Read a bounded number of bytes into a streaming SHA-256 digest, never
     // into an entire decoded RGBA image. The files were already verified to
     // match their own manifests by the calling resolver.
-    fn digest(path: &str) -> Option<[u8; 32]> {
+    fn digest(path: &str, max_bytes: u64) -> Option<[u8; 32]> {
         let path = Path::new(path);
         let meta = fs::symlink_metadata(path).ok()?;
-        if !meta.file_type().is_file() || meta.len() > MAX_IDENTICAL_TEXTURE_BYTES {
+        if !meta.file_type().is_file() || meta.len() > max_bytes {
             return None;
         }
         let mut file = File::open(path).ok()?;
@@ -849,7 +865,7 @@ fn resolve_verified_duplicate_textures(
                 break;
             }
             count = count.checked_add(n as u64)?;
-            if count > MAX_IDENTICAL_TEXTURE_BYTES {
+            if count > max_bytes {
                 return None;
             }
             hash.update(&buf[..n]);
@@ -859,13 +875,13 @@ fn resolve_verified_duplicate_textures(
         }
         Some(hash.finalize().into())
     }
-    let Some(first) = digest(&hits[0].absolute_path) else {
+    let Some(first) = digest(&hits[0].absolute_path, max_bytes) else {
         return LibraryReferenceStatus::Ambiguous(hits);
     };
     if hits
         .iter()
         .skip(1)
-        .all(|hit| digest(&hit.absolute_path) == Some(first))
+        .all(|hit| digest(&hit.absolute_path, max_bytes) == Some(first))
     {
         LibraryReferenceStatus::Found(hits.remove(0))
     } else {
@@ -1059,6 +1075,71 @@ mod tests {
         fs::remove_file(&b).unwrap();
         assert!(matches!(
             resolve_verified_duplicate_textures(vec![x, y], true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+    }
+
+    #[test]
+    fn identical_dba_from_selected_build_is_resolved_without_guessing_an_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("one.dba");
+        let b = dir.path().join("two.dba");
+        fs::write(&a, b"identical original Controller_905 database").unwrap();
+        fs::write(&b, b"identical original Controller_905 database").unwrap();
+        let name = "characters/hunters/merc_emet/animations/emet_3p.dba";
+        let ref_at = |id: &str, path: &Path| LibraryReference {
+            archive_id: id.to_owned(),
+            archive_name: format!("{id}.pak"),
+            relative_path: name.to_owned(),
+            absolute_path: path.to_string_lossy().into_owned(),
+        };
+        let hits = || vec![ref_at("b", &b), ref_at("a", &a)];
+        assert!(matches!(
+            resolve_verified_duplicate_textures(hits(), true),
+            LibraryReferenceStatus::Found(source) if source.archive_id == "a"
+        ));
+        // Without explicit provenance, equal DBAs may belong to different builds.
+        assert!(matches!(
+            resolve_verified_duplicate_textures(hits(), false),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        fs::write(&b, b"a different version of the database").unwrap();
+        assert!(matches!(
+            resolve_verified_duplicate_textures(hits(), true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        fs::remove_file(&b).unwrap();
+        assert!(matches!(
+            resolve_verified_duplicate_textures(hits(), true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        let many = vec![ref_at("a", &a); MAX_IDENTICAL_DBA_COPIES + 1];
+        assert!(matches!(
+            resolve_verified_duplicate_textures(many, true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+    }
+
+    #[test]
+    fn duplicate_dba_paths_must_match_exact_virtual_character_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("one.dba");
+        fs::write(&a, b"same bytes").unwrap();
+        let hits = [
+            "characters/hunters/merc_emet/animations/emet_3p.dba",
+            "characters/hunters/merc_bucket/animations/emet_3p.dba",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| LibraryReference {
+            archive_id: index.to_string(),
+            archive_name: format!("source{index}.pak"),
+            relative_path: name.to_owned(),
+            absolute_path: a.to_string_lossy().into_owned(),
+        })
+        .collect();
+        assert!(matches!(
+            resolve_verified_duplicate_textures(hits, true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
     }
