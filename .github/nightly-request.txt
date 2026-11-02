@@ -1,5 +1,5 @@
 # Explicit manual Nightly build request. Only code already merged into main is packaged.
-request: user-requested-after-merged-pr176-pr177-pr178-pr179-pr180-2026-11-02
+request: user-requested-after-merged-pr181-pr182-2026-11-02
 requested: 2026-11-02
-base-main-commit: 24ed79128d2a05469972ce94a5d81b59afff14ed
-description: Build a Windows Nightly from main following successful ordered merges of PRs #176, #177, #178, #179 and #180. Includes Level Editor rendering and visual parity improvements, CAF/DBA native animation playback, authored 1D/2D/3D blendspaces, and the diagnostics footer fix. Preserve verified runtime/converter packaging, release signing safeguards, and prerelease metadata. No unmerged branches are packaged.
+base-main-commit: dca163216085f25ade20e8c4e04e8bbe52b2313c
+description: Build a Windows Nightly from main after merging PRs #182 and #181. Includes source-verified same-build duplicate DBA resolution with conflict safeguards and preserving TimeOfDay sunlight intensity when applying the authored mission SunVector. Does not include arbitrary brightness or exposure boost controls. Preserve verified runtime and converter packaging, signing safeguards and prerelease metadata. No unmerged branches are packaged.
