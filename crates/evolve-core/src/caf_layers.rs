@@ -86,6 +86,84 @@ fn validate(pose: &[CafBonePose], allowed: &HashSet<u32>) -> Result<(), NativeCa
     Ok(())
 }
 
+/// One authored blendspace source sampled at the common normalized phase.
+/// These weights are barycentric and must sum to one.
+pub struct WeightedCaf<'a> {
+    pub motion: &'a NativeCafMotion,
+    pub seconds: f32,
+    pub weight: f32,
+}
+
+/// Weighted source-CAF blend using independently verified original bind
+/// channels. Every clip is sampled at its own duration; sparse channels fall
+/// back to the same source skeleton, and quaternions use a shortest-arc
+/// reference. Never mix additive sources as ordinary absolute poses.
+pub fn sample_weighted_caf_with_bind(
+    clips: &[WeightedCaf<'_>],
+    bind: &[CafBonePose],
+) -> Result<Vec<CafBonePose>, NativeCafError> {
+    if clips.is_empty() || clips.len() > 8 {
+        return Err(bad("Blendspace requires 1–8 verified source clips"));
+    }
+    let total = clips.iter().map(|clip| clip.weight).sum::<f32>();
+    if !total.is_finite() || (total - 1.0).abs() > 1e-3 ||
+        clips.iter().any(|clip| !clip.weight.is_finite() || clip.weight < 0.0 || !clip.seconds.is_finite() || clip.seconds < 0.0 || clip.motion.additive)
+    {
+        return Err(bad("Blendspace weights must be normalized, finite and non-additive"));
+    }
+    let allowed = bind.iter().map(|p| p.bone_crc32).collect::<HashSet<_>>();
+    validate(bind, &allowed)?;
+    if bind.iter().any(|p| p.translation.is_none() || p.rotation.is_none()) {
+        return Err(bad("Blendspace requires complete original local bind channels"));
+    }
+    let mut sampled = Vec::with_capacity(clips.len());
+    for clip in clips {
+        let pose = clip.motion.sample_seconds(clip.seconds)?;
+        validate(&pose, &allowed)?;
+        sampled.push(pose.into_iter().map(|p| (p.bone_crc32, p)).collect::<HashMap<_, _>>());
+    }
+    let mut result = Vec::with_capacity(bind.len());
+    for bone in bind {
+        let mut positions = [0.0_f64; 3];
+        let mut rotations = [0.0_f64; 4];
+        let reference = clips
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.weight.total_cmp(&b.1.weight))
+            .and_then(|(i, _)| sampled[i].get(&bone.bone_crc32))
+            .and_then(|pose| pose.rotation)
+            .or(bone.rotation)
+            .ok_or_else(|| bad("Missing original bind rotation"))?;
+        let reference_length = reference.iter().map(|n| n*n).sum::<f32>().sqrt();
+        if !(0.95..=1.05).contains(&reference_length) {
+            return Err(bad("Invalid original reference quaternion"));
+        }
+        for (i, clip) in clips.iter().enumerate() {
+            let sample = sampled[i].get(&bone.bone_crc32);
+            let position = sample.and_then(|p| p.translation).or(bone.translation).ok_or_else(|| bad("Missing original bind position"))?;
+            let rotation = sample.and_then(|p| p.rotation).or(bone.rotation).ok_or_else(|| bad("Missing original bind rotation"))?;
+            let length = rotation.iter().map(|n| n*n).sum::<f32>().sqrt();
+            if !(0.95..=1.05).contains(&length) {
+                return Err(bad("Invalid blendspace source quaternion"));
+            }
+            let dot = (0..4).map(|k| reference[k]*rotation[k]).sum::<f32>();
+            let sign = if dot < 0.0 { -1.0 } else { 1.0 };
+            for axis in 0..3 { positions[axis] += f64::from(position[axis]) * f64::from(clip.weight); }
+            for axis in 0..4 { rotations[axis] += f64::from(rotation[axis] * sign) * f64::from(clip.weight); }
+        }
+        let rotation_length = rotations.iter().map(|v| v*v).sum::<f64>().sqrt();
+        if !rotation_length.is_finite() || rotation_length < 1e-8 || positions.iter().any(|v| !v.is_finite()) {
+            return Err(bad("Degenerate blended pose"));
+        }
+        result.push(CafBonePose {
+            bone_crc32: bone.bone_crc32,
+            translation: Some(positions.map(|v| v as f32)),
+            rotation: Some(rotations.map(|v| (v / rotation_length) as f32)),
+        });
+    }
+    Ok(result)
+}
+
 /// Blend a base decoded CAF with at most eight non-additive overlays.
 ///
 /// Every controller must belong to the explicitly supplied compiled-skeleton
@@ -414,4 +492,26 @@ mod tests {
         );
         assert!(sample_verified_caf_layers(&base, 0.0, &[], &HashSet::new()).is_err());
     }
+    #[test]
+    fn barycentric_caf_blending_reuses_original_bind_and_refuses_additive() {
+        let low = clip(123, 2.0);
+        let high = clip(123, 10.0);
+        let bind = vec![CafBonePose {
+            bone_crc32: 123, translation: Some([0.0, 0.0, 0.0]),
+            rotation: Some([0.0, 0.0, 0.0, 1.0]),
+        }];
+        let mixed = sample_weighted_caf_with_bind(
+            &[WeightedCaf { motion: &low, seconds: 0.5, weight: 0.75 },
+              WeightedCaf { motion: &high, seconds: 0.5, weight: 0.25 }], &bind
+        ).unwrap();
+        assert_eq!(mixed[0].translation, Some([4.0, 0.0, 0.0]));
+        assert_eq!(mixed[0].rotation, Some([0.0, 0.0, 0.0, 1.0]));
+        let mut bad = high.clone();
+        bad.additive = true;
+        assert!(sample_weighted_caf_with_bind(&[
+            WeightedCaf { motion: &low, seconds: 0.0, weight: 0.5 },
+            WeightedCaf { motion: &bad, seconds: 0.0, weight: 0.5 },
+        ], &bind).is_err());
+    }
+
 }
