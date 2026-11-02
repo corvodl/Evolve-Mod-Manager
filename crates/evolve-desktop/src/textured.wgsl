@@ -15,6 +15,7 @@ struct Output {
 // data, so it is never reused for a separate opacity-reference material.
 @group(0) @binding(6) var opacity_map: texture_2d<f32>;
 // x is the material's emission strength, y is the user's viewport slider.
+// z is the armor glow's strength, set from the monster's armor.
 // Source values, texture masks, diffuse and FBX export remain unchanged.
 @group(0) @binding(7) var<uniform> emission_params: vec4<f32>;
 // Separate, optional armor overlay: this channel is black when unchecked,
@@ -147,11 +148,10 @@ fn shade(input: Output) -> vec4<f32> {
     let source_glow = glow * emission_params.x * emission_params.y * decal_base;
     let viewport_glow = min(source_glow, vec3<f32>(4096.0));
 
-    // Optional Stage 2 armor-glow overlay has no authored strength: a neutral
-    // one-unit source that never inherits the active material's. Disabled
-    // overlays stay black.
-    let armor_source = armor_glow * emission_params.y;
-    let armor_viewport = min(armor_source, vec3<f32>(32.0));
+    // The game drives a monster's armor glow from its armor, never the active
+    // material's strength. Disabled overlays stay black.
+    let armor_source = armor_glow * emission_params.y * emission_params.z;
+    let armor_viewport = min(armor_source, vec3<f32>(4096.0));
     return vec4<f32>(base.rgb * material[1].rgb * (irradiance * exposure + material[2].rgb)
         + viewport_glow
         + armor_viewport + specular_light, base.a);

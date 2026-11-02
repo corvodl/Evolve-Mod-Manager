@@ -410,6 +410,28 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 .size(11)
                 .style(design::muted),
         );
+        if state.full_armor_glow {
+            entries = entries.push(
+                row![
+                    text(format!("Armor {:.0}%", state.armor_level * 100.0))
+                        .size(12)
+                        .width(80),
+                    slider(
+                        0.0_f32..=1.0_f32,
+                        state.armor_level,
+                        Message::ViewerArmorLevelChanged,
+                    )
+                    .step(0.01_f32)
+                    .width(Fill),
+                ]
+                .spacing(7),
+            );
+            entries = entries.push(
+                text("The game sets this glow from the monster's armor. The curve is estimated from in-game screenshots of Goliath.")
+                    .size(11)
+                    .style(design::muted),
+            );
+        }
         entries = entries.push(
             design::button(if state.damage_blend_enabled {
                 "☑ Damage blend"
@@ -1578,6 +1600,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 zoom: state.zoom.max(0.2),
                 light_strength: state.light_strength,
                 emissive_gain: state.emissive_strength,
+                armor_level: state.armor_level,
                 emissive_time: state.decal_time,
                 pan_x: state.pan_x,
                 pan_y: state.pan_y,

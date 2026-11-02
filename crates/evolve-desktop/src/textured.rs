@@ -159,6 +159,8 @@ pub struct Scene {
     pub light_strength: f32,
     /// Viewport-only multiplier, independent of the original material strength.
     pub emissive_gain: f32,
+    /// A monster's armor as a share of full, which sets its armor glow.
+    pub armor_level: f32,
     /// Continuous glow animation clock, independent of CAF playback.
     pub emissive_time: f32,
     pub pan_x: f32,
@@ -236,6 +238,7 @@ pub struct Primitive {
     specular_identity: usize,
     gloss_identity: usize,
     emissive_gain: f32,
+    armor_level: f32,
     emissive_time: f32,
     world: Option<Arc<super::world_instances::World>>,
     level_hour: f32,
@@ -405,6 +408,7 @@ impl shader::Program<super::Message> for Scene {
                 .map_or(0, |t| Arc::as_ptr(t) as usize),
             gloss_identity: self.gloss.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
             emissive_gain: self.emissive_gain,
+            armor_level: self.armor_level,
             emissive_time: self.emissive_time,
             world: self.world.clone(),
             level_hour: self.level_hour,
@@ -477,6 +481,7 @@ pub struct Pipeline {
     last_surfaces_identity: usize,
     last_viewer_full_textures: bool,
     last_emissive_gain: f32,
+    last_armor_level: f32,
     last_emissive_time: f32,
     gpu_surfaces: Vec<GpuSurface>,
     surface_upload_cursor: usize,
@@ -517,6 +522,19 @@ pub struct Pipeline {
 // helper for initialization, CDF attachment ranges and texture reloads.
 const MATERIAL_BINDINGS: [u32; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
+/// The glow pass strength of a monster's armor glow, from a share of its armor.
+/// The game sets this at runtime. The curve is estimated from Goliath in the
+/// match: glow near 1 at full armor, falling as armor^1.5, then the renderer's
+/// pow(glow * 2, 2).
+fn armor_glow_strength(armor: f32) -> f32 {
+    let armor = if armor.is_finite() {
+        armor.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    (armor.powf(1.5) * 2.0).powi(2)
+}
+
 /// Above the brightest authored glow pass, whose GlowAmount 20 gives 1600.
 const MAX_EMISSION: f32 = 4096.0;
 
@@ -533,7 +551,7 @@ fn emission_uniform_values(source_strength: f32, preview_gain: f32) -> [f32; 4] 
     } else {
         1.0
     };
-    [source, gain, 0.0, 0.0]
+    [source, gain, armor_glow_strength(1.0), 0.0]
 }
 
 /// Source UV tiles and one texture-coordinate translation per axis.
@@ -1249,6 +1267,7 @@ impl Pipeline {
             last_surfaces_identity: usize::MAX,
             last_viewer_full_textures: false,
             last_emissive_gain: f32::NAN,
+            last_armor_level: f32::NAN,
             last_emissive_time: f32::NAN,
             gpu_surfaces: Vec::new(),
             surface_upload_cursor: 0,
@@ -1706,17 +1725,22 @@ impl Pipeline {
                 }
             }
         }
-        if self.last_emissive_gain.to_bits() != primitive.emissive_gain.to_bits() {
+        if self.last_emissive_gain.to_bits() != primitive.emissive_gain.to_bits()
+            || self.last_armor_level.to_bits() != primitive.armor_level.to_bits()
+        {
             self.last_emissive_gain = primitive.emissive_gain;
+            self.last_armor_level = primitive.armor_level;
             // Buffers already exist on each material: update only 16 bytes
             // per visible material, not CDF geometry or source DDS textures.
-            let default = emission_uniform_values(1.0, primitive.emissive_gain);
+            let mut default = emission_uniform_values(1.0, primitive.emissive_gain);
+            default[2] = armor_glow_strength(primitive.armor_level);
             queue.write_buffer(&self._emission_uniform, 0, bytemuck::bytes_of(&default));
             for surface in &self.gpu_surfaces {
                 let mut values = emission_uniform_values(
                     surface.source_emission_strength,
                     primitive.emissive_gain,
                 );
+                values[2] = armor_glow_strength(primitive.armor_level);
                 // Gain updates must not reset the foliage material cutoff.
                 values[3] = surface.alpha_cutoff.clamp(0.0, 1.0);
                 queue.write_buffer(&surface._emission_uniform, 0, bytemuck::bytes_of(&values));
@@ -2128,6 +2152,13 @@ mod tests {
     }
 
     #[test]
+    fn armor_glow_follows_the_estimated_curve() {
+        assert_eq!(super::armor_glow_strength(1.0), 4.0);
+        assert_eq!(super::armor_glow_strength(0.0), 0.0);
+        assert!((super::armor_glow_strength(0.5) - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
     fn independent_armor_emission_does_not_inherit_authored_source_strength() {
         let authored = super::emission_uniform_values(0.0, 2.5);
         assert_eq!(authored[0], 0.0);
@@ -2137,7 +2168,7 @@ mod tests {
         let source = include_str!("textured.wgsl");
         assert!(source.contains("glow * emission_params.x * emission_params.y"));
         assert!(source.contains("armor_glow * emission_params.y"));
-        assert!(source.contains("armor_viewport = min(armor_source, vec3<f32>(32.0))"));
+        assert!(source.contains("armor_viewport = min(armor_source, vec3<f32>(4096.0))"));
     }
 
     #[test]

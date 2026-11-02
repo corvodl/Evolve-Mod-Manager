@@ -219,6 +219,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 zoom: state.zoom.max(0.2),
                 light_strength: state.light_strength,
                 emissive_gain: state.emissive_strength,
+                armor_level: 1.0,
                 emissive_time: state.decal_time,
                 pan_x: state.pan_x,
                 pan_y: state.pan_y,

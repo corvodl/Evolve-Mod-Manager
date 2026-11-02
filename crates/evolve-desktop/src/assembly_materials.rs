@@ -1788,10 +1788,9 @@ pub fn load_with_progress(
     (surfaces, warnings)
 }
 
-/// CryEngine *_glow_diff contains alternate armor colors and highlights.
-/// Add only positive color differences from the original body in linear
-/// light, without clipping each encoded channel at 80/255. This remains
-/// an approximation, never an edit of source DDS, UV0 or FBX data.
+/// A monster's *_glow_diff is the decal of its armor glow, so this bakes what the
+/// glow pass reads: decal * diffuse * both alphas. Diffuse skips the sRGB conversion
+/// there. The game sets the strength from armor; see armor_glow_strength.
 pub fn armor_emission(
     base: &image::RgbaImage,
     glow: &image::RgbaImage,
@@ -1812,7 +1811,12 @@ pub fn armor_emission(
         );
         let normal = base.get_pixel(x, y);
         for c in 0..3 {
-            pixel[c] = linear_srgb((srgb_linear(sample[c]) - srgb_linear(normal[c])).max(0.0));
+            pixel[c] = linear_srgb(
+                srgb_linear(sample[c]) * f32::from(normal[c]) / 255.0 * f32::from(normal[3])
+                    / 255.0
+                    * f32::from(sample[3])
+                    / 255.0,
+            );
         }
         pixel[3] = 255;
     }
@@ -1909,16 +1913,15 @@ mod tests {
     }
 
     #[test]
-    fn alternate_armor_diffuse_emission_preserves_base_and_linear_highlights() {
-        let base = image::RgbaImage::from_pixel(2, 1, image::Rgba([70, 45, 30, 255]));
+    fn armor_emission_bakes_the_glow_pass_decal_over_diffuse() {
+        let base =
+            image::RgbaImage::from_raw(2, 1, vec![255, 255, 255, 255, 255, 255, 255, 0]).unwrap();
         let glow =
-            image::RgbaImage::from_raw(2, 1, vec![250, 200, 150, 255, 50, 30, 20, 255]).unwrap();
+            image::RgbaImage::from_raw(2, 1, vec![255, 0, 255, 255, 255, 255, 255, 255]).unwrap();
         let emission = armor_emission(&base, &glow).unwrap();
-        assert!(emission.get_pixel(0, 0)[0] > 180);
-        assert!(emission.get_pixel(0, 0)[1] > 130);
-        assert!(emission.get_pixel(0, 0)[2] > 100);
+        assert_eq!(emission.get_pixel(0, 0).0, [255, 0, 255, 255]);
+        // Diffuse alpha masks it.
         assert_eq!(emission.get_pixel(1, 0).0, [0, 0, 0, 255]);
-        assert_eq!(base.get_pixel(0, 0).0, [70, 45, 30, 255]);
     }
 
     #[test]
