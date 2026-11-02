@@ -605,6 +605,13 @@ fn fs_opaque(input:Output)->@location(0) vec4<f32> {
   return vec4<f32>(authored_scene_linear(fogged.rgb),1.0);
 }
 
+// Half alpha marks the terrain for road projection; the window never sees it.
+@fragment
+fn fs_opaque_terrain(input:Output)->@location(0) vec4<f32> {
+  let fogged=distance_fog(input,shade(input,true));
+  return vec4<f32>(authored_scene_linear(fogged.rgb),0.5);
+}
+
 @fragment
 fn fs_foliage(input:Output)->@location(0) vec4<f32> {
   // CryEngine Vegetation: cut the original diffuse alpha at 50% (default

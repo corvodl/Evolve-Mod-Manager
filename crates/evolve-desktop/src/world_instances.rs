@@ -1676,6 +1676,7 @@ fn shadow_matrix(center: [f32; 3], to_sun: [f32; 3], radius: f32) -> [[f32; 4]; 
 
 pub(super) struct Renderer {
     solid: wgpu::RenderPipeline,
+    solid_terrain: wgpu::RenderPipeline,
     terrain_source: wgpu::RenderPipeline,
     terrain_source_unlit: bool,
     foliage_cutout: wgpu::RenderPipeline,
@@ -2497,7 +2498,7 @@ impl Renderer {
             bind_group_layouts: &[&layout, &shadow_sample_layout],
             push_constant_ranges: &[],
         });
-        let make = |blend: bool, cutout: bool, raw_terrain: bool| {
+        let make_marked = |blend: bool, cutout: bool, raw_terrain: bool, marked: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(if raw_terrain {
                     "Unlit original terrain color atlas"
@@ -2520,7 +2521,9 @@ impl Renderer {
                     // Solid world meshes must NOT forward packed diffuse alpha
                     // into the Iced window target; it can make the actual
                     // window transparent to applications beneath it.
-                    entry_point: Some(if raw_terrain {
+                    entry_point: Some(if marked {
+                        "fs_opaque_terrain"
+                    } else if raw_terrain {
                         "fs_terrain_source"
                     } else if cutout {
                         "fs_foliage"
@@ -2555,6 +2558,9 @@ impl Renderer {
                 multiview: None,
                 cache: None,
             })
+        };
+        let make = |blend: bool, cutout: bool, raw_terrain: bool| {
+            make_marked(blend, cutout, raw_terrain, false)
         };
 
         let celestial_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -3232,6 +3238,7 @@ impl Renderer {
             screen_sampler,
             refraction_copy: std::sync::Mutex::new(None),
             solid: make(false, false, false),
+            solid_terrain: make_marked(false, false, false, true),
             terrain_source: make(false, false, true),
             terrain_source_unlit: false,
             foliage_cutout: make(false, true, false),
@@ -5143,6 +5150,7 @@ impl Renderer {
                 }
                 pass.set_pipeline(match mode {
                     0 if group.terrain && self.terrain_source_unlit => &self.terrain_source,
+                    0 if group.terrain => &self.solid_terrain,
                     0 => &self.solid,
                     1 => &self.foliage_cutout,
                     3 => &self.distance_clouds,

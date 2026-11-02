@@ -65,7 +65,7 @@ fn fs_shafts(input:FsOut)->@location(0) vec4<f32> {
         let uv=input.uv+to_sun*(f32(i)/48.0);
         if (all(uv>=vec2<f32>(0.0)) && all(uv<=vec2<f32>(1.0))) {
             let sampled=textureSampleLevel(source_texture,source_sampler,uv,0.0);
-            sum+=min(sampled.rgb,vec3<f32>(8.0))*(1.0-clamp(sampled.a,0.0,1.0))*weight;
+            sum+=min(sampled.rgb,vec3<f32>(8.0))*(1.0-clamp(sampled.a*2.0,0.0,1.0))*weight;
         }
         total+=weight;
         weight*=0.97;

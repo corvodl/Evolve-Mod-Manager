@@ -77,9 +77,11 @@ fn fs_decal(input:Output)->@location(0) vec4<f32> {
   return vec4<f32>(source.rgb*input.tint.rgb*behind/TYPICAL_ALBEDO,alpha);
 }
 
-// Authored roads: a prism around each ribbon piece, projected onto what lies
-// within ROAD_REACH of the spline, so tall rocks and trees stay clear of them.
+// Authored roads: a prism around each ribbon piece, projected only onto terrain
+// pixels, which the opaque pass marks with half alpha. As with decals the scene
+// stands in for light, here divided by what bare ground roughly reflects.
 const ROAD_REACH:f32=1.5;
+const GROUND_ALBEDO:f32=0.12;
 
 struct RoadOutput {
   @builtin(position) position:vec4<f32>,
@@ -144,6 +146,8 @@ fn road_coords(p:vec2<f32>,a:vec2<f32>,b:vec2<f32>,c:vec2<f32>,d:vec2<f32>)->vec
 
 @fragment
 fn fs_road(input:RoadOutput)->@location(0) vec4<f32> {
+  let behind=textureLoad(scene_color,vec2<i32>(input.position.xy),0);
+  if (abs(behind.a-0.5)>0.1) { discard; }
   let z=textureLoad(scene_depth,vec2<i32>(input.position.xy),0);
   let view_depth=camera.forward.w/max(1.0-z,0.000001);
   let ndc=input.clip.xy/input.clip.w;
@@ -161,6 +165,5 @@ fn fs_road(input:RoadOutput)->@location(0) vec4<f32> {
   let view_fade=clamp((400.0-view_depth)/100.0,0.0,1.0);
   let alpha=source.a*input.tint.a*facing*ends*view_fade;
   if (alpha<=0.002) { discard; }
-  let behind=textureSampleLevel(scene_color,screen_sampler,input.position.xy/vec2<f32>(textureDimensions(scene_color)),0.0).rgb;
-  return vec4<f32>(source.rgb*input.tint.rgb*behind/TYPICAL_ALBEDO,alpha);
+  return vec4<f32>(source.rgb*input.tint.rgb*behind.rgb/GROUND_ALBEDO,alpha);
 }
