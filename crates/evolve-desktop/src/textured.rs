@@ -10,6 +10,9 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+#[cfg(test)]
+mod model_capture;
+
 // Reuse original DDS pixels once per unique source/role. Balanced mode keeps
 // the conservative manager budget; Full quality has NO manager-imposed total
 // GPU texture ceiling and only downsizes for the adapter's texture dimensions
