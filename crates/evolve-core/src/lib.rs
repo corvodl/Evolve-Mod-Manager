@@ -7,6 +7,7 @@ pub mod archive;
 pub mod asset_compare;
 pub mod batch;
 pub mod caf_layers;
+pub mod blendspace;
 pub mod cdf;
 pub mod character_assembly;
 pub mod character_emet;
