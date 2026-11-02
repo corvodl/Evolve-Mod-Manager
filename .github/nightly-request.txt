@@ -1,5 +1,5 @@
 # Explicit manual Nightly build request. Only code already merged into main is packaged.
-request: user-requested-after-merged-pr181-pr182-2026-11-02
+request: user-requested-after-merged-pr184-pr185-2026-11-02
 requested: 2026-11-02
-base-main-commit: dca163216085f25ade20e8c4e04e8bbe52b2313c
-description: Build a Windows Nightly from main after merging PRs #182 and #181. Includes source-verified same-build duplicate DBA resolution with conflict safeguards and preserving TimeOfDay sunlight intensity when applying the authored mission SunVector. Does not include arbitrary brightness or exposure boost controls. Preserve verified runtime and converter packaging, signing safeguards and prerelease metadata. No unmerged branches are packaged.
+base-main-commit: 33ee247e093501b8232a695b915caabf525c9765
+description: Build a Windows Nightly from main after merging PRs #184 and #185. Includes source-derived time-of-day linked sun path positioning for Level Editor lighting and stored encrypted USM overlay additions so Stage 2 can stream new videos. Preserve existing signed PAK safeguards, validated runtime and converter packaging, and prerelease metadata. No unmerged branches are packaged.
