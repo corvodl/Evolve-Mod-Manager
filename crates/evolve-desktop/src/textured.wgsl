@@ -25,7 +25,7 @@ struct Output {
 // Only the emission map uses these values; other maps stay at mesh UV0.
 @group(0) @binding(9) var<uniform> emissive_uv: vec4<f32>;
 // Authored Specular with Shininess as smoothness, Diffuse tint, Emissive color
-// with a flag for a decal the glow pass multiplies by diffuse.
+// with how a decal glow uses diffuse: 0 not at all, 1 color, 2 color and alpha.
 @group(0) @binding(10) var<uniform> material: array<vec4<f32>, 3>;
 
 @vertex
@@ -151,7 +151,8 @@ fn shade(input: Output) -> vec4<f32> {
     let specular_light = highlight * exposure;
     // The game's emission, unscaled: see authored_emission_strength. The final
     // bloom and tone curve bound the display value.
-    let decal_base = mix(vec3<f32>(1.0), glow_pass_diffuse(base.rgb) * base.a, material[2].a);
+    let decal_alpha = select(1.0, base.a, material[2].a > 1.5);
+    let decal_base = select(vec3<f32>(1.0), glow_pass_diffuse(base.rgb) * decal_alpha, material[2].a > 0.5);
     let source_glow = glow * emission_params.x * emission_params.y * decal_base;
     let viewport_glow = min(source_glow, vec3<f32>(4096.0));
 

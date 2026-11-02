@@ -3751,7 +3751,7 @@ impl Renderer {
                     emissive[0],
                     emissive[1],
                     emissive[2],
-                    if surf.emission_on_diffuse { 1.0 } else { 0.0 },
+                    super::textured::decal_mode(surf.emission_on_diffuse, surf.emission_alpha_mask),
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });

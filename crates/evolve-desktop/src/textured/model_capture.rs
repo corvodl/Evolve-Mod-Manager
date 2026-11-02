@@ -117,7 +117,10 @@ fn capture_real_model_views() {
             light_strength: number(9),
             emissive_gain: 1.0,
             armor_level: number(8),
-            emissive_time: 0.0,
+            emissive_time: std::env::var("EVOLVE_CAPTURE_TIME")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1.0),
             pan_x: number(6),
             pan_y: number(7),
             shift: false,

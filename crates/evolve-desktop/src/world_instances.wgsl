@@ -28,7 +28,7 @@ struct SurfaceParams {
   layers: vec4<f32>,  // DetailGlossScale, has detail, has second layer, BlendFactor
   blend: vec4<f32>,   // BlendFalloff, BlendLayer2Tiling, BlendMaskTiling, normal in emissive slot
   foliage: vec4<f32>, // TransmittanceColor by BackDiffuseMultiplier, BlendLayer2Specular
-  emissive: vec4<f32>, // authored Emissive color, glow decal multiplies diffuse
+  emissive: vec4<f32>, // authored Emissive color, how a glow decal uses diffuse
 }
 @group(0) @binding(4) var<uniform> authored: SurfaceParams;
 // Viewport-only time-of-day lighting. Never reads or edits game engine state.
@@ -541,7 +541,8 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // The game's emission, unscaled: see authored_emission_strength.
   let emission=textureSample(emissive_map,tex_sampler,input.uv).rgb;
   let glow_base=sample_source_albedo(input.uv);
-  let decal_base=mix(vec3<f32>(1.0),glow_pass_diffuse(glow_base.rgb)*glow_base.a,authored.emissive.a);
+  let decal_alpha=select(1.0,glow_base.a,authored.emissive.a>1.5);
+  let decal_base=select(vec3<f32>(1.0),glow_pass_diffuse(glow_base.rgb)*decal_alpha,authored.emissive.a>0.5);
   let preview_glow=emission*decal_base*max(authored.cutoff.y,0.0)*(1.0-authored.blend.w);
   return vec4<f32>(base.rgb*(ambient_light*authored.clouds.w*mix(1.0,n.z*0.25+0.75,foliage_surface)+authored.emissive.rgb+sun+light.sun_color.rgb*light.sun.w*visibility*leaf_through*foliage_surface)+specular+reflected+local_radiance+preview_glow,base.a);
 }

@@ -377,14 +377,13 @@ fn role_channel(role: &str) -> Option<usize> {
     }
 }
 
-/// An explicitly authored Illum Decal with positive GlowAmount is a
-/// separate legacy glow source, not a second diffuse-alpha mask. Kala's
-/// Banshee Gun Glow submaterial deliberately lacks the ALPHAGLOW flag.
+/// An explicitly authored Illum Decal with positive GlowAmount is the glow
+/// pass's mask, whether or not the material also has ALPHAGLOW: Lennox's vents
+/// have both, and Kala's Banshee Gun Glow submaterial lacks the flag.
 fn legacy_decal_role(slot: &evolve_core::MaterialSlot, role: &str) -> Option<usize> {
     if role == "decal"
         && slot.shader.eq_ignore_ascii_case("Illum")
         && slot.glow_amount.is_some_and(|amount| amount > 0.0)
-        && !slot.alpha_glow
     {
         Some(2)
     } else {
@@ -1184,6 +1183,7 @@ fn load_authored_subset_surfaces(
             material_specular: None,
             material_emissive: None,
             emission_on_diffuse: false,
+            emission_alpha_mask: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -1258,6 +1258,7 @@ fn load_authored_subset_surfaces(
                         surface.emissive = emissive;
                         surface.emission_strength = authored_emission_strength(leaf);
                         surface.emission_on_diffuse = decal_glow(leaf);
+                        surface.emission_alpha_mask = leaf.alpha_glow;
                         surface.emissive_uv = source_decal_motion(leaf);
                         surface.specular = specular;
                         surface.gloss = gloss;
@@ -1623,6 +1624,7 @@ pub fn load_with_progress(
             material_specular: None,
             material_emissive: None,
             emission_on_diffuse: false,
+            emission_alpha_mask: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -1712,6 +1714,7 @@ pub fn load_with_progress(
             surface.emissive = emissive;
             surface.emission_strength = authored_emission_strength(leaf);
             surface.emission_on_diffuse = decal_glow(leaf);
+            surface.emission_alpha_mask = leaf.alpha_glow;
             surface.emissive_uv = source_decal_motion(leaf);
             // A single mesh MTL contains BOTH original Banshee blue and
             // Armor Reducer red leaves. Render only the active mode's
@@ -1850,6 +1853,7 @@ mod tests {
             material_specular: None,
             material_emissive: None,
             emission_on_diffuse: false,
+            emission_alpha_mask: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -2101,7 +2105,7 @@ mod tests {
 
         let mut body = slot.clone();
         body.alpha_glow = true;
-        assert_eq!(legacy_decal_role(&body, "decal"), None);
+        assert_eq!(legacy_decal_role(&body, "decal"), Some(2));
         let disabled = evolve_core::parse_material(
             br#"<Material Shader="Illum" GlowAmount="0"><Textures>
                 <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif"/>
@@ -2146,6 +2150,7 @@ mod tests {
             material_specular: None,
             material_emissive: None,
             emission_on_diffuse: false,
+            emission_alpha_mask: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -2197,6 +2202,7 @@ mod tests {
             material_specular: None,
             material_emissive: None,
             emission_on_diffuse: false,
+            emission_alpha_mask: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -2450,6 +2456,7 @@ mod tests {
             material_specular: None,
             material_emissive: None,
             emission_on_diffuse: false,
+            emission_alpha_mask: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,

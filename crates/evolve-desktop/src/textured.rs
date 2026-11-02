@@ -114,6 +114,9 @@ pub struct Surface {
     pub material_emissive: Option<[f32; 3]>,
     /// The emission map is a decal, which the glow pass multiplies by diffuse.
     pub emission_on_diffuse: bool,
+    /// That decal is also masked by diffuse alpha. In the game this holds only with
+    /// ALPHAGLOW: Kala's tubing has zero diffuse alpha, no flag, and still glows.
+    pub emission_alpha_mask: bool,
     /// Authored Shininess, 0 to 255.
     pub material_shininess: Option<f32>,
     /// World meshes only: Waterfall shader params.
@@ -538,6 +541,15 @@ fn armor_glow_strength(armor: f32) -> f32 {
     (armor.powf(1.5) * 2.0).powi(2)
 }
 
+/// How a decal glow uses diffuse: 0 not at all, 1 color, 2 color and alpha.
+pub(super) fn decal_mode(on_diffuse: bool, alpha_mask: bool) -> f32 {
+    match (on_diffuse, alpha_mask) {
+        (false, _) => 0.0,
+        (true, false) => 1.0,
+        (true, true) => 2.0,
+    }
+}
+
 /// Above the brightest authored glow pass, whose GlowAmount 20 gives 1600.
 const MAX_EMISSION: f32 = 4096.0;
 
@@ -647,6 +659,7 @@ impl Pipeline {
         tint: Option<[f32; 4]>,
         emissive: Option<[f32; 3]>,
         emission_on_diffuse: bool,
+        emission_alpha_mask: bool,
     ) -> wgpu::Buffer {
         let specular = specular.unwrap_or([1.0; 3]);
         let tint = tint.unwrap_or([1.0; 4]);
@@ -665,7 +678,7 @@ impl Pipeline {
                 emissive[0],
                 emissive[1],
                 emissive[2],
-                if emission_on_diffuse { 1.0 } else { 0.0 },
+                decal_mode(emission_on_diffuse, emission_alpha_mask),
             ]),
             usage: wgpu::BufferUsages::UNIFORM,
         })
@@ -1209,7 +1222,7 @@ impl Pipeline {
         );
         let emission_uniform = Self::emission_uniform(device, queue, 1.0, 0.5);
         let uv_uniform = Self::emissive_uv_uniform(device, queue, None);
-        let material_uniform = Self::material_uniform(device, None, None, None, None, false);
+        let material_uniform = Self::material_uniform(device, None, None, None, None, false, false);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
@@ -1581,6 +1594,7 @@ impl Pipeline {
                 part.material_tint,
                 part.material_emissive,
                 part.emission_on_diffuse,
+                part.emission_alpha_mask,
             );
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CDF attachment material"),

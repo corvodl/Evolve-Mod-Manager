@@ -429,6 +429,7 @@ fn neutral(first_index: u32, index_count: u32) -> Surface {
         material_specular: None,
         material_emissive: None,
         emission_on_diffuse: false,
+        emission_alpha_mask: false,
         material_shininess: None,
         waterfall: None,
         detail_map: None,
