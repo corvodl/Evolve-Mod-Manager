@@ -105,6 +105,12 @@ pub struct MaterialSlot {
     /// Exact CryEngine StringGenMask ALPHAGLOW flag, not diffuse alpha alone.
     #[serde(default)]
     pub alpha_glow: bool,
+    /// AmbientMultiplier: the strength of ALPHAGLOW in the main pass.
+    #[serde(default)]
+    pub ambient_multiplier: Option<f32>,
+    /// Emissive color, which the game adds to the light falling on diffuse.
+    #[serde(default)]
+    pub emissive_color: Option<[f32; 3]>,
     /// Original hexadecimal CryEngine GenMask. Flags are shader-local;
     /// never compare identical bits across unrelated shader templates.
     #[serde(default)]
@@ -341,6 +347,12 @@ fn authored_waterfall(node: &BytesStart<'_>) -> Result<Option<[f32; 11]>, Materi
 }
 
 /// The first component of IndirectColor, when this element authors one.
+fn authored_ambient_multiplier(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
+    Ok(attr(node, b"AmbientMultiplier")?
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0))
+}
+
 fn authored_indirect_color(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
     Ok(attr(node, b"IndirectColor")?
         .and_then(|value| value.split(',').next()?.trim().parse::<f32>().ok())
@@ -580,6 +592,8 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
                         specular_tint: source_color(&node, b"Specular")?,
+                        ambient_multiplier: authored_ambient_multiplier(&node)?,
+                        emissive_color: source_color(&node, b"Emissive")?,
                         shininess: attr(&node, b"Shininess")?
                             .and_then(|raw| raw.trim().parse::<f32>().ok())
                             .filter(|value| value.is_finite()),
@@ -660,6 +674,9 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     if let Some(waterfall) = authored_waterfall(&node)? {
                         slots[*index].waterfall = Some(waterfall);
                     }
+                    if let Some(multiplier) = authored_ambient_multiplier(&node)? {
+                        slots[*index].ambient_multiplier = Some(multiplier);
+                    }
                     if let Some(indirect) = authored_indirect_color(&node)? {
                         slots[*index].indirect_color = Some(indirect);
                     }
@@ -713,6 +730,8 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
                         specular_tint: source_color(&node, b"Specular")?,
+                        ambient_multiplier: authored_ambient_multiplier(&node)?,
+                        emissive_color: source_color(&node, b"Emissive")?,
                         shininess: attr(&node, b"Shininess")?
                             .and_then(|raw| raw.trim().parse::<f32>().ok())
                             .filter(|value| value.is_finite()),
@@ -790,6 +809,9 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     }
                     if let Some(waterfall) = authored_waterfall(&node)? {
                         slots[*index].waterfall = Some(waterfall);
+                    }
+                    if let Some(multiplier) = authored_ambient_multiplier(&node)? {
+                        slots[*index].ambient_multiplier = Some(multiplier);
                     }
                     if let Some(indirect) = authored_indirect_color(&node)? {
                         slots[*index].indirect_color = Some(indirect);

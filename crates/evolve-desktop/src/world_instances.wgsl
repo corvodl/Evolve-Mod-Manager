@@ -28,6 +28,7 @@ struct SurfaceParams {
   layers: vec4<f32>,  // DetailGlossScale, has detail, has second layer, BlendFactor
   blend: vec4<f32>,   // BlendFalloff, BlendLayer2Tiling, BlendMaskTiling, normal in emissive slot
   foliage: vec4<f32>, // TransmittanceColor by BackDiffuseMultiplier, BlendLayer2Specular
+  emissive: vec4<f32>, // authored Emissive color
 }
 @group(0) @binding(4) var<uniform> authored: SurfaceParams;
 // Viewport-only time-of-day lighting. Never reads or edits game engine state.
@@ -530,15 +531,10 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
       source.color_strength.rgb*cookie*
       source.color_strength.w*attenuation;
   }
-  // A bounded viewport preview only: original GlowAmount is not modified,
-  // and this is not a claim of matching native bloom / HDR.
+  // The game's emission, unscaled: see authored_emission_strength.
   let emission=textureSample(emissive_map,tex_sampler,input.uv).rgb;
-  // Source GlowAmount is the strength of verified emissive/Emittance
-  // channels. Do not divide it by three and normalize it away before HDR;
-  // the filmic output pass bounds highlights, while true bloom remains a
-  // separate post-processing feature. No guessed emission for plain Illum.
-  let preview_glow=emission*max(authored.cutoff.y,0.0)*0.65*(1.0-authored.blend.w);
-  return vec4<f32>(base.rgb*(ambient_light*authored.clouds.w*mix(1.0,n.z*0.25+0.75,foliage_surface)+sun+light.sun_color.rgb*light.sun.w*visibility*leaf_through*foliage_surface)+specular+reflected+local_radiance+preview_glow,base.a);
+  let preview_glow=emission*max(authored.cutoff.y,0.0)*(1.0-authored.blend.w);
+  return vec4<f32>(base.rgb*(ambient_light*authored.clouds.w*mix(1.0,n.z*0.25+0.75,foliage_surface)+authored.emissive.rgb+sun+light.sun_color.rgb*light.sun.w*visibility*leaf_through*foliage_surface)+specular+reflected+local_radiance+preview_glow,base.a);
 }
 
 // A visually bounded preview heuristic, not an Evolve fog equation. Applying

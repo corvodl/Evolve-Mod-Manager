@@ -581,7 +581,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             .spacing(7),
         );
         entries = entries.push(
-            text("Kala's named Glow material stays source-blue in both modes. Body's separate ALPHAGLOW highlights retain their actual diffuse RGB (which can be red); only the equipment glow follows the Banshee/Armor Reducer choice. Every emission uses the 3 = 100 preview reference. Original textures and FBX exports stay unchanged.")
+            text("Kala's named Glow material stays source-blue in both modes. Body's separate ALPHAGLOW highlights retain their actual diffuse RGB (which can be red); only the equipment glow follows the Banshee/Armor Reducer choice. Emission uses the game's alpha glow plus GlowAmount as an assumed glow pass strength. Original textures and FBX exports stay unchanged.")
                 .size(11)
                 .style(design::muted),
         );

@@ -14,9 +14,8 @@ struct Output {
 // Explicit authored opacity map. Diffuse alpha may hold CryEngine gloss/mask
 // data, so it is never reused for a separate opacity-reference material.
 @group(0) @binding(6) var opacity_map: texture_2d<f32>;
-// x is the material's original GlowAmount, y is the user's viewport slider.
-// z is universal 100/3 legacy-Qt calibration times Kala's optional, verified
-// equipment-only state correction (Banshee 0.3, Armor Reducer 4).
+// x is the material's emission strength, y is the user's viewport slider.
+// z is Kala's optional equipment-only state factor (Banshee 0.3, Armor Reducer 2).
 // Source values, texture masks, diffuse and FBX export remain unchanged.
 @group(0) @binding(7) var<uniform> emission_params: vec4<f32>;
 // Separate, optional armor overlay: this channel is black when unchecked,
@@ -25,8 +24,8 @@ struct Output {
 // Independent authored Decal UV transform: x/y tiling, z/w animation offset.
 // Only the emission map uses these values; other maps stay at mesh UV0.
 @group(0) @binding(9) var<uniform> emissive_uv: vec4<f32>;
-// Authored Specular with Shininess as smoothness, then Diffuse tint.
-@group(0) @binding(10) var<uniform> material: array<vec4<f32>, 2>;
+// Authored Specular with Shininess as smoothness, Diffuse tint, Emissive color.
+@group(0) @binding(10) var<uniform> material: array<vec4<f32>, 3>;
 
 @vertex
 fn vs_main(
@@ -142,26 +141,17 @@ fn shade(input: Output) -> vec4<f32> {
     let highlight = 0.84 * game_specular(facing, to_eye, key, specular_color, gloss)
                   + 0.16 * game_specular(facing, to_eye, fill, specular_color, gloss);
     let specular_light = highlight * exposure;
-    // Emissive is independent of incident light. The original public Qt
-    // manager interprets GlowAmount 3 as 100 visualization units for EVERY
-    // source material, not just Kala. Scale only true authored emission.
-    // Per-pixel peak rolloff keeps high-range RGB from clipping to white
-    // in the 8-bit preview; it does not invent bloom outside the mesh.
+    // The game's emission, unscaled: see authored_emission_strength. The final
+    // bloom and tone curve bound the display value.
     let source_glow = glow * emission_params.x * emission_params.y;
-    let calibrated_glow = source_glow * emission_params.z;
-    // Preserve physically positive emissive energy through the half-float
-    // render target. The final bloom/ACES pass bounds the display value;
-    // do not normalize each pixel to white before extracting highlights.
-    let viewport_glow = min(calibrated_glow * 0.06, vec3<f32>(32.0));
+    let viewport_glow = min(source_glow * emission_params.z, vec3<f32>(32.0));
 
-    // Optional Stage 2 armor-glow overlay has no authored GlowAmount.
-    // Treat it as a separate neutral one-unit source using the same 3=>100
-    // preview calibration, never the active material's GlowAmount or Kala
-    // state multiplier. Disabled overlays stay black.
+    // Optional Stage 2 armor-glow overlay has no authored strength: a neutral
+    // one-unit source that never inherits the active material's. Disabled
+    // overlays stay black.
     let armor_source = armor_glow * emission_params.y;
-    let armor_calibrated = armor_source * (100.0 / 3.0);
-    let armor_viewport = min(armor_calibrated * 0.06, vec3<f32>(32.0));
-    return vec4<f32>(base.rgb * material[1].rgb * irradiance * exposure
+    let armor_viewport = min(armor_source, vec3<f32>(32.0));
+    return vec4<f32>(base.rgb * material[1].rgb * (irradiance * exposure + material[2].rgb)
         + viewport_glow
         + armor_viewport + specular_light, base.a);
 }

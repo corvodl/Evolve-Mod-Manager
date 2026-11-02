@@ -107,6 +107,8 @@ pub struct Surface {
     pub material_tint: Option<[f32; 4]>,
     /// Authored Specular color.
     pub material_specular: Option<[f32; 3]>,
+    /// Authored Emissive color, added to the light falling on diffuse.
+    pub material_emissive: Option<[f32; 3]>,
     /// Authored Shininess, 0 to 255.
     pub material_shininess: Option<f32>,
     /// World meshes only: Waterfall shader params.
@@ -517,12 +519,9 @@ pub struct Pipeline {
 // helper for initialization, CDF attachment ranges and texture reloads.
 const MATERIAL_BINDINGS: [u32; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
-/// Apply the earlier public Qt preview's GlowAmount 3 -> 100 reference to
-/// every source-authored emissive material while retaining its GlowAmount.
-/// Kala's active equipment glow keeps its separately verified 0.3x/4x
-/// correction. The Armor Reducer reference is 2x after the user verified
-/// Nightly 13 requires only half of the old 4x multiplier at 1x slider.
-/// The user slider remains independent of both factors.
+/// A material's emission strength, used unscaled as the game's shaders do.
+/// Kala's active equipment glow keeps its own state factor: 0.3x for Banshee and
+/// 2x for Armor Reducer. The user slider remains independent of both.
 fn emission_uniform_values(
     source_strength: f32,
     preview_gain: f32,
@@ -543,8 +542,7 @@ fn emission_uniform_values(
         Some(evolve_core::KalaTubingState::ArmorReducer) => 2.0,
         None => 1.0,
     };
-    let calibration = (100.0 / 3.0) * state_factor;
-    [source, gain, calibration, 0.0]
+    [source, gain, state_factor, 0.0]
 }
 
 /// Source UV tiles and one texture-coordinate translation per axis.
@@ -600,7 +598,7 @@ impl Pipeline {
         alpha_cutoff: f32,
     ) -> wgpu::Buffer {
         // Retain the original GlowAmount as source multiplier, with the
-        // legacy Qt 3 => 100 visualization reference in a separate uniform.
+        // state factor in a separate uniform.
         let mut values = emission_uniform_values(strength, 1.0, kala_emission_state);
         // vec4.w is unused by the emission shader: keep the source
         // AlphaTest threshold here, avoiding a separate bind group/buffer.
@@ -630,16 +628,18 @@ impl Pipeline {
         buffer
     }
 
-    /// Specular color with smoothness, then Diffuse tint. A preview with no
+    /// Specular color with smoothness, then Diffuse tint, then Emissive color. A preview with no
     /// material keeps a plain white tint and a mid smoothness.
     fn material_uniform(
         device: &wgpu::Device,
         specular: Option<[f32; 3]>,
         shininess: Option<f32>,
         tint: Option<[f32; 4]>,
+        emissive: Option<[f32; 3]>,
     ) -> wgpu::Buffer {
         let specular = specular.unwrap_or([1.0; 3]);
         let tint = tint.unwrap_or([1.0; 4]);
+        let emissive = emissive.unwrap_or([0.0; 3]);
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Authored material colors and smoothness"),
             contents: bytemuck::cast_slice(&[
@@ -651,6 +651,10 @@ impl Pipeline {
                 tint[1],
                 tint[2],
                 1.0_f32,
+                emissive[0],
+                emissive[1],
+                emissive[2],
+                0.0,
             ]),
             usage: wgpu::BufferUsages::UNIFORM,
         })
@@ -1194,7 +1198,7 @@ impl Pipeline {
         );
         let emission_uniform = Self::emission_uniform(device, queue, 1.0, None, 0.5);
         let uv_uniform = Self::emissive_uv_uniform(device, queue, None);
-        let material_uniform = Self::material_uniform(device, None, None, None);
+        let material_uniform = Self::material_uniform(device, None, None, None, None);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
@@ -1568,6 +1572,7 @@ impl Pipeline {
                 part.material_specular,
                 part.material_shininess,
                 part.material_tint,
+                part.material_emissive,
             );
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CDF attachment material"),
@@ -2148,7 +2153,7 @@ mod tests {
         let source = include_str!("textured.wgsl");
         assert!(source.contains("glow * emission_params.x * emission_params.y"));
         assert!(source.contains("armor_glow * emission_params.y"));
-        assert!(source.contains("armor_calibrated = armor_source * (100.0 / 3.0)"));
+        assert!(source.contains("armor_viewport = min(armor_source, vec3<f32>(32.0))"));
     }
 
     #[test]
@@ -2156,10 +2161,10 @@ mod tests {
         for authored in [0.0, 0.3, 1.0, 2.0, 3.0, 4.0, 20.0] {
             let params = super::emission_uniform_values(authored, 1.0, None);
             assert_eq!(params[0], authored);
-            assert!((params[0] * params[1] * params[2] - authored * (100.0 / 3.0)).abs() < 0.0001);
+            assert!((params[0] * params[1] * params[2] - authored).abs() < 0.0001);
         }
         let boosted = super::emission_uniform_values(3.0, 2.0, None);
-        assert!((boosted[0] * boosted[1] * boosted[2] - 200.0).abs() < 0.0001);
+        assert!((boosted[0] * boosted[1] * boosted[2] - 6.0).abs() < 0.0001);
         let disabled = super::emission_uniform_values(3.0, 0.0, None);
         assert_eq!(disabled[0] * disabled[1] * disabled[2], 0.0);
         let invalid = super::emission_uniform_values(f32::NAN, 1.0, None);
@@ -2199,27 +2204,26 @@ mod tests {
         assert_eq!(red[0], 3.0);
         assert_eq!(blue[1], 1.0);
         assert_eq!(red[1], 1.0);
-        assert!((blue[0] * blue[2] - 30.0).abs() < 0.0001);
-        assert!((red[0] * red[2] - 200.0).abs() < 0.0001);
+        assert!((blue[0] * blue[2] - 0.9).abs() < 0.0001);
+        assert!((red[0] * red[2] - 6.0).abs() < 0.0001);
         let half_blue = super::emission_uniform_values(1.5, 1.0, Some(KalaTubingState::Banshee));
         let half_red =
             super::emission_uniform_values(1.5, 1.0, Some(KalaTubingState::ArmorReducer));
-        assert!((half_blue[0] * half_blue[2] - 15.0).abs() < 0.0001);
-        assert!((half_red[0] * half_red[2] - 100.0).abs() < 0.0001);
-        let old = 100.0 / 3.0;
-        assert!((blue[0] * blue[1] * blue[2] - 3.0 * old * 0.3).abs() < 0.0001);
-        assert!((red[0] * red[1] * red[2] - 3.0 * old * 2.0).abs() < 0.0001);
+        assert!((half_blue[0] * half_blue[2] - 0.45).abs() < 0.0001);
+        assert!((half_red[0] * half_red[2] - 3.0).abs() < 0.0001);
+        assert!((blue[0] * blue[1] * blue[2] - 3.0 * 0.3).abs() < 0.0001);
+        assert!((red[0] * red[1] * red[2] - 3.0 * 2.0).abs() < 0.0001);
         let disabled =
             super::emission_uniform_values(3.0, 0.0, Some(KalaTubingState::ArmorReducer));
         assert_eq!(disabled[0] * disabled[1] * disabled[2], 0.0);
         let zero = super::emission_uniform_values(0.0, 1.0, Some(KalaTubingState::Banshee));
         assert_eq!(zero[0] * zero[2], 0.0);
         let unrelated = super::emission_uniform_values(3.0, 1.0, None);
-        assert!((unrelated[0] * unrelated[1] * unrelated[2] - 100.0).abs() < 0.0001);
+        assert!((unrelated[0] * unrelated[1] * unrelated[2] - 3.0).abs() < 0.0001);
         let shader = include_str!("textured.wgsl");
-        assert!(shader.contains("let viewport_glow = min(calibrated_glow * 0.06"));
-        assert!(shader.contains("let armor_viewport = min(armor_calibrated * 0.06"));
-        assert!(!shader.contains("calibrated_glow / (1.0 + peak)"));
+        assert!(shader.contains("let viewport_glow = min(source_glow * emission_params.z"));
+        assert!(shader.contains("let armor_viewport = min(armor_source"));
+        assert!(!shader.contains("source_glow / (1.0 + peak)"));
         assert!(shader.contains("armor_glow * emission_params.y"));
     }
 

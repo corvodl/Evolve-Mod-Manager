@@ -33,9 +33,33 @@ fn linear_srgb(value: f32) -> u8 {
     (encoded * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-/// A legacy positive GlowAmount permits diffuse-alpha emission only with
-/// actual alpha-mask evidence. Alpha alone may be gloss or opacity and is not
-/// a license to invent emission for unrelated materials.
+/// The game's alpha glow strength when a material omits AmbientMultiplier.
+const DEFAULT_AMBIENT_MULTIPLIER: f32 = 1.0;
+
+/// How strongly a material emits. An ALPHAGLOW mask gets the main pass's
+/// AmbientMultiplier plus the additive glow pass on top. The engine sets that
+/// pass's strength at runtime, so GlowAmount here is an assumption: the shaders
+/// only show `GlowParams * diffuse * tint * alpha`.
+fn authored_emission_strength(slot: &evolve_core::MaterialSlot) -> f32 {
+    let alpha_mask = slot.alpha_glow
+        && !slot
+            .maps
+            .iter()
+            .any(|map| role_channel(&map.role) == Some(2));
+    if alpha_mask {
+        slot.glow_amount.unwrap_or(0.0)
+            + slot
+                .ambient_multiplier
+                .unwrap_or(DEFAULT_AMBIENT_MULTIPLIER)
+    } else {
+        slot.glow_amount.unwrap_or(1.0)
+    }
+    .max(0.0)
+}
+
+/// ALPHAGLOW emits from diffuse alpha, as `diffuse * alpha * Diffuse tint`. It
+/// needs actual alpha-mask evidence: alpha alone may be gloss or opacity and is
+/// not a license to invent emission for unrelated materials.
 fn legacy_alpha_emission(
     slot: &evolve_core::MaterialSlot,
     diffuse: &image::RgbaImage,
@@ -44,15 +68,18 @@ fn legacy_alpha_emission(
         slot.shader.to_ascii_lowercase().as_str(),
         "illum" | "cloth" | "humanskin"
     ) || !slot.alpha_glow
-        || !slot.glow_amount.is_some_and(|amount| amount > 0.0)
+        || authored_emission_strength(slot) <= 0.0
         || !diffuse.pixels().any(|pixel| pixel[3] < 255)
     {
         return None;
     }
+    let tint = slot.diffuse_tint.unwrap_or([1.0; 3]);
     let mut result = diffuse.clone();
     for pixel in result.pixels_mut() {
         for channel in 0..3 {
-            pixel[channel] = linear_srgb(srgb_linear(pixel[channel]) * f32::from(pixel[3]) / 255.0);
+            pixel[channel] = linear_srgb(
+                srgb_linear(pixel[channel]) * f32::from(pixel[3]) / 255.0 * tint[channel],
+            );
         }
         pixel[3] = 255;
     }
@@ -1129,6 +1156,7 @@ fn load_authored_subset_surfaces(
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_emissive: None,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -1202,7 +1230,7 @@ fn load_authored_subset_surfaces(
                         surface.diffuse = diffuse;
                         surface.normal = normal;
                         surface.emissive = emissive;
-                        surface.emission_strength = leaf.glow_amount.unwrap_or(1.0).max(0.0);
+                        surface.emission_strength = authored_emission_strength(leaf);
                         surface.emissive_uv = source_decal_motion(leaf);
                         surface.specular = specular;
                         surface.gloss = gloss;
@@ -1218,6 +1246,7 @@ fn load_authored_subset_surfaces(
                             leaf.indirect_color.unwrap_or(0.25) / 0.25,
                         ]);
                         surface.material_specular = leaf.specular_tint;
+                        surface.material_emissive = leaf.emissive_color;
                         // The engine's default when a material omits it.
                         surface.material_shininess = Some(leaf.shininess.unwrap_or(10.0));
                         if leaf.shader.eq_ignore_ascii_case("Illum") {
@@ -1565,6 +1594,7 @@ pub fn load_with_progress(
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_emissive: None,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -1653,7 +1683,7 @@ pub fn load_with_progress(
             surface.diffuse = diffuse;
             surface.normal = normal;
             surface.emissive = emissive;
-            surface.emission_strength = leaf.glow_amount.unwrap_or(1.0).max(0.0);
+            surface.emission_strength = authored_emission_strength(leaf);
             surface.emissive_uv = source_decal_motion(leaf);
             // A single mesh MTL contains BOTH original Banshee blue and
             // Armor Reducer red leaves. Render only the active mode's
@@ -1668,8 +1698,7 @@ pub fn load_with_progress(
                 surface.emission_strength = 0.0;
                 surface.emissive_uv = None;
             }
-            // Authored 100/3 calibration is global in the GPU viewer.
-            // Apply Kala's extra 0.3x/4x only to its WEAPON glow leaves.
+            // Apply Kala's extra state factor only to its WEAPON glow leaves.
             // Body/waist Glow stays source blue for every equipment choice.
             surface.kala_emission_state = (surface.emissive.is_some()
                 && surface.emission_strength > 0.0
@@ -1789,6 +1818,7 @@ mod tests {
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_emissive: None,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -1880,6 +1910,8 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,
+            ambient_multiplier: None,
+            emissive_color: None,
             shininess: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
@@ -1893,10 +1925,16 @@ mod tests {
         let mask = legacy_alpha_emission(&slot, &diffuse).unwrap();
         assert!(mask.get_pixel(0, 0)[0] > 150);
         assert_eq!(mask.get_pixel(1, 0).0, [0, 0, 0, 255]);
+        assert_eq!(authored_emission_strength(&slot), 4.0);
+        // AmbientMultiplier alone still emits, because the main pass applies it.
+        slot.glow_amount = None;
+        assert_eq!(authored_emission_strength(&slot), 1.0);
+        assert!(legacy_alpha_emission(&slot, &diffuse).is_some());
+        slot.ambient_multiplier = Some(0.0);
+        assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
         slot.glow_amount = Some(0.0);
         assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
-        slot.glow_amount = None;
-        assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
+        slot.ambient_multiplier = None;
         slot.glow_amount = Some(3.0);
         slot.alpha_glow = false;
         assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
@@ -2068,6 +2106,7 @@ mod tests {
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_emissive: None,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -2118,6 +2157,7 @@ mod tests {
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_emissive: None,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -2224,6 +2264,8 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,
+            ambient_multiplier: None,
+            emissive_color: None,
             shininess: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
@@ -2368,6 +2410,7 @@ mod tests {
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_emissive: None,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -2879,6 +2922,8 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,
+            ambient_multiplier: None,
+            emissive_color: None,
             shininess: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,

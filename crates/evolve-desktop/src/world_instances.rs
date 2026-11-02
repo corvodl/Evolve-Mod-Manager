@@ -3696,6 +3696,7 @@ impl Renderer {
                 .or(surf.material_tint)
                 .unwrap_or([1.0; 4]);
             let waterfall = surf.waterfall.unwrap_or([0.0; 11]);
+            let emissive = surf.material_emissive.unwrap_or([0.0; 3]);
             let alpha_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Authored per-material Vegetation AlphaTest"),
                 contents: bytemuck::cast_slice(&[
@@ -3747,6 +3748,10 @@ impl Renderer {
                     foliage[1],
                     foliage[2],
                     surf.layer_specular.unwrap_or(-1.0),
+                    emissive[0],
+                    emissive[1],
+                    emissive[2],
+                    0.0,
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
