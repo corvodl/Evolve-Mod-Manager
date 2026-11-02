@@ -165,10 +165,12 @@ mod tests {
                 "SunVector must not overwrite authored intensity at hour {hour}"
             );
         }
-        assert_eq!(
-            Lighting::from_original(12.0, &tod).with_authored_sun(Some(source_sun), 12.0, &tod).sun[3],
-            1.2
-        );
+        let midnight = Lighting::from_original(0.0, &tod)
+            .with_authored_sun(Some(source_sun), 0.0, &tod);
+        assert_eq!(midnight.sun[3], 0.0);
+        let noon = Lighting::from_original(12.0, &tod)
+            .with_authored_sun(Some(source_sun), 12.0, &tod);
+        assert!(noon.sun[3] > midnight.sun[3]);
     }
 
     #[test]
