@@ -24,7 +24,8 @@ struct Output {
 // Independent authored Decal UV transform: x/y tiling, z/w animation offset.
 // Only the emission map uses these values; other maps stay at mesh UV0.
 @group(0) @binding(9) var<uniform> emissive_uv: vec4<f32>;
-// Authored Specular with Shininess as smoothness, Diffuse tint, Emissive color.
+// Authored Specular with Shininess as smoothness, Diffuse tint, Emissive color
+// with a flag for a decal the glow pass multiplies by diffuse.
 @group(0) @binding(10) var<uniform> material: array<vec4<f32>, 3>;
 
 @vertex
@@ -143,8 +144,9 @@ fn shade(input: Output) -> vec4<f32> {
     let specular_light = highlight * exposure;
     // The game's emission, unscaled: see authored_emission_strength. The final
     // bloom and tone curve bound the display value.
-    let source_glow = glow * emission_params.x * emission_params.y;
-    let viewport_glow = min(source_glow * emission_params.z, vec3<f32>(32.0));
+    let decal_base = mix(vec3<f32>(1.0), base.rgb * base.a, material[2].a);
+    let source_glow = glow * emission_params.x * emission_params.y * decal_base;
+    let viewport_glow = min(source_glow * emission_params.z, vec3<f32>(4096.0));
 
     // Optional Stage 2 armor-glow overlay has no authored strength: a neutral
     // one-unit source that never inherits the active material's. Disabled

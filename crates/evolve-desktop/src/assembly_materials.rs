@@ -36,29 +36,42 @@ fn linear_srgb(value: f32) -> u8 {
 /// The game's alpha glow strength when a material omits AmbientMultiplier.
 const DEFAULT_AMBIENT_MULTIPLIER: f32 = 1.0;
 
-/// How strongly a material emits. An ALPHAGLOW mask gets the main pass's
-/// AmbientMultiplier plus the additive glow pass on top. The engine sets that
-/// pass's strength at runtime, so GlowAmount here is an assumption: the shaders
-/// only show `GlowParams * diffuse * tint * alpha`.
-fn authored_emission_strength(slot: &evolve_core::MaterialSlot) -> f32 {
-    let alpha_mask = slot.alpha_glow
-        && !slot
-            .maps
-            .iter()
-            .any(|map| role_channel(&map.role) == Some(2));
-    if alpha_mask {
-        slot.glow_amount.unwrap_or(0.0)
-            + slot
-                .ambient_multiplier
-                .unwrap_or(DEFAULT_AMBIENT_MULTIPLIER)
-    } else {
-        slot.glow_amount.unwrap_or(1.0)
-    }
-    .max(0.0)
+/// The glow pass's strength. The renderer sets GlowParams to this whenever HDR is
+/// on, from the CRYENGINE 3.5.8 SDK's CryRenderD3D11: pow(glow * 2, 2).
+fn glow_pass_strength(glow_amount: f32) -> f32 {
+    (glow_amount.max(0.0) * 2.0).powi(2)
 }
 
-/// ALPHAGLOW emits from diffuse alpha, as `diffuse * alpha * Diffuse tint`. It
-/// needs actual alpha-mask evidence: alpha alone may be gloss or opacity and is
+fn authored_ambient_multiplier(slot: &evolve_core::MaterialSlot) -> f32 {
+    slot.ambient_multiplier
+        .unwrap_or(DEFAULT_AMBIENT_MULTIPLIER)
+}
+
+/// The glow pass multiplies diffuse by a material's decal.
+fn decal_glow(slot: &evolve_core::MaterialSlot) -> bool {
+    slot.maps.iter().any(|map| map.role == "decal")
+}
+
+/// How strongly a material emits. An ALPHAGLOW mask gets the main pass's
+/// AmbientMultiplier plus the additive glow pass on top. A decal gets the glow
+/// pass. Other emission maps have no decoded pass, so they keep GlowAmount.
+fn authored_emission_strength(slot: &evolve_core::MaterialSlot) -> f32 {
+    let has_map = slot
+        .maps
+        .iter()
+        .any(|map| role_channel(&map.role) == Some(2));
+    if slot.alpha_glow && !has_map {
+        glow_pass_strength(slot.glow_amount.unwrap_or(0.0)) + authored_ambient_multiplier(slot)
+    } else if decal_glow(slot) {
+        glow_pass_strength(slot.glow_amount.unwrap_or(0.0))
+    } else {
+        slot.glow_amount.unwrap_or(1.0).max(0.0)
+    }
+}
+
+/// ALPHAGLOW emits from diffuse alpha, scaled by authored_emission_strength. The
+/// main pass reads diffuse as linear, the glow pass's sampler skips the sRGB
+/// conversion, so this image holds their weighted mix. It needs actual alpha-mask evidence: alpha alone may be gloss or opacity and is
 /// not a license to invent emission for unrelated materials.
 fn legacy_alpha_emission(
     slot: &evolve_core::MaterialSlot,
@@ -74,12 +87,16 @@ fn legacy_alpha_emission(
         return None;
     }
     let tint = slot.diffuse_tint.unwrap_or([1.0; 3]);
+    let main_pass = authored_ambient_multiplier(slot);
+    let glow_pass = glow_pass_strength(slot.glow_amount.unwrap_or(0.0));
+    let total = main_pass + glow_pass;
     let mut result = diffuse.clone();
     for pixel in result.pixels_mut() {
         for channel in 0..3 {
-            pixel[channel] = linear_srgb(
-                srgb_linear(pixel[channel]) * f32::from(pixel[3]) / 255.0 * tint[channel],
-            );
+            let mixed = (srgb_linear(pixel[channel]) * main_pass
+                + f32::from(pixel[channel]) / 255.0 * glow_pass)
+                / total;
+            pixel[channel] = linear_srgb(mixed * f32::from(pixel[3]) / 255.0 * tint[channel]);
         }
         pixel[3] = 255;
     }
@@ -776,7 +793,7 @@ fn authored_maps(
                 tint_legacy_decal(slot, &image)
             }));
             warnings.push(format!(
-                "{}: legacy Illum Decal uses authored GlowAmount and Diffuse tint, without diffuse-alpha masking; the viewer animates the Decal's independent TexMod (FBX stores its original map without baked motion)",
+                "{}: legacy Illum Decal uses the game's glow pass over diffuse and its alpha, with Diffuse tint; the viewer animates the Decal's independent TexMod (FBX stores its original map without baked motion)",
                 slot.name
             ));
         } else {
@@ -1157,6 +1174,7 @@ fn load_authored_subset_surfaces(
             material_tint: None,
             material_specular: None,
             material_emissive: None,
+            emission_on_diffuse: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -1231,6 +1249,7 @@ fn load_authored_subset_surfaces(
                         surface.normal = normal;
                         surface.emissive = emissive;
                         surface.emission_strength = authored_emission_strength(leaf);
+                        surface.emission_on_diffuse = decal_glow(leaf);
                         surface.emissive_uv = source_decal_motion(leaf);
                         surface.specular = specular;
                         surface.gloss = gloss;
@@ -1595,6 +1614,7 @@ pub fn load_with_progress(
             material_tint: None,
             material_specular: None,
             material_emissive: None,
+            emission_on_diffuse: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -1684,6 +1704,7 @@ pub fn load_with_progress(
             surface.normal = normal;
             surface.emissive = emissive;
             surface.emission_strength = authored_emission_strength(leaf);
+            surface.emission_on_diffuse = decal_glow(leaf);
             surface.emissive_uv = source_decal_motion(leaf);
             // A single mesh MTL contains BOTH original Banshee blue and
             // Armor Reducer red leaves. Render only the active mode's
@@ -1819,6 +1840,7 @@ mod tests {
             material_tint: None,
             material_specular: None,
             material_emissive: None,
+            emission_on_diffuse: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -1925,7 +1947,7 @@ mod tests {
         let mask = legacy_alpha_emission(&slot, &diffuse).unwrap();
         assert!(mask.get_pixel(0, 0)[0] > 150);
         assert_eq!(mask.get_pixel(1, 0).0, [0, 0, 0, 255]);
-        assert_eq!(authored_emission_strength(&slot), 4.0);
+        assert_eq!(authored_emission_strength(&slot), 37.0);
         // AmbientMultiplier alone still emits, because the main pass applies it.
         slot.glow_amount = None;
         assert_eq!(authored_emission_strength(&slot), 1.0);
@@ -1941,6 +1963,13 @@ mod tests {
         slot.alpha_glow = true;
         let opaque = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
         assert!(legacy_alpha_emission(&slot, &opaque).is_none());
+    }
+
+    #[test]
+    fn glow_pass_strength_matches_the_renderer() {
+        assert_eq!(glow_pass_strength(0.0), 0.0);
+        assert_eq!(glow_pass_strength(2.0), 16.0);
+        assert_eq!(glow_pass_strength(20.0), 1600.0);
     }
 
     #[test]
@@ -2107,6 +2136,7 @@ mod tests {
             material_tint: None,
             material_specular: None,
             material_emissive: None,
+            emission_on_diffuse: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -2158,6 +2188,7 @@ mod tests {
             material_tint: None,
             material_specular: None,
             material_emissive: None,
+            emission_on_diffuse: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,
@@ -2411,6 +2442,7 @@ mod tests {
             material_tint: None,
             material_specular: None,
             material_emissive: None,
+            emission_on_diffuse: false,
             material_shininess: None,
             waterfall: None,
             detail_map: None,

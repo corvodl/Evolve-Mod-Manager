@@ -3701,7 +3701,7 @@ impl Renderer {
                 label: Some("Authored per-material Vegetation AlphaTest"),
                 contents: bytemuck::cast_slice(&[
                     surf.alpha_cutoff.clamp(0.0, 1.0),
-                    surf.emission_strength.clamp(0.0, 30.0),
+                    surf.emission_strength.clamp(0.0, 4096.0),
                     if surf.normal.is_some() { 1.0 } else { 0.0 },
                     mip_min_level.get(&key).copied().unwrap_or(0) as f32,
                     params[0],
@@ -3751,7 +3751,7 @@ impl Renderer {
                     emissive[0],
                     emissive[1],
                     emissive[2],
-                    0.0,
+                    if surf.emission_on_diffuse { 1.0 } else { 0.0 },
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });

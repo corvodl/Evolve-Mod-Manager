@@ -109,6 +109,8 @@ pub struct Surface {
     pub material_specular: Option<[f32; 3]>,
     /// Authored Emissive color, added to the light falling on diffuse.
     pub material_emissive: Option<[f32; 3]>,
+    /// The emission map is a decal, which the glow pass multiplies by diffuse.
+    pub emission_on_diffuse: bool,
     /// Authored Shininess, 0 to 255.
     pub material_shininess: Option<f32>,
     /// World meshes only: Waterfall shader params.
@@ -519,6 +521,9 @@ pub struct Pipeline {
 // helper for initialization, CDF attachment ranges and texture reloads.
 const MATERIAL_BINDINGS: [u32; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
+/// Above the brightest authored glow pass, whose GlowAmount 20 gives 1600.
+const MAX_EMISSION: f32 = 4096.0;
+
 /// A material's emission strength, used unscaled as the game's shaders do.
 /// Kala's active equipment glow keeps its own state factor: 0.3x for Banshee and
 /// 2x for Armor Reducer. The user slider remains independent of both.
@@ -528,7 +533,7 @@ fn emission_uniform_values(
     kala_emission_state: Option<evolve_core::KalaTubingState>,
 ) -> [f32; 4] {
     let source = if source_strength.is_finite() {
-        source_strength.clamp(0.0, 100.0)
+        source_strength.clamp(0.0, MAX_EMISSION)
     } else {
         0.0
     };
@@ -636,6 +641,7 @@ impl Pipeline {
         shininess: Option<f32>,
         tint: Option<[f32; 4]>,
         emissive: Option<[f32; 3]>,
+        emission_on_diffuse: bool,
     ) -> wgpu::Buffer {
         let specular = specular.unwrap_or([1.0; 3]);
         let tint = tint.unwrap_or([1.0; 4]);
@@ -654,7 +660,7 @@ impl Pipeline {
                 emissive[0],
                 emissive[1],
                 emissive[2],
-                0.0,
+                if emission_on_diffuse { 1.0 } else { 0.0 },
             ]),
             usage: wgpu::BufferUsages::UNIFORM,
         })
@@ -1198,7 +1204,7 @@ impl Pipeline {
         );
         let emission_uniform = Self::emission_uniform(device, queue, 1.0, None, 0.5);
         let uv_uniform = Self::emissive_uv_uniform(device, queue, None);
-        let material_uniform = Self::material_uniform(device, None, None, None, None);
+        let material_uniform = Self::material_uniform(device, None, None, None, None, false);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
@@ -1573,6 +1579,7 @@ impl Pipeline {
                 part.material_shininess,
                 part.material_tint,
                 part.material_emissive,
+                part.emission_on_diffuse,
             );
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CDF attachment material"),
