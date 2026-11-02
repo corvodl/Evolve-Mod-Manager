@@ -106,21 +106,39 @@ pub fn sample_weighted_caf_with_bind(
         return Err(bad("Blendspace requires 1–8 verified source clips"));
     }
     let total = clips.iter().map(|clip| clip.weight).sum::<f32>();
-    if !total.is_finite() || (total - 1.0).abs() > 1e-3 ||
-        clips.iter().any(|clip| !clip.weight.is_finite() || clip.weight < 0.0 || !clip.seconds.is_finite() || clip.seconds < 0.0 || clip.motion.additive)
+    if !total.is_finite()
+        || (total - 1.0).abs() > 1e-3
+        || clips.iter().any(|clip| {
+            !clip.weight.is_finite()
+                || clip.weight < 0.0
+                || !clip.seconds.is_finite()
+                || clip.seconds < 0.0
+                || clip.motion.additive
+        })
     {
-        return Err(bad("Blendspace weights must be normalized, finite and non-additive"));
+        return Err(bad(
+            "Blendspace weights must be normalized, finite and non-additive",
+        ));
     }
     let allowed = bind.iter().map(|p| p.bone_crc32).collect::<HashSet<_>>();
     validate(bind, &allowed)?;
-    if bind.iter().any(|p| p.translation.is_none() || p.rotation.is_none()) {
-        return Err(bad("Blendspace requires complete original local bind channels"));
+    if bind
+        .iter()
+        .any(|p| p.translation.is_none() || p.rotation.is_none())
+    {
+        return Err(bad(
+            "Blendspace requires complete original local bind channels",
+        ));
     }
     let mut sampled = Vec::with_capacity(clips.len());
     for clip in clips {
         let pose = clip.motion.sample_seconds(clip.seconds)?;
         validate(&pose, &allowed)?;
-        sampled.push(pose.into_iter().map(|p| (p.bone_crc32, p)).collect::<HashMap<_, _>>());
+        sampled.push(
+            pose.into_iter()
+                .map(|p| (p.bone_crc32, p))
+                .collect::<HashMap<_, _>>(),
+        );
     }
     let mut result = Vec::with_capacity(bind.len());
     for bone in bind {
@@ -134,25 +152,38 @@ pub fn sample_weighted_caf_with_bind(
             .and_then(|pose| pose.rotation)
             .or(bone.rotation)
             .ok_or_else(|| bad("Missing original bind rotation"))?;
-        let reference_length = reference.iter().map(|n| n*n).sum::<f32>().sqrt();
+        let reference_length = reference.iter().map(|n| n * n).sum::<f32>().sqrt();
         if !(0.95..=1.05).contains(&reference_length) {
             return Err(bad("Invalid original reference quaternion"));
         }
         for (i, clip) in clips.iter().enumerate() {
             let sample = sampled[i].get(&bone.bone_crc32);
-            let position = sample.and_then(|p| p.translation).or(bone.translation).ok_or_else(|| bad("Missing original bind position"))?;
-            let rotation = sample.and_then(|p| p.rotation).or(bone.rotation).ok_or_else(|| bad("Missing original bind rotation"))?;
-            let length = rotation.iter().map(|n| n*n).sum::<f32>().sqrt();
+            let position = sample
+                .and_then(|p| p.translation)
+                .or(bone.translation)
+                .ok_or_else(|| bad("Missing original bind position"))?;
+            let rotation = sample
+                .and_then(|p| p.rotation)
+                .or(bone.rotation)
+                .ok_or_else(|| bad("Missing original bind rotation"))?;
+            let length = rotation.iter().map(|n| n * n).sum::<f32>().sqrt();
             if !(0.95..=1.05).contains(&length) {
                 return Err(bad("Invalid blendspace source quaternion"));
             }
-            let dot = (0..4).map(|k| reference[k]*rotation[k]).sum::<f32>();
+            let dot = (0..4).map(|k| reference[k] * rotation[k]).sum::<f32>();
             let sign = if dot < 0.0 { -1.0 } else { 1.0 };
-            for axis in 0..3 { positions[axis] += f64::from(position[axis]) * f64::from(clip.weight); }
-            for axis in 0..4 { rotations[axis] += f64::from(rotation[axis] * sign) * f64::from(clip.weight); }
+            for axis in 0..3 {
+                positions[axis] += f64::from(position[axis]) * f64::from(clip.weight);
+            }
+            for axis in 0..4 {
+                rotations[axis] += f64::from(rotation[axis] * sign) * f64::from(clip.weight);
+            }
         }
-        let rotation_length = rotations.iter().map(|v| v*v).sum::<f64>().sqrt();
-        if !rotation_length.is_finite() || rotation_length < 1e-8 || positions.iter().any(|v| !v.is_finite()) {
+        let rotation_length = rotations.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if !rotation_length.is_finite()
+            || rotation_length < 1e-8
+            || positions.iter().any(|v| !v.is_finite())
+        {
             return Err(bad("Degenerate blended pose"));
         }
         result.push(CafBonePose {
@@ -497,21 +528,47 @@ mod tests {
         let low = clip(123, 2.0);
         let high = clip(123, 10.0);
         let bind = vec![CafBonePose {
-            bone_crc32: 123, translation: Some([0.0, 0.0, 0.0]),
+            bone_crc32: 123,
+            translation: Some([0.0, 0.0, 0.0]),
             rotation: Some([0.0, 0.0, 0.0, 1.0]),
         }];
         let mixed = sample_weighted_caf_with_bind(
-            &[WeightedCaf { motion: &low, seconds: 0.5, weight: 0.75 },
-              WeightedCaf { motion: &high, seconds: 0.5, weight: 0.25 }], &bind
-        ).unwrap();
+            &[
+                WeightedCaf {
+                    motion: &low,
+                    seconds: 0.5,
+                    weight: 0.75,
+                },
+                WeightedCaf {
+                    motion: &high,
+                    seconds: 0.5,
+                    weight: 0.25,
+                },
+            ],
+            &bind,
+        )
+        .unwrap();
         assert_eq!(mixed[0].translation, Some([4.0, 0.0, 0.0]));
         assert_eq!(mixed[0].rotation, Some([0.0, 0.0, 0.0, 1.0]));
         let mut bad = high.clone();
         bad.additive = true;
-        assert!(sample_weighted_caf_with_bind(&[
-            WeightedCaf { motion: &low, seconds: 0.0, weight: 0.5 },
-            WeightedCaf { motion: &bad, seconds: 0.0, weight: 0.5 },
-        ], &bind).is_err());
+        assert!(
+            sample_weighted_caf_with_bind(
+                &[
+                    WeightedCaf {
+                        motion: &low,
+                        seconds: 0.0,
+                        weight: 0.5
+                    },
+                    WeightedCaf {
+                        motion: &bad,
+                        seconds: 0.0,
+                        weight: 0.5
+                    },
+                ],
+                &bind
+            )
+            .is_err()
+        );
     }
-
 }
