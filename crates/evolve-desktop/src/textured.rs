@@ -152,6 +152,9 @@ pub struct Surface {
 #[derive(Clone)]
 pub struct Scene {
     pub mesh: Arc<RenderMesh>,
+    /// Rest-pose corners to frame instead of the current mesh. An animated
+    /// character must move within a fixed view, not be refitted every frame.
+    pub framing: Option<[[f32; 3]; 2]>,
     /// Per-attachment material ranges for complete CDF previews.
     pub surfaces: Option<Arc<Vec<Surface>>>,
     pub diffuse: Option<Arc<image::RgbaImage>>,
@@ -279,9 +282,13 @@ impl shader::Program<super::Message> for Scene {
         bounds: Rectangle,
     ) -> Self::Primitive {
         let data = &self.mesh;
+        let framed = self
+            .framing
+            .as_ref()
+            .map_or(data.positions.as_slice(), |corners| corners.as_slice());
         let mut low = [f32::INFINITY; 3];
         let mut high = [f32::NEG_INFINITY; 3];
-        for point in &data.positions {
+        for point in framed {
             for c in 0..3 {
                 low[c] = low[c].min(point[c]);
                 high[c] = high[c].max(point[c]);
@@ -347,7 +354,7 @@ impl shader::Program<super::Message> for Scene {
         // lowest vertex. CPU preview math is identical for 2012 and Stage 2.
         let scale = self.zoom.clamp(0.2, 80.0) * 1.6;
         let mut ground = Vec::with_capacity(164);
-        for line in super::viewer_grid::floor_lines(&data.positions) {
+        for line in super::viewer_grid::floor_lines(framed) {
             for raw in [line.start, line.end] {
                 let x = (raw[0] - center[0]) / extent;
                 let y = (raw[1] - center[1]) / extent;

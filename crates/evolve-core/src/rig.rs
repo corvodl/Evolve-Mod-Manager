@@ -135,6 +135,11 @@ fn multiply(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 fn column_major(m: &[[f32; 4]; 4]) -> [f32; 16] {
     std::array::from_fn(|index| m[index % 4][index / 4])
 }
+/// Whether a compiled file carries its own bone table.
+pub(crate) fn has_compiled_bones(data: &[u8]) -> bool {
+    chunks(data).is_ok_and(|all| all.iter().any(|chunk| chunk.kind == BONES))
+}
+
 pub fn parse_compiled_skeleton(data: &[u8]) -> Result<CompiledSkeleton, RigError> {
     let chunks = chunks(data)?;
     let mut sources = chunks.iter().filter(|c| c.kind == BONES);

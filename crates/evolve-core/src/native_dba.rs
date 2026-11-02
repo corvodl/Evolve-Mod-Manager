@@ -1,7 +1,7 @@
-//! Bounded read-only CryEngine DBA Controller_905 structural inspection.
-//! Does NOT claim compressed native DBA playback: key-frame compression,
-//! shared tracks and individual animation directories must be decoded and
-//! compared against real Stage 2 data before exposing controller samples.
+//! Bounded read-only CryEngine DBA Controller_905 decoding. A database holds a
+//! named directory of clips whose controllers index shared time, position and
+//! rotation tracks; one clip decodes to the same motion as a loose CAF.
+use crate::native_caf::{CafController, NativeCafMotion, quaternion, rotation_size};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -27,8 +27,7 @@ pub struct NativeDbaInspection {
     pub time_tracks: usize,
     pub declared_animations: usize,
     pub inplace_streaming: bool,
-    /// Decoding packed controller tracks is not implemented. Never expose
-    /// database metadata as if these were playable original CAF clips.
+    /// Inspection reads headers only; `decode_native_dba_clip` decodes tracks.
     pub playable_animation_count: usize,
 }
 
@@ -160,10 +159,252 @@ pub struct DbaAnimationRecord {
 
 /// Read the named Controller_905 animation directory and its source
 /// controller references without decoding compressed positions/quaternions.
+pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, NativeDbaError> {
+    Ok(parse_directory(data)?
+        .clips
+        .into_iter()
+        .map(|clip| DbaAnimationRecord {
+            name: clip.name,
+            controller_count: clip.controllers.len(),
+            additive: clip.flags & 1 != 0,
+            cyclic: clip.flags & 2 != 0,
+        })
+        .collect())
+}
+
+#[derive(Clone, Copy)]
+struct DbaController {
+    crc: u32,
+    position_times: i32,
+    position: i32,
+    rotation_times: i32,
+    rotation: i32,
+}
+
+struct DbaClip {
+    name: String,
+    flags: u32,
+    ticks_per_frame: i32,
+    seconds_per_tick: f32,
+    start: i32,
+    end: i32,
+    controllers: Vec<DbaController>,
+}
+
+/// One track family: per-track key counts, the number of tracks stored in each
+/// compression format (tracks are grouped by format), and signed data offsets.
+struct TrackTable {
+    lengths: usize,
+    formats: usize,
+    offsets: usize,
+}
+
+impl TrackTable {
+    fn length(&self, data: &[u8], track: usize) -> usize {
+        usize::from(u16::from_le_bytes([
+            data[self.lengths + track * 2],
+            data[self.lengths + track * 2 + 1],
+        ]))
+    }
+    fn format(&self, data: &[u8], track: usize, bins: usize) -> Result<usize, NativeDbaError> {
+        let mut first = 0usize;
+        for bin in 0..bins {
+            first += word(data, self.formats + bin * 4)? as usize;
+            if track < first {
+                return Ok(bin);
+            }
+        }
+        Err(NativeDbaError::Invalid("DBA track has no format".into()))
+    }
+}
+
+struct DbaDirectory {
+    clips: Vec<DbaClip>,
+    times: TrackTable,
+    positions: TrackTable,
+    rotations: TrackTable,
+    /// Track offsets are relative to this file position: the block start for
+    /// standard storage, the block end (negative offsets) for in-place storage.
+    anchor: i64,
+    tracks_end: usize,
+}
+
+impl DbaDirectory {
+    fn track_at(
+        &self,
+        data: &[u8],
+        table: &TrackTable,
+        track: usize,
+    ) -> Result<usize, NativeDbaError> {
+        usize::try_from(self.anchor + i64::from(word(data, table.offsets + track * 4)? as i32))
+            .map_err(|_| NativeDbaError::Invalid("DBA track before file start".into()))
+    }
+
+    fn key_times(&self, data: &[u8], track: usize) -> Result<Vec<f32>, NativeDbaError> {
+        const F32: usize = 0;
+        const U16: usize = 1;
+        const U8: usize = 2;
+        const BITSET: usize = 6;
+        let at = self.track_at(data, &self.times, track)?;
+        let length = self.times.length(data, track);
+        let format = self.times.format(data, track, 7)?;
+        let stride = match format {
+            F32 => 4,
+            U16 | BITSET => 2,
+            U8 => 1,
+            // Start/stop time formats occur in no shipped database.
+            _ => {
+                return Err(NativeDbaError::Invalid(
+                    "Unsupported DBA key time format".into(),
+                ));
+            }
+        };
+        let raw = at
+            .checked_add(length * stride)
+            .filter(|end| *end <= self.tracks_end)
+            .and_then(|end| data.get(at..end))
+            .ok_or_else(|| NativeDbaError::Invalid("DBA key time track out of bounds".into()))?;
+        let half = |index: usize| u16::from_le_bytes([raw[index * 2], raw[index * 2 + 1]]);
+        let times = match format {
+            F32 => raw
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|v| f32::from_le_bytes(*v))
+                .collect::<Vec<_>>(),
+            U16 => (0..length).map(|i| f32::from(half(i))).collect(),
+            U8 => raw.iter().map(|v| f32::from(*v)).collect(),
+            _ => {
+                // u16 first frame, last frame, key count, then one bit per
+                // frame (low bit first) marking which frames carry a key.
+                if length < 3 {
+                    return Err(NativeDbaError::Invalid("Truncated DBA key bitset".into()));
+                }
+                let first = u32::from(half(0));
+                let count = usize::from(half(2));
+                let mut keys = Vec::with_capacity(count);
+                for index in 0..(length - 3) * 16 {
+                    if half(3 + index / 16) >> (index % 16) & 1 != 0 {
+                        keys.push((first + index as u32) as f32);
+                    }
+                }
+                if keys.len() != count {
+                    return Err(NativeDbaError::Invalid(
+                        "DBA key bitset does not match its key count".into(),
+                    ));
+                }
+                keys
+            }
+        };
+        if times.iter().any(|t| !t.is_finite()) || times.windows(2).any(|t| t[1] < t[0]) {
+            return Err(NativeDbaError::Invalid("Nonmonotonic DBA key times".into()));
+        }
+        Ok(times)
+    }
+
+    fn rotation_keys(&self, data: &[u8], track: usize) -> Result<Vec<[f32; 4]>, NativeDbaError> {
+        let at = self.track_at(data, &self.rotations, track)?;
+        let format = self.rotations.format(data, track, 9)?;
+        let width = rotation_size(format as u8)
+            .ok_or_else(|| NativeDbaError::Invalid("Unsupported DBA rotation format".into()))?;
+        let length = self.rotations.length(data, track);
+        if at + length * width > self.tracks_end {
+            return Err(NativeDbaError::Invalid(
+                "DBA rotation track out of bounds".into(),
+            ));
+        }
+        (0..length)
+            .map(|i| {
+                quaternion(data, at + i * width, format as u8)
+                    .map_err(|e| NativeDbaError::Invalid(e.to_string()))
+            })
+            .collect()
+    }
+
+    fn position_keys(&self, data: &[u8], track: usize) -> Result<Vec<[f32; 3]>, NativeDbaError> {
+        let at = self.track_at(data, &self.positions, track)?;
+        if !matches!(self.positions.format(data, track, 9)?, 0 | 2) {
+            return Err(NativeDbaError::Invalid(
+                "Unsupported DBA position format".into(),
+            ));
+        }
+        let length = self.positions.length(data, track);
+        if at + length * 12 > self.tracks_end {
+            return Err(NativeDbaError::Invalid(
+                "DBA position track out of bounds".into(),
+            ));
+        }
+        (0..length)
+            .map(|i| {
+                let read = |axis: usize| word(data, at + i * 12 + axis * 4).map(f32::from_bits);
+                let xyz = [read(0)?, read(1)?, read(2)?];
+                if xyz.iter().any(|v| !v.is_finite() || v.abs() > 10000.) {
+                    return Err(NativeDbaError::Invalid("Invalid DBA bone position".into()));
+                }
+                Ok(xyz)
+            })
+            .collect()
+    }
+}
+
+/// Decode one named clip from a Controller_905 database into the motion a loose
+/// CAF would produce. The name comparison ignores case, as CryEngine paths do.
+pub fn decode_native_dba_clip(data: &[u8], name: &str) -> Result<NativeCafMotion, NativeDbaError> {
+    let directory = parse_directory(data)?;
+    let clip = directory
+        .clips
+        .iter()
+        .find(|clip| clip.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| NativeDbaError::Invalid(format!("DBA has no clip named {name}")))?;
+    let mut controllers = Vec::with_capacity(clip.controllers.len());
+    for controller in &clip.controllers {
+        let mut decoded = CafController {
+            bone_crc32: controller.crc,
+            rotation_times: Vec::new(),
+            rotations: Vec::new(),
+            position_times: Vec::new(),
+            positions: Vec::new(),
+        };
+        if controller.rotation >= 0 {
+            decoded.rotation_times =
+                directory.key_times(data, controller.rotation_times as usize)?;
+            decoded.rotations = directory.rotation_keys(data, controller.rotation as usize)?;
+        }
+        if controller.position >= 0 {
+            decoded.position_times =
+                directory.key_times(data, controller.position_times as usize)?;
+            decoded.positions = directory.position_keys(data, controller.position as usize)?;
+        }
+        if decoded.rotation_times.len() != decoded.rotations.len()
+            || decoded.position_times.len() != decoded.positions.len()
+        {
+            return Err(NativeDbaError::Invalid(
+                "DBA key times do not match their track length".into(),
+            ));
+        }
+        controllers.push(decoded);
+    }
+    let (mut start, mut end, mut fps) = (clip.start as f32, clip.end as f32, 30.0);
+    if clip.ticks_per_frame > 0 && clip.seconds_per_tick > 0.0 && clip.seconds_per_tick < 1.0 {
+        fps = 1.0 / (clip.ticks_per_frame as f32 * clip.seconds_per_tick);
+        start /= clip.ticks_per_frame as f32;
+        end /= clip.ticks_per_frame as f32;
+    }
+    Ok(NativeCafMotion {
+        schema: 1,
+        controllers,
+        start_frame: start,
+        end_frame: end,
+        fps,
+        additive: clip.flags & 1 != 0,
+        cyclic: clip.flags & 2 != 0,
+    })
+}
+
 /// Both standard (tracks before names) and in-place (names before tracks)
 /// storage have a distinct ordering. This function refuses corrupt offsets
 /// or unknown track references rather than making fake idle poses.
-pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, NativeDbaError> {
+fn parse_directory(data: &[u8]) -> Result<DbaDirectory, NativeDbaError> {
     let summary = inspect_native_dba_bytes(data)?;
     let count = word(data, 8)? as usize;
     let table = word(data, 12)? as usize;
@@ -194,11 +435,11 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
         }
         Ok(old)
     };
-    advance(nt * 2)?;
+    let time_lengths = advance(nt * 2)?;
     let time_formats = advance(7 * 4)?;
-    advance(np * 2)?;
+    let position_lengths = advance(np * 2)?;
     let position_formats = advance(9 * 4)?;
-    advance(nr * 2)?;
+    let rotation_lengths = advance(nr * 2)?;
     let rotation_formats = advance(9 * 4)?;
     let time_offsets = advance(nt * 4)?;
     let pos_offsets = advance(np * 4)?;
@@ -266,6 +507,7 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
             "DBA alignment outside chunk".into(),
         ));
     }
+    let block_start = cursor;
     let mut names_at = cursor;
     if !summary.inplace_streaming {
         names_at = names_at
@@ -278,9 +520,8 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
     // MotionParams905 contains fixed-size (132-byte) motion metadata.
     const MOTION_PARAMS: usize = 132;
     const MAX_NAME: usize = 512;
-    let mut records = Vec::with_capacity(summary.declared_animations.min(4096));
+    let mut clips = Vec::with_capacity(summary.declared_animations.min(4096));
     let mut position = names_at;
-    let mut all_controller_counts = Vec::new();
     for _ in 0..summary.declared_animations {
         if position + 2 > end {
             return Err(NativeDbaError::Invalid(
@@ -308,6 +549,10 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
             ));
         }
         let flags = word(data, position)?;
+        let ticks_per_frame = word(data, position + 8)? as i32;
+        let seconds_per_tick = f32::from_bits(word(data, position + 12)?);
+        let clip_start = word(data, position + 16)? as i32;
+        let clip_end = word(data, position + 20)? as i32;
         position += MOTION_PARAMS;
         let foot_count = u16::from_le_bytes([data[position], data[position + 1]]) as usize;
         position += 2;
@@ -319,11 +564,13 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
         position += foot_count;
         let controllers = u16::from_le_bytes([data[position], data[position + 1]]) as usize;
         position += 2;
-        if controllers == 0 || controllers > 4096 {
+        // Real databases hold a few empty clips, which simply show the bind pose.
+        if controllers > 4096 {
             return Err(NativeDbaError::Invalid(
                 "Unsupported DBA controller count".into(),
             ));
         }
+        let mut table = Vec::new();
         if summary.inplace_streaming {
             if position + 4 > end {
                 return Err(NativeDbaError::Invalid(
@@ -332,21 +579,30 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
             }
             position += 4;
         } else {
-            position = parse_dba_controllers(data, position, end, controllers, nt, np, nr)?;
+            table = parse_dba_controllers(data, position, end, controllers, nt, np, nr)?;
+            position += controllers * 20;
         }
-        all_controller_counts.push(controllers);
-        records.push(DbaAnimationRecord {
-            name: name.to_owned(),
-            controller_count: controllers,
-            additive: flags & 1 != 0,
-            cyclic: flags & 2 != 0,
-        });
+        clips.push((
+            DbaClip {
+                name: name.to_owned(),
+                flags,
+                ticks_per_frame,
+                seconds_per_tick,
+                start: clip_start,
+                end: clip_end,
+                controllers: table,
+            },
+            controllers,
+        ));
     }
+    let mut anchor = block_start as i64;
+    let mut tracks_end = block_start + extent;
     if summary.inplace_streaming {
         // Streaming DBA controller headers form a single contiguous block
         // immediately after its named animation directory.
-        for count in all_controller_counts {
-            position = parse_dba_controllers(data, position, end, count, nt, np, nr)?;
+        for (clip, count) in &mut clips {
+            clip.controllers = parse_dba_controllers(data, position, end, *count, nt, np, nr)?;
+            position += *count * 20;
         }
         let aligned = position
             .checked_add(3)
@@ -357,8 +613,25 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
                 "DBA streaming track block is truncated".into(),
             ));
         }
+        tracks_end = aligned + extent;
+        anchor = tracks_end as i64;
     }
-    Ok(records)
+    if tracks_end > end {
+        return Err(NativeDbaError::Invalid("DBA tracks exceed chunk".into()));
+    }
+    let table = |lengths, formats, offsets| TrackTable {
+        lengths,
+        formats,
+        offsets,
+    };
+    Ok(DbaDirectory {
+        clips: clips.into_iter().map(|(clip, _)| clip).collect(),
+        times: table(time_lengths, time_formats, time_offsets),
+        positions: table(position_lengths, position_formats, pos_offsets),
+        rotations: table(rotation_lengths, rotation_formats, rot_offsets),
+        anchor,
+        tracks_end,
+    })
 }
 
 fn parse_dba_controllers(
@@ -369,7 +642,7 @@ fn parse_dba_controllers(
     time_tracks: usize,
     position_tracks: usize,
     rotation_tracks: usize,
-) -> Result<usize, NativeDbaError> {
+) -> Result<Vec<DbaController>, NativeDbaError> {
     let finish = start
         .checked_add(
             count
@@ -382,15 +655,11 @@ fn parse_dba_controllers(
             "Truncated DBA controller table".into(),
         ));
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = std::collections::HashMap::new();
+    let mut controllers = Vec::with_capacity(count);
     for i in 0..count {
         let at = start + i * 20;
         let crc = word(bytes, at)?;
-        if !seen.insert(crc) {
-            return Err(NativeDbaError::Invalid(
-                "Repeated DBA controller CRC".into(),
-            ));
-        }
         let index = |n| word(bytes, at + n).map(|v| v as i32);
         let pos_time = index(4)?;
         let pos = index(8)?;
@@ -418,8 +687,27 @@ fn parse_dba_controllers(
                 "DBA controller has no source channels".into(),
             ));
         }
+        // Val and Griffin ship clips that list a controller twice with the same
+        // tracks. Only a repeat that disagrees is a corrupt directory.
+        let channels = [pos_time, pos, rot_time, rot];
+        match seen.insert(crc, channels) {
+            None => {}
+            Some(previous) if previous == channels => continue,
+            Some(_) => {
+                return Err(NativeDbaError::Invalid(
+                    "Conflicting repeated DBA controller CRC".into(),
+                ));
+            }
+        }
+        controllers.push(DbaController {
+            crc,
+            position_times: pos_time,
+            position: pos,
+            rotation_times: rot_time,
+            rotation: rot,
+        });
     }
-    Ok(finish)
+    Ok(controllers)
 }
 
 pub fn inspect_native_dba_file(path: &Path) -> Result<NativeDbaInspection, NativeDbaError> {
@@ -556,6 +844,147 @@ mod tests {
             corrupted[controller_at + 8..controller_at + 12].copy_from_slice(&wrong);
             assert!(index_native_dba_bytes(&corrupted).is_err());
         }
+    }
+
+    /// In-place database: one clip, with one bone keyed on frames 0 and 3 by a
+    /// bitset, rotated by a float quaternion and moved by a float position.
+    fn decodable_database(second_controller: Option<[i32; 4]>) -> Vec<u8> {
+        let mut tracks = Vec::new();
+        for value in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0] {
+            tracks.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            tracks.extend_from_slice(&value.to_le_bytes());
+        }
+        for half in [0u16, 3, 2, 0b1001] {
+            tracks.extend_from_slice(&half.to_le_bytes());
+        }
+        let extent = tracks.len() as i32;
+        let mut chunk = Vec::new();
+        for count in [1u32, 1, 1, 1] {
+            chunk.extend_from_slice(&count.to_le_bytes());
+        }
+        let bins = |slot: usize, size: usize| {
+            let mut out = vec![0u8; size * 4];
+            out[slot * 4] = 1;
+            out
+        };
+        chunk.extend_from_slice(&4u16.to_le_bytes()); // time track length in u16s
+        chunk.extend(bins(6, 7)); // bitset key times
+        chunk.extend_from_slice(&2u16.to_le_bytes());
+        chunk.extend(bins(2, 9)); // uncompressed positions
+        chunk.extend_from_slice(&2u16.to_le_bytes());
+        chunk.extend(bins(1, 9)); // uncompressed quaternions
+        for offset in [-8i32, -32, -extent, -extent] {
+            chunk.extend_from_slice(&offset.to_le_bytes());
+        }
+        chunk.extend_from_slice(&0u32.to_le_bytes()); // streaming pad
+        while !(32 + chunk.len()).is_multiple_of(4) {
+            chunk.push(0);
+        }
+        let name = b"anims/run.caf";
+        chunk.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        chunk.extend_from_slice(name);
+        let mut params = [0u8; 132];
+        params[..4].copy_from_slice(&2u32.to_le_bytes()); // cyclic
+        params[8..12].copy_from_slice(&1u32.to_le_bytes());
+        params[12..16].copy_from_slice(&(1.0f32 / 30.0).to_le_bytes());
+        params[20..24].copy_from_slice(&3u32.to_le_bytes());
+        chunk.extend_from_slice(&params);
+        chunk.extend_from_slice(&0u16.to_le_bytes()); // footplants
+        let count = 1 + u16::from(second_controller.is_some());
+        chunk.extend_from_slice(&count.to_le_bytes());
+        chunk.extend_from_slice(&0i32.to_le_bytes()); // streaming pointer
+        chunk.extend_from_slice(&77u32.to_le_bytes());
+        for index in [0i32; 4] {
+            chunk.extend_from_slice(&index.to_le_bytes());
+        }
+        if let Some(channels) = second_controller {
+            chunk.extend_from_slice(&77u32.to_le_bytes());
+            for index in channels {
+                chunk.extend_from_slice(&index.to_le_bytes());
+            }
+        }
+        while !(32 + chunk.len()).is_multiple_of(4) {
+            chunk.push(0);
+        }
+        chunk.extend_from_slice(&tracks);
+        let mut bytes = vec![0u8; 32];
+        bytes[..8].copy_from_slice(b"CrChF\x07\0\0");
+        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&16u32.to_le_bytes());
+        bytes[16..20].copy_from_slice(&0x0905100du32.to_le_bytes());
+        bytes[24..28].copy_from_slice(&(chunk.len() as u32).to_le_bytes());
+        bytes[28..32].copy_from_slice(&32u32.to_le_bytes());
+        bytes.extend_from_slice(&chunk);
+        bytes
+    }
+
+    #[test]
+    fn decodes_bitset_times_and_shared_tracks_into_a_playable_motion() {
+        let data = decodable_database(None);
+        let motion = decode_native_dba_clip(&data, "ANIMS/Run.caf").unwrap();
+        assert!(motion.cyclic && !motion.additive);
+        assert!((motion.fps - 30.0).abs() < 0.01);
+        assert_eq!(motion.end_frame, 3.0);
+        let track = &motion.controllers[0];
+        assert_eq!(track.bone_crc32, 77);
+        assert_eq!(track.rotation_times, [0.0, 3.0]);
+        assert_eq!(track.rotations, [[0., 0., 0., 1.], [0., 0., 1., 0.]]);
+        assert_eq!(track.positions, [[1., 2., 3.], [4., 5., 6.]]);
+        let moved = motion.sample_seconds(0.05).unwrap()[0].translation.unwrap();
+        assert!((moved[0] - 2.5).abs() < 1e-3 && (moved[2] - 4.5).abs() < 1e-3);
+        assert!(decode_native_dba_clip(&data, "anims/walk.caf").is_err());
+    }
+
+    #[test]
+    fn identical_repeated_controller_is_kept_once_and_a_conflict_is_refused() {
+        let repeat = decodable_database(Some([0; 4]));
+        let motion = decode_native_dba_clip(&repeat, "anims/run.caf").unwrap();
+        assert_eq!(motion.controllers.len(), 1);
+        let conflict = decodable_database(Some([0, 0, -1, -1]));
+        assert!(index_native_dba_bytes(&conflict).is_err());
+    }
+
+    /// Set EVOLVE_BENCH_LIBRARY to an imported library to decode everything it holds.
+    #[test]
+    #[ignore]
+    fn decodes_every_clip_of_every_imported_database() {
+        let library = std::env::var("EVOLVE_BENCH_LIBRARY").unwrap();
+        let mut pending = fs::read_dir(&library)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("AnimationsDBA.pak__"))
+            })
+            .collect::<Vec<_>>();
+        let (mut databases, mut clips) = (0, 0);
+        while let Some(folder) = pending.pop() {
+            for entry in fs::read_dir(&folder).unwrap().filter_map(Result::ok) {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "dba") {
+                    let data = fs::read(&path).unwrap();
+                    let directory = parse_directory(&data)
+                        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                    databases += 1;
+                    for clip in &directory.clips {
+                        let motion = decode_native_dba_clip(&data, &clip.name)
+                            .unwrap_or_else(|error| panic!("{}: {error}", clip.name));
+                        assert!(motion.duration_seconds().is_finite() && motion.fps > 1.0);
+                        motion
+                            .sample_seconds(motion.duration_seconds() * 0.5)
+                            .unwrap();
+                        clips += 1;
+                    }
+                }
+            }
+        }
+        println!("decoded {clips} clips from {databases} databases");
+        assert!(clips > 0);
     }
 
     #[test]

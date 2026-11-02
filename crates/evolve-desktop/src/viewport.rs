@@ -9,6 +9,8 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct MeshViewport {
     pub mesh: Arc<RenderMesh>,
+    /// Rest-pose corners to frame instead of the current animated mesh.
+    pub framing: Option<[[f32; 3]; 2]>,
     pub yaw: f32,
     pub pitch: f32,
     pub zoom: f32,
@@ -46,7 +48,11 @@ impl canvas::Program<super::Message> for MeshViewport {
         }
         let mut minimum = [f32::MAX; 3];
         let mut maximum = [f32::MIN; 3];
-        for v in &self.mesh.positions {
+        let framed = self
+            .framing
+            .as_ref()
+            .map_or(self.mesh.positions.as_slice(), |corners| corners.as_slice());
+        for v in framed {
             for c in 0..3 {
                 minimum[c] = minimum[c].min(v[c]);
                 maximum[c] = maximum[c].max(v[c]);

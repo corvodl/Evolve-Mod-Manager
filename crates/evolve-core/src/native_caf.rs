@@ -52,7 +52,7 @@ fn u32_at(raw: &[u8], at: usize) -> Result<u32, NativeCafError> {
 fn float_at(raw: &[u8], at: usize) -> Result<f32, NativeCafError> {
     Ok(f32::from_bits(u32_at(raw, at)?))
 }
-fn quaternion(raw: &[u8], at: usize, format: u8) -> Result<[f32; 4], NativeCafError> {
+pub(crate) fn quaternion(raw: &[u8], at: usize, format: u8) -> Result<[f32; 4], NativeCafError> {
     let mut q = [0f32; 4];
     if format == 1 {
         for (j, item) in q.iter_mut().enumerate() {
@@ -124,7 +124,7 @@ fn quaternion(raw: &[u8], at: usize, format: u8) -> Result<[f32; 4], NativeCafEr
     }
     Ok(q)
 }
-fn rotation_size(id: u8) -> Option<usize> {
+pub(crate) fn rotation_size(id: u8) -> Option<usize> {
     match id {
         1 => Some(16),
         3 | 5 => Some(6),
@@ -446,7 +446,7 @@ impl NativeCafMotion {
             ));
         }
         let duration = self.duration_seconds();
-        let elapsed = if self.cyclic && duration > 0. {
+        let elapsed = if self.cyclic && duration > 0. && seconds > duration {
             seconds % duration
         } else {
             seconds.min(duration)
@@ -524,6 +524,14 @@ mod tests {
         assert_eq!(poses[0].translation, Some([2.5, 0., 0.]));
         assert_eq!(poses[0].rotation, Some([0., 0., 0., 1.]));
         assert!(motion.sample_seconds(f32::NAN).is_err());
+    }
+    #[test]
+    fn scrubbing_to_the_end_shows_the_last_key_and_past_it_wraps_cyclic_clips() {
+        let mut motion = decode_native_caf(&sample()).unwrap();
+        motion.cyclic = true;
+        let at = |seconds| motion.sample_seconds(seconds).unwrap()[0].translation;
+        assert_eq!(at(1.0), Some([5., 0., 0.]));
+        assert_eq!(at(1.5), Some([2.5, 0., 0.]));
     }
     #[test]
     fn refuses_unsupported_or_truncated_controller() {

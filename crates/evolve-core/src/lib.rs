@@ -141,8 +141,8 @@ pub use native_caf::{
     CafBonePose, CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
 };
 pub use native_dba::{
-    DbaAnimationRecord, NativeDbaError, NativeDbaInspection, index_native_dba_bytes,
-    inspect_native_dba_bytes, inspect_native_dba_file,
+    DbaAnimationRecord, NativeDbaError, NativeDbaInspection, decode_native_dba_clip,
+    index_native_dba_bytes, inspect_native_dba_bytes, inspect_native_dba_file,
 };
 pub use native_offline_launch::{
     NativeOfflineReadiness, NativeOfflineSwapPlan, NativeOfflineTarget, NativeRecoveryState,

@@ -595,6 +595,8 @@ struct State {
     viewer_tab: ViewerTab,
     playback_speed: f32,
     playback_loop: bool,
+    /// Hold the skeleton root still so locomotion clips stay in view.
+    motion_in_place: bool,
     viewer_wireframe: bool,
     viewer_full_textures: bool,
     viewer_gpu_remaining: Arc<std::sync::atomic::AtomicUsize>,
@@ -763,6 +765,7 @@ enum Operation {
         Inventory,
         Option<PathBuf>,
         Option<String>,
+        Vec<String>,
     ),
     BindCafPreview(PathBuf, PathBuf, NativeCafMotion),
     BindCdfCafPreview(
@@ -822,7 +825,6 @@ enum Operation {
         Option<PathBuf>,
         Option<String>,
         Vec<String>,
-        Option<PathBuf>,
     ),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
     InspectLevel(PathBuf),
@@ -950,15 +952,6 @@ enum Completed {
     BundleExported(evolve_core::ExportBundleReport),
     MotionConverted(ConvertedMotion, PathBuf),
     DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
-    DeclaredPackedDba(
-        usize,
-        String,
-        String,
-        ConvertedMotion,
-        PathBuf,
-        Arc<tempfile::TempDir>,
-        Option<PathBuf>,
-    ),
     MotionGlb(AnimatedGlb),
     BoundConvertedGlb(PathBuf, AnimatedGlb, usize),
     Character(CdfDefinition),
@@ -973,7 +966,7 @@ enum Completed {
     CharacterDependencies(CdfDependencyReport),
     Model(RenderMesh, PathBuf),
     ModelResources(String, auto_resources::AutoDiscovery),
-    DeclaredClip(usize, String, PathBuf, NativeCafMotion),
+    DeclaredClip(usize, String, Option<PathBuf>, NativeCafMotion),
     Level(LevelScene, PathBuf, String),
     ImportedMap(Box<level_library::LoadedMap>),
     ProjectLevelSaved(modding_projects::ProjectRow, bool),
@@ -1038,34 +1031,6 @@ fn model_preview_lookup(
         // Only a speed-up here: without it, lookups use the unindexed resolver.
         None => Ok(evolve_core::begin_imported_lookup_session_any_build(root).ok()),
     }
-}
-
-/// A verified source may come from the selected local inventory or from a
-/// single, independently verified imported-PAK extraction root. Never execute
-/// a converter against an arbitrarily guessed or cross-build game directory.
-fn verified_motion_asset_root(
-    source: &Path,
-    inventory: &Inventory,
-    imported: Option<&Path>,
-) -> Result<PathBuf, String> {
-    let local_root = std::fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
-    if source.starts_with(&local_root) {
-        return Ok(local_root);
-    }
-    let Some(imported) = imported else {
-        return Err("DBA has no verified extracted source root".into());
-    };
-    let imported = std::fs::canonicalize(imported).map_err(|e| e.to_string())?;
-    if !source.starts_with(&imported) {
-        return Err("DBA escaped verified local and imported asset roots".into());
-    }
-    source
-        .ancestors()
-        .find(|part| {
-            part.starts_with(&imported) && part.file_name().is_some_and(|name| name == "files")
-        })
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "Imported DBA has no verified extracted files root".into())
 }
 
 impl Operation {
@@ -1197,8 +1162,14 @@ impl Operation {
                 Ok(Completed::BoundCdfCafPreview(source, Box::new(preview)))
             }
             Self::BindCafPreview(mesh, skeleton, motion) => {
-                let skin = VerifiedCafSkin::from_originals(&mesh, &skeleton, motion)
-                    .map_err(|e| format!("Original CAF skeleton binding: {e}"))?;
+                let binding = mesh.with_extension("skin");
+                let skin = VerifiedCafSkin::from_originals(
+                    &mesh,
+                    binding.is_file().then_some(binding.as_path()),
+                    &skeleton,
+                    motion,
+                )
+                .map_err(|e| format!("Original CAF skeleton binding: {e}"))?;
                 Ok(Completed::BoundCafPreview(mesh, Box::new(skin)))
             }
             Self::RiggedGlb(mesh, skeleton, dest) => {
@@ -1270,9 +1241,6 @@ impl Operation {
             }
             Self::LoadCafLayer(source, base, label, path) => {
                 let layer = read_native_caf(&path).map_err(|e| e.to_string())?;
-                if layer.additive {
-                    return Err("Additive CAF layers require a verified additive convention; select a non-additive clip.".into());
-                }
                 Ok(Completed::CafLayer(source, base, label, layer))
             }
             Self::LoadDeclaredCafLayer(
@@ -1283,21 +1251,19 @@ impl Operation {
                 inventory,
                 imported,
                 build,
+                declared_databases,
             ) => {
                 let _lookup = model_preview_lookup(imported.as_deref(), build.as_deref())?;
-                let file = auto_resources::resolve_declared(
-                    &inventory, &virtual_path, imported.as_deref(), build.as_deref(),
+                let (_, motion) = load_declared_motion(
+                    &virtual_path,
+                    &inventory,
+                    &declared_databases,
+                    imported.as_deref(),
+                    build.as_deref(),
                 )?
-                .ok_or_else(|| format!(
-                    "Native layer CAF not found in the selected build: {virtual_path}. Packed DBA conversion does not yet provide native CDF layering."
-                ))?;
-                let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
-                if motion.additive {
-                    return Err(
-                        "Additive CAF layers require an independently verified additive convention"
-                            .into(),
-                    );
-                }
+                .ok_or_else(|| {
+                    format!("Layer clip not found in the selected build: {virtual_path}")
+                })?;
                 Ok(Completed::CafLayer(source, base, label, motion))
             }
             Self::LoadCaf(source) => read_native_caf(&source)
@@ -1514,79 +1480,24 @@ impl Operation {
                 library_root,
                 build,
                 declared_databases,
-                converter,
             ) => {
                 let _lookup = model_preview_lookup(library_root.as_deref(), build.as_deref())?;
-                if let Some(file) = auto_resources::resolve_declared(
-                    &inventory,
+                let (file, motion) = load_declared_motion(
                     &virtual_path,
-                    library_root.as_deref(),
-                    build.as_deref(),
-                )? {
-                    let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
-                    return Ok(Completed::DeclaredClip(index, virtual_path, file, motion));
-                }
-                // A CAF reference can be a named track inside a Controller_905
-                // DBA, rather than a standalone file. Only search character-
-                // declared databases, with exact virtual paths and build scope.
-                let Some((source, record)) = auto_resources::find_declared_packed_caf(
                     &inventory,
-                    &virtual_path,
                     &declared_databases,
                     library_root.as_deref(),
                     build.as_deref(),
                 )?
-                else {
-                    return Err(format!(
+                .ok_or_else(|| {
+                    format!(
                         "Declared CAF not found as a loose file or an exact track in the selected character's declared DBAs: {virtual_path} (build: {})",
                         build
                             .as_deref()
                             .unwrap_or("unselected; choose an exact game build"),
-                    ));
-                };
-                let converter = converter.ok_or_else(|| format!(
-                    "CAF {virtual_path} exists as an indexed animation in {} but its packed tracks require the bundled Cryengine-Converter. Check the converter installation.",
-                    source.display()
-                ))?;
-                let root =
-                    verified_motion_asset_root(&source, &inventory, library_root.as_deref())?;
-                let temp = Arc::new(
-                    tempfile::Builder::new()
-                        .prefix("evolve-declared-packed-caf-")
-                        .tempdir()
-                        .map_err(|e| e.to_string())?,
-                );
-                let target = temp.path().join("tracks");
-                let report = convert_original_motion(&converter, &source, &root, &target)
-                    .map_err(|e| e.to_string())?;
-                // Converter output is a distinct representation. Locate only
-                // the matching full virtual path; a same-basename clip is NOT
-                // evidence of the source character or matching skeleton.
-                let mut exact_output: Option<PathBuf> = None;
-                for name in &report.glb_files {
-                    let file = target.join(name);
-                    let motion =
-                        evolve_core::AnimatedGlb::read(&file).map_err(|e| e.to_string())?;
-                    if motion.list_clips().iter().any(|clip| {
-                        auto_resources::packed_record_matches(&virtual_path, &clip.name)
-                    }) {
-                        if exact_output.is_some() {
-                            return Err(format!(
-                                "Converter produced multiple matches for {virtual_path}; refusing ambiguous packed tracks"
-                            ));
-                        }
-                        exact_output = Some(file);
-                    }
-                }
-                Ok(Completed::DeclaredPackedDba(
-                    index,
-                    virtual_path,
-                    record,
-                    report,
-                    target,
-                    temp,
-                    exact_output,
-                ))
+                    )
+                })?;
+                Ok(Completed::DeclaredClip(index, virtual_path, file, motion))
             }
             Self::InspectModel(source) => {
                 let render_source = preferred_render_source(&source);
@@ -2392,6 +2303,7 @@ enum Message {
     ViewerSaveLayout,
     PlaybackSpeedChanged(f32),
     PlaybackLoopChanged,
+    MotionInPlaceChanged,
     ViewerToggleWireframe,
     ViewerFullTexturesToggled,
     LightStrengthChanged(f32),
@@ -2657,8 +2569,49 @@ fn level_source_hash(source: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+/// Decode a character-declared clip: a loose CAF when the build ships one (its
+/// path is returned), otherwise the named clip in the character's own databases.
+fn load_declared_motion(
+    virtual_path: &str,
+    inventory: &Inventory,
+    declared_databases: &[String],
+    library_root: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Option<(Option<PathBuf>, NativeCafMotion)>, String> {
+    if let Some(file) =
+        auto_resources::resolve_declared(inventory, virtual_path, library_root, build)?
+    {
+        let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
+        return Ok(Some((Some(file), motion)));
+    }
+    let Some((database, record)) = auto_resources::find_declared_packed_caf(
+        inventory,
+        virtual_path,
+        declared_databases,
+        library_root,
+        build,
+    )?
+    else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(&database).map_err(|e| e.to_string())?;
+    let motion = evolve_core::decode_native_dba_clip(&bytes, &record)
+        .map_err(|e| format!("{virtual_path}: {e}"))?;
+    Ok(Some((None, motion)))
+}
+
 /// Only exact current model meshes are eligible for verified CAF playback.
 /// Decode and bind in a worker, never during the GUI draw or input event.
+/// Replaying a completed non-looping animation must return to its first
+/// frame instead of immediately stopping at its end on the next Tick.
+fn restart_finished_motion_frame(time: f32, duration: Option<f32>) -> f32 {
+    if duration.is_some_and(|seconds| seconds.is_finite() && seconds > 0.0 && time >= seconds) {
+        0.0
+    } else {
+        time
+    }
+}
+
 fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
     let motion = state.native_caf.as_ref()?;
     if state.model.is_none() || state.skeleton_path.trim().is_empty() {
@@ -2708,7 +2661,7 @@ fn apply_current_skin_frame(state: &mut State) {
         .into_iter()
         .collect::<Vec<_>>();
     if let Some(assembly) = &state.cdf_caf_preview {
-        match assembly.mesh_at_layers(state.motion_time, &layers) {
+        match assembly.mesh_at_layers(state.motion_time, &layers, state.motion_in_place) {
             Ok(mesh) => state.model = Some(Arc::new(mesh)),
             Err(error) => {
                 state.playing = false;
@@ -2716,7 +2669,7 @@ fn apply_current_skin_frame(state: &mut State) {
             }
         }
     } else if let Some(skin) = &state.skin_preview {
-        match skin.mesh_at_layers(state.motion_time, &layers) {
+        match skin.mesh_at_layers(state.motion_time, &layers, state.motion_in_place) {
             Ok(mesh) => state.model = Some(Arc::new(mesh)),
             Err(error) => {
                 state.playing = false;
@@ -3181,7 +3134,23 @@ fn resource_build(state: &State) -> Option<String> {
         .archives
         .iter()
         .find(|item| Path::new(&item.directory) == archive_folder)?;
-    (archive.builds.len() == 1).then(|| archive.builds[0].clone())
+    if archive.builds.len() == 1 {
+        return Some(archive.builds[0].clone());
+    }
+    // An older import of a PAK can stay in the library outside any build. Its
+    // dependencies belong to the build that holds the same source file now.
+    let source = |item: &evolve_core::ImportedPak| {
+        item.source.trim_start_matches(r"\\?\").to_ascii_lowercase()
+    };
+    let mut same_source = catalog
+        .archives
+        .iter()
+        .filter(|item| item.builds.len() == 1 && source(item) == source(archive))
+        .map(|item| &item.builds[0]);
+    let build = same_source.next()?;
+    same_source
+        .all(|other| other == build)
+        .then(|| build.clone())
 }
 
 fn verified_export_diffuse(state: &State, report: &MaterialReport) -> Option<PathBuf> {
@@ -7722,6 +7691,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::PlaybackSpeedChanged(value) => state.playback_speed = value.clamp(0.1, 3.0),
         Message::PlaybackLoopChanged => state.playback_loop = !state.playback_loop,
+        Message::MotionInPlaceChanged => {
+            state.motion_in_place = !state.motion_in_place;
+            apply_current_skin_frame(state);
+        }
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
         Message::ViewerFullTexturesToggled => {
             state.viewer_full_textures = !state.viewer_full_textures;
@@ -8645,6 +8618,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let Some(clip) = state.auto_clips.get(index) else {
                 return Task::none();
             };
+            state.auto_play_native_caf = clip.kind == "caf";
             if clip.kind == "dba" {
                 let Some(inventory) = state.inventory.clone() else {
                     state.status = "Index exact extracted assets to open a declared DBA.".into();
@@ -8695,8 +8669,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .map(|c| PathBuf::from(&c.root)),
                 resource_build(state),
                 declared_databases,
-                (!state.converter_path.trim().is_empty())
-                    .then(|| PathBuf::from(&state.converter_path)),
             );
             return launch(state, operation);
         }
@@ -11103,11 +11075,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "A layered clip needs an independent base animation; use Add layer rather than playing it standalone.".into();
                 return Task::none();
             }
+            // A click in the existing clip list behaves like selecting a CAF:
+            // select, reset the timeline and start only if the decoded GLB has
+            // a verified skinned mesh. Track-only GLBs remain inspectable.
+            let can_play = state.glb_motion.as_ref().is_some_and(|motion| {
+                motion.has_skinned_preview() && motion.list_clips().get(index).is_some()
+            }) && state.model.is_some();
             state.selected_motion_clip = index;
             state.motion_time = 0.0;
             state.playing = false;
             state.motion_tick = None;
             apply_current_skin_frame(state);
+            state.playing = can_play;
         }
         Message::SelectGlbOverlay(index) => {
             if state
@@ -11175,12 +11154,37 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status =
                     "CAF controller keys decoded, but selected mesh has no verified matching skin; cannot animate an unbound model.".into();
             } else {
-                state.playing = !state.playing
-                    && (state.skin_preview.is_some()
-                        || state.cdf_caf_preview.is_some()
-                        || state.glb_motion.as_ref().is_some_and(|m| {
-                            m.list_clips().get(state.selected_motion_clip).is_some()
+                let can_play = state.skin_preview.is_some()
+                    || state.cdf_caf_preview.is_some()
+                    || (state.model.is_some()
+                        && state.glb_motion.as_ref().is_some_and(|motion| {
+                            motion.has_skinned_preview()
+                                && motion
+                                    .list_clips()
+                                    .get(state.selected_motion_clip)
+                                    .is_some()
                         }));
+                let resume = !state.playing && can_play;
+                if resume {
+                    let duration = state
+                        .native_caf
+                        .as_ref()
+                        .map(|clip| clip.duration_seconds())
+                        .or_else(|| {
+                            state.glb_motion.as_ref().and_then(|motion| {
+                                motion
+                                    .list_clips()
+                                    .get(state.selected_motion_clip)
+                                    .map(|clip| clip.duration)
+                            })
+                        });
+                    let restart = restart_finished_motion_frame(state.motion_time, duration);
+                    if restart != state.motion_time {
+                        state.motion_time = restart;
+                        apply_current_skin_frame(state);
+                    }
+                }
+                state.playing = resume;
                 if state
                     .glb_motion
                     .as_ref()
@@ -11211,15 +11215,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if state.playing {
                 let duration = if let Some(motion) = &state.native_caf {
-                    Some((motion.duration_seconds(), motion.cyclic))
+                    Some(motion.duration_seconds())
                 } else {
                     state.glb_motion.as_ref().and_then(|m| {
                         m.list_clips()
                             .get(state.selected_motion_clip)
-                            .map(|clip| (clip.duration, false))
+                            .map(|clip| clip.duration)
                     })
                 };
-                if let Some((duration, looping)) = duration {
+                if let Some(duration) = duration {
                     state.motion_time += evolve_core::animation::playback_step(
                         elapsed,
                         state.playback_speed.max(0.1),
@@ -11227,7 +11231,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if duration <= 0.0 {
                         state.playing = false;
                     } else if state.motion_time >= duration {
-                        if looping || state.playback_loop {
+                        if state.playback_loop {
                             state.motion_time %= duration;
                         } else {
                             state.motion_time = duration;
@@ -11358,6 +11362,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .as_ref()
                     .map(|c| PathBuf::from(&c.root)),
                 resource_build(state),
+                state
+                    .auto_clips
+                    .iter()
+                    .filter(|item| {
+                        item.kind == "dba" && item.label.eq_ignore_ascii_case("$TracksDatabase")
+                    })
+                    .map(|item| item.virtual_path.clone())
+                    .collect(),
             );
             return launch(state, operation);
         }
@@ -12376,9 +12388,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         weight: 0.5,
                     }];
                     let verified = if let Some(assembly) = &state.cdf_caf_preview {
-                        assembly.mesh_at_layers(state.motion_time, &layers)
+                        assembly.mesh_at_layers(state.motion_time, &layers, state.motion_in_place)
                     } else if let Some(skin) = &state.skin_preview {
-                        skin.mesh_at_layers(state.motion_time, &layers)
+                        skin.mesh_at_layers(state.motion_time, &layers, state.motion_in_place)
                     } else {
                         return Task::none();
                     };
@@ -12517,46 +12529,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                     }
                 }
-                Ok(Completed::DeclaredPackedDba(
-                    index,
-                    virtual_path,
-                    record,
-                    report,
-                    dir,
-                    temp,
-                    exact_output,
-                )) => {
-                    let still_selected = state.viewer_queued_preview.is_none()
-                        && state.auto_clips.get(index).is_some_and(|clip| {
-                            clip.virtual_path.eq_ignore_ascii_case(&virtual_path)
-                        });
-                    if still_selected {
-                        let count = report.clips.len();
-                        state.converted_dba_cache = Some(temp);
-                        state.converted_glbs =
-                            report.glb_files.iter().map(|name| dir.join(name)).collect();
-                        state.native_caf = None;
-                        state.caf_layer = None;
-                        state.caf_layer_label.clear();
-                        state.playing = false;
-                        state.status = format!(
-                            "CAF {virtual_path} found in a verified DBA directory ({record}). Converted {count} tracks. Converted GLB playback uses its own verified rig; binding to the selected original CDF is NOT yet validated."
-                        );
-                        if let Some(file) = exact_output {
-                            return launch(state, Operation::LoadGlbMotion(file));
-                        }
-                    }
-                }
                 Ok(Completed::DeclaredClip(index, virtual_path, source, motion)) => {
                     let selected = state.viewer_queued_preview.is_none()
                         && state.auto_clips.get(index).is_some_and(|clip| {
                             clip.virtual_path.eq_ignore_ascii_case(&virtual_path)
                         });
-                    if selected && !motion.additive {
+                    if selected {
                         if let Some(clip) = state.auto_clips.get_mut(index) {
-                            clip.source = Some(source.clone());
+                            clip.source = source.clone();
                         }
-                        state.caf_path = source.to_string_lossy().into_owned();
+                        state.caf_path = source
+                            .as_ref()
+                            .map_or_else(String::new, |file| file.to_string_lossy().into_owned());
                         state.current_caf_virtual_path = Some(virtual_path.clone());
                         state.skin_preview = None;
                         state.cdf_caf_preview = None;
@@ -12578,9 +12562,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         if let Some(task) = bind_current_native_caf(state) {
                             return task;
                         }
-                    } else if selected {
-                        state.status =
-                            "Additive CAF cannot play alone without a compatible base pose.".into();
                     }
                 }
                 Ok(Completed::BoundCdfCafPreview(source, assembly)) => {
@@ -12595,10 +12576,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.cdf_caf_preview = Some(Arc::new(*assembly));
                         state.motion_time = 0.0;
                         apply_current_skin_frame(state);
-                        if state.auto_play_native_caf {
-                            state.playback_loop = true;
-                        }
-                        state.playing = false;
+                        state.playing = state.auto_play_native_caf;
+                        state.motion_tick = None;
                         state.auto_play_native_caf = false;
                         state.status = format!(
                             "Native CAF bound to {part_count} original CDF skin/equipment parts and {bones} source bones. Scrubbing deforms the assembled GPU viewport with verified CPU pose evaluation."
@@ -12621,10 +12600,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.skin_preview = Some(Arc::new(*skin));
                         state.motion_time = 0.0;
                         apply_current_skin_frame(state);
-                        if state.auto_play_native_caf {
-                            state.playback_loop = true;
-                        }
-                        state.playing = false;
+                        state.playing = state.auto_play_native_caf;
+                        state.motion_tick = None;
                         state.auto_play_native_caf = false;
                         state.status = format!(
                             "Native CAF bound to {count} original weighted vertices and {bones} compiled bones. Mesh deforms in the GPU viewport (CPU skin evaluation)."
@@ -14079,9 +14056,11 @@ fn view(state: &State) -> Element<'_, Message> {
                             level_terrain_unlit: false,
                             viewer_full_textures: state.viewer_full_textures,
                             viewer_gpu_remaining: None,
+                            framing: None,
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
                         canvas(MeshViewport{
+                            framing: None,
                             mesh:mesh.clone(),yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                         }).width(Fill).height(Length::Fixed(400.)).into()
@@ -14310,6 +14289,7 @@ fn initial_state() -> State {
         emissive_strength: 1.0,
         armor_level: 1.0,
         viewer_explorer_visible: true,
+        motion_in_place: true,
         ..State::default()
     };
     if let Ok(path) = settings_path() {
@@ -15721,6 +15701,7 @@ mod project_edit_tests {
                 vertex_first: 0,
                 vertex_count: 3,
                 bone_socket: None,
+                binding: None,
                 verified_skin_weights: false,
             }],
             verified_bones: None,
@@ -16454,5 +16435,101 @@ mod project_edit_tests {
         assert!(state.library_menu.is_none());
         assert!(state.modding_menu.is_none());
         assert_eq!(state.page, Some(Page::Files));
+    }
+}
+
+#[cfg(test)]
+mod animation_playback_tests {
+    use super::*;
+
+    fn looping_state(playback_loop: bool) -> State {
+        State {
+            native_caf: Some(Arc::new(NativeCafMotion {
+                schema: 1,
+                controllers: Vec::new(),
+                start_frame: 0.0,
+                end_frame: 30.0,
+                fps: 30.0,
+                additive: false,
+                cyclic: true,
+            })),
+            playing: true,
+            playback_speed: 1.0,
+            playback_loop,
+            motion_time: 0.99,
+            motion_tick: Some(Instant::now() - Duration::from_millis(50)),
+            ..State::default()
+        }
+    }
+
+    #[test]
+    fn the_loop_button_alone_decides_whether_a_clip_wraps_or_stops() {
+        let mut looping = looping_state(true);
+        let _ = update(&mut looping, Message::Tick);
+        assert!(looping.playing && looping.motion_time < 0.1);
+
+        // A cyclic clip must still stop at its end when Loop is off.
+        let mut once = looping_state(false);
+        let _ = update(&mut once, Message::Tick);
+        assert!(!once.playing);
+        assert_eq!(once.motion_time, 1.0);
+
+        let _ = update(&mut once, Message::MotionScrub(0.25));
+        assert_eq!(once.motion_time, 0.25);
+    }
+
+    #[test]
+    fn play_after_nonlooping_clip_ends_restarts_from_zero() {
+        assert_eq!(restart_finished_motion_frame(1.0, Some(1.0)), 0.0);
+        assert_eq!(restart_finished_motion_frame(1.4, Some(1.0)), 0.0);
+        assert_eq!(restart_finished_motion_frame(0.3, Some(1.0)), 0.3);
+        assert_eq!(restart_finished_motion_frame(0.0, None), 0.0);
+        assert_eq!(restart_finished_motion_frame(0.0, Some(0.0)), 0.0);
+    }
+
+    #[test]
+    fn converted_glb_selection_without_a_playable_rig_stays_paused() {
+        let mut state = State::default();
+        let _ = update(&mut state, Message::SelectMotionClip(0));
+        assert!(!state.playing);
+        assert_eq!(state.motion_time, 0.0);
+    }
+
+    #[test]
+    fn an_older_import_of_a_pak_uses_the_build_holding_the_same_source() {
+        let pak = |directory: &str, builds: &[&str], source: &str| evolve_core::ImportedPak {
+            id: directory.into(),
+            name: "a.pak".into(),
+            source: source.into(),
+            directory: directory.into(),
+            group: String::new(),
+            description: String::new(),
+            entries: 0,
+            extracted_bytes: 0,
+            warnings: 0,
+            builds: builds.iter().map(|build| build.to_string()).collect(),
+        };
+        let state = State {
+            inventory: Some(Inventory {
+                schema: 1,
+                root: "library/old/files".into(),
+                entries: Vec::new(),
+                total_bytes: 0,
+                skipped_symlinks: 0,
+            }),
+            library_catalog: Some(ImportedLibrary {
+                root: "library".into(),
+                archives: vec![
+                    pak("library/old", &[], r"C:\Games\Modded\a.pak"),
+                    pak("library/new", &["Modded"], r"\\?\C:\Games\Modded\a.pak"),
+                    pak("library/other", &["Legacy"], r"C:\Games\Legacy\a.pak"),
+                ],
+                builds: vec!["Modded".into(), "Legacy".into()],
+                total_bytes: 0,
+                ignored: 0,
+            }),
+            ..State::default()
+        };
+        assert_eq!(resource_build(&state).as_deref(), Some("Modded"));
     }
 }
