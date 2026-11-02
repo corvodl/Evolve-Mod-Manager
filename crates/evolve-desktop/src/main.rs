@@ -486,8 +486,6 @@ struct State {
     level_sidebar_tab: LevelSidebarTab,
     /// Preview-only lighting controls, never written to original game files.
     level_time_of_day: f32,
-    /// Level Editor-only postprocess multiplier (1x is source baseline).
-    level_preview_exposure: f32,
     level_full_textures: bool,
     level_terrain_unlit: bool,
     terrain: Option<TerrainInfo>,
@@ -2479,8 +2477,6 @@ enum Message {
     LevelZoomChanged(f32),
     LevelTimeOfDayChanged(f32),
     LevelTimePreset(f32),
-    LevelPreviewExposureChanged(f32),
-    LevelPreviewExposureReset,
     LevelFullTexturesToggled,
     LevelTerrainSourceColorToggled,
     LevelEditPositionChanged(String),
@@ -7954,12 +7950,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LevelTimePreset(value) => {
             state.level_time_of_day = value.clamp(0.0, 24.0);
         }
-        Message::LevelPreviewExposureChanged(value) => {
-            if value.is_finite() {
-                state.level_preview_exposure = value.clamp(0.5, 3.0);
-            }
-        }
-        Message::LevelPreviewExposureReset => state.level_preview_exposure = 1.0,
         Message::LevelFullTexturesToggled => {
             state.level_full_textures = !state.level_full_textures;
         }
@@ -14563,8 +14553,6 @@ fn initial_state() -> State {
         viewer_split: 0.67,
         level_zoom: 1.0,
         level_time_of_day: 12.0,
-        // Modest preview lift until real-game lighting calibration is verified.
-        level_preview_exposure: 1.5,
         level_full_textures: true,
         level_terrain_unlit: false,
         viewer_full_textures: true,
