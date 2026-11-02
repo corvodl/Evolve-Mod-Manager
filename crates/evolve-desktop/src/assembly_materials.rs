@@ -42,9 +42,14 @@ fn glow_pass_strength(glow_amount: f32) -> f32 {
     (glow_amount.max(0.0) * 2.0).powi(2)
 }
 
+/// AmbientMultiplier only reaches the main pass on ALPHAGLOW materials.
 fn authored_ambient_multiplier(slot: &evolve_core::MaterialSlot) -> f32 {
-    slot.ambient_multiplier
-        .unwrap_or(DEFAULT_AMBIENT_MULTIPLIER)
+    if slot.alpha_glow {
+        slot.ambient_multiplier
+            .unwrap_or(DEFAULT_AMBIENT_MULTIPLIER)
+    } else {
+        0.0
+    }
 }
 
 /// The glow pass multiplies diffuse by a material's decal.
@@ -52,27 +57,28 @@ fn decal_glow(slot: &evolve_core::MaterialSlot) -> bool {
     slot.maps.iter().any(|map| map.role == "decal")
 }
 
-/// How strongly a material emits. An ALPHAGLOW mask gets the main pass's
-/// AmbientMultiplier plus the additive glow pass on top. A decal gets the glow
-/// pass. Other emission maps have no decoded pass, so they keep GlowAmount.
+/// How strongly a material emits. Diffuse alpha gets the glow pass, which any
+/// positive GlowAmount queues, plus AmbientMultiplier on ALPHAGLOW materials. A
+/// decal gets the glow pass. Other emission maps have no decoded pass, so they
+/// keep GlowAmount.
 fn authored_emission_strength(slot: &evolve_core::MaterialSlot) -> f32 {
     let has_map = slot
         .maps
         .iter()
         .any(|map| role_channel(&map.role) == Some(2));
-    if slot.alpha_glow && !has_map {
-        glow_pass_strength(slot.glow_amount.unwrap_or(0.0)) + authored_ambient_multiplier(slot)
-    } else if decal_glow(slot) {
+    if decal_glow(slot) {
         glow_pass_strength(slot.glow_amount.unwrap_or(0.0))
-    } else {
+    } else if has_map {
         slot.glow_amount.unwrap_or(1.0).max(0.0)
+    } else {
+        glow_pass_strength(slot.glow_amount.unwrap_or(0.0)) + authored_ambient_multiplier(slot)
     }
 }
 
-/// ALPHAGLOW emits from diffuse alpha, scaled by authored_emission_strength. The
+/// A material emits from diffuse alpha, scaled by authored_emission_strength. The
 /// main pass reads diffuse as linear, the glow pass's sampler skips the sRGB
-/// conversion, so this image holds their weighted mix. It needs actual alpha-mask evidence: alpha alone may be gloss or opacity and is
-/// not a license to invent emission for unrelated materials.
+/// conversion, so this image holds their weighted mix. Opaque alpha emits across
+/// the whole surface, as the eyes of Goliath and Kala do in the game.
 fn legacy_alpha_emission(
     slot: &evolve_core::MaterialSlot,
     diffuse: &image::RgbaImage,
@@ -80,9 +86,7 @@ fn legacy_alpha_emission(
     if !matches!(
         slot.shader.to_ascii_lowercase().as_str(),
         "illum" | "cloth" | "humanskin"
-    ) || !slot.alpha_glow
-        || authored_emission_strength(slot) <= 0.0
-        || !diffuse.pixels().any(|pixel| pixel[3] < 255)
+    ) || authored_emission_strength(slot) <= 0.0
     {
         return None;
     }
@@ -1958,10 +1962,12 @@ mod tests {
         assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
         slot.ambient_multiplier = None;
         slot.glow_amount = Some(3.0);
+        // The glow pass needs no ALPHAGLOW, and opaque alpha emits everywhere.
         slot.alpha_glow = false;
-        assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
-        slot.alpha_glow = true;
+        assert_eq!(authored_emission_strength(&slot), 36.0);
         let opaque = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+        assert!(legacy_alpha_emission(&slot, &opaque).is_some());
+        slot.glow_amount = None;
         assert!(legacy_alpha_emission(&slot, &opaque).is_none());
     }
 
