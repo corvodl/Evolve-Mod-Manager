@@ -25,6 +25,31 @@ This work extends draft PR #165. It uses the CryEngine 3.5.8-era FreeSDK **as an
 - **Builds:** selected PAK Game root/known build labels must match; no assets from another build are substituted by matching basename. Missing Sky source does not trigger a fabricated sky-texture asset.
 - **Validation:** run a Windows nightly acceptance on two different Stage 2 maps, exercise 0–24h sky and fog, compare screenshots to game at controlled exposure, verify local light/spot falloff and static sky horizon orientation, and check no GPU/CPU regressions or magenta/flickering textures.
 
+## Tutorial lighting verification (PR #181)
+
+The Level Editor must never compensate for a dark-looking Tutorial scene with a
+guessed constant exposure, an arbitrary ambient floor, or a fake sunlight
+multiplier. The user-observed lighting mismatch remains **unverified against
+the actual in-game output**.
+
+The mission's original `SunVector` provides a directional reference at the
+mission's time; the map's `LevelData/TimeOfDay.xml` separately provides the
+keyed `Sun intensity` value. The previous source code overwrote that sampled
+intensity with an elevation-based clamp whenever a mission SunVector was
+available. PR #181 now preserves the sampled intensity when positioning the sun,
+without introducing new exposure or brightness parameters.
+
+**Acceptance before claiming game shading parity:** use the *same Stage 2
+build*, original Tutorial PAKs, camera position/orientation, time of day,
+weather, scene color profile, and graphics/exposure settings in game and
+editor. Capture (1) unlit terrain color, (2) sunlit terrain and shaded faces,
+(3) local light/probe contribution, and (4) post-HDR result. Compare shadow
+coverage, sky/ambient radiance, `Sun intensity` scaling, exposure adaptation,
+film curve and color chart individually. Correct only a demonstrated
+difference with source-verified equations, test fixtures and screenshots;
+remain explicit about approximations (CryEngine FreeSDK alone is not proof
+of Evolve Stage 2 behavior).
+
 ## References
 
 - CryEngine 3 *Setting Up Time of Day*: https://www.cryengine.com/docs/static/engines/cryengine-3/categories/1114113/pages/1048857
