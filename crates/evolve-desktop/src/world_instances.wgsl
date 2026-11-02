@@ -368,6 +368,13 @@ fn game_specular(n:vec3<f32>,to_view:vec3<f32>,to_light:vec3<f32>,f0:vec3<f32>,s
   let fresnel=f0+(vec3<f32>(1.0)-f0)*edge*edge*edge*edge*edge;
   return fresnel*step(0.001,max(f0.r,max(f0.g,f0.b)))*(alpha2/(d*d)/visibility*0.25*no_l);
 }
+// The glow pass reads diffuse without the sRGB conversion the sampler applies.
+fn glow_pass_diffuse(linear: vec3<f32>) -> vec3<f32> {
+  let low = linear * 12.92;
+  let high = 1.055 * pow(linear, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
+  return select(high, low, linear <= vec3<f32>(0.0031308));
+}
+
 fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   var base=sample_source_albedo(input.uv);
   // CryEngine Terrain.Layer high-pass is ADD-SIGNED over the original
@@ -534,7 +541,7 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   // The game's emission, unscaled: see authored_emission_strength.
   let emission=textureSample(emissive_map,tex_sampler,input.uv).rgb;
   let glow_base=sample_source_albedo(input.uv);
-  let decal_base=mix(vec3<f32>(1.0),glow_base.rgb*glow_base.a,authored.emissive.a);
+  let decal_base=mix(vec3<f32>(1.0),glow_pass_diffuse(glow_base.rgb)*glow_base.a,authored.emissive.a);
   let preview_glow=emission*decal_base*max(authored.cutoff.y,0.0)*(1.0-authored.blend.w);
   return vec4<f32>(base.rgb*(ambient_light*authored.clouds.w*mix(1.0,n.z*0.25+0.75,foliage_surface)+authored.emissive.rgb+sun+light.sun_color.rgb*light.sun.w*visibility*leaf_through*foliage_surface)+specular+reflected+local_radiance+preview_glow,base.a);
 }

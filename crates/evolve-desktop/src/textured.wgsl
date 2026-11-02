@@ -64,6 +64,13 @@ fn game_specular(n:vec3<f32>,to_view:vec3<f32>,to_light:vec3<f32>,f0:vec3<f32>,s
   let fresnel=f0+(vec3<f32>(1.0)-f0)*edge*edge*edge*edge*edge;
   return fresnel*step(0.001,max(f0.r,max(f0.g,f0.b)))*(alpha2/(d*d)/visibility*0.25*no_l);
 }
+// The glow pass reads diffuse without the sRGB conversion the sampler applies.
+fn glow_pass_diffuse(linear: vec3<f32>) -> vec3<f32> {
+  let low = linear * 12.92;
+  let high = 1.055 * pow(linear, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
+  return select(high, low, linear <= vec3<f32>(0.0031308));
+}
+
 fn shade(input: Output) -> vec4<f32> {
     let base = textureSample(diffuse, material_sampler, input.uv);
     let normal_sample = textureSample(normal_map, material_sampler, input.uv);
@@ -144,7 +151,7 @@ fn shade(input: Output) -> vec4<f32> {
     let specular_light = highlight * exposure;
     // The game's emission, unscaled: see authored_emission_strength. The final
     // bloom and tone curve bound the display value.
-    let decal_base = mix(vec3<f32>(1.0), base.rgb * base.a, material[2].a);
+    let decal_base = mix(vec3<f32>(1.0), glow_pass_diffuse(base.rgb) * base.a, material[2].a);
     let source_glow = glow * emission_params.x * emission_params.y * decal_base;
     let viewport_glow = min(source_glow, vec3<f32>(4096.0));
 
