@@ -445,7 +445,6 @@ fn neutral(first_index: u32, index_count: u32) -> Surface {
         emissive: None,
         armor_emissive: None,
         emission_strength: 1.0,
-        kala_emission_state: None,
         emissive_uv: None,
         specular: None,
         gloss: None,

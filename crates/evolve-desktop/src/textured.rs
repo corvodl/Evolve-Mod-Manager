@@ -135,9 +135,6 @@ pub struct Surface {
     pub armor_emissive: Option<Arc<image::RgbaImage>>,
     /// Exact per-leaf authored GlowAmount, not a guessed percentage.
     pub emission_strength: f32,
-    /// Source-verified Kala tubing state adjusts only the GPU preview;
-    /// original GlowAmount and exported assets remain untouched.
-    pub kala_emission_state: Option<evolve_core::KalaTubingState>,
     /// Authored moving Decal UVs used only for this material's emission.
     pub emissive_uv: Option<evolve_core::DecalTexMod>,
     pub specular: Option<Arc<image::RgbaImage>>,
@@ -449,7 +446,6 @@ struct GpuSurface {
     _uv_uniform: wgpu::Buffer,
     source_emission_strength: f32,
     alpha_cutoff: f32,
-    kala_emission_state: Option<evolve_core::KalaTubingState>,
     emissive_uv: Option<evolve_core::DecalTexMod>,
 }
 
@@ -525,13 +521,8 @@ const MATERIAL_BINDINGS: [u32; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const MAX_EMISSION: f32 = 4096.0;
 
 /// A material's emission strength, used unscaled as the game's shaders do.
-/// Kala's active equipment glow keeps its own state factor: 0.3x for Banshee and
-/// 2x for Armor Reducer. The user slider remains independent of both.
-fn emission_uniform_values(
-    source_strength: f32,
-    preview_gain: f32,
-    kala_emission_state: Option<evolve_core::KalaTubingState>,
-) -> [f32; 4] {
+/// The user slider remains independent of it.
+fn emission_uniform_values(source_strength: f32, preview_gain: f32) -> [f32; 4] {
     let source = if source_strength.is_finite() {
         source_strength.clamp(0.0, MAX_EMISSION)
     } else {
@@ -542,12 +533,7 @@ fn emission_uniform_values(
     } else {
         1.0
     };
-    let state_factor = match kala_emission_state {
-        Some(evolve_core::KalaTubingState::Banshee) => 0.3,
-        Some(evolve_core::KalaTubingState::ArmorReducer) => 2.0,
-        None => 1.0,
-    };
-    [source, gain, state_factor, 0.0]
+    [source, gain, 0.0, 0.0]
 }
 
 /// Source UV tiles and one texture-coordinate translation per axis.
@@ -599,12 +585,10 @@ impl Pipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         strength: f32,
-        kala_emission_state: Option<evolve_core::KalaTubingState>,
         alpha_cutoff: f32,
     ) -> wgpu::Buffer {
         // Retain the original GlowAmount as source multiplier, with the
-        // state factor in a separate uniform.
-        let mut values = emission_uniform_values(strength, 1.0, kala_emission_state);
+        let mut values = emission_uniform_values(strength, 1.0);
         // vec4.w is unused by the emission shader: keep the source
         // AlphaTest threshold here, avoiding a separate bind group/buffer.
         values[3] = alpha_cutoff.clamp(0.0, 1.0);
@@ -1202,7 +1186,7 @@ impl Pipeline {
             wgpu::TextureFormat::Rgba8Unorm,
             "Neutral authored opacity",
         );
-        let emission_uniform = Self::emission_uniform(device, queue, 1.0, None, 0.5);
+        let emission_uniform = Self::emission_uniform(device, queue, 1.0, 0.5);
         let uv_uniform = Self::emissive_uv_uniform(device, queue, None);
         let material_uniform = Self::material_uniform(device, None, None, None, None, false);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1565,13 +1549,8 @@ impl Pipeline {
                     opacity_uploaded = true;
                 }
             }
-            let emission_uniform = Self::emission_uniform(
-                device,
-                queue,
-                part.emission_strength,
-                part.kala_emission_state,
-                part.alpha_cutoff,
-            );
+            let emission_uniform =
+                Self::emission_uniform(device, queue, part.emission_strength, part.alpha_cutoff);
             let uv_uniform = Self::emissive_uv_uniform(device, queue, part.emissive_uv);
             let material_uniform = Self::material_uniform(
                 device,
@@ -1605,7 +1584,6 @@ impl Pipeline {
                 _uv_uniform: uv_uniform,
                 source_emission_strength: part.emission_strength,
                 alpha_cutoff: part.alpha_cutoff,
-                kala_emission_state: part.kala_emission_state,
                 emissive_uv: part.emissive_uv,
             });
             self.surface_upload_cursor = part_index + 1;
@@ -1732,13 +1710,12 @@ impl Pipeline {
             self.last_emissive_gain = primitive.emissive_gain;
             // Buffers already exist on each material: update only 16 bytes
             // per visible material, not CDF geometry or source DDS textures.
-            let default = emission_uniform_values(1.0, primitive.emissive_gain, None);
+            let default = emission_uniform_values(1.0, primitive.emissive_gain);
             queue.write_buffer(&self._emission_uniform, 0, bytemuck::bytes_of(&default));
             for surface in &self.gpu_surfaces {
                 let mut values = emission_uniform_values(
                     surface.source_emission_strength,
                     primitive.emissive_gain,
-                    surface.kala_emission_state,
                 );
                 // Gain updates must not reset the foliage material cutoff.
                 values[3] = surface.alpha_cutoff.clamp(0.0, 1.0);
@@ -2152,7 +2129,7 @@ mod tests {
 
     #[test]
     fn independent_armor_emission_does_not_inherit_authored_source_strength() {
-        let authored = super::emission_uniform_values(0.0, 2.5, None);
+        let authored = super::emission_uniform_values(0.0, 2.5);
         assert_eq!(authored[0], 0.0);
         assert_eq!(authored[1], 2.5);
         // Non-authored optional armor glow does not inherit an unrelated
@@ -2166,72 +2143,28 @@ mod tests {
     #[test]
     fn original_emission_calibration_scales_every_material_glow_amount() {
         for authored in [0.0, 0.3, 1.0, 2.0, 3.0, 4.0, 20.0] {
-            let params = super::emission_uniform_values(authored, 1.0, None);
+            let params = super::emission_uniform_values(authored, 1.0);
             assert_eq!(params[0], authored);
-            assert!((params[0] * params[1] * params[2] - authored).abs() < 0.0001);
+            assert!((params[0] * params[1] - authored).abs() < 0.0001);
         }
-        let boosted = super::emission_uniform_values(3.0, 2.0, None);
-        assert!((boosted[0] * boosted[1] * boosted[2] - 6.0).abs() < 0.0001);
-        let disabled = super::emission_uniform_values(3.0, 0.0, None);
-        assert_eq!(disabled[0] * disabled[1] * disabled[2], 0.0);
-        let invalid = super::emission_uniform_values(f32::NAN, 1.0, None);
+        let boosted = super::emission_uniform_values(3.0, 2.0);
+        assert!((boosted[0] * boosted[1] - 6.0).abs() < 0.0001);
+        let disabled = super::emission_uniform_values(3.0, 0.0);
+        assert_eq!(disabled[0] * disabled[1], 0.0);
+        let invalid = super::emission_uniform_values(f32::NAN, 1.0);
         assert_eq!(invalid[0], 0.0);
     }
 
     #[test]
     fn emissive_slider_multiplies_source_relative_glow_without_replacing_it() {
+        assert_eq!(super::emission_uniform_values(3.0, 1.0)[..2], [3.0, 1.0]);
+        assert_eq!(super::emission_uniform_values(3.0, 2.5)[..2], [3.0, 2.5]);
+        assert_eq!(super::emission_uniform_values(0.0, 4.0)[..2], [0.0, 4.0]);
+        assert_eq!(super::emission_uniform_values(3.0, 0.0)[..2], [3.0, 0.0]);
         assert_eq!(
-            super::emission_uniform_values(3.0, 1.0, None)[..2],
-            [3.0, 1.0]
-        );
-        assert_eq!(
-            super::emission_uniform_values(3.0, 2.5, None)[..2],
-            [3.0, 2.5]
-        );
-        assert_eq!(
-            super::emission_uniform_values(0.0, 4.0, None)[..2],
-            [0.0, 4.0]
-        );
-        assert_eq!(
-            super::emission_uniform_values(3.0, 0.0, None)[..2],
-            [3.0, 0.0]
-        );
-        assert_eq!(
-            super::emission_uniform_values(f32::NAN, f32::NAN, None)[..2],
+            super::emission_uniform_values(f32::NAN, f32::NAN)[..2],
             [0.0, 1.0]
         );
-    }
-
-    #[test]
-    fn kala_state_preview_gain_matches_user_blue_red_and_source_glow_amount() {
-        use evolve_core::KalaTubingState;
-        let blue = super::emission_uniform_values(3.0, 1.0, Some(KalaTubingState::Banshee));
-        let red = super::emission_uniform_values(3.0, 1.0, Some(KalaTubingState::ArmorReducer));
-        assert_eq!(blue[0], 3.0);
-        assert_eq!(red[0], 3.0);
-        assert_eq!(blue[1], 1.0);
-        assert_eq!(red[1], 1.0);
-        assert!((blue[0] * blue[2] - 0.9).abs() < 0.0001);
-        assert!((red[0] * red[2] - 6.0).abs() < 0.0001);
-        let half_blue = super::emission_uniform_values(1.5, 1.0, Some(KalaTubingState::Banshee));
-        let half_red =
-            super::emission_uniform_values(1.5, 1.0, Some(KalaTubingState::ArmorReducer));
-        assert!((half_blue[0] * half_blue[2] - 0.45).abs() < 0.0001);
-        assert!((half_red[0] * half_red[2] - 3.0).abs() < 0.0001);
-        assert!((blue[0] * blue[1] * blue[2] - 3.0 * 0.3).abs() < 0.0001);
-        assert!((red[0] * red[1] * red[2] - 3.0 * 2.0).abs() < 0.0001);
-        let disabled =
-            super::emission_uniform_values(3.0, 0.0, Some(KalaTubingState::ArmorReducer));
-        assert_eq!(disabled[0] * disabled[1] * disabled[2], 0.0);
-        let zero = super::emission_uniform_values(0.0, 1.0, Some(KalaTubingState::Banshee));
-        assert_eq!(zero[0] * zero[2], 0.0);
-        let unrelated = super::emission_uniform_values(3.0, 1.0, None);
-        assert!((unrelated[0] * unrelated[1] * unrelated[2] - 3.0).abs() < 0.0001);
-        let shader = include_str!("textured.wgsl");
-        assert!(shader.contains("let viewport_glow = min(source_glow * emission_params.z"));
-        assert!(shader.contains("let armor_viewport = min(armor_source"));
-        assert!(!shader.contains("source_glow / (1.0 + peak)"));
-        assert!(shader.contains("armor_glow * emission_params.y"));
     }
 
     #[test]

@@ -577,11 +577,31 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                             evolve_core::KalaTubingState::ArmorReducer
                         ))
                 ),
+                design::button(
+                    if state.kala_tubing == evolve_core::KalaTubingState::RiftDevice {
+                        "âœ“ Teleporter Â· Purple"
+                    } else {
+                        "â—‹ Teleporter Â· Purple"
+                    }
+                )
+                .style(
+                    if state.kala_tubing == evolve_core::KalaTubingState::RiftDevice {
+                        design::primary
+                    } else {
+                        design::secondary
+                    }
+                )
+                .on_press_maybe(
+                    (!state.busy && state.kala_tubing != evolve_core::KalaTubingState::RiftDevice)
+                        .then_some(Message::ViewerKalaTubingState(
+                            evolve_core::KalaTubingState::RiftDevice
+                        ))
+                ),
             ]
             .spacing(7),
         );
         entries = entries.push(
-            text("Kala's named Glow material stays source-blue in both modes. Body's separate ALPHAGLOW highlights retain their actual diffuse RGB (which can be red); only the equipment glow follows the Banshee/Armor Reducer choice. Emission uses the game's alpha glow and glow pass. Original textures and FBX exports stay unchanged.")
+            text("Kala's named Glow material stays source-blue in every mode. Body's separate ALPHAGLOW highlights retain their actual diffuse RGB (which can be red); only the equipment glow follows the Banshee, Armor Reducer or Teleporter choice. Emission uses the game's alpha glow and glow pass. Original textures and FBX exports stay unchanged.")
                 .size(11)
                 .style(design::muted),
         );

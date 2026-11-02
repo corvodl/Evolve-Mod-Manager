@@ -455,7 +455,12 @@ fn kala_tubing_leaf(
             || (path.ends_with("/merc_tech/weapons/bansheegun/techbansheegun_3p.mtl")
                 && source.ends_with("/merc_tech/techbansheegun_3p.skin")
                 && (slot.name.eq_ignore_ascii_case("bansheegun glow")
-                    || slot.name.eq_ignore_ascii_case("armorreducer glow"))))
+                    || slot.name.eq_ignore_ascii_case("armorreducer glow")
+                    || slot.name.eq_ignore_ascii_case("riftdevice glow")))
+            || (path.ends_with("/merc_tech/weapons/riftdevice/techriftdevice_3p.mtl")
+                && slot
+                    .name
+                    .eq_ignore_ascii_case("monster arm rift device glow")))
 }
 
 fn tint_legacy_decal(
@@ -1195,7 +1200,6 @@ fn load_authored_subset_surfaces(
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
-            kala_emission_state: None,
             emissive_uv: None,
             specular: None,
             gloss: None,
@@ -1635,7 +1639,6 @@ pub fn load_with_progress(
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
-            kala_emission_state: None,
             emissive_uv: None,
             specular: None,
             gloss: None,
@@ -1713,23 +1716,21 @@ pub fn load_with_progress(
             // A single mesh MTL contains BOTH original Banshee blue and
             // Armor Reducer red leaves. Render only the active mode's
             // emissive tube; do not alter its normal/diffuse/UV0 sources.
+            let active_glow = match kala_state {
+                evolve_core::KalaTubingState::Banshee => "bansheegun glow",
+                evolve_core::KalaTubingState::ArmorReducer => "armorreducer glow",
+                evolve_core::KalaTubingState::RiftDevice => "riftdevice glow",
+            };
             if kala_tubing_leaf(&path, &part.binding, leaf)
-                && ((leaf.name.eq_ignore_ascii_case("armorreducer glow")
-                    && kala_state == evolve_core::KalaTubingState::Banshee)
-                    || (leaf.name.eq_ignore_ascii_case("bansheegun glow")
-                        && kala_state == evolve_core::KalaTubingState::ArmorReducer))
+                && ["bansheegun glow", "armorreducer glow", "riftdevice glow"]
+                    .iter()
+                    .any(|name| leaf.name.eq_ignore_ascii_case(name))
+                && !leaf.name.eq_ignore_ascii_case(active_glow)
             {
                 surface.emissive = None;
                 surface.emission_strength = 0.0;
                 surface.emissive_uv = None;
             }
-            // Apply Kala's extra state factor only to its WEAPON glow leaves.
-            // Body/waist Glow stays source blue for every equipment choice.
-            surface.kala_emission_state = (surface.emissive.is_some()
-                && surface.emission_strength > 0.0
-                && kala_tubing_leaf(&path, &part.binding, leaf)
-                && !leaf.name.eq_ignore_ascii_case("Glow"))
-            .then_some(kala_state);
             surface.specular = specular;
             surface.gloss = gloss;
             surface.foliage_cutout = source_vegetation_cutout(leaf) && surface.diffuse.is_some();
@@ -1861,7 +1862,6 @@ mod tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
-            kala_emission_state: None,
             emissive_uv: None,
             specular: None,
             gloss: None,
@@ -2163,7 +2163,6 @@ mod tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
-            kala_emission_state: None,
             emissive_uv: None,
             specular: None,
             gloss: None,
@@ -2215,7 +2214,6 @@ mod tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 2.0,
-            kala_emission_state: None,
             emissive_uv: None,
             specular: None,
             gloss: None,
@@ -2465,7 +2463,6 @@ mod tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
-            kala_emission_state: None,
             emissive_uv: None,
             specular: None,
             gloss: None,

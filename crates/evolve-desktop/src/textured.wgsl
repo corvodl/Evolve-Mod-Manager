@@ -15,7 +15,6 @@ struct Output {
 // data, so it is never reused for a separate opacity-reference material.
 @group(0) @binding(6) var opacity_map: texture_2d<f32>;
 // x is the material's emission strength, y is the user's viewport slider.
-// z is Kala's optional equipment-only state factor (Banshee 0.3, Armor Reducer 2).
 // Source values, texture masks, diffuse and FBX export remain unchanged.
 @group(0) @binding(7) var<uniform> emission_params: vec4<f32>;
 // Separate, optional armor overlay: this channel is black when unchecked,
@@ -146,7 +145,7 @@ fn shade(input: Output) -> vec4<f32> {
     // bloom and tone curve bound the display value.
     let decal_base = mix(vec3<f32>(1.0), base.rgb * base.a, material[2].a);
     let source_glow = glow * emission_params.x * emission_params.y * decal_base;
-    let viewport_glow = min(source_glow * emission_params.z, vec3<f32>(4096.0));
+    let viewport_glow = min(source_glow, vec3<f32>(4096.0));
 
     // Optional Stage 2 armor-glow overlay has no authored strength: a neutral
     // one-unit source that never inherits the active material's. Disabled
