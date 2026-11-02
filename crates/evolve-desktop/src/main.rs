@@ -2605,9 +2605,7 @@ fn load_declared_motion(
 /// Replaying a completed non-looping animation must return to its first
 /// frame instead of immediately stopping at its end on the next Tick.
 fn restart_finished_motion_frame(time: f32, duration: Option<f32>) -> f32 {
-    if duration.is_some_and(|seconds| {
-        seconds.is_finite() && seconds > 0.0 && time >= seconds
-    }) {
+    if duration.is_some_and(|seconds| seconds.is_finite() && seconds > 0.0 && time >= seconds) {
         0.0
     } else {
         time
@@ -11161,14 +11159,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     || (state.model.is_some()
                         && state.glb_motion.as_ref().is_some_and(|motion| {
                             motion.has_skinned_preview()
-                                && motion.list_clips().get(state.selected_motion_clip).is_some()
+                                && motion
+                                    .list_clips()
+                                    .get(state.selected_motion_clip)
+                                    .is_some()
                         }));
                 let resume = !state.playing && can_play;
                 if resume {
-                    let duration = state.native_caf.as_ref().map(|clip| clip.duration_seconds())
-                        .or_else(|| state.glb_motion.as_ref().and_then(|motion| {
-                            motion.list_clips().get(state.selected_motion_clip).map(|clip| clip.duration)
-                        }));
+                    let duration = state
+                        .native_caf
+                        .as_ref()
+                        .map(|clip| clip.duration_seconds())
+                        .or_else(|| {
+                            state.glb_motion.as_ref().and_then(|motion| {
+                                motion
+                                    .list_clips()
+                                    .get(state.selected_motion_clip)
+                                    .map(|clip| clip.duration)
+                            })
+                        });
                     let restart = restart_finished_motion_frame(state.motion_time, duration);
                     if restart != state.motion_time {
                         state.motion_time = restart;
