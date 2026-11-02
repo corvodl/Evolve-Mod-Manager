@@ -1,5 +1,5 @@
 # Explicit manual Nightly build request. Only code already merged into main is packaged.
-request: user-requested-after-merged-pr173-pr175-2026-11-01
-requested: 2026-11-01
-base-main-commit: fc623f0698de3289ce702fad834bbcd46c4ba9ae
-description: Build a new Windows Nightly from main after PR #173 (Asset Library grouped browser with non-destructive duplicate record expansion) and PR #175 (Level Editor authored sun, shadows, sky and materials) passed PR CI and were merged. Includes all earlier merged PRs such as #174. No unmerged branches should be packaged. Maintain official runtime and converter packaging, signing safeguards and prerelease metadata.
+request: user-requested-after-merged-pr176-pr177-pr178-pr179-pr180-2026-11-02
+requested: 2026-11-02
+base-main-commit: 24ed79128d2a05469972ce94a5d81b59afff14ed
+description: Build a Windows Nightly from main following successful ordered merges of PRs #176, #177, #178, #179 and #180. Includes Level Editor rendering and visual parity improvements, CAF/DBA native animation playback, authored 1D/2D/3D blendspaces, and the diagnostics footer fix. Preserve verified runtime/converter packaging, release signing safeguards, and prerelease metadata. No unmerged branches are packaged.
