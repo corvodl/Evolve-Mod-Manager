@@ -768,6 +768,11 @@ fn open_selected(
     let index = index.min(maps.len().saturating_sub(1));
     let chosen = &maps[index];
     let mut diagnostics = Vec::new();
+    // One asset index for the whole load; the steps below all reuse it. Each
+    // still reports its own failure if this one could not be built.
+    let _lookup = Path::new(&archive.directory).parent().and_then(|library| {
+        evolve_core::begin_imported_lookup_session_for_source(library, &archive.source).ok()
+    });
     let inventory = project_inventory
         .clone()
         .map(Ok)

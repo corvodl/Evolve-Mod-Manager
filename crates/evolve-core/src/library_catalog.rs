@@ -623,6 +623,16 @@ pub fn begin_imported_lookup_session_for_source(
     let key = selected_game.to_string_lossy().to_ascii_lowercase();
     let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
     let build_token = format!("source-game-{}", &digest[..24]);
+    // A level load opens many of these in turn. Inside an open session for the
+    // same installation, reuse its table instead of re-reading every manifest.
+    let active = LOOKUP_SESSION.with(|scope| {
+        scope.borrow().clone().filter(|session| {
+            session.root == root && session.build.as_deref() == Some(&build_token)
+        })
+    });
+    if active.is_some() {
+        return Ok((build_token, ImportedLookupGuard { previous: active }));
+    }
     let guard = begin_indexed_lookup_session(root, Some(&build_token), |archive| {
         game_root_from_source(&archive.source).as_ref() == Some(&selected_game)
     })?;
@@ -1260,6 +1270,53 @@ mod tests {
         assert!(matches!(
             resolve_imported_reference(root.path(), "textures/missing.tif", None).unwrap(),
             LibraryReferenceStatus::Missing
+        ));
+    }
+
+    #[test]
+    fn source_lookup_session_reuses_the_open_table_for_one_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let games = tempfile::tempdir().unwrap();
+        for name in ["first", "second"] {
+            fs::create_dir_all(games.path().join(name).join("Game")).unwrap();
+        }
+        let source = |name: &str| {
+            games
+                .path()
+                .join(name)
+                .join("Game")
+                .join("levels.pak")
+                .to_string_lossy()
+                .into_owned()
+        };
+        let (build, _outer) =
+            begin_imported_lookup_session_for_source(root.path(), &source("first")).unwrap();
+        let open = SharedImportedLookup::current().unwrap();
+        {
+            let (again, _inner) =
+                begin_imported_lookup_session_for_source(root.path(), &source("first")).unwrap();
+            assert_eq!(again, build);
+            assert!(Arc::ptr_eq(
+                &open.0,
+                &SharedImportedLookup::current().unwrap().0
+            ));
+        }
+        assert!(Arc::ptr_eq(
+            &open.0,
+            &SharedImportedLookup::current().unwrap().0
+        ));
+        // Another installation never shares the table.
+        let (other, inner) =
+            begin_imported_lookup_session_for_source(root.path(), &source("second")).unwrap();
+        assert_ne!(other, build);
+        assert!(!Arc::ptr_eq(
+            &open.0,
+            &SharedImportedLookup::current().unwrap().0
+        ));
+        drop(inner);
+        assert!(Arc::ptr_eq(
+            &open.0,
+            &SharedImportedLookup::current().unwrap().0
         ));
     }
 
