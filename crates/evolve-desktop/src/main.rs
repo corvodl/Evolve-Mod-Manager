@@ -2602,6 +2602,18 @@ fn load_declared_motion(
 
 /// Only exact current model meshes are eligible for verified CAF playback.
 /// Decode and bind in a worker, never during the GUI draw or input event.
+/// Replaying a completed non-looping animation must return to its first
+/// frame instead of immediately stopping at its end on the next Tick.
+fn restart_finished_motion_frame(time: f32, duration: Option<f32>) -> f32 {
+    if duration.is_some_and(|seconds| {
+        seconds.is_finite() && seconds > 0.0 && time >= seconds
+    }) {
+        0.0
+    } else {
+        time
+    }
+}
+
 fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
     let motion = state.native_caf.as_ref()?;
     if state.model.is_none() || state.skeleton_path.trim().is_empty() {
@@ -11065,11 +11077,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "A layered clip needs an independent base animation; use Add layer rather than playing it standalone.".into();
                 return Task::none();
             }
+            // A click in the existing clip list behaves like selecting a CAF:
+            // select, reset the timeline and start only if the decoded GLB has
+            // a verified skinned mesh. Track-only GLBs remain inspectable.
+            let can_play = state.glb_motion.as_ref().is_some_and(|motion| {
+                motion.has_skinned_preview() && motion.list_clips().get(index).is_some()
+            }) && state.model.is_some();
             state.selected_motion_clip = index;
             state.motion_time = 0.0;
             state.playing = false;
             state.motion_tick = None;
             apply_current_skin_frame(state);
+            state.playing = can_play;
         }
         Message::SelectGlbOverlay(index) => {
             if state
@@ -11137,12 +11156,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status =
                     "CAF controller keys decoded, but selected mesh has no verified matching skin; cannot animate an unbound model.".into();
             } else {
-                state.playing = !state.playing
-                    && (state.skin_preview.is_some()
-                        || state.cdf_caf_preview.is_some()
-                        || state.glb_motion.as_ref().is_some_and(|m| {
-                            m.list_clips().get(state.selected_motion_clip).is_some()
+                let can_play = state.skin_preview.is_some()
+                    || state.cdf_caf_preview.is_some()
+                    || (state.model.is_some()
+                        && state.glb_motion.as_ref().is_some_and(|motion| {
+                            motion.has_skinned_preview()
+                                && motion.list_clips().get(state.selected_motion_clip).is_some()
                         }));
+                let resume = !state.playing && can_play;
+                if resume {
+                    let duration = state.native_caf.as_ref().map(|clip| clip.duration_seconds())
+                        .or_else(|| state.glb_motion.as_ref().and_then(|motion| {
+                            motion.list_clips().get(state.selected_motion_clip).map(|clip| clip.duration)
+                        }));
+                    let restart = restart_finished_motion_frame(state.motion_time, duration);
+                    if restart != state.motion_time {
+                        state.motion_time = restart;
+                        apply_current_skin_frame(state);
+                    }
+                }
+                state.playing = resume;
                 if state
                     .glb_motion
                     .as_ref()
@@ -16380,6 +16413,23 @@ mod animation_playback_tests {
 
         let _ = update(&mut once, Message::MotionScrub(0.25));
         assert_eq!(once.motion_time, 0.25);
+    }
+
+    #[test]
+    fn play_after_nonlooping_clip_ends_restarts_from_zero() {
+        assert_eq!(restart_finished_motion_frame(1.0, Some(1.0)), 0.0);
+        assert_eq!(restart_finished_motion_frame(1.4, Some(1.0)), 0.0);
+        assert_eq!(restart_finished_motion_frame(0.3, Some(1.0)), 0.3);
+        assert_eq!(restart_finished_motion_frame(0.0, None), 0.0);
+        assert_eq!(restart_finished_motion_frame(0.0, Some(0.0)), 0.0);
+    }
+
+    #[test]
+    fn converted_glb_selection_without_a_playable_rig_stays_paused() {
+        let mut state = State::default();
+        let _ = update(&mut state, Message::SelectMotionClip(0));
+        assert!(!state.playing);
+        assert_eq!(state.motion_time, 0.0);
     }
 
     #[test]
