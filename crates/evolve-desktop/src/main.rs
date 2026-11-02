@@ -1667,6 +1667,7 @@ impl Operation {
                 let terrain = read_terrain(&source, 129).map_err(|e| e.to_string())?;
                 let info = terrain.info.clone();
                 let preview = RenderMesh {
+                    vertex_alpha: None,
                     info: ModelInfo {
                         format: "CryEngine Heightmap.dat".into(),
                         version: 1,
@@ -2275,6 +2276,7 @@ enum Message {
     LevelCameraKey(window::Id, char, bool),
     LevelCameraWindowFocus(window::Id, bool),
     LevelCameraTick,
+    LevelAnimationTick,
     LevelGpuStreamTick,
     ViewerGpuStreamTick,
     ViewerSearchChanged(String),
@@ -8122,6 +8124,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ViewerGpuStreamTick => {
             // Redraw while pending CDF materials are uploaded incrementally.
         }
+        Message::LevelAnimationTick => {}
         Message::LevelCameraTick => {
             if !state.level_window_focused
                 || state
@@ -14857,6 +14860,9 @@ impl Desktop {
             && !self.state.level_keys.is_empty()
         {
             iced::time::every(Duration::from_millis(16)).map(|_| Message::LevelCameraTick)
+        } else if self.level_id.is_some() && self.state.level_window_focused {
+            // Authored scrolling and eased exposure only advance when a frame draws.
+            iced::time::every(Duration::from_millis(33)).map(|_| Message::LevelAnimationTick)
         } else {
             Subscription::none()
         };
@@ -15526,6 +15532,13 @@ mod project_edit_tests {
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
+            detail_map: None,
+            blend_layer: None,
+            blend_mask: None,
+            detail_tile: None,
+            layer_params: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&pixels)),
             normal: None,
@@ -15586,6 +15599,13 @@ mod project_edit_tests {
             distance_clouds: None,
             uv_transform: None,
             material_tint: None,
+            material_specular: None,
+            waterfall: None,
+            detail_map: None,
+            blend_layer: None,
+            blend_mask: None,
+            detail_tile: None,
+            layer_params: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
@@ -15599,6 +15619,7 @@ mod project_edit_tests {
             opacity: None,
         };
         let model = Arc::new(RenderMesh {
+            vertex_alpha: None,
             info: evolve_core::ModelInfo {
                 format: "test".into(),
                 version: 0,
@@ -15766,6 +15787,7 @@ mod project_edit_tests {
         let mut state = State {
             inventory: Some(scan_directory(dir.path()).unwrap()),
             model: Some(Arc::new(RenderMesh {
+                vertex_alpha: None,
                 info: evolve_core::ModelInfo {
                     format: "test".into(),
                     version: 7,

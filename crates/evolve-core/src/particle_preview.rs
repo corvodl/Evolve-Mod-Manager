@@ -30,6 +30,32 @@ pub struct ParticleEmitter {
     pub continuous: bool,
     pub enabled: bool,
     pub gravity_scale: f32,
+    /// Size at birth as a fraction of Size, from its ParticleAge curve.
+    #[serde(default)]
+    pub size_birth: f32,
+    /// Cone half angle around the emitter axis, in degrees.
+    #[serde(default)]
+    pub spread: f32,
+    #[serde(default)]
+    pub random_offset: [f32; 3],
+    /// TilesX, TilesY, AnimFramerate.
+    #[serde(default)]
+    pub tiling: [f32; 3],
+    #[serde(default)]
+    pub diffuse_lighting: f32,
+    #[serde(default)]
+    pub emissive_lighting: f32,
+    #[serde(default)]
+    pub additive: bool,
+    /// Scaling ScaleX and ScaleY.
+    #[serde(default)]
+    pub scale: [f32; 2],
+    /// OrientToVelocity or a camera-facing axis: stretched along its motion.
+    #[serde(default)]
+    pub oriented: bool,
+    /// Alpha over life: rise start, rise end, fall start, fall end.
+    #[serde(default)]
+    pub fade: [f32; 4],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -118,7 +144,48 @@ fn defaults(library: &str, effect: String) -> ParticleEmitter {
         continuous: false,
         enabled: true,
         gravity_scale: 0.0,
+        size_birth: 1.0,
+        spread: 0.0,
+        random_offset: [0.0; 3],
+        tiling: [1.0, 1.0, 0.0],
+        diffuse_lighting: 1.0,
+        emissive_lighting: 0.0,
+        additive: false,
+        scale: [1.0, 1.0],
+        oriented: false,
+        fade: [0.0, 0.16, 0.6, 1.0],
     }
+}
+/// The number after `name=` in a parameter's comma separated text.
+fn named_value(text: &str, name: &str) -> Option<f32> {
+    let key = format!("{name}=");
+    text.split([',', '(', ';', ')'])
+        .find_map(|piece| piece.trim().strip_prefix(key.as_str())?.parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+}
+/// The rise and fall of a parameter's ParticleAge curve, whose keys omit t or v
+/// when zero. Shapes between are simplified to that one rise and fall.
+fn age_curve_fade(text: &str) -> Option<[f32; 4]> {
+    let (_, curve) = text.split_once("ParticleAge=(")?;
+    let curve = curve.split(')').next()?;
+    let keys = curve
+        .split(';')
+        .map(|key| {
+            (
+                named_value(key, "t").unwrap_or(0.0),
+                named_value(key, "v").unwrap_or(0.0),
+            )
+        })
+        .collect::<Vec<_>>();
+    let first = keys.iter().position(|key| key.1 >= 0.5)?;
+    let last = keys.iter().rposition(|key| key.1 >= 0.5)?;
+    let rise_start = first.checked_sub(1).map_or(keys[first].0, |at| keys[at].0);
+    let fall_end = keys.get(last + 1).map_or(1.0, |key| key.0);
+    Some([rise_start, keys[first].0, keys[last].0, fall_end])
+}
+fn scaling_axis(text: &str, name: &str) -> Option<f32> {
+    let (_, rest) = text.split_once(&format!("{name}=("))?;
+    rest.split([',', ')']).next()?.trim().parse::<f32>().ok()
 }
 fn source_parameters(tag: &BytesStart<'_>, emitter: &mut ParticleEmitter) {
     if let Some(value) = attr(tag, b"Enabled") {
@@ -138,6 +205,61 @@ fn source_parameters(tag: &BytesStart<'_>, emitter: &mut ParticleEmitter) {
     emitter.color = source_color(attr(tag, b"Color"));
     emitter.texture = attr(tag, b"Texture").filter(|s| !s.is_empty());
     emitter.material = attr(tag, b"Material").filter(|s| !s.is_empty());
+    if let Some(curve) = attr(tag, b"Size").as_deref().and_then(|size| {
+        let (_, curve) = size.split_once("ParticleAge=")?;
+        named_value(curve, "v")
+    }) {
+        emitter.size_birth = curve.clamp(0.0, 16.0);
+    }
+    emitter.spread = source_scalar(attr(tag, b"FocusAngle"), emitter.spread, 180.0).abs();
+    if let Some(offset) = attr(tag, b"RandomOffset") {
+        emitter.random_offset =
+            ["x", "y", "z"].map(|axis| named_value(&offset, axis).unwrap_or(0.0).abs().min(1000.0));
+    }
+    if let Some(tiling) = attr(tag, b"TextureTiling") {
+        emitter.tiling = [
+            named_value(&tiling, "TilesX")
+                .unwrap_or(1.0)
+                .clamp(1.0, 64.0),
+            named_value(&tiling, "TilesY")
+                .unwrap_or(1.0)
+                .clamp(1.0, 64.0),
+            named_value(&tiling, "AnimFramerate")
+                .unwrap_or(0.0)
+                .clamp(0.0, 240.0),
+        ];
+    }
+    if let Some(curve) = attr(tag, b"Alpha").as_deref().and_then(age_curve_fade) {
+        emitter.fade = curve;
+    }
+    if let Some(scaling) = attr(tag, b"Scaling") {
+        emitter.scale = [
+            scaling_axis(&scaling, "ScaleX")
+                .unwrap_or(1.0)
+                .clamp(0.0, 100.0),
+            scaling_axis(&scaling, "ScaleY")
+                .unwrap_or(1.0)
+                .clamp(0.0, 100.0),
+        ];
+    }
+    if attr(tag, b"OrientToVelocity").is_some_and(|value| value.eq_ignore_ascii_case("true")) {
+        emitter.oriented = true;
+    }
+    if let Some(blend) = attr(tag, b"BlendType") {
+        emitter.additive = blend.eq_ignore_ascii_case("Additive");
+    }
+    emitter.diffuse_lighting = source_scalar(
+        attr(tag, b"DiffuseLighting"),
+        emitter.diffuse_lighting,
+        100.0,
+    )
+    .max(0.0);
+    emitter.emissive_lighting = source_scalar(
+        attr(tag, b"EmissiveLighting"),
+        emitter.emissive_lighting,
+        100.0,
+    )
+    .max(0.0);
 }
 
 /// Decode original CryXmlB (or safe plain XML) into source-authored emitter

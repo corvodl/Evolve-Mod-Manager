@@ -276,6 +276,7 @@ pub fn combine_source_meshes(
     };
     Ok((
         RenderMesh {
+            vertex_alpha: None,
             info,
             positions,
             indices,
@@ -1035,6 +1036,7 @@ mod tests {
 
     fn part(count: usize, uv: bool) -> RenderMesh {
         RenderMesh {
+            vertex_alpha: None,
             info: ModelInfo {
                 format: "test".into(),
                 version: 7,

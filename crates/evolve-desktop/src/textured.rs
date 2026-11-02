@@ -105,6 +105,17 @@ pub struct Surface {
     pub uv_transform: Option<[f32; 4]>,
     /// World meshes only: authored Diffuse tint, then ambient share.
     pub material_tint: Option<[f32; 4]>,
+    /// World meshes only: authored Specular color.
+    pub material_specular: Option<[f32; 3]>,
+    /// World meshes only: Waterfall shader params.
+    pub waterfall: Option<[f32; 11]>,
+    /// World meshes only: Illum Detail map, then its tiling.
+    pub detail_map: Option<Arc<image::RgbaImage>>,
+    /// World meshes only: BLENDLAYER second diffuse and blend mask.
+    pub blend_layer: Option<Arc<image::RgbaImage>>,
+    pub blend_mask: Option<Arc<image::RgbaImage>>,
+    pub detail_tile: Option<[f32; 2]>,
+    pub layer_params: Option<[f32; 7]>,
     /// Original per-leaf AlphaTest threshold (normalized). Default preview 0.5.
     pub alpha_cutoff: f32,
     pub diffuse: Option<Arc<image::RgbaImage>>,
@@ -620,7 +631,8 @@ impl Pipeline {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
             .create_view(&wgpu::TextureViewDescriptor::default())
@@ -1587,6 +1599,20 @@ impl Pipeline {
                 [0.18, 1.0, 1.0, 0.0],
             ),
         }
+        let aspect = size.0 as f32 / size.1.max(1) as f32;
+        self.hdr.set_sun_shafts(
+            queue,
+            primitive.world.as_ref().map_or([0.0; 4], |world| {
+                world.sun_shafts(
+                    primitive.camera,
+                    primitive.yaw,
+                    primitive.pitch,
+                    aspect,
+                    primitive.zoom,
+                    hour,
+                )
+            }),
+        );
         self.world_renderer.prepare(
             device,
             queue,
@@ -1870,6 +1896,8 @@ impl Pipeline {
         self.world_renderer.draw_spotlight_beams(&mut pass);
         self.world_renderer.draw_light_points(&mut pass);
         drop(pass);
+        self.world_renderer
+            .draw_water(encoder, self.hdr.scene(), &self.depth, Some(clip));
         // Apply bloom and ACES only after all opaque, transparent, sky and
         // depth-tested light-source contributions exist in linear HDR.
         self.hdr.composite(encoder, target, clip);

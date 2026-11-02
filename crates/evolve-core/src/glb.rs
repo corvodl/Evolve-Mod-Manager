@@ -403,6 +403,7 @@ mod tests {
     use crate::model::ModelInfo;
     fn mesh() -> RenderMesh {
         RenderMesh {
+            vertex_alpha: None,
             info: ModelInfo {
                 format: "test".into(),
                 version: 7,

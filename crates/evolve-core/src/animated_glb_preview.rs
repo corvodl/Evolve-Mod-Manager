@@ -610,6 +610,7 @@ impl RiggedGlbPreview {
             });
         }
         Ok(RenderMesh {
+            vertex_alpha: None,
             info: ModelInfo {
                 format: "Converted GLB own-rig animation preview".into(),
                 version: 2,

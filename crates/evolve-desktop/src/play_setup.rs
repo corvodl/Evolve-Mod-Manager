@@ -276,6 +276,8 @@ fn configure_helper(
     swap: &Path,
     test_client: bool,
 ) -> Result<(), String> {
+    // Tests must not depend on what is running on the machine.
+    #[cfg(not(test))]
     crate::launcher_bridge::games_closed()?;
     let stage = fs::canonicalize(stage).map_err(|e| format!("Signing stage: {e}"))?;
     let swap = fs::canonicalize(swap).map_err(|e| format!("Swap helper folder: {e}"))?;

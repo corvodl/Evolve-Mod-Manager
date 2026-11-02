@@ -903,17 +903,68 @@ fn open_selected(
     let mut sources = Vec::<(String, Vec<u8>)>::new();
     // Keep both memory and parser work bounded. A map with more than this
     // requires an incremental scene loader rather than silent unbounded reads.
-    for path in chosen.layers.iter().take(128) {
+    // Maps author alternative lighting setups under Weather_Condition, and the
+    // game loads one. Loading them all stacks their skies, lights and probes.
+    let weather_folder = |path: &PathBuf| {
+        let lower = path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        lower.split_once("/weather_condition/").map(|(_, rest)| {
+            let folder = rest.split('/').next().unwrap_or_default();
+            folder.strip_suffix(".lyr").unwrap_or(folder).to_owned()
+        })
+    };
+    let is_default_weather = |folder: &str| folder.ends_with("default") || folder == "lighting";
+    let has_default_weather = chosen
+        .layers
+        .iter()
+        .any(|path| weather_folder(path).is_some_and(|folder| is_default_weather(&folder)));
+    let active_layers = chosen
+        .layers
+        .iter()
+        .filter(|path| {
+            !has_default_weather
+                || weather_folder(path).is_none_or(|folder| is_default_weather(&folder))
+        })
+        .collect::<Vec<_>>();
+    for path in active_layers.iter().copied().take(128) {
         let verified = verified_source(&root, path, 48 * 1024 * 1024)?;
         let bytes = fs::read(&verified).map_err(|e| e.to_string())?;
         sources.push((path.to_string_lossy().into_owned(), bytes));
     }
-    if chosen.layers.len() > 128 {
+    if active_layers.len() > 128 {
         diagnostics.push(format!(
             "Only 128 of {} layer sources were read.",
-            chosen.layers.len()
+            active_layers.len()
         ));
     }
+    let water = match crate::level_atmosphere::authored_water(&archive, &sources) {
+        Ok(water) => {
+            diagnostics.push(format!("Original water volumes: {}.", water.len()));
+            water
+        }
+        Err(error) => {
+            diagnostics.push(format!("Original water volumes unavailable: {error}"));
+            Vec::new()
+        }
+    };
+    let celestial_bodies = match authored_environment(&archive, chosen, &inventory)
+        .ok()
+        .flatten()
+        .and_then(|file| fs::read(file).ok())
+        .map(|bytes| crate::level_atmosphere::authored_celestial_bodies(&archive, &bytes))
+    {
+        Some(Ok(bodies)) => {
+            diagnostics.push(format!("Original celestial bodies: {}.", bodies.len()));
+            bodies
+        }
+        Some(Err(error)) => {
+            diagnostics.push(format!("Original celestial bodies unavailable: {error}"));
+            Vec::new()
+        }
+        None => Vec::new(),
+    };
     let (ambient_cube, probe_cube) =
         match crate::level_atmosphere::authored_ambient_cube(&archive, &sources) {
             Ok(Some((ambient, cube))) => {
@@ -929,6 +980,16 @@ fn open_selected(
                 (None, None)
             }
         };
+    let local_probes = match crate::level_atmosphere::authored_local_probes(&archive, &sources) {
+        Ok(probes) => {
+            diagnostics.push(format!("Original local probes: {}", probes.len()));
+            probes
+        }
+        Err(error) => {
+            diagnostics.push(format!("Original local probes unavailable: {error}"));
+            Vec::new()
+        }
+    };
     let mut source = chosen.layers.first().map(|p| root.join(p));
     let mut scene = None;
     if !sources.is_empty() {
@@ -1054,6 +1115,24 @@ fn open_selected(
             &particle_placements,
         ),
     );
+    let particles =
+        match crate::level_atmosphere::authored_particles(&archive, &particle_placements) {
+            Ok(batches) => {
+                diagnostics.push(format!(
+                    "Original looping particles: {} across {} sprites",
+                    batches
+                        .iter()
+                        .map(|batch| batch.instances.len())
+                        .sum::<usize>(),
+                    batches.len()
+                ));
+                batches
+            }
+            Err(error) => {
+                diagnostics.push(format!("Original particles unavailable: {error}"));
+                Vec::new()
+            }
+        };
     let (local_lights, light_warnings) = crate::level_atmosphere::lights(&sources, scene.as_ref());
     diagnostics.push(format!("Original map light entities with verified authored color, radius and strength: {}. GPU viewport uses nearby point/spot preview lighting; authored shadow maps and projector textures require separate verification.",local_lights.len()));
     diagnostics.extend(light_warnings.into_iter().take(5));
@@ -1151,6 +1230,7 @@ fn open_selected(
                 let info = data.info.clone();
                 Some((
                     RenderMesh {
+                        vertex_alpha: None,
                         info: ModelInfo {
                             format: "CryEngine Heightmap.dat".into(),
                             version: 1,
@@ -1265,6 +1345,11 @@ fn open_selected(
         world.authored_sun = authored_sun;
         world.ambient_cube = ambient_cube;
         world.probe_cube = probe_cube;
+        world.rain_darkening = crate::level_atmosphere::authored_rain_darkening(&sources);
+        world.local_probes = std::sync::Arc::new(local_probes);
+        world.particles = std::sync::Arc::new(particles);
+        world.water = std::sync::Arc::new(water);
+        world.celestial_bodies = std::sync::Arc::new(celestial_bodies);
         world.color_chart = color_chart;
         world.local_lights = std::sync::Arc::new(local_lights);
         world.time_of_day = original_time.map(std::sync::Arc::new);

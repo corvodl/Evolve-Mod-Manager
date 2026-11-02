@@ -8,6 +8,9 @@ pub(super) const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16
 const BLOOM_DIVISOR: u32 = 4;
 
 struct Frames {
+    _shafts: wgpu::Texture,
+    shafts: wgpu::TextureView,
+    shaft_group: wgpu::BindGroup,
     _luminance: wgpu::Texture,
     luminance: wgpu::TextureView,
     size: (u32, u32),
@@ -35,8 +38,11 @@ pub(super) struct ViewportHdr {
     luminance: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     composite_uniform: wgpu::Buffer,
+    shaft_uniform: wgpu::Buffer,
+    shafts: wgpu::RenderPipeline,
     chart_view: wgpu::TextureView,
     chart_identity: usize,
+    last_adaptation: std::sync::Mutex<Option<std::time::Instant>>,
     frames: Frames,
 }
 fn surface(
@@ -55,7 +61,9 @@ fn surface(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: SCENE_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -97,6 +105,7 @@ fn bind_composite(
     uniform: &wgpu::Buffer,
     chart: &wgpu::TextureView,
     luminance: &wgpu::TextureView,
+    shafts: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("HDR scene and bloom into Iced window"),
@@ -126,10 +135,18 @@ fn bind_composite(
                 binding: 5,
                 resource: wgpu::BindingResource::TextureView(luminance),
             },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(shafts),
+            },
         ],
     })
 }
 /// A 256x16 color chart. With no map chart, an identity table leaves color as is.
+// Exposure eases this fast per second. The game's own rate is a runtime
+// constant that is not in its shaders, so this value is calibrated.
+const ADAPTATION_RATE: f64 = 1.5;
+
 fn upload_color_chart(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -189,6 +206,7 @@ fn build_frames(
     composite_layout: &wgpu::BindGroupLayout,
     composite_uniform: &wgpu::Buffer,
     chart: &wgpu::TextureView,
+    shaft_uniform: &wgpu::Buffer,
 ) -> Frames {
     let size = (size.0.max(1), size.1.max(1));
     let small = (
@@ -200,6 +218,8 @@ fn build_frames(
     let (_horizontal, horizontal) = surface(device, small, "Bloom horizontal Gaussian pass");
     let (_blurred, blurred) = surface(device, small, "Bloom vertical Gaussian pass");
     let (_luminance, luminance) = surface(device, (1, 1), "Scene mean log luminance");
+    let (_shafts, shafts) = surface(device, small, "Sun shafts");
+    let shaft_group = bind_filter(device, filter_layout, &scene, sampler, shaft_uniform);
     let upload = |values: [f32; 4], label| {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(label),
@@ -239,8 +259,12 @@ fn build_frames(
         composite_uniform,
         chart,
         &luminance,
+        &shafts,
     );
     Frames {
+        _shafts,
+        shafts,
+        shaft_group,
         _luminance,
         luminance,
         size,
@@ -312,6 +336,7 @@ impl ViewportHdr {
                 sampling(2),
                 uniform(3),
                 sampled(4),
+                sampled(6),
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -387,11 +412,44 @@ impl ViewportHdr {
             "fs_blur",
             SCENE_FORMAT,
         );
-        let luminance = pipeline(
-            "Scene mean log luminance",
+        // Blending toward each frame's reading is how exposure adapts over time.
+        let luminance = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Scene mean log luminance"),
+            layout: Some(&filter_pipeline),
+            vertex: wgpu::VertexState {
+                module: &bloom_source,
+                entry_point: Some("vs_fullscreen"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &bloom_source,
+                entry_point: Some("fs_luminance"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SCENE_FORMAT,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Constant,
+                            dst_factor: wgpu::BlendFactor::OneMinusConstant,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::REPLACE,
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let shafts = pipeline(
+            "Sun shafts",
             &filter_pipeline,
             &bloom_source,
-            "fs_luminance",
+            "fs_shafts",
             SCENE_FORMAT,
         );
         let composite = pipeline(
@@ -408,10 +466,16 @@ impl ViewportHdr {
                 [0.20_f32, 1.0, 0.0, 0.0],
                 [1.0, 1.0, 1.0, 4.0],
                 [0.18, 1.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0],
             ]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let chart_view = upload_color_chart(device, queue, None);
+        let shaft_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Sun shaft screen position"),
+            contents: bytemuck::cast_slice(&[0.0_f32; 4]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let frames = build_frames(
             device,
             (1, 1),
@@ -420,6 +484,7 @@ impl ViewportHdr {
             &composite_layout,
             &composite_uniform,
             &chart_view,
+            &shaft_uniform,
         );
         Self {
             sampler,
@@ -430,8 +495,11 @@ impl ViewportHdr {
             luminance,
             composite,
             composite_uniform,
+            shaft_uniform,
+            shafts,
             chart_view,
             chart_identity: 0,
+            last_adaptation: std::sync::Mutex::new(None),
             frames,
         }
     }
@@ -447,6 +515,7 @@ impl ViewportHdr {
             &self.composite_layout,
             &self.composite_uniform,
             &self.chart_view,
+            &self.shaft_uniform,
         );
     }
     /// Apply a map's authored film curve and color chart. Neutral with no map.
@@ -474,6 +543,23 @@ impl ViewportHdr {
             &self.composite_layout,
             &self.composite_uniform,
             &self.chart_view,
+            &self.shaft_uniform,
+        );
+    }
+    /// The sun's screen position and authored shaft strength; zero turns off.
+    /// Snap exposure to the next frame instead of easing, as on a new view.
+    #[cfg(test)]
+    pub(super) fn reset_adaptation(&self) {
+        if let Ok(mut last) = self.last_adaptation.lock() {
+            *last = None;
+        }
+    }
+    pub(super) fn set_sun_shafts(&self, queue: &wgpu::Queue, shafts: [f32; 4]) {
+        queue.write_buffer(&self.shaft_uniform, 0, bytemuck::cast_slice(&shafts));
+        queue.write_buffer(
+            &self.composite_uniform,
+            48,
+            bytemuck::cast_slice(&[shafts[2], 0.0, 0.0, 0.0]),
         );
     }
     pub(super) fn set_source_unlit(&self, queue: &wgpu::Queue, unlit: bool) {
@@ -494,14 +580,47 @@ impl ViewportHdr {
         if clip.width == 0 || clip.height == 0 {
             return;
         }
+        let blend = self.last_adaptation.lock().map_or(1.0, |mut last| {
+            let now = std::time::Instant::now();
+            let seconds = last.replace(now).map(|before| (now - before).as_secs_f64());
+            seconds
+                .filter(|seconds| *seconds < 2.0)
+                .map_or(1.0, |seconds| 1.0 - (-seconds * ADAPTATION_RATE).exp())
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Scene mean log luminance"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.frames.luminance,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.luminance);
+            pass.set_bind_group(0, &self.frames.extract_group, &[]);
+            pass.set_blend_constant(wgpu::Color {
+                r: blend,
+                g: blend,
+                b: blend,
+                a: blend,
+            });
+            pass.draw(0..3, 0..1);
+        }
         // Bloom texture is a fraction of the full viewport, never a
         // high-resolution duplicate; all passes run without depth writes.
         for (label, view, pipeline, group) in [
             (
-                "Scene mean log luminance",
-                &self.frames.luminance,
-                &self.luminance,
-                &self.frames.extract_group,
+                "Sun shafts",
+                &self.frames.shafts,
+                &self.shafts,
+                &self.frames.shaft_group,
             ),
             (
                 "Bloom extract",
