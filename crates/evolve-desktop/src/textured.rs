@@ -251,8 +251,6 @@ pub struct Primitive {
     emissive_time: f32,
     world: Option<Arc<super::world_instances::World>>,
     level_hour: f32,
-    /// Independent Level Editor HDR exposure. Never alters the Model Viewer.
-    level_preview_exposure: f32,
     level_full_textures: bool,
     level_terrain_unlit: bool,
     viewer_full_textures: bool,
@@ -427,11 +425,6 @@ impl shader::Program<super::Message> for Scene {
             emissive_time: self.emissive_time,
             world: self.world.clone(),
             level_hour: self.level_hour,
-            level_preview_exposure: if self.level_camera.is_some() {
-                self.light_strength
-            } else {
-                1.0
-            },
             level_full_textures: self.level_full_textures,
             level_terrain_unlit: self.level_terrain_unlit,
             viewer_full_textures: self.viewer_full_textures,
@@ -1676,14 +1669,6 @@ impl Pipeline {
         self.hdr.resize(device, size);
         self.hdr
             .set_source_unlit(queue, primitive.level_terrain_unlit);
-        self.hdr.set_level_preview_exposure(
-            queue,
-            if primitive.world.is_some() {
-                primitive.level_preview_exposure
-            } else {
-                1.0
-            },
-        );
         let hour = primitive.level_hour;
         let grade = primitive.world.as_ref().map(|world| {
             (
