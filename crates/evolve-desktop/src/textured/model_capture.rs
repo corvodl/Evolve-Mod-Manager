@@ -56,8 +56,13 @@ fn check_capture_model_identity(label: &str, cdf: &str) -> Result<(), String> {
         return Ok(());
     };
     let path = cdf.replace('\\', "/").to_ascii_lowercase();
-    let components = path.split('/').filter(|part| !part.is_empty()).collect::<Vec<_>>();
-    let Some(index) = components.windows(2).position(|pair| pair == ["characters", "monsters"])
+    let components = path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let Some(index) = components
+        .windows(2)
+        .position(|pair| pair == ["characters", "monsters"])
     else {
         return Err(format!(
             "Capture {label}: expected a {owner} monster CDF but source was {cdf}"
@@ -72,7 +77,9 @@ fn check_capture_model_identity(label: &str, cdf: &str) -> Result<(), String> {
         Some(stage) => stem == format!("{owner}{stage}"),
         None => {
             stem == owner
-                || [1, 2, 3].iter().any(|stage| stem == format!("{owner}{stage}"))
+                || [1, 2, 3]
+                    .iter()
+                    .any(|stage| stem == format!("{owner}{stage}"))
         }
     };
     if actual_owner != owner || !stem_matches || components.len() != index + 4 {
@@ -468,26 +475,58 @@ fn real_character_clips_bind_and_keep_the_mesh_whole() {
 #[test]
 fn named_kraken_and_behemoth_captures_require_their_real_source_cdfs() {
     for (label, cdf) in [
-        ("kraken1_idle_0", "characters/monsters/Grounder/grounder1.cdf"),
-        ("kraken2_idle_0.66", "characters/monsters/grounder/grounder2.cdf"),
-        ("kraken3_idle", "characters\\monsters\\Grounder\\Grounder3.CDF"),
+        (
+            "kraken1_idle_0",
+            "characters/monsters/Grounder/grounder1.cdf",
+        ),
+        (
+            "kraken2_idle_0.66",
+            "characters/monsters/grounder/grounder2.cdf",
+        ),
+        (
+            "kraken3_idle",
+            "characters\\monsters\\Grounder\\Grounder3.CDF",
+        ),
         ("behemoth2_idle", "characters/monsters/rocky/rocky2.cdf"),
         ("goliath_run_0", "characters/monsters/goliath/goliath2.cdf"),
-        ("wraith2_idle", "characters/monsters/teleporter/teleporter2.cdf"),
+        (
+            "wraith2_idle",
+            "characters/monsters/teleporter/teleporter2.cdf",
+        ),
         ("gorgon2_web_0.33", "characters/monsters/lurker/lurker2.cdf"),
     ] {
-        assert!(check_capture_model_identity(label, cdf).is_ok(), "{label}: {cdf}");
+        assert!(
+            check_capture_model_identity(label, cdf).is_ok(),
+            "{label}: {cdf}"
+        );
     }
     for (label, cdf) in [
         ("kraken1_idle_0", "characters/monsters/rocky/rocky1.cdf"),
-        ("behemoth2_idle", "characters/monsters/grounder/grounder2.cdf"),
+        (
+            "behemoth2_idle",
+            "characters/monsters/grounder/grounder2.cdf",
+        ),
         ("kraken1_idle", "characters/monsters/grounder/grounder2.cdf"),
-        ("kraken1_idle", "characters/monsters/krakenelder/krakenelder1.cdf"),
-        ("behemoth2_idle", "characters/monsters/rockybobcicle/rockybobcicle2.cdf"),
-        ("kraken1_idle", "characters/monsters/grounder/../rocky/rocky1.cdf"),
-        ("kraken1_idle", "characters/monsters/grounder/grounder1.skin"),
+        (
+            "kraken1_idle",
+            "characters/monsters/krakenelder/krakenelder1.cdf",
+        ),
+        (
+            "behemoth2_idle",
+            "characters/monsters/rockybobcicle/rockybobcicle2.cdf",
+        ),
+        (
+            "kraken1_idle",
+            "characters/monsters/grounder/../rocky/rocky1.cdf",
+        ),
+        (
+            "kraken1_idle",
+            "characters/monsters/grounder/grounder1.skin",
+        ),
     ] {
-        assert!(check_capture_model_identity(label, cdf).is_err(), "{label}: {cdf}");
+        assert!(
+            check_capture_model_identity(label, cdf).is_err(),
+            "{label}: {cdf}"
+        );
     }
 }
-
