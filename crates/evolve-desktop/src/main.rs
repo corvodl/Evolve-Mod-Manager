@@ -462,6 +462,7 @@ struct State {
     full_armor_glow: bool,
     /// Viewport-only gain over the original source material emission.
     emissive_strength: f32,
+    armor_level: f32,
     damage_blend_percent: u8,
     damage_blend_enabled: bool,
     /// CDF source-part completion tracked by the loading worker.
@@ -2247,6 +2248,7 @@ enum Message {
     ViewerKalaTubingState(KalaTubingState),
     ViewerToggleMonsterGlow,
     ViewerEmissiveStrengthChanged(f32),
+    ViewerArmorLevelChanged(f32),
     ViewerToggleDamageBlend,
     ViewerDamageBlendChanged(u8),
     ViewerDamageBlendCommit,
@@ -3284,6 +3286,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.kala_tubing = KalaTubingState::Banshee;
     state.full_armor_glow = false;
     state.emissive_strength = 1.0;
+    state.armor_level = 1.0;
     state.damage_blend_percent = 0;
     state.damage_blend_enabled = false;
     state.viewer_load_progress = None;
@@ -7511,6 +7514,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
             return update(state, Message::ViewerDamageBlendCommit);
         }
+        Message::ViewerArmorLevelChanged(value) => {
+            if value.is_finite() {
+                state.armor_level = value.clamp(0.0, 1.0);
+            }
+        }
         Message::ViewerEmissiveStrengthChanged(value) => {
             if value.is_finite()
                 && state.model.is_some()
@@ -7547,6 +7555,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 // reported blue/red brightness. Reset the shared slider to
                 // neutral when switching states instead of carrying 0.3/4x.
                 state.emissive_strength = 1.0;
+                state.armor_level = 1.0;
                 state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
                 return update(state, Message::ViewerPreviewStaticCdf);
             }
@@ -8387,6 +8396,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 // Source-verified Kala tubing receives its own blue/red
                 // viewport calibration, so the slider starts neutral.
                 state.emissive_strength = 1.0;
+                state.armor_level = 1.0;
                 // Armor glow is the normal monster preview state. Missing
                 // original glow DDS must not block regular diffuse rendering.
                 let virtual_source = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
@@ -14059,7 +14069,7 @@ fn view(state: &State) -> Element<'_, Message> {
                             specular:state.specular_map.clone(),gloss:state.gloss_map.clone(),
                             yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
                             light_strength:state.light_strength,
-                            emissive_gain:state.emissive_strength,
+                            emissive_gain:state.emissive_strength,armor_level:1.0,
                             emissive_time:state.decal_time,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                             level_camera: None,
@@ -14298,6 +14308,7 @@ fn initial_state() -> State {
         viewer_full_textures: true,
         light_strength: 1.6,
         emissive_strength: 1.0,
+        armor_level: 1.0,
         viewer_explorer_visible: true,
         ..State::default()
     };
@@ -15533,19 +15544,25 @@ mod project_edit_tests {
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_emissive: None,
+            emission_on_diffuse: false,
+            emission_alpha_mask: false,
+            material_shininess: None,
             waterfall: None,
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            blend_normal: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
             alpha_cutoff: 0.5,
             diffuse: Some(Arc::clone(&pixels)),
             normal: None,
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
-            kala_emission_state: None,
             emissive_uv: None,
             specular: None,
             gloss: None,
@@ -15600,19 +15617,25 @@ mod project_edit_tests {
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_emissive: None,
+            emission_on_diffuse: false,
+            emission_alpha_mask: false,
+            material_shininess: None,
             waterfall: None,
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            blend_normal: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
             alpha_cutoff: 0.5,
             diffuse: None,
             normal: None,
             emissive: Some(Arc::clone(&pixels)),
             armor_emissive: None,
             emission_strength: 3.0,
-            kala_emission_state: None,
             emissive_uv: None,
             specular: None,
             gloss: None,
@@ -15638,6 +15661,7 @@ mod project_edit_tests {
             model: Some(model),
             cdf_surfaces: Some(Arc::new(vec![surface.clone()])),
             emissive_strength: 1.0,
+            armor_level: 1.0,
             ..State::default()
         };
         let before = state.cdf_surfaces.clone().unwrap();

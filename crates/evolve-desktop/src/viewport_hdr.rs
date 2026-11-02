@@ -6,7 +6,23 @@ use wgpu::util::DeviceExt;
 
 pub(super) const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const BLOOM_DIVISOR: u32 = 4;
+/// Bloom blends in as Bloom amount times this, from the renderer's HDRBloomColor.
+const BLOOM_SCALE: f32 = 0.125;
 
+/// One size of the bloom chain: a downscale blurred on each axis.
+struct BloomLevel {
+    _down: wgpu::Texture,
+    down: wgpu::TextureView,
+    _horizontal: wgpu::Texture,
+    horizontal: wgpu::TextureView,
+    _blurred: wgpu::Texture,
+    blurred: wgpu::TextureView,
+    down_group: wgpu::BindGroup,
+    horizontal_group: wgpu::BindGroup,
+    vertical_group: wgpu::BindGroup,
+    combine_group: wgpu::BindGroup,
+    _uniforms: [wgpu::Buffer; 4],
+}
 struct Frames {
     _shafts: wgpu::Texture,
     shafts: wgpu::TextureView,
@@ -16,25 +32,21 @@ struct Frames {
     size: (u32, u32),
     _scene: wgpu::Texture,
     scene: wgpu::TextureView,
-    _bright: wgpu::Texture,
-    bright: wgpu::TextureView,
-    _horizontal: wgpu::Texture,
-    horizontal: wgpu::TextureView,
-    _blurred: wgpu::Texture,
-    blurred: wgpu::TextureView,
+    levels: Vec<BloomLevel>,
+    _bloom: wgpu::Texture,
+    bloom: wgpu::TextureView,
     extract_group: wgpu::BindGroup,
-    blur_horizontal_group: wgpu::BindGroup,
-    blur_vertical_group: wgpu::BindGroup,
     composite_group: wgpu::BindGroup,
-    _horizontal_uniform: wgpu::Buffer,
-    _vertical_uniform: wgpu::Buffer,
+    _extract_uniform: wgpu::Buffer,
 }
 pub(super) struct ViewportHdr {
     sampler: wgpu::Sampler,
     filter_layout: wgpu::BindGroupLayout,
+    blur_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
-    extract: wgpu::RenderPipeline,
+    downscale: wgpu::RenderPipeline,
     blur: wgpu::RenderPipeline,
+    combine: wgpu::RenderPipeline,
     luminance: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     composite_uniform: wgpu::Buffer,
@@ -91,6 +103,37 @@ fn bind_filter(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: uniform.as_entire_binding(),
+            },
+        ],
+    })
+}
+fn bind_blur(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    uniform: &wgpu::Buffer,
+    luminance: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Bloom blur input"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(luminance),
             },
         ],
     })
@@ -203,6 +246,7 @@ fn build_frames(
     size: (u32, u32),
     sampler: &wgpu::Sampler,
     filter_layout: &wgpu::BindGroupLayout,
+    blur_layout: &wgpu::BindGroupLayout,
     composite_layout: &wgpu::BindGroupLayout,
     composite_uniform: &wgpu::Buffer,
     chart: &wgpu::TextureView,
@@ -214,9 +258,6 @@ fn build_frames(
         (size.1 / BLOOM_DIVISOR).max(1),
     );
     let (_scene, scene) = surface(device, size, "HDR full resolution linear scene");
-    let (_bright, bright) = surface(device, small, "Bloom quarter-resolution bright pass");
-    let (_horizontal, horizontal) = surface(device, small, "Bloom horizontal Gaussian pass");
-    let (_blurred, blurred) = surface(device, small, "Bloom vertical Gaussian pass");
     let (_luminance, luminance) = surface(device, (1, 1), "Scene mean log luminance");
     let (_shafts, shafts) = surface(device, small, "Sun shafts");
     let shaft_group = bind_filter(device, filter_layout, &scene, sampler, shaft_uniform);
@@ -227,34 +268,68 @@ fn build_frames(
             usage: wgpu::BufferUsages::UNIFORM,
         })
     };
-    let _horizontal_uniform = upload(
-        [1.0 / small.0 as f32, 0.0, 0.0, 0.0],
-        "Bloom horizontal texel direction",
-    );
-    let _vertical_uniform = upload(
-        [0.0, 1.0 / small.1 as f32, 0.0, 0.0],
-        "Bloom vertical texel direction",
-    );
-    let extract_group = bind_filter(device, filter_layout, &scene, sampler, &_horizontal_uniform);
-    let blur_horizontal_group = bind_filter(
-        device,
-        filter_layout,
-        &bright,
-        sampler,
-        &_horizontal_uniform,
-    );
-    let blur_vertical_group = bind_filter(
-        device,
-        filter_layout,
-        &horizontal,
-        sampler,
-        &_vertical_uniform,
-    );
+    let _extract_uniform = upload([0.0; 4], "Scene luminance input");
+    let extract_group = bind_filter(device, filter_layout, &scene, sampler, &_extract_uniform);
+    // The renderer's scaled targets: a quarter, an eighth and a sixteenth, summed
+    // and averaged. The renderer divides by three, and each counts equally.
+    let (_bloom, bloom) = surface(device, small, "Final bloom");
+    let mut levels = Vec::<BloomLevel>::new();
+    for level in 0..3u32 {
+        let extent = ((small.0 >> level).max(1), (small.1 >> level).max(1));
+        let (_down, down) = surface(device, extent, "Bloom downscale");
+        let (_horizontal, horizontal) = surface(device, extent, "Bloom horizontal Gaussian");
+        let (_blurred, blurred) = surface(device, extent, "Bloom vertical Gaussian");
+        let texel = [1.0 / extent.0 as f32, 1.0 / extent.1 as f32];
+        let down_uniform = upload(
+            [texel[0] * 0.5, texel[1] * 0.5, 0.0, 0.0],
+            "Bloom downscale",
+        );
+        let horizontal_uniform = upload([texel[0], 0.0, 0.0, 0.0], "Bloom horizontal texel");
+        let vertical_uniform = upload([0.0, texel[1], 0.0, 0.0], "Bloom vertical texel");
+        let combine_uniform = upload([0.0, 0.0, 1.0 / 3.0, 0.0], "Bloom level share");
+        let source = levels.last().map_or(&scene, |previous| &previous.blurred);
+        let down_group = bind_filter(device, filter_layout, source, sampler, &down_uniform);
+        let horizontal_group = bind_blur(
+            device,
+            blur_layout,
+            &down,
+            sampler,
+            &horizontal_uniform,
+            &luminance,
+        );
+        let vertical_group = bind_blur(
+            device,
+            blur_layout,
+            &horizontal,
+            sampler,
+            &vertical_uniform,
+            &luminance,
+        );
+        let combine_group = bind_filter(device, filter_layout, &blurred, sampler, &combine_uniform);
+        levels.push(BloomLevel {
+            _down,
+            down,
+            _horizontal,
+            horizontal,
+            _blurred,
+            blurred,
+            down_group,
+            horizontal_group,
+            vertical_group,
+            combine_group,
+            _uniforms: [
+                down_uniform,
+                horizontal_uniform,
+                vertical_uniform,
+                combine_uniform,
+            ],
+        });
+    }
     let composite_group = bind_composite(
         device,
         composite_layout,
         &scene,
-        &blurred,
+        &bloom,
         sampler,
         composite_uniform,
         chart,
@@ -270,18 +345,12 @@ fn build_frames(
         size,
         _scene,
         scene,
-        _bright,
-        bright,
-        _horizontal,
-        horizontal,
-        _blurred,
-        blurred,
+        levels,
+        _bloom,
+        bloom,
         extract_group,
-        blur_horizontal_group,
-        blur_vertical_group,
         composite_group,
-        _horizontal_uniform,
-        _vertical_uniform,
+        _extract_uniform,
     }
 }
 impl ViewportHdr {
@@ -328,6 +397,24 @@ impl ViewportHdr {
             label: Some("HDR bloom source/blur layout"),
             entries: &[sampled(0), sampling(1), uniform(2)],
         });
+        let blur_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("HDR bloom blur layout"),
+            entries: &[
+                sampled(0),
+                sampling(1),
+                uniform(2),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("HDR bloom composite layout"),
             entries: &[
@@ -360,6 +447,11 @@ impl ViewportHdr {
         let filter_pipeline = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Bloom filter pipeline layout"),
             bind_group_layouts: &[&filter_layout],
+            push_constant_ranges: &[],
+        });
+        let blur_pipeline = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Bloom blur pipeline layout"),
+            bind_group_layouts: &[&blur_layout],
             push_constant_ranges: &[],
         });
         let composite_pipeline = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -398,21 +490,52 @@ impl ViewportHdr {
                 cache: None,
             })
         };
-        let extract = pipeline(
-            "HDR source bright threshold",
+        let downscale = pipeline(
+            "Bloom downscale",
             &filter_pipeline,
             &bloom_source,
-            "fs_extract",
+            "fs_downscale",
             SCENE_FORMAT,
         );
         let blur = pipeline(
-            "Quarter-res Gaussian HDR bloom",
-            &filter_pipeline,
+            "Bloom 15-tap Gaussian",
+            &blur_pipeline,
             &bloom_source,
             "fs_blur",
             SCENE_FORMAT,
         );
-        // Blending toward each frame's reading is how exposure adapts over time.
+        let combine = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Bloom level sum"),
+            layout: Some(&filter_pipeline),
+            vertex: wgpu::VertexState {
+                module: &bloom_source,
+                entry_point: Some("vs_fullscreen"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &bloom_source,
+                entry_point: Some("fs_combine"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SCENE_FORMAT,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::REPLACE,
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        }); // Blending toward each frame's reading is how exposure adapts over time.
         let luminance = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Scene mean log luminance"),
             layout: Some(&filter_pipeline),
@@ -460,10 +583,9 @@ impl ViewportHdr {
             format,
         );
         let composite_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("HDR bloom strength, exposure, bypass unlit"),
-            // bloom strength=.20; manual exposure=1; bypass source color=0
+            label: Some("HDR bloom blend, exposure, bypass unlit"),
             contents: bytemuck::cast_slice(&[
-                [0.20_f32, 1.0, 0.0, 0.0],
+                [BLOOM_SCALE, 1.0, 0.0, 0.0],
                 [1.0, 1.0, 1.0, 4.0],
                 [0.18, 1.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 0.0],
@@ -481,6 +603,7 @@ impl ViewportHdr {
             (1, 1),
             &sampler,
             &filter_layout,
+            &blur_layout,
             &composite_layout,
             &composite_uniform,
             &chart_view,
@@ -489,9 +612,11 @@ impl ViewportHdr {
         Self {
             sampler,
             filter_layout,
+            blur_layout,
             composite_layout,
-            extract,
+            downscale,
             blur,
+            combine,
             luminance,
             composite,
             composite_uniform,
@@ -512,6 +637,7 @@ impl ViewportHdr {
             size,
             &self.sampler,
             &self.filter_layout,
+            &self.blur_layout,
             &self.composite_layout,
             &self.composite_uniform,
             &self.chart_view,
@@ -540,6 +666,7 @@ impl ViewportHdr {
             self.frames.size,
             &self.sampler,
             &self.filter_layout,
+            &self.blur_layout,
             &self.composite_layout,
             &self.composite_uniform,
             &self.chart_view,
@@ -562,11 +689,19 @@ impl ViewportHdr {
             bytemuck::cast_slice(&[shafts[2], 0.0, 0.0, 0.0]),
         );
     }
+    /// The map's authored Bloom amount.
+    pub(super) fn set_bloom(&self, queue: &wgpu::Queue, amount: f32) {
+        queue.write_buffer(
+            &self.composite_uniform,
+            0,
+            bytemuck::bytes_of(&(amount * BLOOM_SCALE)),
+        );
+    }
     pub(super) fn set_source_unlit(&self, queue: &wgpu::Queue, unlit: bool) {
         // Preserve the existing "Source RGB (unlit)" diagnostic: bypass bloom
         // and tonemapping, never grade source ground colors for comparisons.
-        let values = [0.20_f32, 1.0, if unlit { 1.0 } else { 0.0 }, 0.0];
-        queue.write_buffer(&self.composite_uniform, 0, bytemuck::bytes_of(&values));
+        let value: f32 = if unlit { 1.0 } else { 0.0 };
+        queue.write_buffer(&self.composite_uniform, 8, bytemuck::bytes_of(&value));
     }
     pub(super) fn scene(&self) -> &wgpu::TextureView {
         &self.frames.scene
@@ -613,34 +748,48 @@ impl ViewportHdr {
             });
             pass.draw(0..3, 0..1);
         }
-        // Bloom texture is a fraction of the full viewport, never a
+        // Bloom textures are fractions of the full viewport, never a
         // high-resolution duplicate; all passes run without depth writes.
-        for (label, view, pipeline, group) in [
-            (
-                "Sun shafts",
-                &self.frames.shafts,
-                &self.shafts,
-                &self.frames.shaft_group,
-            ),
-            (
-                "Bloom extract",
-                &self.frames.bright,
-                &self.extract,
-                &self.frames.extract_group,
-            ),
-            (
+        let mut passes = vec![(
+            "Sun shafts",
+            &self.frames.shafts,
+            &self.shafts,
+            &self.frames.shaft_group,
+            true,
+        )];
+        for level in &self.frames.levels {
+            passes.push((
+                "Bloom downscale",
+                &level.down,
+                &self.downscale,
+                &level.down_group,
+                true,
+            ));
+            passes.push((
                 "Bloom horizontal",
-                &self.frames.horizontal,
+                &level.horizontal,
                 &self.blur,
-                &self.frames.blur_horizontal_group,
-            ),
-            (
+                &level.horizontal_group,
+                true,
+            ));
+            passes.push((
                 "Bloom vertical",
-                &self.frames.blurred,
+                &level.blurred,
                 &self.blur,
-                &self.frames.blur_vertical_group,
-            ),
-        ] {
+                &level.vertical_group,
+                true,
+            ));
+        }
+        for (index, level) in self.frames.levels.iter().enumerate() {
+            passes.push((
+                "Bloom sum",
+                &self.frames.bloom,
+                &self.combine,
+                &level.combine_group,
+                index == 0,
+            ));
+        }
+        for (label, view, pipeline, group, clear) in passes {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -648,7 +797,11 @@ impl ViewportHdr {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: if clear {
+                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -693,12 +846,24 @@ impl ViewportHdr {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn bloom_blur_weights_sum_to_one() {
+        let bloom = include_str!("viewport_bloom.wgsl");
+        let start = bloom.find("array<f32,15>(").unwrap() + "array<f32,15>(".len();
+        let end = start + bloom[start..].find(')').unwrap();
+        let sum: f32 = bloom[start..end]
+            .split(',')
+            .map(|weight| weight.trim().parse::<f32>().unwrap())
+            .sum();
+        assert!((sum - 1.0).abs() < 0.001);
+    }
+
+    #[test]
     fn bloom_shader_has_extract_two_axis_blur_and_final_tonemap() {
         let bloom = include_str!("viewport_bloom.wgsl");
         let hdr = include_str!("viewport_hdr.wgsl");
         naga::front::wgsl::parse_str(bloom).expect("Bloom filter shader parses");
         naga::front::wgsl::parse_str(hdr).expect("HDR compositor shader parses");
-        assert!(bloom.contains("fn fs_extract("));
+        assert!(bloom.contains("fn fs_downscale("));
         assert!(bloom.contains("fn fs_blur("));
         assert!(hdr.contains("fn fs_composite("));
         assert!(hdr.contains("film_map"));

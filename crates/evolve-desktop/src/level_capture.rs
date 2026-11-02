@@ -50,7 +50,10 @@ fn capture_real_map_views() {
             || note.contains("particle")
             || note.contains("water volumes")
             || note.contains("celestial")
+            || note.contains("Original decals")
+            || note.contains("vegetation")
             || note.contains("terrain color")
+            || note.contains("baked terrain")
             || note.contains("olor chart")
             || note.contains("sun vector")
             || note.contains("Static Sky")
@@ -148,6 +151,7 @@ fn capture_real_map_views() {
             world.film_curve(hour),
             world.eye_adaptation(hour),
         );
+        hdr.set_bloom(&queue, world.bloom_amount(hour));
         hdr.set_sun_shafts(
             &queue,
             world.sun_shafts(Some(camera), yaw, pitch, aspect, 1.0, hour),

@@ -410,6 +410,28 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 .size(11)
                 .style(design::muted),
         );
+        if state.full_armor_glow {
+            entries = entries.push(
+                row![
+                    text(format!("Armor {:.0}%", state.armor_level * 100.0))
+                        .size(12)
+                        .width(80),
+                    slider(
+                        0.0_f32..=1.0_f32,
+                        state.armor_level,
+                        Message::ViewerArmorLevelChanged,
+                    )
+                    .step(0.01_f32)
+                    .width(Fill),
+                ]
+                .spacing(7),
+            );
+            entries = entries.push(
+                text("The game sets this glow from the monster's armor. The curve is estimated from in-game screenshots of Goliath.")
+                    .size(11)
+                    .style(design::muted),
+            );
+        }
         entries = entries.push(
             design::button(if state.damage_blend_enabled {
                 "☑ Damage blend"
@@ -577,11 +599,31 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                             evolve_core::KalaTubingState::ArmorReducer
                         ))
                 ),
+                design::button(
+                    if state.kala_tubing == evolve_core::KalaTubingState::RiftDevice {
+                        "âœ“ Teleporter Â· Purple"
+                    } else {
+                        "â—‹ Teleporter Â· Purple"
+                    }
+                )
+                .style(
+                    if state.kala_tubing == evolve_core::KalaTubingState::RiftDevice {
+                        design::primary
+                    } else {
+                        design::secondary
+                    }
+                )
+                .on_press_maybe(
+                    (!state.busy && state.kala_tubing != evolve_core::KalaTubingState::RiftDevice)
+                        .then_some(Message::ViewerKalaTubingState(
+                            evolve_core::KalaTubingState::RiftDevice
+                        ))
+                ),
             ]
             .spacing(7),
         );
         entries = entries.push(
-            text("Kala's named Glow material stays source-blue in both modes. Body's separate ALPHAGLOW highlights retain their actual diffuse RGB (which can be red); only the equipment glow follows the Banshee/Armor Reducer choice. Every emission uses the 3 = 100 preview reference. Original textures and FBX exports stay unchanged.")
+            text("Kala's named Glow material stays source-blue in every mode. Body's separate ALPHAGLOW highlights retain their actual diffuse RGB (which can be red); only the equipment glow follows the Banshee, Armor Reducer or Teleporter choice. Emission uses the game's alpha glow and glow pass. Original textures and FBX exports stay unchanged.")
                 .size(11)
                 .style(design::muted),
         );
@@ -1558,6 +1600,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 zoom: state.zoom.max(0.2),
                 light_strength: state.light_strength,
                 emissive_gain: state.emissive_strength,
+                armor_level: state.armor_level,
                 emissive_time: state.decal_time,
                 pan_x: state.pan_x,
                 pan_y: state.pan_y,

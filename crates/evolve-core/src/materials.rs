@@ -105,6 +105,12 @@ pub struct MaterialSlot {
     /// Exact CryEngine StringGenMask ALPHAGLOW flag, not diffuse alpha alone.
     #[serde(default)]
     pub alpha_glow: bool,
+    /// AmbientMultiplier: the strength of ALPHAGLOW in the main pass.
+    #[serde(default)]
+    pub ambient_multiplier: Option<f32>,
+    /// Emissive color, which the game adds to the light falling on diffuse.
+    #[serde(default)]
+    pub emissive_color: Option<[f32; 3]>,
     /// Original hexadecimal CryEngine GenMask. Flags are shader-local;
     /// never compare identical bits across unrelated shader templates.
     #[serde(default)]
@@ -113,6 +119,9 @@ pub struct MaterialSlot {
     #[serde(default)]
     pub diffuse_tint: Option<[f32; 3]>,
     pub specular_tint: Option<[f32; 3]>,
+    /// Shininess, which the game divides by 255 into smoothness.
+    #[serde(default)]
+    pub shininess: Option<f32>,
     /// Source TexMod of an explicitly authored Decal, if present.
     #[serde(default)]
     pub decal_tex_mod: Option<DecalTexMod>,
@@ -134,6 +143,12 @@ pub struct MaterialSlot {
     /// BlendFalloff, BlendLayer2Tiling, BlendMaskTiling.
     #[serde(default)]
     pub layer_params: Option<[f32; 7]>,
+    /// TransmittanceColor scaled by BackDiffuseMultiplier, for leaves.
+    #[serde(default)]
+    pub foliage_transmit: Option<[f32; 3]>,
+    /// BlendLayer2Specular.
+    #[serde(default)]
+    pub layer_specular: Option<f32>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialDocument {
@@ -269,6 +284,18 @@ fn source_color(node: &BytesStart<'_>, name: &[u8]) -> Result<Option<[f32; 3]>, 
     Ok(Some([values[0], values[1], values[2]]))
 }
 
+fn authored_foliage_transmit(node: &BytesStart<'_>) -> Result<Option<[f32; 3]>, MaterialError> {
+    let Some(color) = source_color(node, b"TransmittanceColor")? else {
+        return Ok(None);
+    };
+    let back = attr(node, b"BackDiffuseMultiplier")?
+        .and_then(|raw| raw.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    Ok(Some(color.map(|channel| channel * back)))
+}
+
 fn authored_layer_params(node: &BytesStart<'_>) -> Result<Option<[f32; 7]>, MaterialError> {
     const NAMES: [(&[u8], f32); 7] = [
         (b"DetailBumpScale", 0.0),
@@ -320,6 +347,12 @@ fn authored_waterfall(node: &BytesStart<'_>) -> Result<Option<[f32; 11]>, Materi
 }
 
 /// The first component of IndirectColor, when this element authors one.
+fn authored_ambient_multiplier(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
+    Ok(attr(node, b"AmbientMultiplier")?
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0))
+}
+
 fn authored_indirect_color(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
     Ok(attr(node, b"IndirectColor")?
         .and_then(|value| value.split(',').next()?.trim().parse::<f32>().ok())
@@ -559,12 +592,19 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
                         specular_tint: source_color(&node, b"Specular")?,
+                        ambient_multiplier: authored_ambient_multiplier(&node)?,
+                        emissive_color: source_color(&node, b"Emissive")?,
+                        shininess: attr(&node, b"Shininess")?
+                            .and_then(|raw| raw.trim().parse::<f32>().ok())
+                            .filter(|value| value.is_finite()),
                         decal_tex_mod: None,
                         diffuse_tex_mod: None,
                         indirect_color: None,
                         waterfall: None,
                         detail_tile: None,
                         layer_params: None,
+                        foliage_transmit: None,
+                        layer_specular: None,
                     });
                     nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
@@ -619,11 +659,23 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         })))
                     && let Some((_, index)) = material_indices.last()
                 {
+                    if let Some(transmit) = authored_foliage_transmit(&node)? {
+                        slots[*index].foliage_transmit = Some(transmit);
+                    }
+                    if let Some(specular) = attr(&node, b"BlendLayer2Specular")?
+                        .and_then(|raw| raw.trim().parse::<f32>().ok())
+                        .filter(|value| value.is_finite())
+                    {
+                        slots[*index].layer_specular = Some(specular);
+                    }
                     if let Some(layer) = authored_layer_params(&node)? {
                         slots[*index].layer_params = Some(layer);
                     }
                     if let Some(waterfall) = authored_waterfall(&node)? {
                         slots[*index].waterfall = Some(waterfall);
+                    }
+                    if let Some(multiplier) = authored_ambient_multiplier(&node)? {
+                        slots[*index].ambient_multiplier = Some(multiplier);
                     }
                     if let Some(indirect) = authored_indirect_color(&node)? {
                         slots[*index].indirect_color = Some(indirect);
@@ -678,12 +730,19 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
                         specular_tint: source_color(&node, b"Specular")?,
+                        ambient_multiplier: authored_ambient_multiplier(&node)?,
+                        emissive_color: source_color(&node, b"Emissive")?,
+                        shininess: attr(&node, b"Shininess")?
+                            .and_then(|raw| raw.trim().parse::<f32>().ok())
+                            .filter(|value| value.is_finite()),
                         decal_tex_mod: None,
                         diffuse_tex_mod: None,
                         indirect_color: None,
                         waterfall: None,
                         detail_tile: None,
                         layer_params: None,
+                        foliage_transmit: None,
+                        layer_specular: None,
                     });
                     nonleaf.push(false);
                 } else if tag.eq_ignore_ascii_case(b"Texture")
@@ -736,11 +795,23 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         })))
                     && let Some((_, index)) = material_indices.last()
                 {
+                    if let Some(transmit) = authored_foliage_transmit(&node)? {
+                        slots[*index].foliage_transmit = Some(transmit);
+                    }
+                    if let Some(specular) = attr(&node, b"BlendLayer2Specular")?
+                        .and_then(|raw| raw.trim().parse::<f32>().ok())
+                        .filter(|value| value.is_finite())
+                    {
+                        slots[*index].layer_specular = Some(specular);
+                    }
                     if let Some(layer) = authored_layer_params(&node)? {
                         slots[*index].layer_params = Some(layer);
                     }
                     if let Some(waterfall) = authored_waterfall(&node)? {
                         slots[*index].waterfall = Some(waterfall);
+                    }
+                    if let Some(multiplier) = authored_ambient_multiplier(&node)? {
+                        slots[*index].ambient_multiplier = Some(multiplier);
                     }
                     if let Some(indirect) = authored_indirect_color(&node)? {
                         slots[*index].indirect_color = Some(indirect);

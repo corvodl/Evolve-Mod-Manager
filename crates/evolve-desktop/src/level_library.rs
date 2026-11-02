@@ -381,6 +381,13 @@ fn imported_map_terrain(
                     }
                 }
             }
+        } else if member_name.eq_ignore_ascii_case("cover.ctc") && is_level_pak {
+            // The baked surface texture the engine renders, with its multiplier.
+            if let Some(path) = imported_terrain_member(&inventory, "terrain/cover.ctc")?
+                && read_terrain_texture_header(&path).is_ok()
+            {
+                found.push(TerrainResource::Cry(path));
+            }
         } else if member_name.eq_ignore_ascii_case("terraintexture.pak") && is_terrain_pak {
             // The imported 'terraintexture.pak' ZIP is a container, not an
             // extracted file named terraintexture.pak. Look inside *that exact
@@ -761,6 +768,11 @@ fn open_selected(
     let index = index.min(maps.len().saturating_sub(1));
     let chosen = &maps[index];
     let mut diagnostics = Vec::new();
+    // One asset index for the whole load; the steps below all reuse it. Each
+    // still reports its own failure if this one could not be built.
+    let _lookup = Path::new(&archive.directory).parent().and_then(|library| {
+        evolve_core::begin_imported_lookup_session_for_source(library, &archive.source).ok()
+    });
     let inventory = project_inventory
         .clone()
         .map(Ok)
@@ -990,6 +1002,26 @@ fn open_selected(
             Vec::new()
         }
     };
+    let mut decals =
+        crate::level_atmosphere::authored_decals(&archive, &sources).unwrap_or_default();
+    diagnostics.push(format!(
+        "Original decals: {} across {} materials.",
+        decals
+            .iter()
+            .map(|batch| batch.instances.len())
+            .sum::<usize>(),
+        decals.len()
+    ));
+    let roads = crate::level_atmosphere::authored_roads(&archive, &sources).unwrap_or_default();
+    diagnostics.push(format!(
+        "Original road pieces: {} across {} materials.",
+        roads
+            .iter()
+            .map(|batch| batch.instances.len())
+            .sum::<usize>(),
+        roads.len()
+    ));
+    decals.extend(roads);
     let mut source = chosen.layers.first().map(|p| root.join(p));
     let mut scene = None;
     if !sources.is_empty() {
@@ -1133,7 +1165,15 @@ fn open_selected(
                 Vec::new()
             }
         };
-    let (local_lights, light_warnings) = crate::level_atmosphere::lights(&sources, scene.as_ref());
+    let (local_lights, light_warnings, cookie_files) =
+        crate::level_atmosphere::lights(&sources, scene.as_ref());
+    let light_cookies = crate::level_atmosphere::authored_light_cookies(&archive, &cookie_files)
+        .unwrap_or_default();
+    diagnostics.push(format!(
+        "Original projector cookies: {} of {} named textures found.",
+        light_cookies.iter().flatten().count(),
+        cookie_files.len()
+    ));
     diagnostics.push(format!("Original map light entities with verified authored color, radius and strength: {}. GPU viewport uses nearby point/spot preview lighting; authored shadow maps and projector textures require separate verification.",local_lights.len()));
     diagnostics.extend(light_warnings.into_iter().take(5));
     let terrain_xml = if chosen.terrain.is_some() {
@@ -1271,7 +1311,24 @@ fn open_selected(
     {
         let decoded = match package {
             TerrainResource::Cry(path) => read_terrain_texture_atlas(path),
-            TerrainResource::Rgb24 { paths, side } => read_terrain_rgb24_tiles(paths, *side),
+            TerrainResource::Rgb24 { paths, side } => {
+                // Prefer the engine's own baked cover; the raw tiles carry no multiplier.
+                let cover = map_virtual_folder(chosen, &archive)
+                    .ok_or_else(|| "no map folder".to_owned())
+                    .and_then(|folder| imported_map_terrain(&archive, &folder, "cover.ctc"))
+                    .and_then(|resource| match resource {
+                        Some(TerrainResource::Cry(path)) => {
+                            read_terrain_texture_atlas(&path).map_err(|e| e.to_string())
+                        }
+                        _ => Err("no terrain/cover.ctc in the map's level.pak".to_owned()),
+                    });
+                diagnostics.push(match &cover {
+                    Ok(_) => "Original baked terrain color from terrain/cover.ctc.".to_owned(),
+                    Err(error) => format!("Original baked terrain color from raw tiles: {error}"),
+                });
+                let cover = cover.ok();
+                cover.map_or_else(|| read_terrain_rgb24_tiles(paths, *side), Ok)
+            }
         };
         match decoded.map_err(|err| err.to_string()) {
             Ok(atlas) => {
@@ -1347,11 +1404,13 @@ fn open_selected(
         world.probe_cube = probe_cube;
         world.rain_darkening = crate::level_atmosphere::authored_rain_darkening(&sources);
         world.local_probes = std::sync::Arc::new(local_probes);
+        world.decals = std::sync::Arc::new(decals);
         world.particles = std::sync::Arc::new(particles);
         world.water = std::sync::Arc::new(water);
         world.celestial_bodies = std::sync::Arc::new(celestial_bodies);
         world.color_chart = color_chart;
         world.local_lights = std::sync::Arc::new(local_lights);
+        world.light_cookies = std::sync::Arc::new(light_cookies);
         world.time_of_day = original_time.map(std::sync::Arc::new);
         world.fog_profile = original_fog;
         world.source_resources = resources;

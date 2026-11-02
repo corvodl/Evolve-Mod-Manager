@@ -86,6 +86,7 @@ pub enum KalaTubingState {
     #[default]
     Banshee,
     ArmorReducer,
+    RiftDevice,
 }
 
 /// Original CDF verification shared by attachment selection and desktop options.
@@ -107,6 +108,7 @@ pub fn is_original_kala_3p(cdf: &CdfDefinition) -> bool {
         && [
             "hiddenwhenbansheegunselected",
             "hiddenwhenarmorreducerselected",
+            "hiddenwhenriftdeviceselected",
         ]
         .iter()
         .all(|name| cdf.skin_sets.contains_key(*name))
@@ -131,6 +133,7 @@ pub fn select_attachments_with_kala_state(
             match kala_state {
                 KalaTubingState::Banshee => "hiddenwhenbansheegunselected",
                 KalaTubingState::ArmorReducer => "hiddenwhenarmorreducerselected",
+                KalaTubingState::RiftDevice => "hiddenwhenriftdeviceselected",
             }
             .to_owned(),
         )
@@ -164,7 +167,11 @@ pub fn select_attachments_with_kala_state(
                 if is_original_kala_3p(cdf)
                     && matches!(
                         chosen.as_deref(),
-                        Some("hiddenwhenbansheegunselected" | "hiddenwhenarmorreducerselected")
+                        Some(
+                            "hiddenwhenbansheegunselected"
+                                | "hiddenwhenarmorreducerselected"
+                                | "hiddenwhenriftdeviceselected"
+                        )
                     )
                 {
                     // This Kala SkinSet is an exclusion list, not a list
@@ -880,6 +887,10 @@ mod tests {
             select_attachments_with_kala_state(&cdf, KalaTubingState::ArmorReducer).unwrap();
         assert_eq!(red_set.as_deref(), Some("hiddenwhenarmorreducerselected"));
         assert_eq!(red_rendered, ["body", "armorreducer"]);
+        let (rift_set, rift_rendered) =
+            select_attachments_with_kala_state(&cdf, KalaTubingState::RiftDevice).unwrap();
+        assert_eq!(rift_set.as_deref(), Some("hiddenwhenriftdeviceselected"));
+        assert_eq!(rift_rendered, ["body", "riftdevice", "riftdevicearm"]);
 
         // Don't impose Kala's exclusive-arm defaults on unrelated CDFs.
         let mut unrelated = cdf.clone();

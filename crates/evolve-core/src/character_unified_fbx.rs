@@ -1993,12 +1993,17 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,
+            ambient_multiplier: None,
+            emissive_color: None,
+            shininess: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
             indirect_color: None,
             waterfall: None,
             detail_tile: None,
             layer_params: None,
+            foliage_transmit: None,
+            layer_specular: None,
         };
         assert!(opaque_historical_2012_diffuse(true, &opaque));
         assert!(!opaque_historical_2012_diffuse(false, &opaque));
