@@ -16341,3 +16341,82 @@ mod project_edit_tests {
         assert_eq!(state.page, Some(Page::Files));
     }
 }
+
+#[cfg(test)]
+mod animation_playback_tests {
+    use super::*;
+
+    fn looping_state(playback_loop: bool) -> State {
+        State {
+            native_caf: Some(Arc::new(NativeCafMotion {
+                schema: 1,
+                controllers: Vec::new(),
+                start_frame: 0.0,
+                end_frame: 30.0,
+                fps: 30.0,
+                additive: false,
+                cyclic: true,
+            })),
+            playing: true,
+            playback_speed: 1.0,
+            playback_loop,
+            motion_time: 0.99,
+            motion_tick: Some(Instant::now() - Duration::from_millis(50)),
+            ..State::default()
+        }
+    }
+
+    #[test]
+    fn the_loop_button_alone_decides_whether_a_clip_wraps_or_stops() {
+        let mut looping = looping_state(true);
+        let _ = update(&mut looping, Message::Tick);
+        assert!(looping.playing && looping.motion_time < 0.1);
+
+        // A cyclic clip must still stop at its end when Loop is off.
+        let mut once = looping_state(false);
+        let _ = update(&mut once, Message::Tick);
+        assert!(!once.playing);
+        assert_eq!(once.motion_time, 1.0);
+
+        let _ = update(&mut once, Message::MotionScrub(0.25));
+        assert_eq!(once.motion_time, 0.25);
+    }
+
+    #[test]
+    fn an_older_import_of_a_pak_uses_the_build_holding_the_same_source() {
+        let pak = |directory: &str, builds: &[&str], source: &str| evolve_core::ImportedPak {
+            id: directory.into(),
+            name: "a.pak".into(),
+            source: source.into(),
+            directory: directory.into(),
+            group: String::new(),
+            description: String::new(),
+            entries: 0,
+            extracted_bytes: 0,
+            warnings: 0,
+            builds: builds.iter().map(|build| build.to_string()).collect(),
+        };
+        let state = State {
+            inventory: Some(Inventory {
+                schema: 1,
+                root: "library/old/files".into(),
+                entries: Vec::new(),
+                total_bytes: 0,
+                skipped_symlinks: 0,
+            }),
+            library_catalog: Some(ImportedLibrary {
+                root: "library".into(),
+                archives: vec![
+                    pak("library/old", &[], r"C:\Games\Modded\a.pak"),
+                    pak("library/new", &["Modded"], r"\\?\C:\Games\Modded\a.pak"),
+                    pak("library/other", &["Legacy"], r"C:\Games\Legacy\a.pak"),
+                ],
+                builds: vec!["Modded".into(), "Legacy".into()],
+                total_bytes: 0,
+                ignored: 0,
+            }),
+            ..State::default()
+        };
+        assert_eq!(resource_build(&state).as_deref(), Some("Modded"));
+    }
+}
