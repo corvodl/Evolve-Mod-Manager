@@ -159,7 +159,8 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
             clips = clips.push(
                 text(format!(
                     "AUTHORED BLENDSPACE · {}D · {} source CAF/DBA clips",
-                    active.space.dimensions.len(), active.motions.len()
+                    active.space.dimensions.len(),
+                    active.motions.len()
                 ))
                 .size(12)
                 .style(design::muted),
@@ -1795,9 +1796,12 @@ fn viewport(state: &State) -> Element<'_, Message> {
         .active_blendspace
         .as_ref()
         .map(|active| active.duration)
-        .or_else(|| state.native_caf
-        .as_ref()
-        .map(|clip| clip.duration_seconds()))
+        .or_else(|| {
+            state
+                .native_caf
+                .as_ref()
+                .map(|clip| clip.duration_seconds())
+        })
         .or_else(|| {
             state.glb_motion.as_ref().and_then(|motion| {
                 motion
