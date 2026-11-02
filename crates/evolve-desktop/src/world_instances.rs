@@ -1748,6 +1748,7 @@ pub(super) struct Renderer {
     device: wgpu::Device,
     water_screen_layout: wgpu::BindGroupLayout,
     particle_layout: wgpu::BindGroupLayout,
+    road_layout: wgpu::BindGroupLayout,
     particle_pipeline: wgpu::RenderPipeline,
     particle_batches: Vec<GpuParticles>,
     decal_pipeline: wgpu::RenderPipeline,
@@ -2968,6 +2969,27 @@ impl Renderer {
                 },
             ],
         });
+        let road_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Authored road surface"),
+            entries: &[
+                water_uniform_entry(0),
+                water_uniform_entry(1),
+                screen_color_entry(2),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                screen_color_entry(4),
+                water_uniform_entry(5),
+            ],
+        });
+        let road_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Authored roads"),
+            bind_group_layouts: &[&road_layout, &water_screen_layout],
+            push_constant_ranges: &[],
+        });
         let particle_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Authored particles"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
@@ -3023,10 +3045,10 @@ impl Renderer {
                 "world_decals.wgsl"
             ))),
         });
-        let projected_pipeline = |vertex: &str, fragment: &str| {
+        let projected_pipeline = |layout: &wgpu::PipelineLayout, vertex: &str, fragment: &str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Authored decals"),
-            layout: Some(&particle_pipe_layout),
+            layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &decal_shader,
                 entry_point: Some(vertex),
@@ -3065,8 +3087,8 @@ impl Renderer {
             cache: None,
             })
         };
-        let decal_pipeline = projected_pipeline("vs_decal", "fs_decal");
-        let road_pipeline = projected_pipeline("vs_road", "fs_road");
+        let decal_pipeline = projected_pipeline(&particle_pipe_layout, "vs_decal", "fs_decal");
+        let road_pipeline = projected_pipeline(&road_pipe_layout, "vs_road", "fs_road");
         let occlusion_entries = |raw: bool| {
             let mut entries = vec![
                 water_uniform_entry(0),
@@ -3223,6 +3245,7 @@ impl Renderer {
             device: device.clone(),
             water_screen_layout,
             particle_layout,
+            road_layout,
             particle_pipeline,
             particle_batches: Vec::new(),
             decal_pipeline,
@@ -4691,31 +4714,64 @@ impl Renderer {
                     wgpu::TextureFormat::Rgba8UnormSrgb,
                     "Authored decal",
                 );
+                let (_normal, normal_view) = upload_rgba_mips(
+                    device,
+                    queue,
+                    batch.normal.as_deref(),
+                    [128, 128, 255, 255],
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    "Authored road normal",
+                );
+                let surface = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Authored road specular"),
+                    contents: bytemuck::cast_slice(&[
+                        batch.specular[0],
+                        batch.specular[1],
+                        batch.specular[2],
+                        0.0_f32,
+                    ]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+                let mut entries = vec![
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.camera_uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.lighting_uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&sprite_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(if batch.road {
+                            &self.water_sampler
+                        } else {
+                            &self.screen_sampler
+                        }),
+                    },
+                ];
+                if batch.road {
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&normal_view),
+                    });
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: surface.as_entire_binding(),
+                    });
+                }
                 let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Authored decal"),
-                    layout: &self.particle_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: self.camera_uniform.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: self.lighting_uniform.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(&sprite_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::Sampler(if batch.road {
-                                &self.water_sampler
-                            } else {
-                                &self.screen_sampler
-                            }),
-                        },
-                    ],
+                    layout: if batch.road {
+                        &self.road_layout
+                    } else {
+                        &self.particle_layout
+                    },
+                    entries: &entries,
                 });
                 (
                     batch.road,

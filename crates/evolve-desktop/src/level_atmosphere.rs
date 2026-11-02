@@ -1310,6 +1310,10 @@ pub(super) struct DecalBatch {
     pub instances: Vec<[f32; 20]>,
     /// Road instances hold ribbon pieces, as described on road_pieces.
     pub road: bool,
+    /// A road's Bumpmap, when its material has one.
+    pub normal: Option<std::sync::Arc<image::RgbaImage>>,
+    /// A road's authored Specular.
+    pub specular: [f32; 3],
 }
 
 /// Every placed deferred decal, grouped by material and ordered by SortPriority.
@@ -1361,6 +1365,8 @@ pub(super) fn authored_decals(
                 image,
                 instances: Vec::new(),
                 road: false,
+                normal: None,
+                specular: [0.0; 3],
             });
             batch.instances.push([
                 x[0],
@@ -1430,6 +1436,38 @@ fn load_decal_material(root: &std::path::Path, build: &str, material: &str) -> D
         mtl_value(&mtl, "DecalAlphaMult", 1.0) * mtl_value(&mtl, "DecalDiffuseOpacity", 1.0),
         mtl_value(&mtl, "Opacity", 1.0),
     ))
+}
+
+/// A road material's Bumpmap and Specular, for shaping how light meets the road.
+fn load_road_surface(
+    root: &std::path::Path,
+    build: &str,
+    material: &str,
+) -> (Option<std::sync::Arc<image::RgbaImage>>, [f32; 3]) {
+    let mtl = indexed_source(root, build, &format!("{material}.mtl"))
+        .ok()
+        .flatten()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|raw| {
+            evolve_core::cryxml::xml_bytes(&raw, 4 * 1024 * 1024)
+                .ok()
+                .map(|xml| String::from_utf8_lossy(xml.as_ref()).into_owned())
+        })
+        .unwrap_or_default();
+    let specular = match xml_tuple(&mtl, "Specular").as_deref() {
+        Some([r, g, b]) => [*r, *g, *b],
+        _ => [0.0; 3],
+    };
+    let normal = mtl.find("Map=\"Bumpmap\"").and_then(|at| {
+        let tag_start = mtl[..at].rfind('<').unwrap_or(at);
+        let tag = &mtl[tag_start..];
+        let file = xml_attribute(&tag[..tag.find('>').unwrap_or(tag.len())], "File")?;
+        let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+        let path = indexed_source(root, build, &format!("{stem}.dds.0")).ok()??;
+        let (_, image) = evolve_core::decode_dds_rgba(&path).ok()?;
+        Some(std::sync::Arc::new(image))
+    });
+    (normal, specular)
 }
 
 /// One authored Point of a road, in the object's own space.
@@ -1563,6 +1601,7 @@ pub(super) fn authored_roads(
         evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
             .map_err(|e| e.to_string())?;
     let mut materials = HashMap::<String, DecalMaterial>::new();
+    let mut surfaces = HashMap::new();
     let mut batches = HashMap::<String, DecalBatch>::new();
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
@@ -1585,6 +1624,10 @@ pub(super) fn authored_roads(
             else {
                 continue;
             };
+            let (normal, specular) = surfaces
+                .entry(key.clone())
+                .or_insert_with(|| load_road_surface(root, &build, material))
+                .clone();
             let width = mtl_value(head, "Width", 4.0);
             let points = object
                 .match_indices("<Point ")
@@ -1614,6 +1657,8 @@ pub(super) fn authored_roads(
                     image,
                     instances: Vec::new(),
                     road: true,
+                    normal: normal.clone(),
+                    specular,
                 })
                 .instances
                 .extend(pieces);

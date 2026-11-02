@@ -6,6 +6,10 @@ struct Camera { origin:vec4<f32>, forward:vec4<f32>, right:vec4<f32>, up:vec4<f3
 @group(0) @binding(0) var<uniform> camera:Camera;
 @group(0) @binding(2) var decal_map:texture_2d<f32>;
 @group(0) @binding(3) var decal_sampler:sampler;
+struct TimeOfDayLight { sun:vec4<f32>, ambient:vec4<f32>, sun_color:vec4<f32>, }
+@group(0) @binding(1) var<uniform> light:TimeOfDayLight;
+@group(0) @binding(4) var road_normal:texture_2d<f32>;
+@group(0) @binding(5) var<uniform> road_specular:vec4<f32>;
 @group(1) @binding(1) var scene_color:texture_2d<f32>;
 @group(1) @binding(2) var scene_depth:texture_depth_2d;
 @group(1) @binding(3) var screen_sampler:sampler;
@@ -165,5 +169,27 @@ fn fs_road(input:RoadOutput)->@location(0) vec4<f32> {
   let view_fade=clamp((400.0-view_depth)/100.0,0.0,1.0);
   let alpha=source.a*input.tint.a*facing*ends*view_fade;
   if (alpha<=0.002) { discard; }
-  return vec4<f32>(source.rgb*input.tint.rgb*behind.rgb/GROUND_ALBEDO,alpha);
+  // The road's relief: the same basis as other materials, with U along the road
+  // and V across it. The ground below already holds its own sun, so the bump only
+  // scales it by how much more or less sun the bent normal catches.
+  let up=select(-n,n,n.z>=0.0);
+  let along_raw=input.left1.xyz-input.left0.xyz;
+  let across_raw=input.right0.xyz-input.left0.xyz;
+  let tangent=normalize(along_raw-up*dot(up,along_raw));
+  let bitangent=normalize(across_raw-up*dot(up,across_raw)-tangent*dot(tangent,across_raw));
+  let bump=textureSampleGrad(road_normal,decal_sampler,uv,dpdx(uv),dpdy(uv));
+  let xy=bump.rg*2.0-vec2<f32>(1.0);
+  let bent=normalize(tangent*xy.x+bitangent*xy.y+up*sqrt(max(1.0-dot(xy,xy),0.0)));
+  let sun_direction=normalize(light.sun.xyz);
+  let luma=vec3<f32>(0.2126,0.7152,0.0722);
+  let ambient=dot(light.ambient.rgb,luma);
+  let sun=dot(light.sun_color.rgb,luma)*light.sun.w;
+  let relief=(ambient+sun*max(dot(bent,sun_direction),0.0))
+    /max(ambient+sun*max(dot(up,sun_direction),0.0),0.001);
+  let incoming=behind.rgb/GROUND_ALBEDO;
+  let to_camera=normalize(camera.origin.xyz-world);
+  let halfway=normalize(sun_direction+to_camera);
+  let highlight=pow(max(dot(bent,halfway),0.0),mix(8.0,120.0,clamp(bump.a,0.0,1.0)));
+  let shine=road_specular.rgb*incoming*0.6*highlight;
+  return vec4<f32>(source.rgb*input.tint.rgb*incoming*clamp(relief,0.4,1.8)+shine,alpha);
 }
