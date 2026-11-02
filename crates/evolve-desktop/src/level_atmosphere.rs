@@ -838,6 +838,29 @@ pub(super) fn atmosphere_uniform(
 pub(super) struct AuthoredSun {
     pub to_sun: [f32; 3],
     pub hour: f32,
+    /// Lighting SunRotation and Longitude in degrees, when EnvState links the
+    /// sun to the time of day. The engine then ignores SunVector.
+    pub path: Option<[f32; 2]>,
+}
+
+/// Toward the sun at this hour for a sun linked to the time of day, from the
+/// CRYENGINE 3.5.8 SDK's Cry3DEngine (CTimeOfDay update, sinf/cosf of these
+/// three angles).
+pub(super) fn time_of_day_sun(rotation: f32, longitude: f32, hour: f32) -> [f32; 3] {
+    let time = std::f32::consts::TAU * (hour + 12.0) / 24.0;
+    let tilt = std::f32::consts::FRAC_PI_2 - longitude.to_radians();
+    let turn = -rotation.to_radians();
+    let (st, ct) = time.sin_cos();
+    let (sl, cl) = tilt.sin_cos();
+    let (sr, cr) = turn.sin_cos();
+    [st * cr + sl * ct * sr, sl * ct * cr - st * sr, cl * ct]
+}
+
+/// The attributes of the first `<name ...>` element only.
+fn xml_element<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let start = text.find(&format!("<{name} "))?;
+    let length = text[start..].find('>')?;
+    Some(&text[start..start + length])
 }
 
 fn xml_attribute<'a>(text: &'a str, name: &str) -> Option<&'a str> {
@@ -849,23 +872,49 @@ fn xml_attribute<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 }
 
 fn parse_authored_sun(mission: &str) -> Option<AuthoredSun> {
-    let vector = xml_attribute(mission, "SunVector")?
-        .split(',')
-        .map(|value| value.trim().parse::<f32>().ok())
-        .collect::<Option<Vec<_>>>()?;
-    let [x, y, z] = vector.as_slice() else {
-        return None;
+    // SEnvironmentInfo defaults SunLinkedToTOD to true.
+    let linked = xml_element(mission, "EnvState")
+        .and_then(|state| xml_attribute(state, "SunLinkedToTOD"))
+        .is_none_or(|value| value != "0");
+    let lighting = xml_element(mission, "Lighting");
+    let angle = |name| {
+        lighting
+            .and_then(|element| xml_attribute(element, name))
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .filter(|value| value.is_finite())
     };
-    let length = (x * x + y * y + z * z).sqrt();
-    if !length.is_finite() || length < 0.001 {
-        return None;
+    let path = linked
+        .then(|| Some([angle("SunRotation")?, angle("Longitude")?]))
+        .flatten();
+    let hour = xml_attribute(mission, "Time")
+        .and_then(|time| time.split_once(':'))
+        .and_then(|(hours, minutes)| {
+            Some(hours.parse::<f32>().ok()? + minutes.parse::<f32>().ok()? / 60.0)
+        });
+    let vector = xml_attribute(mission, "SunVector").and_then(|vector| {
+        let values = vector
+            .split(',')
+            .map(|value| value.trim().parse::<f32>().ok())
+            .collect::<Option<Vec<_>>>()?;
+        let [x, y, z] = values.as_slice() else {
+            return None;
+        };
+        let length = (x * x + y * y + z * z).sqrt();
+        // SunVector points along the light's travel; shading wants toward the sun.
+        (length.is_finite() && length >= 0.001).then(|| [-x / length, -y / length, -z / length])
+    });
+    if let Some([rotation, longitude]) = path {
+        let hour = hour.unwrap_or(12.0);
+        return Some(AuthoredSun {
+            to_sun: time_of_day_sun(rotation, longitude, hour),
+            hour,
+            path,
+        });
     }
-    let (hours, minutes) = xml_attribute(mission, "Time")?.split_once(':')?;
-    let hour = hours.parse::<f32>().ok()? + minutes.parse::<f32>().ok()? / 60.0;
-    // SunVector points along the light's travel; shading wants toward the sun.
     Some(AuthoredSun {
-        to_sun: [-x / length, -y / length, -z / length],
-        hour,
+        to_sun: vector?,
+        hour: hour?,
+        path: None,
     })
 }
 
@@ -2086,6 +2135,42 @@ pub(super) fn load_static_sky(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn time_of_day_sun_rises_peaks_and_sets_on_the_authored_path() {
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-3);
+        // A pole tilt of 90 puts the noon sun overhead.
+        assert!(close(
+            super::time_of_day_sun(0.0, 90.0, 12.0),
+            [0.0, 0.0, 1.0]
+        ));
+        assert!(super::time_of_day_sun(78.0, 144.0, 6.0)[2].abs() < 1e-3);
+        assert!(super::time_of_day_sun(78.0, 144.0, 0.0)[2] < 0.0);
+        // Tutorial's Lighting at its 10:30 mission time.
+        assert!(close(
+            super::time_of_day_sun(78.0, 144.0, 10.5),
+            [0.6513, -0.5300, 0.5432]
+        ));
+    }
+
+    #[test]
+    fn linked_sun_reads_lighting_angles_not_the_moon_or_sun_vector() {
+        let mission = r#"<Mission Time="10:30"><Environment>
+            <EnvState SunLinkedToTOD="1"/>
+            <Moon Latitude="240" Longitude="45"/>
+            <Lighting SunRotation="78" Longitude="144" SunVector="0.58688861,0.124747,-0.79999989"/>
+            </Environment></Mission>"#;
+        let sun = super::parse_authored_sun(mission).unwrap();
+        assert_eq!(sun.path, Some([78.0, 144.0]));
+        assert!((sun.hour - 10.5).abs() < 1e-6);
+        assert!(sun.to_sun[0] > 0.6);
+        let unlinked = super::parse_authored_sun(
+            &mission.replace("SunLinkedToTOD=\"1\"", "SunLinkedToTOD=\"0\""),
+        )
+        .unwrap();
+        assert_eq!(unlinked.path, None);
+        assert!(unlinked.to_sun[0] < -0.5);
+    }
+
     #[test]
     fn road_pieces_follow_the_spline_with_tiled_distance() {
         let at = |x: f32| [x, 0.0, 1.0];

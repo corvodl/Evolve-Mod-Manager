@@ -86,7 +86,12 @@ impl Lighting {
         hour: f32,
         source: &super::level_environment::TimeOfDay,
     ) -> Self {
-        if let Some(sun) = sun {
+        if let Some(sun) = sun
+            && let Some([rotation, longitude]) = sun.path
+        {
+            let [x, y, z] = super::level_atmosphere::time_of_day_sun(rotation, longitude, hour);
+            self.sun[..3].copy_from_slice(&[x, y, z]);
+        } else if let Some(sun) = sun {
             let [x, y, z] = sun.to_sun;
             // Turn about the horizontal axis across the sun's heading.
             let flat = (x * x + y * y).sqrt().max(0.001);
@@ -156,6 +161,7 @@ mod tests {
         let source_sun = super::super::level_atmosphere::AuthoredSun {
             to_sun: [0.0, 0.6, 0.8],
             hour: 12.0,
+            path: None,
         };
         for hour in [9.0, 12.0, 15.0] {
             let authored = Lighting::from_original(hour, &tod);
