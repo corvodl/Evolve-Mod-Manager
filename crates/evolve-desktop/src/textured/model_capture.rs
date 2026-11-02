@@ -20,6 +20,92 @@ fn kala_state(name: &str) -> KalaTubingState {
     }
 }
 
+/// Character names shown in the capture sheet are *display* names, not
+/// CryEngine's source CDF owner. Checking the screenshot label only let an
+/// accidental Rocky/Behemoth CDF be reported as a successful Kraken capture.
+/// Keep this mapping separate from game-runtime actor aliases (GrounderA etc.).
+fn expected_monster_capture(label: &str) -> Option<(&'static str, Option<u8>)> {
+    let key = label.split('_').next()?.to_ascii_lowercase();
+    const OWNERS: &[(&str, &str)] = &[
+        ("goliath", "goliath"),
+        ("kraken", "grounder"),
+        ("behemoth", "rocky"),
+        ("gorgon", "lurker"),
+        ("wraith", "teleporter"),
+    ];
+    for &(display, source) in OWNERS {
+        if let Some(tail) = key.strip_prefix(display) {
+            let stage = match tail {
+                "" => None,
+                "1" => Some(1),
+                "2" => Some(2),
+                "3" => Some(3),
+                _ => continue,
+            };
+            return Some((source, stage));
+        }
+    }
+    None
+}
+
+/// Validate the CDF owner and (when provided in the label) the stage *before*
+/// loading it or applying animation tracks. Never accept a controller-ID match
+/// as proof that two characters are identical.
+fn check_capture_model_identity(label: &str, cdf: &str) -> Result<(), String> {
+    let Some((owner, stage)) = expected_monster_capture(label) else {
+        return Ok(());
+    };
+    let path = cdf.replace('\\', "/").to_ascii_lowercase();
+    let components = path.split('/').filter(|part| !part.is_empty()).collect::<Vec<_>>();
+    let Some(index) = components.windows(2).position(|pair| pair == ["characters", "monsters"])
+    else {
+        return Err(format!(
+            "Capture {label}: expected a {owner} monster CDF but source was {cdf}"
+        ));
+    };
+    let actual_owner = components.get(index + 2).copied().unwrap_or("");
+    let filename = components.get(index + 3).copied().unwrap_or("");
+    // The owner directory must be exact, not a prefix like krakenelder or
+    // rockybobcicle. CDF stems must also agree with the owner and stage.
+    let stem = filename.strip_suffix(".cdf").unwrap_or("");
+    let stem_matches = match stage {
+        Some(stage) => stem == format!("{owner}{stage}"),
+        None => {
+            stem == owner
+                || [1, 2, 3].iter().any(|stage| stem == format!("{owner}{stage}"))
+        }
+    };
+    if actual_owner != owner || !stem_matches || components.len() != index + 4 {
+        return Err(format!(
+            "Capture {label} is mislabeled: CDF {cdf} is not the expected \
+             characters/monsters/{owner}/{owner}{}.cdf. \
+             Kraken uses Grounder; Behemoth uses Rocky.",
+            stage.map_or("[1-3]".to_owned(), |number| number.to_string())
+        ));
+    }
+    Ok(())
+}
+
+/// A clip requested for an offscreen capture must be declared for the model
+/// selected by that capture. This prevents a plausible pose from a different
+/// monster being accepted only because some controller IDs overlap.
+fn check_capture_clip_declaration(
+    label: &str,
+    clip: &str,
+    clips: &[crate::auto_resources::AutoClip],
+) -> Result<(), String> {
+    let normalize = |path: &str| path.replace('\\', "/").to_ascii_lowercase();
+    if clips.iter().any(|candidate| {
+        candidate.kind == "caf" && normalize(&candidate.virtual_path) == normalize(clip)
+    }) {
+        return Ok(());
+    }
+    Err(format!(
+        "Capture {label}: requested animation {clip} is not declared by the selected CDF. \
+         Refusing an unverified cross-character pose."
+    ))
+}
+
 #[test]
 #[ignore]
 fn capture_real_model_views() {
@@ -83,6 +169,7 @@ fn capture_real_model_views() {
             .cloned()
             .unwrap();
         let inventory = imported_archive_preview_inventory(&archive).unwrap();
+        check_capture_model_identity(fields[0], fields[2]).unwrap();
         let source = Path::new(&inventory.root).join(fields[2]);
         let build = archive.builds.first().cloned();
         let root = Some(Path::new(&library_root));
@@ -110,6 +197,7 @@ fn capture_real_model_views() {
             let _lookup = crate::model_preview_lookup(root, build.as_deref()).unwrap();
             let found =
                 crate::auto_resources::discover(fields[2], &inventory, root, build.as_deref());
+            check_capture_clip_declaration(fields[0], fields[11], &found.clips).unwrap();
             let databases = found
                 .clips
                 .iter()
@@ -266,6 +354,7 @@ fn real_character_clips_bind_and_keep_the_mesh_whole() {
     let mut passed = true;
     for view in characters.split(';').filter(|view| !view.trim().is_empty()) {
         let fields = view.split('|').map(str::trim).collect::<Vec<_>>();
+        check_capture_model_identity(fields[0], fields[2]).unwrap();
         let archive = library
             .archives
             .iter()
@@ -375,3 +464,30 @@ fn real_character_clips_bind_and_keep_the_mesh_whole() {
     }
     assert!(passed);
 }
+
+#[test]
+fn named_kraken_and_behemoth_captures_require_their_real_source_cdfs() {
+    for (label, cdf) in [
+        ("kraken1_idle_0", "characters/monsters/Grounder/grounder1.cdf"),
+        ("kraken2_idle_0.66", "characters/monsters/grounder/grounder2.cdf"),
+        ("kraken3_idle", "characters\\monsters\\Grounder\\Grounder3.CDF"),
+        ("behemoth2_idle", "characters/monsters/rocky/rocky2.cdf"),
+        ("goliath_run_0", "characters/monsters/goliath/goliath2.cdf"),
+        ("wraith2_idle", "characters/monsters/teleporter/teleporter2.cdf"),
+        ("gorgon2_web_0.33", "characters/monsters/lurker/lurker2.cdf"),
+    ] {
+        assert!(check_capture_model_identity(label, cdf).is_ok(), "{label}: {cdf}");
+    }
+    for (label, cdf) in [
+        ("kraken1_idle_0", "characters/monsters/rocky/rocky1.cdf"),
+        ("behemoth2_idle", "characters/monsters/grounder/grounder2.cdf"),
+        ("kraken1_idle", "characters/monsters/grounder/grounder2.cdf"),
+        ("kraken1_idle", "characters/monsters/krakenelder/krakenelder1.cdf"),
+        ("behemoth2_idle", "characters/monsters/rockybobcicle/rockybobcicle2.cdf"),
+        ("kraken1_idle", "characters/monsters/grounder/../rocky/rocky1.cdf"),
+        ("kraken1_idle", "characters/monsters/grounder/grounder1.skin"),
+    ] {
+        assert!(check_capture_model_identity(label, cdf).is_err(), "{label}: {cdf}");
+    }
+}
+
