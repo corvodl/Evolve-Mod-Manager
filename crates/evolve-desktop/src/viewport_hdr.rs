@@ -9,7 +9,7 @@ const BLOOM_DIVISOR: u32 = 4;
 /// Bloom blends in as Bloom amount times this, from the renderer's HDRBloomColor.
 const BLOOM_SCALE: f32 = 0.125;
 
-/// Finite, bounded level-preview exposure; 1x preserves the authored baseline.
+/// Finite, bounded level-preview exposure; 1x preserves the prior renderer output.
 fn level_preview_exposure(multiplier: f32) -> f32 {
     if multiplier.is_finite() {
         multiplier.clamp(0.5, 3.0)
