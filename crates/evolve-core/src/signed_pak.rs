@@ -1043,7 +1043,8 @@ pub fn rebuild_signed_pak_entries(
 
 /// Rebuild a verified signed PAK with replacement and new members. The source
 /// remains untouched; the resulting archive is verified before publication.
-/// New members use encrypted DEFLATE (method 14), matching existing CryPAKs.
+/// New members use encrypted DEFLATE (method 14), matching existing CryPAKs,
+/// except `.usm` videos, which are stored (method 13) so the engine can stream them.
 pub fn rebuild_signed_pak_with_additions(
     source: &Path,
     original_public: &Path,
@@ -1201,7 +1202,20 @@ fn rebuild_signed_pak_changes(
                 read_u16(&verified.cdr, offset + 14)?,
             )
         } else {
-            (20, if expected.is_ascii() { 0 } else { 0x800 }, 14, 0, 0)
+            // Streamed videos must be stored (method 13) like stock Stage 2 videos:
+            // the engine refuses random access to a compressed .usm inside a PAK.
+            let method = if expected.to_ascii_lowercase().ends_with(".usm") {
+                13
+            } else {
+                14
+            };
+            (
+                20,
+                if expected.is_ascii() { 0 } else { 0x800 },
+                method,
+                0,
+                0,
+            )
         };
         let mut temporary = tempfile::tempfile_in(parent)?;
         let mut replacement_file = File::open(replacement)?;
@@ -1850,9 +1864,15 @@ mod tests {
         let add_dir = root.path().join("with-addition");
         fs::create_dir(&add_dir).unwrap();
         let add_output = add_dir.join("sample.pak");
+        let added_video = root.path().join("added.usm");
+        fs::write(&added_video, b"CRID streamed video payload").unwrap();
         let added_changes = vec![
             ("example.caf".into(), replacement.clone()),
             ("new/folder/member.dds".into(), added.clone()),
+            (
+                "Libs/UI/FlashAssets/videos/Clip.USM".into(),
+                added_video.clone(),
+            ),
         ];
         let added_reports = rebuild_signed_pak_with_additions(
             &archive,
@@ -1864,12 +1884,23 @@ mod tests {
             &add_output,
         )
         .unwrap();
-        assert_eq!(added_reports.len(), 2);
+        assert_eq!(added_reports.len(), 3);
         assert_eq!(added_reports[1].original_bytes, 0);
         let verified_add =
             open_verified_signed_pak(&add_output, &new_public_file, "sample.pak").unwrap();
-        assert_eq!(verified_add.info.entries.len(), 2);
+        assert_eq!(verified_add.info.entries.len(), 3);
         assert_eq!(verified_add.info.entries[1].method, 14);
+        // Streamed videos are stored like stock Stage 2 videos; the engine
+        // refuses random access to a compressed .usm inside a PAK.
+        let video = &verified_add.info.entries[2];
+        assert_eq!(video.method, 13);
+        assert_eq!(video.compressed_size, video.size);
+        assert_eq!(
+            verified_add
+                .read_member(&add_output, "Libs/UI/FlashAssets/videos/Clip.USM", 1024)
+                .unwrap(),
+            fs::read(&added_video).unwrap()
+        );
         assert_eq!(
             verified_add
                 .read_member(&add_output, "new/folder/member.dds", 1024)
