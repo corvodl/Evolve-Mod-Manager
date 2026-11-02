@@ -3149,6 +3149,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::ResolveMaterial(..) => "Resolving CryEngine materials",
         Operation::LoadModelSurfaces(..) => "Loading model surface materials",
         Operation::LoadCaf(..) | Operation::LoadCafLayer(..) => "Loading character animation",
+        Operation::LoadBlendSpace(..) => "Resolving authored blendspace and source animations",
         Operation::BindCafPreview(..) | Operation::BindCdfCafPreview(..) => {
             "Binding character animation"
         }
