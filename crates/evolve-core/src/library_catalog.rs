@@ -1125,17 +1125,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("one.dba");
         fs::write(&a, b"same bytes").unwrap();
-        let hits = ["characters/hunters/merc_emet/animations/emet_3p.dba",
-                    "characters/hunters/merc_bucket/animations/emet_3p.dba"]
-            .into_iter()
-            .enumerate()
-            .map(|(index, name)| LibraryReference {
-                archive_id: index.to_string(),
-                archive_name: format!("source{index}.pak"),
-                relative_path: name.to_owned(),
-                absolute_path: a.to_string_lossy().into_owned(),
-            })
-            .collect();
+        let hits = [
+            "characters/hunters/merc_emet/animations/emet_3p.dba",
+            "characters/hunters/merc_bucket/animations/emet_3p.dba",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| LibraryReference {
+            archive_id: index.to_string(),
+            archive_name: format!("source{index}.pak"),
+            relative_path: name.to_owned(),
+            absolute_path: a.to_string_lossy().into_owned(),
+        })
+        .collect();
         assert!(matches!(
             resolve_verified_duplicate_textures(hits, true),
             LibraryReferenceStatus::Ambiguous(_)
