@@ -342,8 +342,8 @@ fn simplex_weights(coords: &[[f32; 3]], values: &[f32]) -> Option<Vec<f32>> {
         }
         matrix[axis][d + 1] = f64::from(values[axis]);
     }
-    for col in 0..=d {
-        matrix[d][col] = 1.0;
+    for item in matrix[d].iter_mut().take(d + 1) {
+        *item = 1.0;
     }
     matrix[d][d + 1] = 1.0;
     let n = d + 1;
@@ -355,16 +355,17 @@ fn simplex_weights(coords: &[[f32; 3]], values: &[f32]) -> Option<Vec<f32>> {
         }
         matrix.swap(col, pivot);
         let inverse = 1.0 / matrix[col][col];
-        for item in col..=n {
-            matrix[col][item] *= inverse;
+        for value in matrix[col].iter_mut().take(n + 1).skip(col) {
+            *value *= inverse;
         }
-        for row in 0..n {
-            if row == col {
+        let pivot_row = matrix[col];
+        for (row_index, row) in matrix.iter_mut().take(n).enumerate() {
+            if row_index == col {
                 continue;
             }
-            let factor = matrix[row][col];
-            for item in col..=n {
-                matrix[row][item] -= factor * matrix[col][item]
+            let factor = row[col];
+            for (item, value) in row.iter_mut().take(n + 1).enumerate().skip(col) {
+                *value -= factor * pivot_row[item];
             }
         }
     }
