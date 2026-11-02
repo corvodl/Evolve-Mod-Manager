@@ -62,6 +62,9 @@ pub struct AssemblyGeometry {
     pub vertex_first: usize,
     pub vertex_count: usize,
     pub bone_socket: Option<String>,
+    /// The authored `.skin` holding this part's bone table, when found.
+    #[serde(default)]
+    pub binding: Option<std::path::PathBuf>,
     pub verified_skin_weights: bool,
 }
 
@@ -569,6 +572,7 @@ pub fn read_static_cdf_assembly_with_kala_state(
             },
             None => None,
         };
+        let binding_source = bound.clone();
         let rendered = if let Some(rendered) = compiled {
             if bound.is_none() {
                 notes.push(format!(
@@ -661,6 +665,7 @@ pub fn read_static_cdf_assembly_with_kala_state(
             } else {
                 None
             },
+            binding: binding_source,
             verified_skin_weights,
         });
         vertex_cursor = vertex_cursor

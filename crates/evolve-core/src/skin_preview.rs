@@ -7,8 +7,8 @@ use crate::model::{RenderMesh, read_model};
 use crate::native_caf::CafBonePose;
 use crate::native_caf::NativeCafMotion;
 use crate::rig::{
-    CompiledSkeleton, RigError, VerifiedWeights, parse_compiled_skeleton, remap_verified_weights,
-    rigged_glb_bytes_with_caf,
+    CompiledSkeleton, RigError, VerifiedWeights, has_compiled_bones as rig_has_bones,
+    parse_compiled_skeleton, remap_verified_weights,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -128,6 +128,17 @@ fn deform(
     Ok(output)
 }
 
+fn position_bounds(positions: &[[f32; 3]]) -> [[f32; 3]; 2] {
+    let mut bounds = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];
+    for point in positions {
+        for axis in 0..3 {
+            bounds[0][axis] = bounds[0][axis].min(point[axis]);
+            bounds[1][axis] = bounds[1][axis].max(point[axis]);
+        }
+    }
+    bounds
+}
+
 /// Keep all original vertex streams and bone tables in memory so frame
 /// scrubbing does not re-read a game PAK or rebuild an entire GLB.
 #[derive(Debug, Clone)]
@@ -135,6 +146,9 @@ pub struct VerifiedCafSkin {
     mesh: RenderMesh,
     skeleton: CompiledSkeleton,
     weights: VerifiedWeights,
+    /// One entry per bone the weights index: the skeleton bone that drives it
+    /// and the bind inverse the skin was built with.
+    joints: Vec<(usize, Mat4)>,
     bind_local: Vec<Mat4>,
     bind_components: Vec<([f32; 3], [f32; 4])>,
     crc_to_bone: HashMap<u32, usize>,
@@ -142,12 +156,18 @@ pub struct VerifiedCafSkin {
 }
 
 impl VerifiedCafSkin {
+    /// `binding_path` is the authored `.skin` that holds the bone table of the
+    /// render mesh at `mesh_path`, when they are separate files.
     pub fn from_originals(
         mesh_path: &Path,
+        binding_path: Option<&Path>,
         skeleton_path: &Path,
         motion: NativeCafMotion,
     ) -> Result<Self, RigError> {
-        for file in [mesh_path, skeleton_path] {
+        for file in [Some(mesh_path), binding_path, Some(skeleton_path)]
+            .into_iter()
+            .flatten()
+        {
             let stat = fs::symlink_metadata(file)?;
             if !stat.file_type().is_file() || stat.len() == 0 || stat.len() > 256 * 1024 * 1024 {
                 return Err(RigError::Limits);
@@ -156,21 +176,44 @@ impl VerifiedCafSkin {
         let mesh = read_model(mesh_path)?;
         let mesh_raw = fs::read(mesh_path)?;
         let skeleton_raw = fs::read(skeleton_path)?;
-        Self::from_bytes(mesh, &mesh_raw, &skeleton_raw, motion)
+        let binding_raw = binding_path.map(fs::read).transpose()?;
+        Self::from_bytes(
+            mesh,
+            &mesh_raw,
+            binding_raw.as_deref(),
+            &skeleton_raw,
+            motion,
+        )
     }
 
     pub fn from_bytes(
         mesh: RenderMesh,
         mesh_raw: &[u8],
+        binding_raw: Option<&[u8]>,
         skeleton_raw: &[u8],
         motion: NativeCafMotion,
     ) -> Result<Self, RigError> {
-        // Reuse the same exact CRC, bind-matrix and controller validation as
-        // verified FBX export. Do not animate a mesh that Blender could not
-        // bind without guessing its compiled skeleton.
-        rigged_glb_bytes_with_caf(&mesh, mesh_raw, skeleton_raw, &motion)?;
         let skeleton = parse_compiled_skeleton(skeleton_raw)?;
-        let weights = remap_verified_weights(mesh_raw, mesh.positions.len(), skeleton.names.len())?;
+        // A skin's weights index its own bone table, which need not match the
+        // skeleton's: Kraken stage 1 skins 166 bones in another order against a
+        // 185-bone skeleton. Like the game, match them by controller ID.
+        let table = binding_raw
+            .filter(|raw| rig_has_bones(raw))
+            .map(parse_compiled_skeleton)
+            .transpose()?;
+        let table = table.as_ref().unwrap_or(&skeleton);
+        let joints = table
+            .controller_ids
+            .iter()
+            .zip(&table.inverse)
+            .map(|(id, inverse)| {
+                let bone = skeleton.controller_ids.iter().position(|other| other == id);
+                bone.map(|bone| (bone, *inverse)).ok_or_else(|| {
+                    RigError::Invalid(format!("Skin bone {id:08x} is not in the skeleton"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let weights = remap_verified_weights(mesh_raw, mesh.positions.len(), joints.len())?;
         let mut bind_local = Vec::with_capacity(skeleton.names.len());
         let mut bind_components = Vec::with_capacity(skeleton.names.len());
         let mut crc_to_bone = HashMap::new();
@@ -195,6 +238,7 @@ impl VerifiedCafSkin {
             mesh,
             skeleton,
             weights,
+            joints,
             bind_local,
             bind_components,
             crc_to_bone,
@@ -202,7 +246,21 @@ impl VerifiedCafSkin {
         })
     }
 
-    fn posed_world(&self, seconds: f32, layers: &[CafLayer<'_>]) -> Result<Vec<Mat4>, RigError> {
+    fn palette(&self, world: &[Mat4]) -> Vec<Mat4> {
+        self.joints
+            .iter()
+            .map(|(bone, inverse)| multiply(&world[*bone], inverse))
+            .collect()
+    }
+
+    /// With `in_place`, the skeleton root holds its first keyed transform. A clip
+    /// stores locomotion on the root, which the game moves the entity with.
+    fn posed_world(
+        &self,
+        seconds: f32,
+        layers: &[CafLayer<'_>],
+        in_place: bool,
+    ) -> Result<Vec<Mat4>, RigError> {
         let bind = self
             .skeleton
             .controller_ids
@@ -216,6 +274,16 @@ impl VerifiedCafSkin {
             .collect::<Vec<_>>();
         let poses = sample_caf_layers_with_bind(&self.motion, seconds, layers, &bind)
             .map_err(|e| RigError::Invalid(format!("Native CAF sample: {e}")))?;
+        let root = self.skeleton.parents.iter().position(Option::is_none);
+        let held_root = if in_place && !self.motion.additive {
+            self.motion
+                .sample_seconds(0.0)
+                .map_err(|e| RigError::Invalid(format!("Native CAF sample: {e}")))?
+                .into_iter()
+                .find(|pose| Some(pose.bone_crc32) == root.map(|i| self.skeleton.controller_ids[i]))
+        } else {
+            None
+        };
         let mut locals = self.bind_local.clone();
         for pose in poses {
             let index = *self
@@ -223,8 +291,14 @@ impl VerifiedCafSkin {
                 .get(&pose.bone_crc32)
                 .ok_or_else(|| RigError::Invalid("CAF references an unmatched bone".into()))?;
             let (bind_position, bind_rotation) = self.bind_components[index];
-            let translation = pose.translation.unwrap_or(bind_position);
-            let rotation = pose.rotation.unwrap_or(bind_rotation);
+            let mut translation = pose.translation.unwrap_or(bind_position);
+            let mut rotation = pose.rotation.unwrap_or(bind_rotation);
+            if Some(index) == root
+                && let Some(held) = &held_root
+            {
+                translation = held.translation.unwrap_or(translation);
+                rotation = held.rotation.unwrap_or(rotation);
+            }
             locals[index] = trs(translation, rotation)?;
         }
         let mut world = Vec::with_capacity(locals.len());
@@ -238,20 +312,21 @@ impl VerifiedCafSkin {
     }
 
     pub fn mesh_at(&self, seconds: f32) -> Result<RenderMesh, RigError> {
-        self.mesh_at_layers(seconds, &[])
+        self.mesh_at_layers(seconds, &[], false)
     }
     pub fn mesh_at_layers(
         &self,
         seconds: f32,
         layers: &[CafLayer<'_>],
+        in_place: bool,
     ) -> Result<RenderMesh, RigError> {
-        let world = self.posed_world(seconds, layers)?;
-        let skin = world
-            .iter()
-            .zip(&self.skeleton.inverse)
-            .map(|(pose, inverse)| multiply(pose, inverse))
-            .collect::<Vec<_>>();
-        deform(&self.mesh, &self.weights, &skin)
+        let world = self.posed_world(seconds, layers, in_place)?;
+        deform(&self.mesh, &self.weights, &self.palette(&world))
+    }
+    /// Corners of the rest pose, so a viewport can hold its framing still
+    /// while the clip moves the character.
+    pub fn rest_bounds(&self) -> [[f32; 3]; 2] {
+        position_bounds(&self.mesh.positions)
     }
     pub fn original_vertices(&self) -> usize {
         self.mesh.positions.len()
@@ -361,8 +436,12 @@ impl VerifiedCafAssembly {
                         part.name
                     )));
                 }
-                let skin =
-                    VerifiedCafSkin::from_originals(&part.source, skeleton_source, motion.clone())?;
+                let skin = VerifiedCafSkin::from_originals(
+                    &part.source,
+                    part.binding.as_deref(),
+                    skeleton_source,
+                    motion.clone(),
+                )?;
                 if skin.original_vertices() != part.vertex_count
                     || skin.mesh.positions != rest.positions[part.vertex_first..cursor]
                 {
@@ -387,23 +466,19 @@ impl VerifiedCafAssembly {
     }
 
     pub fn mesh_at(&self, seconds: f32) -> Result<RenderMesh, RigError> {
-        self.mesh_at_layers(seconds, &[])
+        self.mesh_at_layers(seconds, &[], false)
     }
     pub fn mesh_at_layers(
         &self,
         seconds: f32,
         layers: &[CafLayer<'_>],
+        in_place: bool,
     ) -> Result<RenderMesh, RigError> {
         let mut output = self.rest.clone();
         let primary = &self.skins[0].1;
-        let world = primary.posed_world(seconds, layers)?;
-        let palette = world
-            .iter()
-            .zip(&primary.skeleton.inverse)
-            .map(|(pose, inverse)| multiply(pose, inverse))
-            .collect::<Vec<_>>();
+        let world = primary.posed_world(seconds, layers, in_place)?;
         for (offset, skin) in &self.skins {
-            let animated = deform(&skin.mesh, &skin.weights, &palette)?;
+            let animated = deform(&skin.mesh, &skin.weights, &skin.palette(&world))?;
             let end = offset
                 .checked_add(animated.positions.len())
                 .ok_or(RigError::Limits)?;
@@ -422,6 +497,11 @@ impl VerifiedCafAssembly {
         Ok(output)
     }
 
+    /// Corners of the rest pose, so a viewport can hold its framing still
+    /// while the clip moves the character.
+    pub fn rest_bounds(&self) -> [[f32; 3]; 2] {
+        position_bounds(&self.rest.positions)
+    }
     pub fn part_count(&self) -> usize {
         self.skins.len() + self.sockets.len()
     }
@@ -474,6 +554,7 @@ mod tests {
                 inverse: vec![identity, inverse_child],
             },
             weights,
+            joints: vec![(0, identity), (1, inverse_child)],
             bind_local: vec![identity, child],
             bind_components: vec![
                 ([0.0; 3], [0.0, 0.0, 0.0, 1.0]),
@@ -507,7 +588,7 @@ mod tests {
             seconds: 0.2,
             weight: 0.5,
         }];
-        let posed = assembly.mesh_at_layers(0.2, &layers).unwrap();
+        let posed = assembly.mesh_at_layers(0.2, &layers, false).unwrap();
         for offset in [0, 3, 6] {
             assert_eq!(posed.positions[offset], [7.0, 0.0, 0.0]);
         }
@@ -521,7 +602,10 @@ mod tests {
             weight: 0.0,
         }];
         assert_eq!(
-            assembly.mesh_at_layers(0.2, &zero).unwrap().positions,
+            assembly
+                .mesh_at_layers(0.2, &zero, false)
+                .unwrap()
+                .positions,
             assembly.mesh_at(0.2).unwrap().positions
         );
         let wrong = clip("unrelated", 10.0);
@@ -533,7 +617,8 @@ mod tests {
                         motion: &wrong,
                         seconds: 0.2,
                         weight: 1.0
-                    }]
+                    }],
+                    false
                 )
                 .is_err()
         );
@@ -612,6 +697,38 @@ mod tests {
         assert_eq!(next.uv0, original.uv0);
         assert_eq!(next.normals, original.normals);
         assert!(move_equipment(&mut next, &original, 2, 2, &delta).is_err());
+    }
+
+    #[test]
+    fn weights_follow_the_skins_own_bone_table_to_the_skeleton_bone() {
+        let mut skin = two_bone_skin();
+        // The skin lists hand first and root second, the reverse of the
+        // skeleton, so its index 0 must be driven by skeleton bone 1.
+        skin.joints = vec![(1, skin.joints[1].1), (0, skin.joints[0].1)];
+        for ids in &mut skin.weights.joint_ids {
+            ids[0] = 0;
+        }
+        skin.motion = clip("hand", 6.0);
+        assert_eq!(skin.mesh_at(0.5).unwrap().positions[0], [5.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn additive_clip_plays_on_the_bind_pose_and_in_place_holds_the_root() {
+        let mut skin = two_bone_skin();
+        // Bind has the hand 2 along X; the delta adds 3 more to it.
+        skin.motion = NativeCafMotion {
+            additive: true,
+            ..clip("hand", 3.0)
+        };
+        assert_eq!(skin.mesh_at(0.5).unwrap().positions[0], [4.0, 0.0, 0.0]);
+
+        // The root travels from 0 to 30 over the clip.
+        skin.motion = clip("root", 0.0);
+        skin.motion.controllers[0].positions = vec![[0.0; 3], [30.0, 0.0, 0.0]];
+        let moving = skin.mesh_at_layers(0.5, &[], false).unwrap();
+        let held = skin.mesh_at_layers(0.5, &[], true).unwrap();
+        assert_eq!(moving.positions[0], [16.0, 0.0, 0.0]);
+        assert_eq!(held.positions[0], [1.0, 0.0, 0.0]);
     }
 
     #[test]

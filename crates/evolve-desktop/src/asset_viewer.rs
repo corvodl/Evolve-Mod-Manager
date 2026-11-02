@@ -119,6 +119,15 @@ fn dropdown_x(name: Option<&str>) -> f32 {
     }
 }
 
+/// While a clip drives the mesh, frame its rest pose rather than each pose.
+fn animation_framing(state: &State) -> Option<[[f32; 3]; 2]> {
+    state
+        .cdf_caf_preview
+        .as_ref()
+        .map(|preview| preview.rest_bounds())
+        .or_else(|| state.skin_preview.as_ref().map(|skin| skin.rest_bounds()))
+}
+
 fn animation_browser(state: &State) -> Element<'_, Message> {
     let content: Element<'_, Message> = {
         let mut clips = column![
@@ -221,17 +230,11 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                 .on_input(Message::ViewerAutoClipFilter),
         );
         let needle = state.auto_clip_filter.to_ascii_lowercase();
-        for (index, clip) in state
-            .auto_clips
-            .iter()
-            .enumerate()
-            .filter(|(_, clip)| {
-                needle.is_empty()
-                    || clip.label.to_ascii_lowercase().contains(&needle)
-                    || clip.kind.to_ascii_lowercase().contains(&needle)
-            })
-            .take(80)
-        {
+        for (index, clip) in state.auto_clips.iter().enumerate().filter(|(_, clip)| {
+            needle.is_empty()
+                || clip.label.to_ascii_lowercase().contains(&needle)
+                || clip.kind.to_ascii_lowercase().contains(&needle)
+        }) {
             // A CHRPARAMS declaration or matching manifest entry is not
             // proof of an extracted CAF. Most entries are resolved lazily.
             // Never label every unresolved clip as a missing extraction.
@@ -1589,6 +1592,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
         if !state.viewer_wireframe {
             shader(TexturedScene {
                 mesh: mesh.clone(),
+                framing: animation_framing(state),
                 surfaces: state.cdf_surfaces.clone(),
                 diffuse: state.diffuse.clone(),
                 normal_map: state.normal_map.clone(),
@@ -1619,6 +1623,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
         } else {
             canvas(MeshViewport {
                 mesh: mesh.clone(),
+                framing: animation_framing(state),
                 yaw: state.yaw,
                 pitch: state.pitch,
                 zoom: state.zoom.max(0.2),
@@ -1773,6 +1778,12 @@ fn viewport(state: &State) -> Element<'_, Message> {
             "Loop off"
         })
         .on_press(Message::PlaybackLoopChanged),
+        design::button(if state.motion_in_place {
+            "In place"
+        } else {
+            "Root motion"
+        })
+        .on_press(Message::MotionInPlaceChanged),
         design::button("◀").on_press(Message::MotionScrub(0.0)),
         design::button(if state.playing { "Ⅱ" } else { "▶" }).on_press(Message::ToggleMotion),
         slider(

@@ -43,6 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 seconds,
                 weight: 0.5,
             }],
+            false,
         )?;
         if posed.indices != rest.indices
             || posed.uv0 != rest.uv0

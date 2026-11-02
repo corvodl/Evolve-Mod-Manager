@@ -681,9 +681,7 @@ pub(crate) fn packed_record_matches(declared_caf: &str, record: &str) -> bool {
 }
 
 /// Look only in exact DBAs declared by the selected character's CHRPARAMS.
-/// The current Controller_905 parser validates the database's animation-name
-/// directory but does NOT decode compressed keyframes. A positive result is a
-/// converter candidate, never proof of native CAF or skeleton playback.
+/// A positive result names the database and record to decode the clip from.
 pub fn find_declared_packed_caf(
     inventory: &Inventory,
     requested_caf: &str,

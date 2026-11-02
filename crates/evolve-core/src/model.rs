@@ -981,7 +981,63 @@ pub fn read_model(path: &Path) -> Result<RenderMesh, ModelError> {
     if !meta.file_type().is_file() || meta.len() > MAX_BYTES as u64 {
         return Err(ModelError::Limits);
     }
-    parse_model_bytes(&fs::read(path)?)
+    let data = fs::read(path)?;
+    let mut mesh = parse_model_bytes(&data)?;
+    let skinned = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            ["skin", "skinm", "chr", "chrm"]
+                .iter()
+                .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+        });
+    if skinned && let Some(offset) = skin_node_offset(&data) {
+        for position in &mut mesh.positions {
+            for axis in 0..3 {
+                position[axis] += offset[axis];
+            }
+        }
+    }
+    Ok(mesh)
+}
+
+/// A compiled skin stores vertices relative to its one scene node, whose
+/// translation is in centimetres, while its bones stay in model space: Stage 2
+/// Goliath's body sits 3.61 m below its skeleton until this is applied. Only the
+/// pure translation every shipped skin uses is read; a rotated node is left as
+/// it is rather than guessed at.
+fn skin_node_offset(data: &[u8]) -> Option<[f32; 3]> {
+    const NODE: u32 = 0x0823100B;
+    const TRANSFORM: usize = 84;
+    if data.get(..8)? != b"CrChF\x07\0\0" {
+        return None;
+    }
+    let count = u32at(data, 8).ok()? as usize;
+    let table = u32at(data, 12).ok()? as usize;
+    let mut nodes = (0..count).filter_map(|index| {
+        let at = table.checked_add(index.checked_mul(16)?)?;
+        (u32at(data, at).ok()? == NODE).then(|| u32at(data, at + 12).ok())?
+    });
+    let node = nodes.next()? as usize;
+    if nodes.next().is_some() {
+        return None;
+    }
+    let mut matrix = [0f32; 16];
+    for (index, value) in matrix.iter_mut().enumerate() {
+        *value = f32::from_bits(u32at(data, node + TRANSFORM + index * 4).ok()?);
+    }
+    let unrotated = (0..3).all(|row| {
+        (0..3).all(|column| {
+            let expected = if row == column { 1.0 } else { 0.0 };
+            (matrix[row * 4 + column] - expected).abs() < 1e-3
+        })
+    });
+    let offset = [matrix[12] / 100.0, matrix[13] / 100.0, matrix[14] / 100.0];
+    (unrotated
+        && offset
+            .iter()
+            .all(|value| value.is_finite() && value.abs() < 1000.0))
+    .then_some(offset)
 }
 
 /// Creates a Blender-importable geometric OBJ; does not claim skeletal FBX
@@ -1040,6 +1096,32 @@ pub fn export_model_obj(mesh: &RenderMesh, target: &Path) -> Result<(), ModelErr
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    fn node_file(matrix: [f32; 16]) -> Vec<u8> {
+        let mut data = vec![0u8; 32];
+        data[..8].copy_from_slice(b"CrChF\x07\0\0");
+        data[8..12].copy_from_slice(&1u32.to_le_bytes());
+        data[12..16].copy_from_slice(&16u32.to_le_bytes());
+        data[16..20].copy_from_slice(&0x0823100Bu32.to_le_bytes());
+        data[24..28].copy_from_slice(&204u32.to_le_bytes());
+        data[28..32].copy_from_slice(&32u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 84]);
+        data.extend(matrix.iter().flat_map(|value| value.to_le_bytes()));
+        data.extend_from_slice(&[0u8; 56]);
+        data
+    }
+
+    #[test]
+    fn skin_node_translation_is_read_in_centimetres_and_rotation_is_not_guessed() {
+        let mut matrix = [0f32; 16];
+        (matrix[0], matrix[5], matrix[10]) = (1.0, 1.0, 1.0);
+        (matrix[12], matrix[13], matrix[14]) = (0.141, 45.867, 361.247);
+        let offset = skin_node_offset(&node_file(matrix)).unwrap();
+        assert!((offset[1] - 0.45867).abs() < 1e-5 && (offset[2] - 3.61247).abs() < 1e-5);
+        matrix[0] = 0.5;
+        assert!(skin_node_offset(&node_file(matrix)).is_none());
+        assert!(skin_node_offset(b"CryTek\0\0 historical").is_none());
+    }
+
     pub(crate) fn fixture() -> Vec<u8> {
         let streams = [(0u32, 3u32, 12u32), (5u32, 3u32, 2u32), (2u32, 3u32, 8u32)];
         let mut data = vec![0u8; 16 + streams.len() * 16];

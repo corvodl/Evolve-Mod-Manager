@@ -207,6 +207,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                     .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
                     .is_some_and(|o| !o.kind.eq_ignore_ascii_case("Vegetation")),
             inner: super::textured::Scene {
+                framing: None,
                 mesh: mesh.clone(),
                 surfaces: state.level_surfaces.clone(),
                 diffuse: None,

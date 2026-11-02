@@ -117,8 +117,8 @@ pub fn sample_caf_layers_with_bind(
     layers: &[CafLayer<'_>],
     bind: &[CafBonePose],
 ) -> Result<Vec<CafBonePose>, NativeCafError> {
-    if base.additive || layers.len() > MAX_LAYERS {
-        return Err(bad("Unsupported additive base or layer count"));
+    if layers.len() > MAX_LAYERS {
+        return Err(bad("Unsupported layer count"));
     }
     let allowed = bind.iter().map(|p| p.bone_crc32).collect::<HashSet<_>>();
     validate(bind, &allowed)?;
@@ -127,6 +127,21 @@ pub fn sample_caf_layers_with_bind(
         .any(|p| p.translation.is_none() || p.rotation.is_none())
     {
         return Err(bad("Incomplete original local bind transforms"));
+    }
+    if base.additive {
+        // An additive clip stores deltas, not a pose. Played on its own it
+        // deforms the bind pose, ahead of any layers selected on top of it.
+        let pose = blend_pose_inner(
+            bind.to_vec(),
+            &[CafLayer {
+                motion: base,
+                seconds,
+                weight: 1.0,
+            }],
+            &allowed,
+            true,
+        )?;
+        return blend_pose_inner(pose, layers, &allowed, true);
     }
     let sampled = base.sample_seconds(seconds)?;
     validate(&sampled, &allowed)?;
