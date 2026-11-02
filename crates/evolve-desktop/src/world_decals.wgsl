@@ -76,3 +76,91 @@ fn fs_decal(input:Output)->@location(0) vec4<f32> {
   let behind=textureSampleLevel(scene_color,screen_sampler,input.position.xy/vec2<f32>(textureDimensions(scene_color)),0.0).rgb;
   return vec4<f32>(source.rgb*input.tint.rgb*behind/TYPICAL_ALBEDO,alpha);
 }
+
+// Authored roads: a prism around each ribbon piece, projected onto what lies
+// within ROAD_REACH of the spline, so tall rocks and trees stay clear of them.
+const ROAD_REACH:f32=1.5;
+
+struct RoadOutput {
+  @builtin(position) position:vec4<f32>,
+  @location(0) clip:vec4<f32>,
+  @location(1) @interpolate(flat) left0:vec4<f32>,
+  @location(2) @interpolate(flat) right0:vec4<f32>,
+  @location(3) @interpolate(flat) left1:vec4<f32>,
+  @location(4) @interpolate(flat) right1:vec4<f32>,
+  @location(5) @interpolate(flat) tint:vec4<f32>,
+}
+
+@vertex
+fn vs_road(
+  @builtin(vertex_index) vertex:u32,
+  @location(0) left0:vec4<f32>,  // world position, distance along the road in tiles
+  @location(1) right0:vec4<f32>, // world position, end fade
+  @location(2) left1:vec4<f32>,
+  @location(3) right1:vec4<f32>,
+  @location(4) tint:vec4<f32>,
+)->RoadOutput {
+  let indices=array<u32,36>(0u,1u,2u,2u,1u,3u,4u,6u,5u,5u,6u,7u,0u,4u,1u,1u,4u,5u,
+    2u,3u,6u,6u,3u,7u,0u,2u,4u,4u,2u,6u,1u,5u,3u,3u,5u,7u);
+  let i=indices[vertex%36u];
+  let start=select(left0.xyz,right0.xyz,(i&1u)==1u);
+  let end=select(left1.xyz,right1.xyz,(i&1u)==1u);
+  var world=select(start,end,((i>>1u)&1u)==1u);
+  world.z+=f32((i>>2u)&1u)*2.0*ROAD_REACH-ROAD_REACH;
+  let delta=world-camera.origin.xyz;
+  let d=dot(delta,camera.forward.xyz);
+  var out:RoadOutput;
+  out.clip=vec4<f32>(dot(delta,camera.right.xyz)/camera.right.w,
+    dot(delta,camera.up.xyz)/camera.up.w,d-camera.forward.w,d);
+  out.position=out.clip;
+  out.left0=left0;
+  out.right0=right0;
+  out.left1=left1;
+  out.right1=right1;
+  out.tint=tint;
+  return out;
+}
+
+// Where a point falls in a four sided piece: across it, then along it.
+fn road_coords(p:vec2<f32>,a:vec2<f32>,b:vec2<f32>,c:vec2<f32>,d:vec2<f32>)->vec2<f32> {
+  let e=b-a;
+  let f=d-a;
+  let g=a-b+c-d;
+  let h=p-a;
+  let k2=g.x*f.y-g.y*f.x;
+  let k1=e.x*f.y-e.y*f.x+h.x*g.y-h.y*g.x;
+  let k0=h.x*e.y-h.y*e.x;
+  var t:f32;
+  if (abs(k2)<0.00001) {
+    t=-k0/k1;
+  } else {
+    let root=sqrt(max(k1*k1-4.0*k0*k2,0.0));
+    t=(-k1-root)*0.5/k2;
+    if (t<0.0||t>1.0) { t=(-k1+root)*0.5/k2; }
+  }
+  let across=e+g*t;
+  return vec2<f32>(dot(h-f*t,across)/max(dot(across,across),0.000001),t);
+}
+
+@fragment
+fn fs_road(input:RoadOutput)->@location(0) vec4<f32> {
+  let z=textureLoad(scene_depth,vec2<i32>(input.position.xy),0);
+  let view_depth=camera.forward.w/max(1.0-z,0.000001);
+  let ndc=input.clip.xy/input.clip.w;
+  let ray=camera.forward.xyz+camera.right.xyz*camera.right.w*ndc.x+camera.up.xyz*camera.up.w*ndc.y;
+  let world=camera.origin.xyz+ray*view_depth;
+  let at=road_coords(world.xy,input.left0.xy,input.right0.xy,input.right1.xy,input.left1.xy);
+  if (any(at<vec2<f32>(0.0))||any(at>vec2<f32>(1.0))) { discard; }
+  if (abs(world.z-mix(input.left0.z,input.left1.z,at.y))>ROAD_REACH) { discard; }
+  let n=normalize(cross(dpdx(world),dpdy(world)));
+  // The texture repeats along the road and spans its width once.
+  let uv=vec2<f32>(mix(input.left0.w,input.left1.w,at.y),at.x);
+  let source=textureSampleGrad(decal_map,decal_sampler,uv,dpdx(uv),dpdy(uv));
+  let facing=clamp(abs(n.z)*3.0-0.5,0.0,1.0);
+  let ends=mix(input.right0.w,input.right1.w,at.y);
+  let view_fade=clamp((400.0-view_depth)/100.0,0.0,1.0);
+  let alpha=source.a*input.tint.a*facing*ends*view_fade;
+  if (alpha<=0.002) { discard; }
+  let behind=textureSampleLevel(scene_color,screen_sampler,input.position.xy/vec2<f32>(textureDimensions(scene_color)),0.0).rgb;
+  return vec4<f32>(source.rgb*input.tint.rgb*behind/TYPICAL_ALBEDO,alpha);
+}

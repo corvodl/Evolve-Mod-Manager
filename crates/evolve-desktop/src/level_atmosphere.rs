@@ -1308,6 +1308,8 @@ pub(super) struct DecalBatch {
     pub priority: f32,
     pub image: std::sync::Arc<image::RgbaImage>,
     pub instances: Vec<[f32; 20]>,
+    /// Road instances hold ribbon pieces, as described on road_pieces.
+    pub road: bool,
 }
 
 /// Every placed deferred decal, grouped by material and ordered by SortPriority.
@@ -1315,15 +1317,13 @@ pub(super) fn authored_decals(
     archive: &evolve_core::ImportedPak,
     layers: &[(String, Vec<u8>)],
 ) -> Result<Vec<DecalBatch>, String> {
-    const MAX_SIDE: u32 = 1024;
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
     let (build, _guard) =
         evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
             .map_err(|e| e.to_string())?;
-    type Material = Option<(std::sync::Arc<image::RgbaImage>, [f32; 3], f32, f32)>;
-    let mut materials = HashMap::<String, Material>::new();
+    let mut materials = HashMap::<String, DecalMaterial>::new();
     let mut batches = HashMap::<String, DecalBatch>::new();
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
@@ -1338,43 +1338,10 @@ pub(super) fn authored_decals(
                 continue;
             };
             let key = material.to_ascii_lowercase();
-            let loaded = materials.entry(key.clone()).or_insert_with(|| {
-                let mtl = indexed_source(root, &build, &format!("{material}.mtl"))
-                    .ok()
-                    .flatten()
-                    .and_then(|path| std::fs::read(path).ok())
-                    .and_then(|raw| {
-                        evolve_core::cryxml::xml_bytes(&raw, 4 * 1024 * 1024)
-                            .ok()
-                            .map(|xml| String::from_utf8_lossy(xml.as_ref()).into_owned())
-                    })?;
-                let file = xml_attribute(&mtl[mtl.find("Map=\"Diffuse\"")?..], "File")?;
-                let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
-                let path = indexed_source(root, &build, &format!("{stem}.dds.0")).ok()??;
-                let (_, image) = evolve_core::decode_dds_rgba(&path).ok()?;
-                let image = if image.width().max(image.height()) > MAX_SIDE {
-                    image::imageops::resize(
-                        &image,
-                        image.width().min(MAX_SIDE),
-                        image.height().min(MAX_SIDE),
-                        image::imageops::FilterType::Triangle,
-                    )
-                } else {
-                    image
-                };
-                let tint = xml_tuple(&mtl, "Diffuse").unwrap_or_default();
-                Some((
-                    std::sync::Arc::new(image),
-                    match tint.as_slice() {
-                        [r, g, b] => [*r, *g, *b],
-                        _ => [1.0; 3],
-                    },
-                    mtl_value(&mtl, "DecalFalloff", 1.0).max(0.01),
-                    mtl_value(&mtl, "DecalAlphaMult", 1.0)
-                        * mtl_value(&mtl, "DecalDiffuseOpacity", 1.0),
-                ))
-            });
-            let Some((image, tint, falloff, opacity)) = loaded.clone() else {
+            let loaded = materials
+                .entry(key.clone())
+                .or_insert_with(|| load_decal_material(root, &build, material));
+            let Some((image, tint, falloff, opacity, _)) = loaded.clone() else {
                 continue;
             };
             let rotation = xml_tuple(object, "Rotate")
@@ -1393,6 +1360,7 @@ pub(super) fn authored_decals(
                 priority: mtl_value(object, "SortPriority", 16.0),
                 image,
                 instances: Vec::new(),
+                road: false,
             });
             batch.instances.push([
                 x[0],
@@ -1423,6 +1391,238 @@ pub(super) fn authored_decals(
     Ok(ordered)
 }
 
+/// A decal or road texture, with its tint, DecalFalloff, decal opacity and Opacity.
+type DecalMaterial = Option<(std::sync::Arc<image::RgbaImage>, [f32; 3], f32, f32, f32)>;
+
+fn load_decal_material(root: &std::path::Path, build: &str, material: &str) -> DecalMaterial {
+    const MAX_SIDE: u32 = 1024;
+    let mtl = indexed_source(root, build, &format!("{material}.mtl"))
+        .ok()
+        .flatten()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|raw| {
+            evolve_core::cryxml::xml_bytes(&raw, 4 * 1024 * 1024)
+                .ok()
+                .map(|xml| String::from_utf8_lossy(xml.as_ref()).into_owned())
+        })?;
+    let file = xml_attribute(&mtl[mtl.find("Map=\"Diffuse\"")?..], "File")?;
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    let path = indexed_source(root, build, &format!("{stem}.dds.0")).ok()??;
+    let (_, image) = evolve_core::decode_dds_rgba(&path).ok()?;
+    let image = if image.width().max(image.height()) > MAX_SIDE {
+        image::imageops::resize(
+            &image,
+            image.width().min(MAX_SIDE),
+            image.height().min(MAX_SIDE),
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        image
+    };
+    let tint = xml_tuple(&mtl, "Diffuse").unwrap_or_default();
+    Some((
+        std::sync::Arc::new(image),
+        match tint.as_slice() {
+            [r, g, b] => [*r, *g, *b],
+            _ => [1.0; 3],
+        },
+        mtl_value(&mtl, "DecalFalloff", 1.0).max(0.01),
+        mtl_value(&mtl, "DecalAlphaMult", 1.0) * mtl_value(&mtl, "DecalDiffuseOpacity", 1.0),
+        mtl_value(&mtl, "Opacity", 1.0),
+    ))
+}
+
+/// One authored Point of a road, in the object's own space.
+#[derive(Clone, Copy, Debug)]
+struct RoadPoint {
+    position: [f32; 3],
+    back: [f32; 3],
+    forward: [f32; 3],
+    width: f32,
+}
+
+fn road_point(tag: &str, default_width: f32) -> Option<RoadPoint> {
+    let triple = |name: &str| {
+        xml_tuple(tag, name)
+            .filter(|value| value.len() == 3)
+            .map(|value| [value[0], value[1], value[2]])
+    };
+    let default = xml_attribute(tag, "IsDefaultWidth") != Some("0");
+    Some(RoadPoint {
+        position: triple("Pos")?,
+        back: triple("Back")?,
+        forward: triple("Forw")?,
+        width: if default {
+            default_width
+        } else {
+            mtl_value(tag, "Width", default_width)
+        },
+    })
+}
+
+fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+fn horizontal_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+/// Cut a road's spline into ribbon pieces no longer than StepSize. Each piece is
+/// its start left and right corners then its end corners, as world position with
+/// a fourth value: left holds the distance along the road in tiles, right how far
+/// the road's end fade has opened. The last four values are tint and opacity.
+fn road_pieces(
+    points: &[RoadPoint],
+    step: f32,
+    tile: f32,
+    tint: [f32; 4],
+    origin: [f32; 3],
+    rotation: [f32; 4],
+) -> Vec<[f32; 20]> {
+    let mut samples = Vec::<([f32; 3], f32)>::new();
+    for pair in points.windows(2) {
+        let [from, to] = [pair[0], pair[1]];
+        let length = horizontal_distance(from.position, from.forward)
+            + horizontal_distance(from.forward, to.back)
+            + horizontal_distance(to.back, to.position);
+        let count = (length / step.max(0.25)).ceil().max(1.0) as usize;
+        // Later curves start where the last one ended.
+        let first = usize::from(!samples.is_empty());
+        for i in first..=count {
+            let t = i as f32 / count as f32;
+            let a = mix3(from.position, from.forward, t);
+            let b = mix3(from.forward, to.back, t);
+            let c = mix3(to.back, to.position, t);
+            let local = mix3(mix3(a, b, t), mix3(b, c, t), t);
+            let turned = rotate(rotation, local);
+            samples.push((
+                [
+                    origin[0] + turned[0],
+                    origin[1] + turned[1],
+                    origin[2] + turned[2],
+                ],
+                from.width + (to.width - from.width) * t,
+            ));
+        }
+    }
+    samples.dedup_by(|b, a| horizontal_distance(a.0, b.0) < 0.001);
+    if samples.len() < 2 {
+        return Vec::new();
+    }
+    let mut along = vec![0.0_f32; samples.len()];
+    for i in 1..samples.len() {
+        along[i] = along[i - 1] + horizontal_distance(samples[i - 1].0, samples[i].0);
+    }
+    let total = along[samples.len() - 1];
+    let corners = |i: usize| {
+        let before = samples[i.saturating_sub(1)].0;
+        let after = samples[(i + 1).min(samples.len() - 1)].0;
+        let (dx, dy) = (after[0] - before[0], after[1] - before[1]);
+        let length = dx.hypot(dy).max(0.0001);
+        let half = samples[i].1 * 0.5;
+        let (side_x, side_y) = (dy / length * half, -dx / length * half);
+        let [x, y, z] = samples[i].0;
+        let fade = (along[i].min(total - along[i]) / samples[i].1.min(total * 0.25).max(0.01))
+            .clamp(0.0, 1.0);
+        [
+            x - side_x,
+            y - side_y,
+            z,
+            along[i] / tile.max(0.01),
+            x + side_x,
+            y + side_y,
+            z,
+            fade,
+        ]
+    };
+    (0..samples.len() - 1)
+        .map(|i| {
+            let mut piece = [0.0; 20];
+            piece[..8].copy_from_slice(&corners(i));
+            piece[8..16].copy_from_slice(&corners(i + 1));
+            piece[16..].copy_from_slice(&tint);
+            piece
+        })
+        .collect()
+}
+
+/// Every placed Road, grouped by material and SortPriority, lowest priority first.
+pub(super) fn authored_roads(
+    archive: &evolve_core::ImportedPak,
+    layers: &[(String, Vec<u8>)],
+) -> Result<Vec<DecalBatch>, String> {
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    let mut materials = HashMap::<String, DecalMaterial>::new();
+    let mut batches = HashMap::<String, DecalBatch>::new();
+    for (_, bytes) in layers {
+        let text = String::from_utf8_lossy(bytes);
+        for (offset, _) in text.match_indices(" Type=\"Road\"") {
+            let start = text[..offset].rfind("<Object").unwrap_or(offset);
+            let object = &text[start..];
+            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let head = &object[..object.find('>').unwrap_or(object.len())];
+            let (Some(position), Some(material)) = (
+                xml_tuple(head, "Pos").filter(|pos| pos.len() == 3),
+                xml_attribute(head, "Material").filter(|name| !name.is_empty()),
+            ) else {
+                continue;
+            };
+            let key = material.to_ascii_lowercase();
+            let Some((image, tint, _, decal_opacity, opacity)) = materials
+                .entry(key.clone())
+                .or_insert_with(|| load_decal_material(root, &build, material))
+                .clone()
+            else {
+                continue;
+            };
+            let width = mtl_value(head, "Width", 4.0);
+            let points = object
+                .match_indices("<Point ")
+                .filter_map(|(at, _)| {
+                    let tag = &object[at..];
+                    road_point(&tag[..tag.find('>').unwrap_or(tag.len())], width)
+                })
+                .collect::<Vec<_>>();
+            let rotation = xml_tuple(head, "Rotate")
+                .filter(|rotate| rotate.len() == 4)
+                .map_or([1.0, 0.0, 0.0, 0.0], |rotate| {
+                    [rotate[0], rotate[1], rotate[2], rotate[3]]
+                });
+            let pieces = road_pieces(
+                &points,
+                mtl_value(head, "StepSize", 4.0),
+                mtl_value(head, "TileLength", 4.0),
+                [tint[0], tint[1], tint[2], decal_opacity * opacity],
+                [position[0], position[1], position[2]],
+                rotation,
+            );
+            let priority = mtl_value(head, "SortPriority", 0.0);
+            batches
+                .entry(format!("{key}|{priority}"))
+                .or_insert_with(|| DecalBatch {
+                    priority,
+                    image,
+                    instances: Vec::new(),
+                    road: true,
+                })
+                .instances
+                .extend(pieces);
+        }
+    }
+    let mut ordered = batches.into_values().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| a.priority.total_cmp(&b.priority));
+    Ok(ordered)
+}
 /// How much the map's Rain entity darkens wet surfaces, when it has one.
 pub(super) fn authored_rain_darkening(layers: &[(String, Vec<u8>)]) -> f32 {
     layers
@@ -1831,6 +2031,44 @@ pub(super) fn load_static_sky(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn road_pieces_follow_the_spline_with_tiled_distance() {
+        let at = |x: f32| [x, 0.0, 1.0];
+        let point = |x: f32| RoadPoint {
+            position: at(x),
+            back: at(x),
+            forward: at(x),
+            width: 4.0,
+        };
+        let pieces = super::road_pieces(
+            &[point(0.0), point(8.0)],
+            2.0,
+            4.0,
+            [1.0; 4],
+            [10.0, 20.0, 30.0],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        assert_eq!(pieces.len(), 4);
+        // The right corner of a road heading along +X sits on its -Y side.
+        assert_eq!(&pieces[0][..3], &[10.0, 22.0, 31.0]);
+        assert_eq!(&pieces[0][4..7], &[10.0, 18.0, 31.0]);
+        assert_eq!(pieces[0][3], 0.0);
+        assert_eq!(pieces[0][7], 0.0);
+        assert_eq!(pieces[3][11], 2.0);
+        assert_eq!(pieces[3][15], 0.0);
+        // Pieces meet exactly, so the ribbon has no gaps.
+        assert_eq!(&pieces[0][8..16], &pieces[1][..8]);
+    }
+
+    #[test]
+    fn a_road_point_uses_its_own_width_only_when_authored() {
+        let tag = r#"<Point Pos="1,2,3" Back="0,0,0" Forw="4,5,6" Angle="0" Width="9" IsDefaultWidth="X"/>"#;
+        let own = super::road_point(&tag.replace('X', "0"), 4.0).unwrap();
+        let shared = super::road_point(&tag.replace('X', "1"), 4.0).unwrap();
+        assert_eq!(own.width, 9.0);
+        assert_eq!(shared.width, 4.0);
+        assert_eq!(own.forward, [4.0, 5.0, 6.0]);
+    }
     use super::*;
     #[test]
     fn placed_particle_effect_uses_entity_class_and_original_guid() {

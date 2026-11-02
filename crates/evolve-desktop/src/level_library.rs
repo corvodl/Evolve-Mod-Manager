@@ -997,7 +997,8 @@ fn open_selected(
             Vec::new()
         }
     };
-    let decals = crate::level_atmosphere::authored_decals(&archive, &sources).unwrap_or_default();
+    let mut decals =
+        crate::level_atmosphere::authored_decals(&archive, &sources).unwrap_or_default();
     diagnostics.push(format!(
         "Original decals: {} across {} materials.",
         decals
@@ -1006,6 +1007,16 @@ fn open_selected(
             .sum::<usize>(),
         decals.len()
     ));
+    let roads = crate::level_atmosphere::authored_roads(&archive, &sources).unwrap_or_default();
+    diagnostics.push(format!(
+        "Original road pieces: {} across {} materials.",
+        roads
+            .iter()
+            .map(|batch| batch.instances.len())
+            .sum::<usize>(),
+        roads.len()
+    ));
+    decals.extend(roads);
     let mut source = chosen.layers.first().map(|p| root.join(p));
     let mut scene = None;
     if !sources.is_empty() {

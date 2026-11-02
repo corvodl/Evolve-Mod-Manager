@@ -1750,6 +1750,7 @@ pub(super) struct Renderer {
     particle_pipeline: wgpu::RenderPipeline,
     particle_batches: Vec<GpuParticles>,
     decal_pipeline: wgpu::RenderPipeline,
+    road_pipeline: wgpu::RenderPipeline,
     occlusion_layout: wgpu::BindGroupLayout,
     occlusion_apply_layout: wgpu::BindGroupLayout,
     occlusion_pipeline: wgpu::RenderPipeline,
@@ -1757,6 +1758,7 @@ pub(super) struct Renderer {
     occlusion_uniform: wgpu::Buffer,
     occlusion_target: std::sync::Mutex<Option<(wgpu::Texture, wgpu::TextureView)>>,
     decal_batches: Vec<GpuParticles>,
+    road_batches: Vec<GpuParticles>,
     screen_sampler: wgpu::Sampler,
     reflection_view: wgpu::TextureView,
     reflection_depth: wgpu::TextureView,
@@ -3015,12 +3017,13 @@ impl Renderer {
                 "world_decals.wgsl"
             ))),
         });
-        let decal_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let projected_pipeline = |vertex: &str, fragment: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Authored decals"),
             layout: Some(&particle_pipe_layout),
             vertex: wgpu::VertexState {
                 module: &decal_shader,
-                entry_point: Some("vs_decal"),
+                entry_point: Some(vertex),
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: 80,
                     step_mode: wgpu::VertexStepMode::Instance,
@@ -3030,7 +3033,7 @@ impl Renderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &decal_shader,
-                entry_point: Some("fs_decal"),
+                entry_point: Some(fragment),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -3054,7 +3057,10 @@ impl Renderer {
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
-        });
+            })
+        };
+        let decal_pipeline = projected_pipeline("vs_decal", "fs_decal");
+        let road_pipeline = projected_pipeline("vs_road", "fs_road");
         let occlusion_entries = |raw: bool| {
             let mut entries = vec![
                 water_uniform_entry(0),
@@ -3214,6 +3220,7 @@ impl Renderer {
             particle_pipeline,
             particle_batches: Vec::new(),
             decal_pipeline,
+            road_pipeline,
             occlusion_layout,
             occlusion_apply_layout,
             occlusion_pipeline,
@@ -3221,6 +3228,7 @@ impl Renderer {
             occlusion_uniform,
             occlusion_target: std::sync::Mutex::new(None),
             decal_batches: Vec::new(),
+            road_batches: Vec::new(),
             screen_sampler,
             refraction_copy: std::sync::Mutex::new(None),
             solid: make(false, false, false),
@@ -4525,6 +4533,12 @@ impl Renderer {
             pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
         }
         pass.set_bind_group(1, &screen, &[]);
+        pass.set_pipeline(&self.road_pipeline);
+        for batch in &self.road_batches {
+            pass.set_bind_group(0, &batch.bind, &[]);
+            pass.set_vertex_buffer(0, batch.instances.slice(..));
+            pass.draw(0..36, 0..batch.count);
+        }
         pass.set_pipeline(&self.decal_pipeline);
         for batch in &self.decal_batches {
             pass.set_bind_group(0, &batch.bind, &[]);
@@ -4652,7 +4666,7 @@ impl Renderer {
     }
 
     fn update_decals(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
-        self.decal_batches = world
+        let (roads, decals): (Vec<_>, Vec<_>) = world
             .decals
             .iter()
             .filter(|batch| !batch.instances.is_empty())
@@ -4688,18 +4702,27 @@ impl Renderer {
                         },
                         wgpu::BindGroupEntry {
                             binding: 3,
-                            resource: wgpu::BindingResource::Sampler(&self.screen_sampler),
+                            resource: wgpu::BindingResource::Sampler(if batch.road {
+                                &self.water_sampler
+                            } else {
+                                &self.screen_sampler
+                            }),
                         },
                     ],
                 });
-                GpuParticles {
-                    instances,
-                    count: batch.instances.len() as u32,
-                    bind,
-                    _sprite: sprite,
-                }
+                (
+                    batch.road,
+                    GpuParticles {
+                        instances,
+                        count: batch.instances.len() as u32,
+                        bind,
+                        _sprite: sprite,
+                    },
+                )
             })
-            .collect();
+            .partition(|(road, _)| *road);
+        self.road_batches = roads.into_iter().map(|(_, batch)| batch).collect();
+        self.decal_batches = decals.into_iter().map(|(_, batch)| batch).collect();
     }
 
     fn update_particles(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
