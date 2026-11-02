@@ -9,6 +9,15 @@ const BLOOM_DIVISOR: u32 = 4;
 /// Bloom blends in as Bloom amount times this, from the renderer's HDRBloomColor.
 const BLOOM_SCALE: f32 = 0.125;
 
+/// Finite, bounded level-preview exposure; 1x preserves the authored baseline.
+fn level_preview_exposure(multiplier: f32) -> f32 {
+    if multiplier.is_finite() {
+        multiplier.clamp(0.5, 3.0)
+    } else {
+        1.0
+    }
+}
+
 /// One size of the bloom chain: a downscale blurred on each axis.
 struct BloomLevel {
     _down: wgpu::Texture,
@@ -697,6 +706,14 @@ impl ViewportHdr {
             bytemuck::bytes_of(&(amount * BLOOM_SCALE)),
         );
     }
+    /// Level Editor preview-only exposure multiplier. This is deliberately
+    /// separate from authored TimeOfDay eye adaptation and never changes source
+    /// terrain, imported materials, or Model Viewer lighting.
+    pub(super) fn set_level_preview_exposure(&self, queue: &wgpu::Queue, multiplier: f32) {
+        let multiplier = level_preview_exposure(multiplier);
+        // CompositeParams.params.y holds the viewport exposure multiplier.
+        queue.write_buffer(&self.composite_uniform, 4, bytemuck::bytes_of(&multiplier));
+    }
     pub(super) fn set_source_unlit(&self, queue: &wgpu::Queue, unlit: bool) {
         // Preserve the existing "Source RGB (unlit)" diagnostic: bypass bloom
         // and tonemapping, never grade source ground colors for comparisons.
@@ -881,5 +898,20 @@ mod tests {
     fn hdr_frame_format_is_floating_point() {
         assert_eq!(super::SCENE_FORMAT, wgpu::TextureFormat::Rgba16Float);
         assert_eq!(super::BLOOM_DIVISOR, 4);
+    }
+}
+
+#[cfg(test)]
+mod level_exposure_tests {
+    use super::level_preview_exposure;
+
+    #[test]
+    fn preview_exposure_is_bounded_and_neutral_for_invalid_values() {
+        assert_eq!(level_preview_exposure(1.0), 1.0);
+        assert_eq!(level_preview_exposure(1.5), 1.5);
+        assert_eq!(level_preview_exposure(-1.0), 0.5);
+        assert_eq!(level_preview_exposure(20.0), 3.0);
+        assert_eq!(level_preview_exposure(f32::NAN), 1.0);
+        assert_eq!(level_preview_exposure(f32::INFINITY), 1.0);
     }
 }
