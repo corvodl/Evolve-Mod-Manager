@@ -605,9 +605,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             ))
                 .size(11)
                 .style(design::muted),
-                    text(format!("{} source scene diagnostics", state.level_diagnostics.len()))
-                        .size(11)
-                        .style(design::muted),
+                    text(format!("Original imported scene audit · {} notes", state.level_diagnostics.len()))
+                        .size(12),
+                    text(if state.level_diagnostics.is_empty() {
+                        "No imported source diagnostics for this level.".to_owned()
+                    } else {
+                        state.level_diagnostics.join("\n\n")
+                    })
+                    .size(11)
+                    .style(design::muted),
                 ]
                 .spacing(8),
             )
@@ -714,6 +720,21 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
 #[cfg(test)]
 mod editing_tests {
     use super::*;
+
+    #[test]
+    fn full_imported_scene_notes_remain_available_separately_from_footer() {
+        let notes = vec![
+            "Missing texture: textures/terrain/rock.dds".to_owned(),
+            "Original terrain layer IDs: 14".to_owned(),
+        ];
+        let state = State {
+            level_diagnostics: notes.clone(),
+            status: "Map Tutorial opened read-only · 2 source notes (see Diagnostics)".into(),
+            ..State::default()
+        };
+        assert_eq!(state.level_diagnostics, notes);
+        assert!(!state.status.contains("Missing texture"));
+    }
 
     #[test]
     fn level_inspector_defaults_to_actors_instead_of_verbose_scene_diagnostics() {
