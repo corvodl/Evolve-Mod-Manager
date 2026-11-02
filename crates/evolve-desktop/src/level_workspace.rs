@@ -218,9 +218,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 yaw: state.yaw,
                 pitch: state.pitch,
                 zoom: state.zoom.max(0.2),
-                // Reuse Scene's existing per-view preview scalar. The GPU
-                // world renderer uses it solely in HDR compositing.
-                light_strength: state.level_preview_exposure,
+                light_strength: state.light_strength,
                 emissive_gain: state.emissive_strength,
                 armor_level: 1.0,
                 emissive_time: state.decal_time,
@@ -476,22 +474,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 design::button("Night").on_press(Message::LevelTimePreset(0.0)),
             ]
             .spacing(4),
-            row![
-                text("Preview exposure").size(12),
-                space().width(Fill),
-                text(format!("{:.2}×", state.level_preview_exposure))
-                    .size(12)
-                    .style(design::muted),
-            ]
-            .align_y(iced::Center),
-            iced::widget::slider(
-                0.5..=3.0,
-                state.level_preview_exposure,
-                Message::LevelPreviewExposureChanged,
-            )
-            .step(0.05_f32)
-            .width(Fill),
-            design::button("Neutral exposure (1×)").on_press(Message::LevelPreviewExposureReset),
             design::button(if state.level_full_textures {
                 "Textures: Full quality"
             } else {
