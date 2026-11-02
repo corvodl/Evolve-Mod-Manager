@@ -1,7 +1,7 @@
 //! Resolve each CDF attachment's original CryEngine material and cooked DDS
 //! independently. All reads are source/path-checked, background-only, and
 //! shared through the bounded decoded preview cache.
-use crate::asset_cache::{SharedCache, decoded_dds_indexed};
+use crate::asset_cache::{SharedCache, decoded_dds_indexed, decoded_normal_with_gloss};
 use crate::auto_resources;
 use crate::textured::{MAX_GPU_PREVIEW_TEXTURE_BYTES, Surface};
 use evolve_core::{
@@ -639,6 +639,7 @@ fn authored_maps(
     // verified diffuse, nor may duplicate candidate roles pick an arbitrary
     // layer based on XML ordering.
     let mut counts = [0usize; 6];
+    let mut normal_gloss = false;
     for map in &slot.maps {
         if !is_damage_blend_mask(slot, map)
             && let Some(index) = legacy_decal_role(slot, &map.role)
@@ -706,8 +707,20 @@ fn authored_maps(
                 build,
             )?;
             let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-            let (_info, image) =
-                decoded_dds_indexed(cache, &canonical, &virtual_path, inventory, imported, build)?;
+            let image = if index == 1 {
+                let (image, gloss) = decoded_normal_with_gloss(
+                    cache,
+                    &canonical,
+                    &virtual_path,
+                    inventory,
+                    imported,
+                    build,
+                )?;
+                normal_gloss = gloss;
+                image
+            } else {
+                decoded_dds_indexed(cache, &canonical, &virtual_path, inventory, imported, build)?.1
+            };
             Ok((canonical, image))
         })();
         let (canonical, image) = match decoded {
@@ -745,6 +758,17 @@ fn authored_maps(
         } else {
             result[index] = Some(image);
         }
+    }
+    // Gloss in the normal's alpha multiplies this slot, whose neutral is mid gray.
+    if normal_gloss && result[4].is_none() {
+        static WHITE: std::sync::OnceLock<Arc<image::RgbaImage>> = std::sync::OnceLock::new();
+        result[4] = Some(Arc::clone(WHITE.get_or_init(|| {
+            Arc::new(image::RgbaImage::from_pixel(
+                1,
+                1,
+                image::Rgba([255, 255, 255, 255]),
+            ))
+        })));
     }
     if result[2].is_none()
         && !slot

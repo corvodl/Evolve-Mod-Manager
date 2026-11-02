@@ -45,7 +45,8 @@ fn vs_main(
 
 fn shade(input: Output) -> vec4<f32> {
     let base = textureSample(diffuse, material_sampler, input.uv);
-    let encoded_normal = textureSample(normal_map, material_sampler, input.uv).rg;
+    let normal_sample = textureSample(normal_map, material_sampler, input.uv);
+    let encoded_normal = normal_sample.rg;
     let decal_coord = input.uv * emissive_uv.xy + emissive_uv.zw;
     let glow = textureSample(emissive_map, material_sampler, decal_coord).rgb;
     let armor_glow = textureSample(armor_glow_map, material_sampler, input.uv).rgb;
@@ -53,7 +54,8 @@ fn shade(input: Output) -> vec4<f32> {
     // Only an explicitly authored Gloss/Glossiness/Smoothness map controls
     // the highlight width. Missing specular uses a black neutral fallback.
     let specular_color = textureSample(specular_map, material_sampler, input.uv).rgb;
-    let gloss = textureSample(gloss_map, material_sampler, input.uv).r;
+    // A ddna normal map carries smoothness in alpha; other formats read as 1.
+    let gloss = textureSample(gloss_map, material_sampler, input.uv).r * normal_sample.a;
 
     // CryEngine BC5 stores tangent-space XY. Reconstruct non-negative Z,
     // without treating the normal texture as sRGB. Missing maps use flat XY.

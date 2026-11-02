@@ -384,6 +384,97 @@ pub fn decoded_dds_indexed(
     })
 }
 
+/// Where a split texture keeps its gloss: `.dds.0a` beside the normal's `.dds.0`.
+fn gloss_stream(
+    virtual_path: &str,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Option<(String, PathBuf)>, String> {
+    let lower = virtual_path.replace('\\', "/").to_ascii_lowercase();
+    let Some((stem, _)) = lower.rsplit_once(".dds") else {
+        return Ok(None);
+    };
+    if !stem.ends_with("_ddna") {
+        return Ok(None);
+    }
+    let part = format!("{stem}.dds.0a");
+    if let AssetResolution::Found(relative) = resolve_virtual(inventory, &part) {
+        let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+        let target = fs::canonicalize(root.join(&relative)).map_err(|e| e.to_string())?;
+        return Ok(target.starts_with(&root).then_some((part, target)));
+    }
+    let Some(imported) = imported else {
+        return Ok(None);
+    };
+    match resolve_imported_reference(imported, &part, build).map_err(|e| e.to_string())? {
+        LibraryReferenceStatus::Found(found) => Ok(Some((part, found.absolute_path.into()))),
+        _ => Ok(None),
+    }
+}
+
+/// Copy a gloss stream's brightness into a normal map's alpha, where the shaders
+/// read it. Differing sizes sample the nearest gloss pixel.
+fn merge_gloss(normal: &mut RgbaImage, gloss: &RgbaImage) {
+    let (width, height) = normal.dimensions();
+    let (gloss_width, gloss_height) = gloss.dimensions();
+    if gloss_width == 0 || gloss_height == 0 {
+        return;
+    }
+    for (x, y, pixel) in normal.enumerate_pixels_mut() {
+        let sample = gloss.get_pixel(
+            u32::try_from(u64::from(x) * u64::from(gloss_width) / u64::from(width)).unwrap_or(0),
+            u32::try_from(u64::from(y) * u64::from(gloss_height) / u64::from(height)).unwrap_or(0),
+        );
+        pixel[3] = sample[0];
+    }
+}
+
+/// A normal map with its authored gloss in alpha, and whether gloss was found.
+/// The parts decode through a private cache, so a map load only holds the result.
+pub fn decoded_normal_with_gloss(
+    cache: &SharedCache,
+    source: &Path,
+    virtual_path: &str,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<(Arc<RgbaImage>, bool), String> {
+    let Some((part, stream)) = gloss_stream(virtual_path, inventory, imported, build)? else {
+        let (_, image) =
+            decoded_dds_indexed(cache, source, virtual_path, inventory, imported, build)?;
+        return Ok((image, false));
+    };
+    let meta = fs::symlink_metadata(&stream).map_err(|e| e.to_string())?;
+    let mut wanted = key(source, DdsLayout::Linear)?;
+    wanted.parts = vec![(
+        stream.clone(),
+        meta.len(),
+        meta.modified().map_err(|e| e.to_string())?,
+    )];
+    let mut merged = false;
+    let (_, image) = decode_once(cache, &wanted, || {
+        let scratch: SharedCache = Arc::new(Mutex::new(PreviewCache::with_limits(0, 0)));
+        let (info, normal) =
+            decoded_dds_indexed(&scratch, source, virtual_path, inventory, imported, build)?;
+        let mut normal = Arc::unwrap_or_clone(normal);
+        // A damaged gloss stream must not cost the surface its normal map.
+        if let Ok((_, gloss)) =
+            decoded_dds_indexed(&scratch, &stream, &part, inventory, imported, build)
+        {
+            merge_gloss(&mut normal, &gloss);
+            merged = true;
+        }
+        Ok((info, normal))
+    })?;
+    // A cached result was merged when it was first decoded; only a failed stream
+    // leaves alpha opaque, which reads the same as the neutral fallback did.
+    Ok((
+        image.clone(),
+        merged || image.pixels().any(|pixel| pixel[3] != 255),
+    ))
+}
+
 /// Display every face of a verified six-face cube DDS as an ordinary 3x2
 /// image, so even envprobe textures are useful in the 2D asset viewport.
 /// This is a preview, not a reinterpretation of the game's original bytes.
@@ -557,6 +648,15 @@ pub fn decoded_dds_with_layout(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gloss_brightness_moves_into_normal_alpha_across_sizes() {
+        let mut normal = RgbaImage::from_pixel(4, 4, image::Rgba([10, 20, 0, 255]));
+        let mut gloss = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+        gloss.put_pixel(1, 1, image::Rgba([200, 200, 200, 255]));
+        super::merge_gloss(&mut normal, &gloss);
+        assert_eq!(normal.get_pixel(0, 0).0, [10, 20, 0, 0]);
+        assert_eq!(normal.get_pixel(3, 3).0, [10, 20, 0, 200]);
+    }
     use super::*;
     use evolve_core::DdsFormat;
     #[test]
