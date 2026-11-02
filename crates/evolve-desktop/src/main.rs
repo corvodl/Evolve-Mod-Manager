@@ -255,7 +255,6 @@ enum LevelSidebarTab {
     Diagnostics,
 }
 
-#[derive(Default)]
 /// Playback of a source-annotated 1D/2D/3D blendspace. Original clips are
 /// resolved by this character's declarations, never by global basename.
 #[derive(Clone, Debug)]
@@ -325,6 +324,7 @@ impl ActiveBlendSpace {
     }
 }
 
+#[derive(Default)]
 struct State {
     sidebar_hovered: bool,
     sidebar_reveal: f32,
