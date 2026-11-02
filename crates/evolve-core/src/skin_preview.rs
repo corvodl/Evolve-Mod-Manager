@@ -2,7 +2,7 @@
 //! Renders exact compiled source weights and non-additive CAF keys, never
 //! guesses missing bones. CPU deformation is a correctness stepping stone;
 //! a dedicated GPU joint palette remains a separate performance milestone.
-use crate::caf_layers::{CafLayer, sample_caf_layers_with_bind};
+use crate::caf_layers::{CafLayer, WeightedCaf, sample_caf_layers_with_bind, sample_weighted_caf_with_bind};
 use crate::model::{RenderMesh, read_model};
 use crate::native_caf::CafBonePose;
 use crate::native_caf::NativeCafMotion;
@@ -311,6 +311,50 @@ impl VerifiedCafSkin {
         Ok(world)
     }
 
+    /// Source-annotated blendspace pose over this skin's original bone table.
+    fn posed_world_weighted(&self, clips: &[WeightedCaf<'_>], in_place: bool) -> Result<Vec<Mat4>, RigError> {
+        let bind = self.skeleton.controller_ids.iter()
+            .zip(&self.bind_components)
+            .map(|(&bone_crc32, (position, rotation))| CafBonePose {
+                bone_crc32, translation: Some(*position), rotation: Some(*rotation),
+            }).collect::<Vec<_>>();
+        let sampled = sample_weighted_caf_with_bind(clips, &bind)
+            .map_err(|e| RigError::Invalid(format!("Blendspace sample: {e}")))?;
+        let root = self.skeleton.parents.iter().position(Option::is_none);
+        let held = if in_place {
+            let at_start = clips.iter().map(|clip| WeightedCaf {
+                motion: clip.motion, seconds: 0.0, weight: clip.weight,
+            }).collect::<Vec<_>>();
+            sample_weighted_caf_with_bind(&at_start, &bind)
+                .map_err(|e| RigError::Invalid(format!("Blendspace root sample: {e}")))?
+                .into_iter()
+                .find(|pose| Some(pose.bone_crc32) == root.map(|i| self.skeleton.controller_ids[i]))
+        } else { None };
+        let mut locals = self.bind_local.clone();
+        for pose in sampled {
+            let index = *self.crc_to_bone.get(&pose.bone_crc32)
+                .ok_or_else(|| RigError::Invalid("Blendspace references unknown bone".into()))?;
+            let (bind_position, bind_rotation) = self.bind_components[index];
+            let mut translation = pose.translation.unwrap_or(bind_position);
+            let mut rotation = pose.rotation.unwrap_or(bind_rotation);
+            if Some(index) == root && let Some(held) = &held {
+                translation = held.translation.unwrap_or(translation);
+                rotation = held.rotation.unwrap_or(rotation);
+            }
+            locals[index] = trs(translation, rotation)?;
+        }
+        let mut world = Vec::with_capacity(locals.len());
+        for (i, local) in locals.iter().enumerate() {
+            world.push(self.skeleton.parents[i].map(|parent| multiply(&world[parent], local)).unwrap_or(*local));
+        }
+        Ok(world)
+    }
+
+    pub fn mesh_at_weighted(&self, clips: &[WeightedCaf<'_>], in_place: bool) -> Result<RenderMesh, RigError> {
+        let world = self.posed_world_weighted(clips, in_place)?;
+        deform(&self.mesh, &self.weights, &self.palette(&world))
+    }
+
     pub fn mesh_at(&self, seconds: f32) -> Result<RenderMesh, RigError> {
         self.mesh_at_layers(seconds, &[], false)
     }
@@ -477,6 +521,36 @@ impl VerifiedCafAssembly {
         let mut output = self.rest.clone();
         let primary = &self.skins[0].1;
         let world = primary.posed_world(seconds, layers, in_place)?;
+        for (offset, skin) in &self.skins {
+            let animated = deform(&skin.mesh, &skin.weights, &skin.palette(&world))?;
+            let end = offset
+                .checked_add(animated.positions.len())
+                .ok_or(RigError::Limits)?;
+            if end > output.positions.len() {
+                return Err(RigError::Limits);
+            }
+            output.positions[*offset..end].copy_from_slice(&animated.positions);
+            if let (Some(target), Some(source)) = (&mut output.normals, animated.normals) {
+                target[*offset..end].copy_from_slice(&source);
+            }
+        }
+        for &(first, count, bone) in &self.sockets {
+            let delta = multiply(&world[bone], &primary.skeleton.inverse[bone]);
+            move_equipment(&mut output, &self.rest, first, count, &delta)?;
+        }
+        Ok(output)
+    }
+
+    /// Deform all original CDF skin and mounted equipment parts from one
+    /// validated, weighted blendspace pose.
+    pub fn mesh_at_weighted(
+        &self,
+        clips: &[WeightedCaf<'_>],
+        in_place: bool,
+    ) -> Result<RenderMesh, RigError> {
+        let mut output = self.rest.clone();
+        let primary = &self.skins[0].1;
+        let world = primary.posed_world_weighted(clips, in_place)?;
         for (offset, skin) in &self.skins {
             let animated = deform(&skin.mesh, &skin.weights, &skin.palette(&world))?;
             let end = offset
