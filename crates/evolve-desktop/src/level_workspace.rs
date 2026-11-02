@@ -491,7 +491,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             )
             .step(0.05_f32)
             .width(Fill),
-            design::button("Source exposure (1×)").on_press(Message::LevelPreviewExposureReset),
+            design::button("Neutral exposure (1×)").on_press(Message::LevelPreviewExposureReset),
             design::button(if state.level_full_textures {
                 "Textures: Full quality"
             } else {
