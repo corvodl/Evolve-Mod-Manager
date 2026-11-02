@@ -1993,6 +1993,7 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,
+            shininess: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
             indirect_color: None,

@@ -113,6 +113,9 @@ pub struct MaterialSlot {
     #[serde(default)]
     pub diffuse_tint: Option<[f32; 3]>,
     pub specular_tint: Option<[f32; 3]>,
+    /// Shininess, which the game divides by 255 into smoothness.
+    #[serde(default)]
+    pub shininess: Option<f32>,
     /// Source TexMod of an explicitly authored Decal, if present.
     #[serde(default)]
     pub decal_tex_mod: Option<DecalTexMod>,
@@ -577,6 +580,9 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
                         specular_tint: source_color(&node, b"Specular")?,
+                        shininess: attr(&node, b"Shininess")?
+                            .and_then(|raw| raw.trim().parse::<f32>().ok())
+                            .filter(|value| value.is_finite()),
                         decal_tex_mod: None,
                         diffuse_tex_mod: None,
                         indirect_color: None,
@@ -707,6 +713,9 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
                         specular_tint: source_color(&node, b"Specular")?,
+                        shininess: attr(&node, b"Shininess")?
+                            .and_then(|raw| raw.trim().parse::<f32>().ok())
+                            .filter(|value| value.is_finite()),
                         decal_tex_mod: None,
                         diffuse_tex_mod: None,
                         indirect_color: None,

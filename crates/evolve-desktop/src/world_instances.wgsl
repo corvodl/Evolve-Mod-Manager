@@ -20,7 +20,7 @@ struct SurfaceParams {
   cutoff: vec4<f32>,
   clouds: vec4<f32>, // authored tint, then cloud exposure or ambient share
   uv: vec4<f32>,     // authored diffuse tiling, then scroll per second
-  specular: vec4<f32>, // authored Specular color
+  specular: vec4<f32>, // authored Specular color, Shininess as smoothness
   waterfall_scroll: vec4<f32>, // TillingLayer0, TillingLayer1, SpeedLayer0, SpeedLayer1
   waterfall_surface: vec4<f32>, // BumpScaleLayer0, BumpScaleLayer1, ReflectionAmount, FresnelBias
   waterfall_blend: vec4<f32>, // AlphaBlendMul, FoamDeform, FoamMultiplier
@@ -348,6 +348,25 @@ fn blended_terrain(input:Output,baked:vec3<f32>)->vec3<f32> {
 // Shared lighting, preserving the original source alpha only for materials
 // explicitly routed through the transparent pipeline. CryEngine can store
 // gloss, masks and other non-opacity data in a diffuse texture's alpha.
+// The game's light pass: GGX over its smoothness, with Schlick Fresnel. A surface
+// with no specular at all gets no grazing sheen either.
+fn game_specular(n:vec3<f32>,to_view:vec3<f32>,to_light:vec3<f32>,f0:vec3<f32>,smoothness:f32)->vec3<f32> {
+  let h=normalize(to_light+to_view);
+  let no_l=max(dot(n,to_light),0.0);
+  let no_v=max(dot(n,to_view),0.0);
+  let no_h=max(dot(n,h),0.0);
+  let rough=1.0-clamp(smoothness,0.0,1.0)*0.7;
+  let rough2=rough*rough;
+  let rough6=rough2*rough2*rough2;
+  let alpha2=max(rough6*rough6,0.00001);
+  let c=rough6*0.5+0.8;
+  let k=c*c*0.5;
+  let visibility=max((no_v*(1.0-k)+k)*(no_l*(1.0-k)+k),0.000001);
+  let d=no_h*no_h*(alpha2-1.0)+1.0;
+  let edge=1.0-max(dot(to_light,h),0.0);
+  let fresnel=f0+(vec3<f32>(1.0)-f0)*edge*edge*edge*edge*edge;
+  return fresnel*step(0.001,max(f0.r,max(f0.g,f0.b)))*(alpha2/(d*d)/visibility*0.25*no_l);
+}
 fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
   var base=sample_source_albedo(input.uv);
   // CryEngine Terrain.Layer high-pass is ADD-SIGNED over the original
@@ -451,12 +470,9 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
     reflectance=mix(reflectance,vec3<f32>(authored.foliage.w),layer_amount);
   }
   // A ddna normal map carries smoothness in alpha; other formats read as 1.
-  let gloss=clamp(textureSample(gloss_map,tex_sampler,input.uv).r*textureSample(normal_map,tex_sampler,input.uv).a*detail_gloss,0.0,1.0);
+  let gloss=clamp(textureSample(gloss_map,tex_sampler,input.uv).r*textureSample(normal_map,tex_sampler,input.uv).a*authored.specular.a*detail_gloss,0.0,1.0);
   let view_direction=normalize(camera.origin.xyz-input.world);
-  let half_direction=normalize(sun_direction+view_direction);
-  let exponent=mix(8.0,120.0,clamp(gloss,0.0,1.0));
-  let highlight=pow(max(dot(n,half_direction),0.0),exponent);
-  let specular=reflectance*light.sun_color.rgb*(light.sun.w*0.6*highlight*visibility);
+  let specular=game_specular(n,view_direction,sun_direction,reflectance,gloss)*light.sun_color.rgb*(light.sun.w*visibility);
   // Reflect the map's baked probe. Only materials with authored specular do.
   // The game reads a BRDF table here; this is the common fit of that table, so
   // rough surfaces do not mirror the probe at grazing angles.
@@ -509,9 +525,7 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
         clamp(cookie_uv,vec2<f32>(0.0),vec2<f32>(1.0)),i32(source.bulb.y),0.0).rgb;
     }
     let diffuse=max(dot(n,incoming),0.0);
-    let local_half=normalize(incoming+view_direction);
-    let spec=reflectance*
-       pow(max(dot(n,local_half),0.0),exponent)*0.15;
+    let spec=game_specular(n,view_direction,incoming,reflectance,gloss);
     local_radiance+=(base.rgb*diffuse+spec)*
       source.color_strength.rgb*cookie*
       source.color_strength.w*attenuation;

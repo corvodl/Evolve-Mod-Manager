@@ -430,7 +430,7 @@ fn merge_gloss(normal: &mut RgbaImage, gloss: &RgbaImage) {
     }
 }
 
-/// A normal map with its authored gloss in alpha, and whether gloss was found.
+/// A normal map with its authored gloss in alpha.
 /// The parts decode through a private cache, so a map load only holds the result.
 pub fn decoded_normal_with_gloss(
     cache: &SharedCache,
@@ -439,11 +439,11 @@ pub fn decoded_normal_with_gloss(
     inventory: &Inventory,
     imported: Option<&Path>,
     build: Option<&str>,
-) -> Result<(Arc<RgbaImage>, bool), String> {
+) -> Result<Arc<RgbaImage>, String> {
     let Some((part, stream)) = gloss_stream(virtual_path, inventory, imported, build)? else {
         let (_, image) =
             decoded_dds_indexed(cache, source, virtual_path, inventory, imported, build)?;
-        return Ok((image, false));
+        return Ok(image);
     };
     let meta = fs::symlink_metadata(&stream).map_err(|e| e.to_string())?;
     let mut wanted = key(source, DdsLayout::Linear)?;
@@ -452,7 +452,6 @@ pub fn decoded_normal_with_gloss(
         meta.len(),
         meta.modified().map_err(|e| e.to_string())?,
     )];
-    let mut merged = false;
     let (_, image) = decode_once(cache, &wanted, || {
         let scratch: SharedCache = Arc::new(Mutex::new(PreviewCache::with_limits(0, 0)));
         let (info, normal) =
@@ -463,16 +462,10 @@ pub fn decoded_normal_with_gloss(
             decoded_dds_indexed(&scratch, &stream, &part, inventory, imported, build)
         {
             merge_gloss(&mut normal, &gloss);
-            merged = true;
         }
         Ok((info, normal))
     })?;
-    // A cached result was merged when it was first decoded; only a failed stream
-    // leaves alpha opaque, which reads the same as the neutral fallback did.
-    Ok((
-        image.clone(),
-        merged || image.pixels().any(|pixel| pixel[3] != 255),
-    ))
+    Ok(image)
 }
 
 /// Display every face of a verified six-face cube DDS as an ordinary 3x2

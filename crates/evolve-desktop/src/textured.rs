@@ -103,10 +103,12 @@ pub struct Surface {
     pub distance_clouds: Option<[f32; 4]>,
     /// World meshes only: authored diffuse tiling, then scroll per second.
     pub uv_transform: Option<[f32; 4]>,
-    /// World meshes only: authored Diffuse tint, then ambient share.
+    /// Authored Diffuse tint, then ambient share (world meshes only).
     pub material_tint: Option<[f32; 4]>,
-    /// World meshes only: authored Specular color.
+    /// Authored Specular color.
     pub material_specular: Option<[f32; 3]>,
+    /// Authored Shininess, 0 to 255.
+    pub material_shininess: Option<f32>,
     /// World meshes only: Waterfall shader params.
     pub waterfall: Option<[f32; 11]>,
     /// World meshes only: Illum Detail map, then its tiling.
@@ -505,6 +507,7 @@ pub struct Pipeline {
     group: wgpu::BindGroup,
     _emission_uniform: wgpu::Buffer,
     _uv_uniform: wgpu::Buffer,
+    _material_uniform: wgpu::Buffer,
     depth: wgpu::TextureView,
     depth_dimensions: (u32, u32),
 }
@@ -512,7 +515,7 @@ pub struct Pipeline {
 // Every runtime material bind group must follow the same schema used by
 // textured.wgsl, including the standalone DDS refresh path. Keep this single
 // helper for initialization, CDF attachment ranges and texture reloads.
-const MATERIAL_BINDINGS: [u32; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+const MATERIAL_BINDINGS: [u32; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 /// Apply the earlier public Qt preview's GlowAmount 3 -> 100 reference to
 /// every source-authored emissive material while retaining its GlowAmount.
@@ -555,6 +558,7 @@ fn material_entries<'a>(
     sampler: &'a wgpu::Sampler,
     emission_uniform: &'a wgpu::Buffer,
     uv_uniform: &'a wgpu::Buffer,
+    material_uniform: &'a wgpu::Buffer,
 ) -> [wgpu::BindGroupEntry<'a>; MATERIAL_BINDINGS.len()] {
     let texture = |binding: usize, channel: usize| wgpu::BindGroupEntry {
         binding: MATERIAL_BINDINGS[binding],
@@ -579,6 +583,10 @@ fn material_entries<'a>(
         wgpu::BindGroupEntry {
             binding: MATERIAL_BINDINGS[9],
             resource: uv_uniform.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: MATERIAL_BINDINGS[10],
+            resource: material_uniform.as_entire_binding(),
         },
     ]
 }
@@ -620,6 +628,32 @@ impl Pipeline {
         });
         queue.write_buffer(&buffer, 0, bytemuck::bytes_of(&emissive_uv_values(uv, 0.0)));
         buffer
+    }
+
+    /// Specular color with smoothness, then Diffuse tint. A preview with no
+    /// material keeps a plain white tint and a mid smoothness.
+    fn material_uniform(
+        device: &wgpu::Device,
+        specular: Option<[f32; 3]>,
+        shininess: Option<f32>,
+        tint: Option<[f32; 4]>,
+    ) -> wgpu::Buffer {
+        let specular = specular.unwrap_or([1.0; 3]);
+        let tint = tint.unwrap_or([1.0; 4]);
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Authored material colors and smoothness"),
+            contents: bytemuck::cast_slice(&[
+                specular[0],
+                specular[1],
+                specular[2],
+                shininess.map_or(0.5, |value| value / 255.0),
+                tint[0],
+                tint[1],
+                tint[2],
+                1.0_f32,
+            ]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        })
     }
 
     fn depth_view(device: &wgpu::Device, size: (u32, u32)) -> wgpu::TextureView {
@@ -790,6 +824,16 @@ impl Pipeline {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -1136,7 +1180,7 @@ impl Pipeline {
             device,
             queue,
             None,
-            &[128, 128, 128, 255],
+            &[255, 255, 255, 255],
             wgpu::TextureFormat::Rgba8Unorm,
             "Neutral unverified gloss",
         );
@@ -1150,6 +1194,7 @@ impl Pipeline {
         );
         let emission_uniform = Self::emission_uniform(device, queue, 1.0, None, 0.5);
         let uv_uniform = Self::emissive_uv_uniform(device, queue, None);
+        let material_uniform = Self::material_uniform(device, None, None, None);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
@@ -1166,6 +1211,7 @@ impl Pipeline {
                 &sampler,
                 &emission_uniform,
                 &uv_uniform,
+                &material_uniform,
             ),
         });
         let vertex = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1237,6 +1283,7 @@ impl Pipeline {
             group,
             _emission_uniform: emission_uniform,
             _uv_uniform: uv_uniform,
+            _material_uniform: material_uniform,
             depth,
             depth_dimensions: (1, 1),
         }
@@ -1393,7 +1440,7 @@ impl Pipeline {
                 ),
                 (
                     part.gloss.as_ref(),
-                    [128, 128, 128, 255],
+                    [255, 255, 255, 255],
                     wgpu::TextureFormat::Rgba8Unorm,
                     "CDF part gloss",
                 ),
@@ -1516,6 +1563,12 @@ impl Pipeline {
                 part.alpha_cutoff,
             );
             let uv_uniform = Self::emissive_uv_uniform(device, queue, part.emissive_uv);
+            let material_uniform = Self::material_uniform(
+                device,
+                part.material_specular,
+                part.material_shininess,
+                part.material_tint,
+            );
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CDF attachment material"),
                 layout: &self.layout,
@@ -1526,6 +1579,7 @@ impl Pipeline {
                     &self.sampler,
                     &emission_uniform,
                     &uv_uniform,
+                    &material_uniform,
                 ),
             });
             self.gpu_surfaces.push(GpuSurface {
@@ -1778,7 +1832,7 @@ impl Pipeline {
                 device,
                 queue,
                 primitive.gloss.as_ref(),
-                &[128, 128, 128, 255],
+                &[255, 255, 255, 255],
                 wgpu::TextureFormat::Rgba8Unorm,
                 "Verified authored separate gloss",
             );
@@ -1798,6 +1852,7 @@ impl Pipeline {
                     &self.sampler,
                     &self._emission_uniform,
                     &self._uv_uniform,
+                    &self._material_uniform,
                 ),
             });
             self.last_texture_identity = primitive.texture_identity;

@@ -81,6 +81,25 @@ fn fs_decal(input:Output)->@location(0) vec4<f32> {
   return vec4<f32>(source.rgb*input.tint.rgb*behind/TYPICAL_ALBEDO,alpha);
 }
 
+// The game's light pass: GGX over its smoothness, with Schlick Fresnel. A surface
+// with no specular at all gets no grazing sheen either.
+fn game_specular(n:vec3<f32>,to_view:vec3<f32>,to_light:vec3<f32>,f0:vec3<f32>,smoothness:f32)->vec3<f32> {
+  let h=normalize(to_light+to_view);
+  let no_l=max(dot(n,to_light),0.0);
+  let no_v=max(dot(n,to_view),0.0);
+  let no_h=max(dot(n,h),0.0);
+  let rough=1.0-clamp(smoothness,0.0,1.0)*0.7;
+  let rough2=rough*rough;
+  let rough6=rough2*rough2*rough2;
+  let alpha2=max(rough6*rough6,0.00001);
+  let c=rough6*0.5+0.8;
+  let k=c*c*0.5;
+  let visibility=max((no_v*(1.0-k)+k)*(no_l*(1.0-k)+k),0.000001);
+  let d=no_h*no_h*(alpha2-1.0)+1.0;
+  let edge=1.0-max(dot(to_light,h),0.0);
+  let fresnel=f0+(vec3<f32>(1.0)-f0)*edge*edge*edge*edge*edge;
+  return fresnel*step(0.001,max(f0.r,max(f0.g,f0.b)))*(alpha2/(d*d)/visibility*0.25*no_l);
+}
 // Authored roads: a prism around each ribbon piece, projected only onto terrain
 // pixels, which the opaque pass marks with half alpha. As with decals the scene
 // stands in for light, here divided by what bare ground roughly reflects.
@@ -188,8 +207,6 @@ fn fs_road(input:RoadOutput)->@location(0) vec4<f32> {
     /max(ambient+sun*max(dot(up,sun_direction),0.0),0.001);
   let incoming=behind.rgb/GROUND_ALBEDO;
   let to_camera=normalize(camera.origin.xyz-world);
-  let halfway=normalize(sun_direction+to_camera);
-  let highlight=pow(max(dot(bent,halfway),0.0),mix(8.0,120.0,clamp(bump.a,0.0,1.0)));
-  let shine=road_specular.rgb*incoming*0.6*highlight;
+  let shine=game_specular(bent,to_camera,sun_direction,road_specular.rgb,bump.a*road_specular.a)*incoming;
   return vec4<f32>(source.rgb*input.tint.rgb*incoming*clamp(relief,0.4,1.8)+shine,alpha);
 }

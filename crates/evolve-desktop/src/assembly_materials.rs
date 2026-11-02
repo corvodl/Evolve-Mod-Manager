@@ -639,7 +639,6 @@ fn authored_maps(
     // verified diffuse, nor may duplicate candidate roles pick an arbitrary
     // layer based on XML ordering.
     let mut counts = [0usize; 6];
-    let mut normal_gloss = false;
     for map in &slot.maps {
         if !is_damage_blend_mask(slot, map)
             && let Some(index) = legacy_decal_role(slot, &map.role)
@@ -708,16 +707,14 @@ fn authored_maps(
             )?;
             let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
             let image = if index == 1 {
-                let (image, gloss) = decoded_normal_with_gloss(
+                decoded_normal_with_gloss(
                     cache,
                     &canonical,
                     &virtual_path,
                     inventory,
                     imported,
                     build,
-                )?;
-                normal_gloss = gloss;
-                image
+                )?
             } else {
                 decoded_dds_indexed(cache, &canonical, &virtual_path, inventory, imported, build)?.1
             };
@@ -758,17 +755,6 @@ fn authored_maps(
         } else {
             result[index] = Some(image);
         }
-    }
-    // Gloss in the normal's alpha multiplies this slot, whose neutral is mid gray.
-    if normal_gloss && result[4].is_none() {
-        static WHITE: std::sync::OnceLock<Arc<image::RgbaImage>> = std::sync::OnceLock::new();
-        result[4] = Some(Arc::clone(WHITE.get_or_init(|| {
-            Arc::new(image::RgbaImage::from_pixel(
-                1,
-                1,
-                image::Rgba([255, 255, 255, 255]),
-            ))
-        })));
     }
     if result[2].is_none()
         && !slot
@@ -1143,6 +1129,7 @@ fn load_authored_subset_surfaces(
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_shininess: None,
             waterfall: None,
             detail_map: None,
             blend_layer: None,
@@ -1231,6 +1218,8 @@ fn load_authored_subset_surfaces(
                             leaf.indirect_color.unwrap_or(0.25) / 0.25,
                         ]);
                         surface.material_specular = leaf.specular_tint;
+                        // The engine's default when a material omits it.
+                        surface.material_shininess = Some(leaf.shininess.unwrap_or(10.0));
                         if leaf.shader.eq_ignore_ascii_case("Illum") {
                             let layer = |role: &str| {
                                 authored_layer_map(
@@ -1576,6 +1565,7 @@ pub fn load_with_progress(
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_shininess: None,
             waterfall: None,
             detail_map: None,
             blend_layer: None,
@@ -1799,6 +1789,7 @@ mod tests {
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_shininess: None,
             waterfall: None,
             detail_map: None,
             blend_layer: None,
@@ -1889,6 +1880,7 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,
+            shininess: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
             indirect_color: None,
@@ -2076,6 +2068,7 @@ mod tests {
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_shininess: None,
             waterfall: None,
             detail_map: None,
             blend_layer: None,
@@ -2125,6 +2118,7 @@ mod tests {
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_shininess: None,
             waterfall: None,
             detail_map: None,
             blend_layer: None,
@@ -2230,6 +2224,7 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,
+            shininess: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
             indirect_color: None,
@@ -2373,6 +2368,7 @@ mod tests {
             uv_transform: None,
             material_tint: None,
             material_specular: None,
+            material_shininess: None,
             waterfall: None,
             detail_map: None,
             blend_layer: None,
@@ -2883,6 +2879,7 @@ mod tests {
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,
+            shininess: None,
             decal_tex_mod: None,
             diffuse_tex_mod: None,
             indirect_color: None,

@@ -25,6 +25,8 @@ struct Output {
 // Independent authored Decal UV transform: x/y tiling, z/w animation offset.
 // Only the emission map uses these values; other maps stay at mesh UV0.
 @group(0) @binding(9) var<uniform> emissive_uv: vec4<f32>;
+// Authored Specular with Shininess as smoothness, then Diffuse tint.
+@group(0) @binding(10) var<uniform> material: array<vec4<f32>, 2>;
 
 @vertex
 fn vs_main(
@@ -43,6 +45,25 @@ fn vs_main(
     return out;
 }
 
+// The game's light pass: GGX over its smoothness, with Schlick Fresnel. A surface
+// with no specular at all gets no grazing sheen either.
+fn game_specular(n:vec3<f32>,to_view:vec3<f32>,to_light:vec3<f32>,f0:vec3<f32>,smoothness:f32)->vec3<f32> {
+  let h=normalize(to_light+to_view);
+  let no_l=max(dot(n,to_light),0.0);
+  let no_v=max(dot(n,to_view),0.0);
+  let no_h=max(dot(n,h),0.0);
+  let rough=1.0-clamp(smoothness,0.0,1.0)*0.7;
+  let rough2=rough*rough;
+  let rough6=rough2*rough2*rough2;
+  let alpha2=max(rough6*rough6,0.00001);
+  let c=rough6*0.5+0.8;
+  let k=c*c*0.5;
+  let visibility=max((no_v*(1.0-k)+k)*(no_l*(1.0-k)+k),0.000001);
+  let d=no_h*no_h*(alpha2-1.0)+1.0;
+  let edge=1.0-max(dot(to_light,h),0.0);
+  let fresnel=f0+(vec3<f32>(1.0)-f0)*edge*edge*edge*edge*edge;
+  return fresnel*step(0.001,max(f0.r,max(f0.g,f0.b)))*(alpha2/(d*d)/visibility*0.25*no_l);
+}
 fn shade(input: Output) -> vec4<f32> {
     let base = textureSample(diffuse, material_sampler, input.uv);
     let normal_sample = textureSample(normal_map, material_sampler, input.uv);
@@ -53,9 +74,9 @@ fn shade(input: Output) -> vec4<f32> {
     // Specular is source reflectance color, NOT a gloss/roughness scalar.
     // Only an explicitly authored Gloss/Glossiness/Smoothness map controls
     // the highlight width. Missing specular uses a black neutral fallback.
-    let specular_color = textureSample(specular_map, material_sampler, input.uv).rgb;
+    let specular_color = textureSample(specular_map, material_sampler, input.uv).rgb * material[0].rgb;
     // A ddna normal map carries smoothness in alpha; other formats read as 1.
-    let gloss = textureSample(gloss_map, material_sampler, input.uv).r * normal_sample.a;
+    let gloss = textureSample(gloss_map, material_sampler, input.uv).r * normal_sample.a * material[0].a;
 
     // CryEngine BC5 stores tangent-space XY. Reconstruct non-negative Z,
     // without treating the normal texture as sRGB. Missing maps use flat XY.
@@ -116,12 +137,11 @@ fn shade(input: Output) -> vec4<f32> {
     // Original CryEngine-style spec/gloss slots remain authoritative.
     // No missing source specular is invented: an absent map stays black.
     let to_eye = normalize(vec3<f32>(-input.view_position.xy, 3.0 - input.view_position.z));
-    let half_key = normalize(key + to_eye);
-    let half_fill = normalize(fill + to_eye);
-    let exponent = mix(8.0, 120.0, clamp(gloss, 0.0, 1.0));
-    let highlight = 0.84 * pow(abs(dot(surface, half_key)), exponent)
-                  + 0.16 * pow(abs(dot(surface, half_fill)), exponent);
-    let specular_light = specular_color * highlight * exposure;
+    // Either side of a two-sided surface can face the camera in this rig.
+    let facing = select(-surface, surface, dot(surface, to_eye) >= 0.0);
+    let highlight = 0.84 * game_specular(facing, to_eye, key, specular_color, gloss)
+                  + 0.16 * game_specular(facing, to_eye, fill, specular_color, gloss);
+    let specular_light = highlight * exposure;
     // Emissive is independent of incident light. The original public Qt
     // manager interprets GlowAmount 3 as 100 visualization units for EVERY
     // source material, not just Kala. Scale only true authored emission.
@@ -141,7 +161,7 @@ fn shade(input: Output) -> vec4<f32> {
     let armor_source = armor_glow * emission_params.y;
     let armor_calibrated = armor_source * (100.0 / 3.0);
     let armor_viewport = min(armor_calibrated * 0.06, vec3<f32>(32.0));
-    return vec4<f32>(base.rgb * irradiance * exposure
+    return vec4<f32>(base.rgb * material[1].rgb * irradiance * exposure
         + viewport_glow
         + armor_viewport + specular_light, base.a);
 }

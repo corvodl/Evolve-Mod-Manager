@@ -1312,8 +1312,8 @@ pub(super) struct DecalBatch {
     pub road: bool,
     /// A road's Bumpmap, when its material has one.
     pub normal: Option<std::sync::Arc<image::RgbaImage>>,
-    /// A road's authored Specular.
-    pub specular: [f32; 3],
+    /// A road's authored Specular, then Shininess as smoothness.
+    pub specular: [f32; 4],
 }
 
 /// Every placed deferred decal, grouped by material and ordered by SortPriority.
@@ -1366,7 +1366,7 @@ pub(super) fn authored_decals(
                 instances: Vec::new(),
                 road: false,
                 normal: None,
-                specular: [0.0; 3],
+                specular: [0.0; 4],
             });
             batch.instances.push([
                 x[0],
@@ -1443,7 +1443,8 @@ fn load_road_surface(
     root: &std::path::Path,
     build: &str,
     material: &str,
-) -> (Option<std::sync::Arc<image::RgbaImage>>, [f32; 3]) {
+    inventory: &evolve_core::Inventory,
+) -> (Option<std::sync::Arc<image::RgbaImage>>, [f32; 4]) {
     let mtl = indexed_source(root, build, &format!("{material}.mtl"))
         .ok()
         .flatten()
@@ -1455,17 +1456,25 @@ fn load_road_surface(
         })
         .unwrap_or_default();
     let specular = match xml_tuple(&mtl, "Specular").as_deref() {
-        Some([r, g, b]) => [*r, *g, *b],
-        _ => [0.0; 3],
+        Some([r, g, b]) => [*r, *g, *b, mtl_value(&mtl, "Shininess", 10.0) / 255.0],
+        _ => [0.0; 4],
     };
     let normal = mtl.find("Map=\"Bumpmap\"").and_then(|at| {
         let tag_start = mtl[..at].rfind('<').unwrap_or(at);
         let tag = &mtl[tag_start..];
         let file = xml_attribute(&tag[..tag.find('>').unwrap_or(tag.len())], "File")?;
         let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
-        let path = indexed_source(root, build, &format!("{stem}.dds.0")).ok()??;
-        let (_, image) = evolve_core::decode_dds_rgba(&path).ok()?;
-        Some(std::sync::Arc::new(image))
+        let part = format!("{stem}.dds.0");
+        let path = indexed_source(root, build, &part).ok()??;
+        crate::asset_cache::decoded_normal_with_gloss(
+            &crate::asset_cache::PreviewCache::for_scene(),
+            &path,
+            &part,
+            inventory,
+            Some(root),
+            Some(build),
+        )
+        .ok()
     });
     (normal, specular)
 }
@@ -1602,6 +1611,7 @@ pub(super) fn authored_roads(
             .map_err(|e| e.to_string())?;
     let mut materials = HashMap::<String, DecalMaterial>::new();
     let mut surfaces = HashMap::new();
+    let inventory = evolve_core::imported_archive_files(archive).map_err(|e| e.to_string())?;
     let mut batches = HashMap::<String, DecalBatch>::new();
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
@@ -1626,7 +1636,7 @@ pub(super) fn authored_roads(
             };
             let (normal, specular) = surfaces
                 .entry(key.clone())
-                .or_insert_with(|| load_road_surface(root, &build, material))
+                .or_insert_with(|| load_road_surface(root, &build, material, &inventory))
                 .clone();
             let width = mtl_value(head, "Width", 4.0);
             let points = object
