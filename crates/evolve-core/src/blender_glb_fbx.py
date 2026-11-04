@@ -152,8 +152,10 @@ def run():
     visible = armatures + meshes + source_lights + placement_roots + source_placement_groups + [export_root]
     prepare_export_materials(meshes, embed_textures, destination)
     source_normal_maps = normal_image_names(meshes) if not embed_textures else set()
+    uvless = any(not mesh.data.uv_layers for mesh in meshes)
     validate_blender_meshes(meshes, rigged=any(o.type == 'ARMATURE' for o in visible),
-                            embed_textures=embed_textures)
+                            embed_textures=embed_textures,
+                            allow_uvless=level_scene)
     bpy.ops.object.select_all(action='DESELECT')
     for obj in visible:
         obj.select_set(True)
@@ -168,7 +170,7 @@ def run():
         axis_forward='-Y', axis_up='Z',
         use_mesh_modifiers=True,
         mesh_smooth_type='EDGE',
-        use_tspace=True,
+        use_tspace=not uvless,
         use_triangles=True,
         use_armature_deform_only=False,
         add_leaf_bones=False,
@@ -183,7 +185,8 @@ def run():
     if not destination.is_file() or destination.stat().st_size < 256:
         raise RuntimeError("Blender did not create a valid FBX")
     optimized = optimize_binary_fbx(destination, embed_textures=embed_textures,
-                                    require_tangent_space=True)
+                                    require_tangent_space=not uvless,
+                                    allow_uvless=level_scene)
     if not embed_textures:
         if optimized["embedded_normal_maps"] != len(source_normal_maps):
             raise RuntimeError("FBX lost one or more embedded normal maps")
@@ -233,6 +236,7 @@ def run():
         "fbx_optimization": optimized,
         "meshes": exported_mesh_count,
         "lights": exported_light_count,
+        "untextured_geometry_without_uv0": int(uvless),
         "editable_placement_groups": exported_placement_groups,
         "original_multi_mesh_groups": len(exported_source_groups),
         "armatures": exported_armature_count,
