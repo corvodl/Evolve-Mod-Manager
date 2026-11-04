@@ -309,9 +309,16 @@ fn scan_wildlife_child(
         object.home_area = attr(e, b"HomeAreaName")?.unwrap_or_default();
     } else if object.kind.eq_ignore_ascii_case("CreatureSpawn")
         && e.name().as_ref().eq_ignore_ascii_case(b"Populations")
-        && parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"Properties"))
+        && parents
+            .last()
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"Properties"))
     {
-        for key in [b"Population1", b"Population2", b"Population3", b"Population4"] {
+        for key in [
+            b"Population1",
+            b"Population2",
+            b"Population3",
+            b"Population4",
+        ] {
             if let Some(value) = attr(e, key)?
                 && !value.trim().is_empty()
             {
@@ -320,7 +327,9 @@ fn scan_wildlife_child(
         }
     } else if object.kind.eq_ignore_ascii_case("ZooKeeperShape")
         && e.name().as_ref().eq_ignore_ascii_case(b"Point")
-        && parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"Points"))
+        && parents
+            .last()
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"Points"))
         && object.shape_points.len() < 8192
         && let Some(coords) = attr(e, b"Pos")?
     {
@@ -911,7 +920,10 @@ mod tests {
         assert_eq!(scene.objects.len(), 3);
         assert!(scene.objects[0].is_wildlife_spawn());
         assert_eq!(scene.objects[0].kind, "CreatureSpawn");
-        assert_eq!(scene.objects[0].populations, ["MammothBird", "Marshstrider"]);
+        assert_eq!(
+            scene.objects[0].populations,
+            ["MammothBird", "Marshstrider"]
+        );
         assert_eq!(scene.objects[0].home_area, "MB_ZooKeeperShape_01");
         assert!(scene.objects[0].model.is_empty());
         assert_eq!(scene.objects[1].kind, "ZooKeeperShape");
