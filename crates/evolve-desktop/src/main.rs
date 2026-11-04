@@ -109,7 +109,7 @@ use evolve_core::{
     apply_library_build_updates, apply_profile_stage, apply_stage_pak, batch_stage_status,
     compare_assets, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
     decode_dds_rgba, discover_equipment, export_dds_png, export_level_scene_glb,
-    export_level_scene_glb_with_scene, export_rigged_character_fbx_textured_animated,
+    export_level_scene_glb_with_scene_color, export_rigged_character_fbx_textured_animated,
     export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
     import_library_plan_with_keys, import_stage_pak, imported_archive_files, imported_library,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
@@ -973,6 +973,7 @@ enum Operation {
         Option<Arc<LevelScene>>,
         Option<evolve_core::ImportedPak>,
         Vec<PathBuf>,
+        Option<Arc<image::RgbaImage>>,
     ),
     StageInit(PathBuf),
     StageStatus(PathBuf),
@@ -2194,6 +2195,7 @@ impl Operation {
                 assembled,
                 archive,
                 source_layers,
+                original_baked_color,
             ) => {
                 let folder = tempfile::tempdir().map_err(|e| e.to_string())?;
                 let scene_glb = folder.path().join("level-scene.glb");
@@ -2238,12 +2240,13 @@ impl Operation {
                         .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("Evolve Level");
-                    export_level_scene_glb_with_scene(
+                    export_level_scene_glb_with_scene_color(
                         &assembled,
                         &layers,
                         label,
                         &root,
                         terrain.as_deref(),
+                        original_baked_color.as_deref(),
                         &scene_glb,
                         |virtual_path| {
                             auto_resources::exact(
@@ -12053,6 +12056,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 (None, None, Vec::new())
             };
+            let original_baked_color = if same_loaded_scene {
+                state.level_world_source.as_ref()
+                    .and_then(|world| world.groups.first())
+                    .filter(|group| group.instances.first()
+                        .is_some_and(|item| item.object_index == usize::MAX))
+                    .and_then(|group| group.surfaces.first())
+                    .and_then(|surface| surface.diffuse.clone())
+            } else {
+                None
+            };
             return launch(
                 state,
                 Operation::ExportLevelFbx(
@@ -12064,6 +12077,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     assembled,
                     archive,
                     source_layers,
+                    original_baked_color,
                 ),
             );
         }
