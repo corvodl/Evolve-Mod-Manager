@@ -138,6 +138,59 @@ level mesh, terrain material, or texture was exported.
   verify no other instance moves, and verify all material pieces move together.
   GLB node-count tests alone are insufficient for FBX acceptance.
 
+## Blender reimport and actual map acceptance (November 4)
+
+- Every Level Editor FBX export now performs a **forced Blender FBX
+  round-trip** rather than skipping reimport when no static CDF basis or
+  original material tag was present.
+- The bridge compares each source-to-FBX mesh count, triangle count,
+  original UV0 presence and world-coordinate bounds; it also checks every
+  original local-light position. A sample imported mesh is actively moved,
+  its independently movable sibling checked, and the transform restored.
+  Dropped/fused meshes, missing UVs and displaced geometry fail the export.
+- The checks operate on the already-loaded level scene, **not** an in-game
+  rendering. Shader colors, material masks, native sun/shadow energy, texture
+  visual quality and real gameplay placement remain outside these assertions.
+- The exported Level Editor scene can now pass its **original verified
+  baked-terrain image** directly to the exporter. The source is the loaded
+  map's unmodified RGBA baked terrain surface, not the CPU/GPU high-pass
+  preview or a guessed `TerrainTexture.pak` path. This also supports original
+  RGB24 tile sets. The image is embedded with all source pixels and dimensions
+  preserved; a regression test decodes the image from the GLB and compares
+  every pixel. If there is no verified source image, no substitute color is
+  synthesized.
+- The user's original Tutorial source archive independently contains
+  `LevelData/Heightmap.dat` (512 x 512) and `TerrainTexture.xml` describing
+  four 1024-pixel RGB24 tiles (2 x 2, 2048² baked color). These inputs and
+  the user's separate four raw tiles support source-format inspection but are
+  **not** embedded in this repository or CI.
+- This execution environment does not contain Blender or Rust toolchains
+  or an in-game Evolve renderer. GitHub Actions can check compilation and
+  pure regression tests, but a real Tutorial/Ice_Crashsite FBX export and
+  paired Evolve screenshots must still be run in the owner's verified
+  Windows installation. Do not claim that synthetic test pass equals native
+  visual parity.
+- The owner-provided shader packages are opaque to ordinary ZIP inspection,
+  so their engine-specific native shader mathematics cannot be proven from
+  those bytes alone. The exported glTF/FBX materials remain an explicit
+  best-effort representation of verified source fields.
+
+### Real-map verification sequence
+
+1. Open the exact-build imported Tutorial map with its terrain texture PAK
+   and source MTL/DDS archives. Export a new FBX in the Level Editor.
+2. Confirm the exporter completes the Blender reimport audit, preserving
+   counts, independent object transforms, point/spot lights, all verified
+   UV0 spans, and the original 2048² baked RGB image.
+3. Confirm the original LayerID PNG sidecar retains the exact categorical
+   source bitmap and is not mistaken for a shaded texture.
+4. Compare Blender with a paired Evolve Stage 2 screenshot at matched
+   location, daylight, weather, and exposure. Track native normals, POM,
+   terrain blend weights, and local-light attenuation as separate gaps.
+5. Repeat on Ice_Crashsite with its different 4x4 map-owned tile layout and
+   4096² baked atlas. Inspect unsupported geometry and missing source assets;
+   do not silently substitute geometry or textures from another build.
+
 ## Acceptance requirements before ready for review
 
 - `cargo fmt --all -- --check`
