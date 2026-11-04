@@ -164,7 +164,8 @@ fn model_stem_key(value: &str) -> String {
 }
 
 fn is_elite_population(population: &str) -> bool {
-    population.to_ascii_lowercase().contains("elite")
+    let value = population.to_ascii_lowercase();
+    value.contains("elite") || value.contains("albino")
 }
 
 fn append_population_alias(aliases: &mut Vec<String>, value: &str) {
@@ -196,7 +197,11 @@ pub(super) fn population_model_aliases(population: &str) -> Vec<String> {
         // Evolve's Elite wildlife may be authored as Albino instead of Elite.
         // Both prefixes and suffixes are recognized; plain species stems are
         // usable only in a separately labeled elite/albino asset directory.
-        let species = name.replace("elite", "").trim_matches('_').to_owned();
+        let species = name
+            .replace("elite", "")
+            .replace("albino", "")
+            .trim_matches('_')
+            .to_owned();
         if !species.is_empty() {
             append_population_alias(&mut aliases, &format!("{species}_elite"));
             append_population_alias(&mut aliases, &format!("elite_{species}"));
@@ -1504,6 +1509,18 @@ mod tests {
                 "elitetyrant",
                 "tyrantelite",
                 "tyrantalbino",
+                "albinotyrant",
+                "tyrant"
+            ]
+        );
+        assert!(is_elite_population("Tyrant_Albino_Tutorial"));
+        assert_eq!(
+            population_model_aliases("Tyrant_Albino_Tutorial"),
+            vec![
+                "tyrantalbinotutorial",
+                "tyrantalbino",
+                "tyrantelite",
+                "elitetyrant",
                 "albinotyrant",
                 "tyrant"
             ]
