@@ -52,9 +52,26 @@ def run():
             raise RuntimeError('Oversized scene metadata')
         doc = json.loads(glb_file.read(json_len))
     level_scene = doc.get('extras', {}).get('source') == 'CryEngine Stage 2 level'
+    # Multi-part original CGFs already have a parent placement node in glTF.
+    # Preserve those real source hierarchies rather than regrouping each mesh.
+    group_names = {node.get('name') for node in doc.get('nodes', [])
+                   if node.get('children')
+                   and node.get('extras', {}).get('source_id')}
+    def source_group(obj):
+        if obj.type != 'EMPTY' or not any(c.type == 'MESH' for c in obj.children):
+            return False
+        name = obj.name
+        if name in group_names:
+            return True
+        stem, dot, suffix = name.rpartition('.')
+        return bool(dot and suffix.isdigit() and stem in group_names)
+    source_placement_groups = ([o for o in bpy.data.objects if source_group(o)]
+                               if level_scene else [])
     placement_roots = []
     if level_scene:
         for index, mesh in enumerate(source_meshes):
+            if mesh.parent in source_placement_groups:
+                continue
             if len({p.material_index for p in mesh.data.polygons}) < 2:
                 continue
             anchor = bpy.data.objects.new('EvolvePlacement_%06d' % index, None)
@@ -106,7 +123,7 @@ def run():
     source_shading = normal_samples(meshes)
     armatures = [obj for obj in visible if obj.type == "ARMATURE"]
     export_root = character_root(root_name, meshes, armatures)
-    for anchor in placement_roots:
+    for anchor in placement_roots + source_placement_groups:
         world = anchor.matrix_world.copy()
         anchor.parent = export_root
         anchor.matrix_world = world
@@ -117,7 +134,7 @@ def run():
         world = light.matrix_world.copy()
         light.parent = export_root
         light.matrix_world = world
-    visible = armatures + meshes + source_lights + placement_roots + [export_root]
+    visible = armatures + meshes + source_lights + placement_roots + source_placement_groups + [export_root]
     prepare_export_materials(meshes, embed_textures, destination)
     source_normal_maps = normal_image_names(meshes) if not embed_textures else set()
     validate_blender_meshes(meshes, rigged=any(o.type == 'ARMATURE' for o in visible),
@@ -163,6 +180,7 @@ def run():
     exported_armature_count = sum(obj.type == 'ARMATURE' for obj in visible)
     exported_light_count = len(source_lights)
     exported_placement_groups = len(placement_roots)
+    exported_source_groups = [o.name for o in source_placement_groups]
     if source_material_ids or native_bounds is not None:
         bpy.ops.wm.read_factory_settings(use_empty=True)
         bpy.ops.import_scene.fbx(filepath=str(destination))
@@ -179,6 +197,9 @@ def run():
                                if o.name.startswith('EvolvePlacement_')]
             if len(exported_groups) != exported_placement_groups:
                 raise RuntimeError('FBX lost editable multi-material placement groups')
+            imported_group_names = {o.name for o in bpy.data.objects if o.type == 'EMPTY'}
+            if any(name not in imported_group_names for name in exported_source_groups):
+                raise RuntimeError('FBX lost one or more original multi-mesh placement groups')
         if native_bounds is not None:
             if arms:
                 raise RuntimeError("Unrigged FBX unexpectedly gained an armature")
@@ -193,6 +214,7 @@ def run():
         "meshes": exported_mesh_count,
         "lights": exported_light_count,
         "editable_placement_groups": exported_placement_groups,
+        "original_multi_mesh_groups": len(exported_source_groups),
         "armatures": exported_armature_count,
         "animations_included": include_animation,
         "character_root": root_name,
