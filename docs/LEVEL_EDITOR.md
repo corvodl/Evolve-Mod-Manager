@@ -172,9 +172,10 @@ single nonempty population, the importer now also tries exact-variant and
 base-species model stems in the **verified same-installation Asset Library**.
 For example, `Trapjaw_Tutorial` searches `Trapjaw_Tutorial` and then
 `Trapjaw`. An elite population such as `TyrantElite_Tutorial` **must**
-use an explicitly elite-labeled asset, e.g. `TyrantElite.skinm` or an
-`Elite/Tyrant.skinm` path. It never substitutes the ordinary
-`Tyrant.skinm` model; if no distinct elite model is verified, a location
+use an explicitly elite/albino-labeled asset, e.g. `TyrantElite.skinm`,
+`TyrantAlbino.skinm`, or an `Elite/Tyrant.skinm` or
+`Albino/Tyrant.skinm` path. It never substitutes the ordinary
+`Tyrant.skinm` model; if no distinct elite/albino model is verified, a location
 marker remains instead. This also prevents normal populations from being
 displayed using elite model paths. Only a unique verified model path is used.
 Some elites may depend on runtime material/effect swaps rather than separate
