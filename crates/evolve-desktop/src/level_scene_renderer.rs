@@ -1559,6 +1559,19 @@ mod tests {
         for (population, model) in &report.resolved_models {
             println!("RESOLVED {population} {model}");
         }
+        for object in &scene.objects {
+            if object.populations.iter().any(|name| {
+                report
+                    .resolved_models
+                    .iter()
+                    .any(|(resolved, _)| resolved == name)
+            }) {
+                println!(
+                    "SPAWN {} {:?} {:?}",
+                    object.name, object.world.position, object.populations
+                );
+            }
+        }
         assert_eq!(report.spawn_distances.unwrap().minimum, 30.0);
         assert_eq!(report.spawn_distances.unwrap().maximum, 110.0);
         assert!(!world.groups.is_empty());
