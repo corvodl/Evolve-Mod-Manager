@@ -1160,17 +1160,23 @@ impl Operation {
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
             Self::ApplyLibraryBuildUpdates(root, plan, stage, cancelled, progress) => {
-                let keys = if plan
+                // Hold the verification key bundle throughout the update. Taking only
+                // .paths drops its TempDir and deletes bundled RSAKeyData.bin
+                // before the changed PAKs can be authenticated.
+                let verification_keys = if plan
                     .changed
                     .iter()
                     .any(|part| part.reuse_archive_id.is_none())
                 {
-                    modding_keys::archive_verification_keys(&stage)?.paths
+                    Some(modding_keys::archive_verification_keys(&stage)?)
                 } else {
-                    Vec::new()
+                    None
                 };
+                let keys: &[PathBuf] = verification_keys
+                    .as_ref()
+                    .map_or(&[], |bundle| bundle.paths.as_slice());
                 let report =
-                    apply_library_build_updates(&root, &plan, &keys, &cancelled, &progress)?;
+                    apply_library_build_updates(&root, &plan, keys, &cancelled, &progress)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedBuildUpdated(report, catalog))
             }
