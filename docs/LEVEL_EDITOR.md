@@ -153,3 +153,37 @@ shadow cascades or light-probe parity.
 Actual Stage 2 maps need screenshot comparison for BC5 channel orientation,
 specular levels, emissive tuning, mirrored buildings/vegetation and the
 reported originally missing DDS files. The source game files remain unchanged.
+
+
+## Wildlife Spawns visibility (source-authored)
+
+The Scene Outliner has a **Wildlife Spawns** toggle, initially off. The
+editor reads `CreatureSpawn` and `ZooKeeperShape` declarations from the
+selected map's original .lyr/mission XML. Creature spawns retain their
+`Properties/Populations` (Population1–4) and `HomeAreaName` attributes;
+ZooKeeper areas retain local polygon vertices. An enabled layer shows
+selectable marker meshes in the perspective world view, population names
+in the Outliner, and the authored polygon outlines in the 2D overview.
+Toggling visibility reuses assembled geometry and textures; it never
+rescans or rewrites source PAKs.
+
+The marker overlay is always available when enabled. For a spawn with a
+single nonempty population, the importer now also tries exact-variant and
+base-species model stems in the **verified same-installation Asset Library**.
+For example, `Trapjaw_Tutorial` searches `Trapjaw_Tutorial` and then
+`Trapjaw`. An elite population such as `TyrantElite_Tutorial` **must**
+use an explicitly elite/albino-labeled asset, e.g. `TyrantElite.skinm`,
+`TyrantAlbino.skinm`, or an `Elite/Tyrant.skinm` or
+`Albino/Tyrant.skinm` path. It never substitutes the ordinary
+`Tyrant.skinm` model; if no distinct elite/albino model is verified, a location
+marker remains instead. This also prevents normal populations from being
+displayed using elite model paths. Only a unique verified model path is used.
+Some elites may depend on runtime material/effect swaps rather than separate
+mesh paths; those visuals are not claimed until confirmed against source files.
+Ambiguous/missing matches, or multi-population spawns that could generate
+different creatures, remain indicator markers instead of inventing an animal.
+The preview uses the existing source-mesh/material decoder and may still
+report unsupported or incomplete skeletal attachments. Source population IDs
+are never renamed or rewritten. Population spawn timing and rules are not
+simulated. Native model parity and source-polygon placement must be validated
+against actual imported Stage 2 maps.

@@ -354,6 +354,9 @@ pub(super) fn decode(bytes: &[u8], scene: &mut LevelScene) -> Result<VegetationI
             local: tf,
             world: tf,
             status: "Original binary vegetation instance (read-only)".into(),
+            populations: Vec::new(),
+            home_area: String::new(),
+            shape_points: Vec::new(),
         });
     }
     let instances = new_objects.len();
