@@ -71,7 +71,7 @@ def run():
     meshes = prepare_original_uv(source_meshes)
     if level_scene and placement_roots:
         for anchor in placement_roots:
-            if not any(obj.parent is anchor for obj in meshes):
+            if not any(obj.parent == anchor for obj in meshes):
                 raise RuntimeError('Original placement lost all material fragments')
     preserve_or_reconstruct_normals(meshes, glb_source_normals(source))
     visible = [o for o in bpy.data.objects if o in visible or o in meshes]
