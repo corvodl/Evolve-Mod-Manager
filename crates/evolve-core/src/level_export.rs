@@ -1231,6 +1231,33 @@ impl Assembler {
         Ok(data)
     }
 }
+/// Author-declared CrChF MtlName (0x08021014) references only.
+fn embedded_mtl_names(bytes:&[u8])->Vec<String> {
+    if bytes.len()<32 || bytes.get(..5)!=Some(b"CrChF"){return Vec::new();}
+    let read=|at:usize|->Option<usize>{
+        Some(u32::from_le_bytes(bytes.get(at..at+4)?.try_into().ok()?) as usize)
+    };
+    let (Some(count),Some(start))=(read(8),read(12)) else{return Vec::new();};
+    if count==0 || count>10_000 || start<16
+        || start.checked_add(count*16).is_none_or(|n|n>bytes.len()) {return Vec::new();}
+    let mut names=Vec::<String>::new();
+    for i in 0..count {
+        let at=start+i*16;
+        if read(at)!=Some(0x08021014){continue;}
+        let (Some(len),Some(offset))=(read(at+8),read(at+12)) else{continue;};
+        if len<132 || offset<start+count*16
+            || offset.checked_add(len).is_none_or(|n|n>bytes.len()){continue;}
+        let Some(field)=bytes.get(offset..offset+128) else{continue;};
+        let Some(zero)=field.iter().position(|b|*b==0) else{continue;};
+        let Ok(raw)=std::str::from_utf8(&field[..zero]) else{continue;};
+        let name=raw.trim().replace('\\',"/");
+        let name=if name.to_ascii_lowercase().ends_with(".mtl"){name}else{format!("{name}.mtl")};
+        if safe_member_name(&name).is_err(){continue;}
+        if !names.iter().any(|known|known.eq_ignore_ascii_case(&name)){names.push(name);}
+    }
+    names
+}
+
 fn exact_geometry(root: &Path, virtual_path: &str) -> Result<PathBuf, LevelExportError> {
     let normalized = safe_member_name(virtual_path)
         .map_err(|_| LevelExportError::Missing(virtual_path.into()))?;
