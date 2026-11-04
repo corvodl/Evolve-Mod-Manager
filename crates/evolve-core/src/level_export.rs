@@ -1151,88 +1151,79 @@ where
         }
     }
     for object in &scene.objects {
-        let mesh_id = if object.model.is_empty() {
-            None
+        let mesh_ids = if object.model.is_empty() {
+            Vec::new()
         } else {
-            let key = (
-                object.model.to_ascii_lowercase(),
-                object.material.to_ascii_lowercase(),
-            );
-            if let Some(id) = resources.get(&key) {
-                Some(*id)
+            let key=(object.model.to_ascii_lowercase(),object.material.to_ascii_lowercase());
+            if let Some(ids)=resources.get(&key) {
+                ids.clone()
             } else {
-                // Exact authored source first, then its exact compiled partner;
-                // a similarly named asset elsewhere is never considered.
-                let name = &object.model;
-                let mut candidates = vec![name.clone()];
-                let ext = Path::new(name)
-                    .extension()
-                    .and_then(|x| x.to_str())
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                if matches!(ext.as_str(), "cgf" | "cga" | "chr" | "skin") {
-                    let compiled = Path::new(name)
-                        .with_extension(format!("{ext}m"))
-                        .to_string_lossy()
-                        .to_string();
-                    candidates.push(compiled);
+                let name=&object.model;
+                let mut candidates=vec![name.clone()];
+                let ext=Path::new(name).extension().and_then(|x|x.to_str())
+                    .unwrap_or_default().to_ascii_lowercase();
+                if matches!(ext.as_str(),"cgf"|"cga"|"chr"|"skin") {
+                    candidates.push(Path::new(name).with_extension(format!("{ext}m"))
+                        .to_string_lossy().to_string());
                 }
-                let mut loaded = None;
-                let mut errors = Vec::new();
+                let mut loaded=None;
+                let mut errors=Vec::new();
                 for candidate in candidates {
-                    if let Some(path) = resolve(&candidate)? {
+                    if let Some(path)=resolve(&candidate)? {
+                        if let Ok(parts)=read_world_model_parts_with_subsets(&path)
+                            && !parts.is_empty()
+                        {
+                            loaded=Some((parts,path));
+                            break;
+                        }
                         match read_model(&path) {
-                            Ok(mesh) => {
-                                loaded = Some((mesh, path));
+                            Ok(mesh)=>{
+                                loaded=Some((vec![WorldModelPart{
+                                    mesh,subsets:Vec::new(),has_subset_table:false
+                                }],path));
                                 break;
                             }
-                            Err(error) => errors.push(format!("{candidate}: {error}")),
+                            Err(error)=>errors.push(format!("{candidate}: {error}")),
                         }
                     }
                 }
-                let (mesh, path) = loaded.ok_or_else(|| {
-                    LevelExportError::Missing(format!("{}: {}", object.model, errors.join("; ")))
-                })?;
-                let bytes = fs::read(&path)?;
-                let virtual_material = if object.material.trim().is_empty() {
-                    let stem = object
-                        .model
-                        .rsplit_once('.')
-                        .map_or(object.model.as_str(), |(stem, _)| stem);
+                let (parts,path)=loaded.ok_or_else(||LevelExportError::Missing(
+                    format!("{}: {}",object.model,errors.join("; "))
+                ))?;
+                let bytes=fs::read(&path)?;
+                let virtual_material=if object.material.trim().is_empty() {
+                    let stem=object.model.rsplit_once('.')
+                        .map_or(object.model.as_str(),|(stem,_)|stem);
                     format!("{stem}.mtl")
                 } else if object.material.to_ascii_lowercase().ends_with(".mtl") {
                     object.material.clone()
                 } else {
-                    format!("{}.mtl", object.material)
+                    format!("{}.mtl",object.material)
                 };
-                let authored = resolve(&virtual_material)?.and_then(|mtl| read_material(&mtl).ok());
-                let id = assembler.add_textured_mesh_resolved(
-                    &mesh,
-                    &bytes,
-                    authored.as_ref(),
-                    &mut resolve,
-                )?;
-                resources.insert(key, id);
-                Some(id)
+                let authored=resolve(&virtual_material)?
+                    .and_then(|material|read_material(&material).ok());
+                let mut ids=Vec::new();
+                for part in parts {
+                    // An explicit empty ranges slice means the source part
+                    // has no table; do not borrow another mesh's subset IDs.
+                    let known=Some(part.subsets.as_slice());
+                    let index=assembler.add_textured_mesh_resolved(
+                        &part.mesh,&bytes,authored.as_ref(),known,&mut resolve
+                    )?;
+                    ids.push(index);
+                }
+                resources.insert(key,ids.clone());
+                ids
             }
         };
-        if mesh_id.is_some() {
-            geometry_instances += 1;
-        } else {
-            metadata_only += 1;
-        }
-        assembler.add_node(
-            &object.name,
-            mesh_id,
-            Some(object.world),
-            json!({"source_id":object.id,"layer":object.layer,
-                   "type":object.kind,"parent_guid":object.parent,
-                   "material_reference":object.material,"hidden":object.hidden}),
-        )?;
+        if mesh_ids.is_empty() {metadata_only+=1;}
+        else {geometry_instances+=1;}
+        assembler.add_placement(object,&mesh_ids)?;
     }
     for light in &lights {
         assembler.add_light(light)?;
     }
+    let assembler_mesh_count=assembler.meshes;
     let authored_material_slots = assembler.document["materials"]
         .as_array()
         .map_or(0, Vec::len);
@@ -1254,7 +1245,7 @@ where
     })?;
     Ok(LevelExportReport {
         source_objects: scene.objects.len(),
-        exported_mesh_resources: resources.len() + terrain_tiles,
+        exported_mesh_resources: assembler_mesh_count,
         exported_mesh_instances: geometry_instances,
         metadata_only_objects: metadata_only,
         included_terrain: terrain.is_some(),
