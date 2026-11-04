@@ -47,6 +47,23 @@ level mesh, terrain material, or texture was exported.
    reimports and comparison of all mesh/material/texture counts, UVs, positions,
    source-resolution images, and terrain are still required.
 
+## Blender object-editing contract
+
+- **Do not combine the level into one mesh.** Each original level placement must
+  produce a separately selectable Blender object with its own transform.
+- Repeated models may share source geometry, but moving, rotating or scaling
+  one instance must not transform any other instance.
+- Keep object names and source GUID/layer identifiers traceable. If the FBX
+  conversion separates a multi-material mesh into multiple Blender objects,
+  preserve a per-placement parent/group so the complete prop can be moved as
+  one unit.
+- Terrain must be a separately selectable object or organized tile collection;
+  vegetation must preserve independently movable instances rather than a
+  single fused foliage mesh.
+- Blender reimport acceptance must alter a sample repeated prop's transform,
+  verify no other instance moves, and verify all material pieces move together.
+  GLB node-count tests alone are insufficient for FBX acceptance.
+
 ## Acceptance requirements before ready for review
 
 - `cargo fmt --all -- --check`
