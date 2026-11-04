@@ -607,7 +607,7 @@ impl Assembler {
         let mut pbr = json!({"metallicFactor":0.0,"roughnessFactor":1.0});
         if let Some(tint) = slot.diffuse_tint {
             pbr["baseColorFactor"] =
-                json!([tint[0], tint[1], tint[2], slot.opacity.unwrap_or(1.0)]);
+                json!([tint[0].clamp(0.,1.),tint[1].clamp(0.,1.),tint[2].clamp(0.,1.),slot.opacity.unwrap_or(1.0)]);
         } else if let Some(opacity) = slot.opacity {
             pbr["baseColorFactor"] = json!([1.0, 1.0, 1.0, opacity]);
         }
@@ -661,7 +661,7 @@ impl Assembler {
         }
         if let Some(tint)=slot.specular_tint {
             value["extensions"]["KHR_materials_specular"]=
-                json!({"specularColorFactor":tint});
+                json!({"specularColorFactor":tint.map(|value|value.clamp(0.,1.))});
             self.require_extension("KHR_materials_specular")?;
         }
         for reference in &slot.maps {
