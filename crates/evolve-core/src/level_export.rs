@@ -383,23 +383,23 @@ impl Assembler {
     /// Each source map is embedded as PNG at its original decoded mip dimensions.
     /// We deliberately do not fabricate unknown maps or borrow same-name DDS
     /// files from a different extraction root.
-    fn source_texture(
+    fn source_texture<R>(
         &mut self,
-        root: &Path,
+        resolve: &mut R,
         virtual_path: &str,
-    ) -> Result<Option<usize>, LevelExportError> {
+    ) -> Result<Option<usize>, LevelExportError>
+    where R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>
+    {
         let cache_key = virtual_path.to_ascii_lowercase();
         if let Some(index) = self.cached_images.get(&cache_key) {
             return Ok(Some(*index));
         }
-        let source = exact_geometry(root, virtual_path).or_else(|_| {
-            if virtual_path.to_ascii_lowercase().ends_with(".dds") {
-                exact_geometry(root, &format!("{virtual_path}.0"))
-            } else {
-                Err(LevelExportError::Missing(virtual_path.into()))
-            }
-        });
-        let Ok(source) = source else {
+        let source = if let Some(source)=resolve(virtual_path)? {
+            Some(source)
+        } else if virtual_path.to_ascii_lowercase().ends_with(".dds") {
+            resolve(&format!("{virtual_path}.0"))?
+        } else { None };
+        let Some(source) = source else {
             self.missing_texture_references += 1;
             return Ok(None);
         };
@@ -455,11 +455,13 @@ impl Assembler {
     /// Preserve authored leaf slot order, including NoDraw holes. glTF maps
     /// established texture channels directly; other CryEngine channels remain
     /// explicitly identified in extras, rather than assigned guessed semantics.
-    fn source_material(
+    fn source_material<R>(
         &mut self,
         slot: &MaterialSlot,
-        root: &Path,
-    ) -> Result<usize, LevelExportError> {
+        resolve: &mut R,
+    ) -> Result<usize, LevelExportError>
+    where R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>
+    {
         let mut pbr = json!({"metallicFactor":0.0,"roughnessFactor":1.0});
         if let Some(tint) = slot.diffuse_tint {
             pbr["baseColorFactor"] =
@@ -488,7 +490,7 @@ impl Assembler {
             value["emissiveFactor"] = json!(color);
         }
         for reference in &slot.maps {
-            let Some(texture) = self.source_texture(root, &reference.path)? else {
+            let Some(texture) = self.source_texture(resolve, &reference.path)? else {
                 continue;
             };
             let role = reference.role.as_str();
@@ -535,6 +537,20 @@ impl Assembler {
         material: Option<&MaterialDocument>,
         root: &Path,
     ) -> Result<usize, LevelExportError> {
+        self.add_textured_mesh_resolved(
+            mesh,source_bytes,material,
+            &mut |path| Ok(exact_geometry(root,path).ok())
+        )
+    }
+    fn add_textured_mesh_resolved<R>(
+        &mut self,
+        mesh: &RenderMesh,
+        source_bytes: &[u8],
+        material: Option<&MaterialDocument>,
+        resolve: &mut R,
+    ) -> Result<usize, LevelExportError>
+    where R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>
+    {
         let id = self.add_mesh(mesh)?;
         let Some(document) = material else {
             self.missing_material_sets += 1;
@@ -542,7 +558,7 @@ impl Assembler {
         };
         let mut ids = Vec::with_capacity(document.slots.len());
         for slot in &document.slots {
-            ids.push(self.source_material(slot, root)?);
+            ids.push(self.source_material(slot, resolve)?);
         }
         let old = self.document["meshes"][id]["primitives"][0].clone();
         let ranges = original_mesh_subsets(source_bytes, mesh.indices.len())
