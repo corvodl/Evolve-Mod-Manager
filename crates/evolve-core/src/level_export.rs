@@ -634,7 +634,15 @@ impl Assembler {
                 "cryengine_pbr_mapping":"glTF is a neutral approximation of CryEngine parameters"
             }
         });
-        if let Some(alpha_test) = slot.alpha_test {
+        // CryEngine's authored NoDraw leaf still occupies an original
+        // material slot. Preserve its polygons for editing, but never render
+        // them as an opaque white placeholder in Blender.
+        if slot.shader.eq_ignore_ascii_case("NoDraw") {
+            value["alphaMode"] = json!("BLEND");
+            value["pbrMetallicRoughness"]["baseColorFactor"] =
+                json!([1.0, 1.0, 1.0, 0.0]);
+            value["extras"]["cryengine_no_draw"] = json!(true);
+        } else if let Some(alpha_test) = slot.alpha_test {
             value["alphaMode"] = json!("MASK");
             value["alphaCutoff"] = json!(alpha_test);
         } else if slot.opacity.is_some_and(|x| x < 1.0) {
@@ -1571,6 +1579,28 @@ mod tests {
         let edge=image.get_pixel(1,0);
         assert_eq!(edge[0],255);
         assert!(edge[2]>=124 && edge[2]<=130);
+    }
+    #[test]
+    fn source_nodraw_is_invisible_but_keeps_its_original_material_slot() {
+        let material = crate::materials::parse_material(
+            br#"<Material Name="Root"><SubMaterials>
+                <Material Name="Visible" Shader="Illum" />
+                <Material Name="Helper" Shader="NoDraw" />
+            </SubMaterials></Material>"#,
+        ).unwrap();
+        assert_eq!(material.slots.len(), 2);
+        let folder=tempfile::tempdir().unwrap();
+        let mut exporter=Assembler::new("NoDraw test");
+        for slot in &material.slots {
+            exporter.source_material(slot,&mut |_path|Ok(None)).unwrap();
+        }
+        assert_eq!(exporter.document["materials"][0]["alphaMode"], serde_json::Value::Null);
+        assert_eq!(exporter.document["materials"][1]["alphaMode"], "BLEND");
+        assert_eq!(
+            exporter.document["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"][3],0.0
+        );
+        assert_eq!(exporter.document["materials"][1]["extras"]["cryengine_no_draw"],true);
+        drop(folder);
     }
     #[test]
     fn multi_part_actor_has_one_movable_transform_parent() {
