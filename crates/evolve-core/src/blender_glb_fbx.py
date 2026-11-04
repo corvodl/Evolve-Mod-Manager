@@ -16,7 +16,7 @@ from blender_fbx_safety import (prepare_export_materials, validate_blender_meshe
                                optimize_binary_fbx, normal_image_names)
 from blender_static_fbx_basis import original_static_bounds, verify_static_world_bounds
 from blender_export_hierarchy import (original_part_labels, name_static_meshes,
-                                      character_root, combine_source_meshes)
+                                      character_root, combine_source_meshes, clean_name)
 
 def run():
     # Blender script flags: source.glb output.fbx animate embed combine
@@ -52,6 +52,8 @@ def run():
             raise RuntimeError('Oversized scene metadata')
         doc = json.loads(glb_file.read(json_len))
     level_scene = doc.get('extras', {}).get('source') == 'CryEngine Stage 2 level'
+    if level_scene and combine_meshes:
+        raise RuntimeError('Level FBX export must keep source placements separately movable')
     # Multi-part original CGFs already have a parent placement node in glTF.
     # Preserve those real source hierarchies rather than regrouping each mesh.
     group_names = {node.get('name') for node in doc.get('nodes', [])
@@ -113,7 +115,11 @@ def run():
     if source_material_ids:
         verify_original_material_ids(meshes, [source_material_ids])
         source_material_uvs = source_material_uv_distributions(meshes)
-    root_name = name_static_meshes(meshes, source.stem, original_part_labels(source))
+    # Character material-part naming is not appropriate for original levels.
+    # Keep each imported actor/vegetation/terrain tile name in the Blender
+    # Outliner; material splitting only adds Blender's normal .001 suffix.
+    root_name = (clean_name(source.stem, 'CryEngine Level') if level_scene else
+                 name_static_meshes(meshes, source.stem, original_part_labels(source)))
     if combine_meshes:
         meshes, _ = combine_source_meshes(meshes, root_name=root_name)
         if source_material_ids:
