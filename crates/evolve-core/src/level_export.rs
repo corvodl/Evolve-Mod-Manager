@@ -1123,7 +1123,7 @@ where
         .filter(|light| used.insert(light.id.to_ascii_lowercase()))
         .collect::<Vec<_>>();
     let mut assembler = Assembler::new(label);
-    let mut resources = HashMap::<(String, String), usize>::new();
+    let mut resources = HashMap::<(String, String), Vec<usize>>::new();
     let mut geometry_instances = 0usize;
     let mut metadata_only = 0usize;
     let mut terrain_tiles = 0usize;
