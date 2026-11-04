@@ -111,7 +111,8 @@ class StaticFBXBasisTests(unittest.TestCase):
                        "include_animation": False,
                        "root_name": "Emet", "combine_meshes": False,
                        "source_lights": [], "placement_roots": [],
-                       "source_placement_groups": [], "uvless": False}
+                       "source_placement_groups": [], "uvless": False,
+                       "audited_geometry_count": 0, "audited_movable": False}
             compile_snippet = lambda statements: compile(
                 ast.fix_missing_locations(ast.Module(
                     body=statements, type_ignores=[])), "<lifecycle-test>", "exec")
@@ -129,6 +130,8 @@ class StaticFBXBasisTests(unittest.TestCase):
             self.assertEqual(result["editable_placement_groups"], 0)
             self.assertEqual(result["original_multi_mesh_groups"], 0)
             self.assertEqual(result["untextured_geometry_without_uv0"], 0)
+            self.assertEqual(result["roundtrip_verified_meshes"], 0)
+            self.assertFalse(result["independent_movement_checked"])
             self.assertEqual(result["output_bytes"], destination.stat().st_size)
 
     def test_native_source_coordinates_are_verified(self):
