@@ -171,8 +171,14 @@ The marker overlay is always available when enabled. For a spawn with a
 single nonempty population, the importer now also tries exact-variant and
 base-species model stems in the **verified same-installation Asset Library**.
 For example, `Trapjaw_Tutorial` searches `Trapjaw_Tutorial` and then
-`Trapjaw`; `TyrantElite_Tutorial` similarly falls back through
-`TyrantElite` to `Tyrant`. Only a unique verified model path is used.
+`Trapjaw`. An elite population such as `TyrantElite_Tutorial` **must**
+use an explicitly elite-labeled asset, e.g. `TyrantElite.skinm` or an
+`Elite/Tyrant.skinm` path. It never substitutes the ordinary
+`Tyrant.skinm` model; if no distinct elite model is verified, a location
+marker remains instead. This also prevents normal populations from being
+displayed using elite model paths. Only a unique verified model path is used.
+Some elites may depend on runtime material/effect swaps rather than separate
+mesh paths; those visuals are not claimed until confirmed against source files.
 Ambiguous/missing matches, or multi-population spawns that could generate
 different creatures, remain indicator markers instead of inventing an animal.
 The preview uses the existing source-mesh/material decoder and may still
