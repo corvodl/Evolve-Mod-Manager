@@ -189,3 +189,10 @@ authored terrain; associated spawns link to their named home shape. The 2D
 overview tints spawns by their distance to the camera. These guides show
 authored distance parameters, **not** runtime timing, caps, spawn weights,
 AI activation, or a gameplay simulation. Source PAKs are never changed.
+
+Stage 2 Tutorial captures (the two diagnostic views hide ordinary world
+objects/vegetation **only in the offscreen test**, not in the editor):
+
+![Tutorial with the normal map scene and wildlife preview](screenshots/level-wildlife/tutorial-map.png)
+![Tutorial Trapjaw wildlife/terrain diagnostic capture](screenshots/level-wildlife/tutorial-trapjaw-diagnostic.png)
+![Tutorial TyrantElite wildlife/terrain diagnostic capture](screenshots/level-wildlife/tutorial-tyrant-elite-diagnostic.png)
