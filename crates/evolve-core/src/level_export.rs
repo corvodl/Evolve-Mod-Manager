@@ -3,7 +3,7 @@
 //! one separately editable Blender node per placement and original UV0.
 //! Missing render dependencies fail closed, instead of faking a whole map.
 use crate::archive::safe_member_name;
-use crate::dds::decode_dds_rgba;
+use crate::dds::{DdsFormat, decode_dds_rgba, decode_dds_rgba_with_parts};
 use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::materials::{MaterialDocument, MaterialSlot, read_material};
 use crate::model::{ModelError, ModelInfo, RenderMesh, original_mesh_subsets, read_model, read_world_model_parts_with_subsets, WorldModelPart};
@@ -325,6 +325,21 @@ fn light_spot_rotation(source: [f32; 4]) -> [f32; 4] {
     ]
 }
 
+/// Reconstruct the positive tangent-space Z channel for the two authored
+/// normal components in BC5. This changes only the PNG for Blender's
+/// tangent-space normal slot: diffuse/packed R-G data is never reclassified.
+/// No Y inversion is applied without in-game shader verification.
+fn reconstruct_bc5_normal(rgba:&mut image::RgbaImage) {
+    for pixel in rgba.pixels_mut() {
+        let x=f32::from(pixel[0])/127.5-1.0;
+        let y=f32::from(pixel[1])/127.5-1.0;
+        let z=(1.0-x*x-y*y).max(0.0).sqrt();
+        let len=(x*x+y*y+z*z).sqrt().max(f32::EPSILON);
+        pixel[2]=((z/len+1.0)*127.5).round().clamp(0.0,255.0) as u8;
+        pixel[3]=255;
+    }
+}
+
 struct Assembler {
     document: Value,
     binary: Vec<u8>,
@@ -465,11 +480,12 @@ impl Assembler {
         &mut self,
         resolve: &mut R,
         virtual_path: &str,
+        normal_map: bool,
     ) -> Result<Option<usize>, LevelExportError>
     where
         R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
     {
-        let cache_key = virtual_path.to_ascii_lowercase();
+        let cache_key = format!("{}:{}",virtual_path.to_ascii_lowercase(),normal_map);
         if let Some(index) = self.cached_images.get(&cache_key) {
             return Ok(Some(*index));
         }
@@ -484,10 +500,35 @@ impl Assembler {
             self.missing_texture_references += 1;
             return Ok(None);
         };
-        let Ok((_, rgba)) = decode_dds_rgba(&source) else {
-            self.missing_texture_references += 1;
+        // The top mip may reside in .dds.1..N, including another PAK
+        // from the exact same installed game. Ask the verified resolver for
+        // every numbered candidate; the DDS decoder checks contiguity and
+        // byte lengths before permitting the reconstructed image.
+        let decoded=match decode_dds_rgba(&source) {
+            Ok(decoded)=>Ok(decoded),
+            Err(initial) if source.file_name().and_then(|n|n.to_str())
+                .is_some_and(|n|n.to_ascii_lowercase().ends_with(".dds.0")) => {
+                let mut external=Vec::new();
+                for n in 1..20 {
+                    let candidate=format!("{virtual_path}.{n}");
+                    if let Some(part)=resolve(&candidate)? {
+                        if part.parent()!=source.parent() {
+                            external.push(part);
+                        }
+                    }
+                }
+                if external.is_empty(){Err(initial)}
+                else {decode_dds_rgba_with_parts(&source,&external)}
+            }
+            Err(error)=>Err(error),
+        };
+        let Ok((info,mut rgba))=decoded else {
+            self.missing_texture_references+=1;
             return Ok(None);
         };
+        if normal_map && info.format==DdsFormat::Bc5 {
+            reconstruct_bc5_normal(&mut rgba);
+        }
         let mut png = Vec::new();
         DynamicImage::ImageRgba8(rgba)
             .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
@@ -572,7 +613,10 @@ impl Assembler {
             value["emissiveFactor"] = json!(color);
         }
         for reference in &slot.maps {
-            let Some(texture) = self.source_texture(resolve, &reference.path)? else {
+            let Some(texture) = self.source_texture(
+                resolve,&reference.path,
+                matches!(reference.role.as_str(),"normals"|"normal"|"bumpmap")
+            )? else {
                 continue;
             };
             let role = reference.role.as_str();
