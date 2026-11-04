@@ -125,6 +125,20 @@ pub struct PlacedObject {
     pub local: Transform,
     pub world: Transform,
     pub status: String,
+    /// Population IDs from a CreatureSpawn's original <Properties><Populations>.
+    #[serde(default)]
+    pub populations: Vec<String>,
+    #[serde(default)]
+    pub home_area: String,
+    /// Local-space polygon points authored on a ZooKeeperShape.
+    #[serde(default)]
+    pub shape_points: Vec<[f32; 3]>,
+}
+impl PlacedObject {
+    pub fn is_wildlife_spawn(&self) -> bool {
+        self.kind.eq_ignore_ascii_case("CreatureSpawn")
+            || self.kind.eq_ignore_ascii_case("ZooKeeperShape")
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LevelScene {
@@ -241,9 +255,24 @@ fn parse_element(
         scale: vector(attr(e, b"Scale")?, [1., 1., 1.]),
     }
     .normalize()?;
-    let kind = std::str::from_utf8(e.name().as_ref())
+    let tag_kind = std::str::from_utf8(e.name().as_ref())
         .map_err(|_| SceneError::Xml("invalid tag".into()))?
         .to_owned();
+    // Only classify known Evolve gameplay entities. Other layer objects
+    // retain their original tag kind so existing scene rendering is stable.
+    let class = attr(e, b"EntityClass")?.unwrap_or_default();
+    let kind = if class.eq_ignore_ascii_case("CreatureSpawn")
+        || class.eq_ignore_ascii_case("ZooKeeperShape")
+        || attr(e, b"Type")?.as_deref() == Some("ZooKeeperShape")
+    {
+        if class.eq_ignore_ascii_case("CreatureSpawn") {
+            "CreatureSpawn".to_owned()
+        } else {
+            "ZooKeeperShape".to_owned()
+        }
+    } else {
+        tag_kind
+    };
     Ok(Some(PlacedObject {
         id: id.clone(),
         parent,
@@ -256,7 +285,51 @@ fn parse_element(
         local,
         world: local,
         status: String::new(),
+        populations: Vec::new(),
+        home_area: String::new(),
+        shape_points: Vec::new(),
     }))
+}
+
+/// Read only source-authored wildlife metadata. A population *name* is not a
+/// model path: never fabricate meshes based on a similar-looking filename.
+fn scan_wildlife_child(
+    e: &BytesStart<'_>,
+    parents: &[Vec<u8>],
+    placement_stack: &[Option<usize>],
+    objects: &mut [PlacedObject],
+) -> Result<(), SceneError> {
+    let Some(index) = placement_stack.iter().rev().find_map(|index| *index) else {
+        return Ok(());
+    };
+    let object = &mut objects[index];
+    if object.kind.eq_ignore_ascii_case("CreatureSpawn")
+        && e.name().as_ref().eq_ignore_ascii_case(b"Properties")
+    {
+        object.home_area = attr(e, b"HomeAreaName")?.unwrap_or_default();
+    } else if object.kind.eq_ignore_ascii_case("CreatureSpawn")
+        && e.name().as_ref().eq_ignore_ascii_case(b"Populations")
+        && parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"Properties"))
+    {
+        for key in [b"Population1", b"Population2", b"Population3", b"Population4"] {
+            if let Some(value) = attr(e, key)?
+                && !value.trim().is_empty()
+            {
+                object.populations.push(value);
+            }
+        }
+    } else if object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+        && e.name().as_ref().eq_ignore_ascii_case(b"Point")
+        && parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"Points"))
+        && object.shape_points.len() < 8192
+        && let Some(coords) = attr(e, b"Pos")?
+    {
+        let parsed = vector(Some(coords), [f32::NAN; 3]);
+        if parsed.iter().all(|n| n.is_finite()) {
+            object.shape_points.push(parsed);
+        }
+    }
+    Ok(())
 }
 fn scan_placements(xml: &[u8], layer: &str) -> Result<Vec<PlacedObject>, SceneError> {
     if xml.is_empty()
@@ -270,6 +343,7 @@ fn scan_placements(xml: &[u8], layer: &str) -> Result<Vec<PlacedObject>, SceneEr
     let mut objects = Vec::new();
     let mut depth = 0usize;
     let mut parents = Vec::new();
+    let mut placement_stack: Vec<Option<usize>> = Vec::new();
     loop {
         match reader
             .read_event()
@@ -280,14 +354,19 @@ fn scan_placements(xml: &[u8], layer: &str) -> Result<Vec<PlacedObject>, SceneEr
                 if depth > MAX_DEPTH {
                     return Err(SceneError::Limits);
                 }
+                scan_wildlife_child(&e, &parents, &placement_stack, &mut objects)?;
+                let mut placed = None;
                 if !is_entity_reference(&e, &parents)?
                     && let Some(obj) = parse_element(&e, layer, objects.len())?
                 {
+                    placed = Some(objects.len());
                     objects.push(obj);
                 }
+                placement_stack.push(placed);
                 parents.push(e.name().as_ref().to_vec());
             }
             Event::Empty(e) => {
+                scan_wildlife_child(&e, &parents, &placement_stack, &mut objects)?;
                 if !is_entity_reference(&e, &parents)?
                     && let Some(obj) = parse_element(&e, layer, objects.len())?
                 {
@@ -300,6 +379,7 @@ fn scan_placements(xml: &[u8], layer: &str) -> Result<Vec<PlacedObject>, SceneEr
                 }
                 depth -= 1;
                 parents.pop();
+                placement_stack.pop();
             }
             Event::DocType(_) | Event::GeneralRef(_) => return Err(SceneError::Limits),
             Event::Eof => break,
@@ -375,6 +455,9 @@ pub fn parse_level_scene_read_only(
                     || prior.material != obj.material
                     || prior.hidden != obj.hidden
                     || prior.local != obj.local
+                    || prior.populations != obj.populations
+                    || prior.home_area != obj.home_area
+                    || prior.shape_points != obj.shape_points
                 {
                     ambiguous.insert(obj.id);
                 }
@@ -811,6 +894,31 @@ pub fn export_edited_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wildlife_spawn_and_area_keep_authored_population_and_polygon() {
+        let xml = br#"<ObjectLayer><LayerObjects>
+          <Object Id="creature" Name="CS_Mammoth" EntityClass="CreatureSpawn" Pos="5,6,7">
+            <Properties HomeAreaName="MB_ZooKeeperShape_01">
+              <Populations Population1="MammothBird" Population2="" Population3="Marshstrider" Population4=""/>
+            </Properties>
+          </Object>
+          <Object Id="zone" Type="ZooKeeperShape" EntityClass="ZooKeeperShape" Pos="1,2,3">
+            <Points><Point Pos="0,0,0"/><Point Pos="4,0,0"/><Point Pos="4,5,0"/></Points>
+          </Object>
+          <Object Id="regular" Type="Brush" Geometry="objects/rock.cgf"/>
+        </LayerObjects></ObjectLayer>"#;
+        let scene = parse_level_scene(&[("tutorial.lyr", xml)]).unwrap();
+        assert_eq!(scene.objects.len(), 3);
+        assert!(scene.objects[0].is_wildlife_spawn());
+        assert_eq!(scene.objects[0].kind, "CreatureSpawn");
+        assert_eq!(scene.objects[0].populations, ["MammothBird", "Marshstrider"]);
+        assert_eq!(scene.objects[0].home_area, "MB_ZooKeeperShape_01");
+        assert!(scene.objects[0].model.is_empty());
+        assert_eq!(scene.objects[1].kind, "ZooKeeperShape");
+        assert_eq!(scene.objects[1].shape_points.len(), 3);
+        assert!(!scene.objects[2].is_wildlife_spawn());
+    }
+
     #[test]
     fn undoable_local_edit_propagates_to_child_world_transform() {
         let src = br#"<Objects><Object Id="parent" Pos="1,2,3"/><Object Id="child" Parent="parent" Pos="4,5,6"/></Objects>"#;
