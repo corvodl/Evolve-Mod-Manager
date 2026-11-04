@@ -70,7 +70,8 @@ class StaticFBXBasisTests(unittest.TestCase):
                      and isinstance(node.func, ast.Attribute)
                      and node.func.attr == "read_factory_settings")
         saved_names = {"exported_mesh_count", "exported_armature_count",
-                       "exported_light_count", "exported_placement_groups"}
+                       "exported_light_count", "exported_placement_groups",
+                       "exported_source_groups"}
         assignments = [
             stmt for stmt in run.body
             if isinstance(stmt, ast.Assign)
@@ -109,7 +110,8 @@ class StaticFBXBasisTests(unittest.TestCase):
                        "json": json, "optimized": {"embedded_normal_maps": 1},
                        "include_animation": False,
                        "root_name": "Emet", "combine_meshes": False,
-                       "source_lights": [], "placement_roots": []}
+                       "source_lights": [], "placement_roots": [],
+                       "source_placement_groups": []}
             compile_snippet = lambda statements: compile(
                 ast.fix_missing_locations(ast.Module(
                     body=statements, type_ignores=[])), "<lifecycle-test>", "exec")
@@ -125,6 +127,7 @@ class StaticFBXBasisTests(unittest.TestCase):
             self.assertEqual(result["armatures"], 1)
             self.assertEqual(result["lights"], 0)
             self.assertEqual(result["editable_placement_groups"], 0)
+            self.assertEqual(result["original_multi_mesh_groups"], 0)
             self.assertEqual(result["output_bytes"], destination.stat().st_size)
 
     def test_native_source_coordinates_are_verified(self):
