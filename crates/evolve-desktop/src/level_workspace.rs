@@ -145,28 +145,40 @@ impl canvas::Program<Message> for SceneOverview {
                     ];
                     let u = [q[1], q[2], q[3]];
                     let cross = [
-                        u[1]*v[2]-u[2]*v[1],
-                        u[2]*v[0]-u[0]*v[2],
-                        u[0]*v[1]-u[1]*v[0],
+                        u[1] * v[2] - u[2] * v[1],
+                        u[2] * v[0] - u[0] * v[2],
+                        u[0] * v[1] - u[1] * v[0],
                     ];
-                    let dot = u[0]*v[0]+u[1]*v[1]+u[2]*v[2];
-                    let factor = q[0]*q[0]-u[0]*u[0]-u[1]*u[1]-u[2]*u[2];
+                    let dot = u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+                    let factor = q[0] * q[0] - u[0] * u[0] - u[1] * u[1] - u[2] * u[2];
                     let rotated = [
-                        factor*v[0]+2.0*dot*u[0]+2.0*q[0]*cross[0],
-                        factor*v[1]+2.0*dot*u[1]+2.0*q[0]*cross[1],
+                        factor * v[0] + 2.0 * dot * u[0] + 2.0 * q[0] * cross[0],
+                        factor * v[1] + 2.0 * dot * u[1] + 2.0 * q[0] * cross[1],
                     ];
                     vertices.push(self.point(
-                        [obj.world.position[0]+rotated[0],obj.world.position[1]+rotated[1],0.0],
-                        bounds,center,extent
+                        [
+                            obj.world.position[0] + rotated[0],
+                            obj.world.position[1] + rotated[1],
+                            0.0,
+                        ],
+                        bounds,
+                        center,
+                        extent,
                     ));
                 }
                 let path = Path::new(|builder| {
                     builder.move_to(vertices[0]);
-                    for vertex in vertices.iter().skip(1) { builder.line_to(*vertex); }
+                    for vertex in vertices.iter().skip(1) {
+                        builder.line_to(*vertex);
+                    }
                     builder.close();
                 });
-                frame.stroke(&path, Stroke::default().with_width(1.5)
-                    .with_color(Color::from_rgb(0.95,0.70,0.16)));
+                frame.stroke(
+                    &path,
+                    Stroke::default()
+                        .with_width(1.5)
+                        .with_color(Color::from_rgb(0.95, 0.70, 0.16)),
+                );
             }
             let point = self.point(obj.world.position, bounds, center, extent);
             if point.x < -10.0
@@ -304,7 +316,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let mut outliner = column![].spacing(2);
     let query = state.level_filter.to_ascii_lowercase();
     let mut visible = 0usize;
-    let wildlife_count = scene.objects.iter().filter(|obj| obj.is_wildlife_spawn()).count();
+    let wildlife_count = scene
+        .objects
+        .iter()
+        .filter(|obj| obj.is_wildlife_spawn())
+        .count();
     for (index, obj) in scene.objects.iter().enumerate() {
         if !query.is_empty()
             && !obj.name.to_ascii_lowercase().contains(&query)
@@ -315,23 +331,33 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         }
         if visible < 180 {
             outliner = outliner.push(
-                button(text(if obj.kind.eq_ignore_ascii_case("CreatureSpawn") {
-                    format!("Wildlife · {} / {} [{}]", obj.layer, obj.name,
-                        if obj.populations.is_empty() { "unknown".to_owned() }
-                        else { obj.populations.join(", ") })
-                } else if obj.kind.eq_ignore_ascii_case("ZooKeeperShape") {
-                    format!("Spawn area · {} / {}", obj.layer, obj.name)
-                } else {
-                    format!("{}  /  {}", obj.layer, obj.name)
-                }).size(12))
-                    .width(Fill)
-                    .padding([7, 9])
-                    .style(if state.level_selection.indices.contains(&index) {
-                        design::primary
+                button(
+                    text(if obj.kind.eq_ignore_ascii_case("CreatureSpawn") {
+                        format!(
+                            "Wildlife · {} / {} [{}]",
+                            obj.layer,
+                            obj.name,
+                            if obj.populations.is_empty() {
+                                "unknown".to_owned()
+                            } else {
+                                obj.populations.join(", ")
+                            }
+                        )
+                    } else if obj.kind.eq_ignore_ascii_case("ZooKeeperShape") {
+                        format!("Spawn area · {} / {}", obj.layer, obj.name)
                     } else {
-                        design::text_button
+                        format!("{}  /  {}", obj.layer, obj.name)
                     })
-                    .on_press(Message::LevelSelect(index)),
+                    .size(12),
+                )
+                .width(Fill)
+                .padding([7, 9])
+                .style(if state.level_selection.indices.contains(&index) {
+                    design::primary
+                } else {
+                    design::text_button
+                })
+                .on_press(Message::LevelSelect(index)),
             );
         }
         visible += 1;
@@ -346,15 +372,30 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text(format!("Position: {:?}", object.world.position)).size(12),
             text(format!("Rotation (wxyz): {:?}", object.world.quaternion)).size(12),
             text(format!("Scale: {:?}", object.world.scale)).size(12),
-            text(format!("Model: {}", if object.model.is_empty() && object.is_wildlife_spawn() {
-                "Unresolved source population (marker only)"
-            } else { &object.model })).size(12),
+            text(format!(
+                "Model: {}",
+                if object.model.is_empty() && object.is_wildlife_spawn() {
+                    "Unresolved source population (marker only)"
+                } else {
+                    &object.model
+                }
+            ))
+            .size(12),
             text(if object.kind.eq_ignore_ascii_case("CreatureSpawn") {
-                format!("Populations: {} · Home area: {}",
-                    object.populations.join(", "), object.home_area)
+                format!(
+                    "Populations: {} · Home area: {}",
+                    object.populations.join(", "),
+                    object.home_area
+                )
             } else if object.kind.eq_ignore_ascii_case("ZooKeeperShape") {
-                format!("Spawn region · {} authored polygon points", object.shape_points.len())
-            } else { String::new() }).size(12),
+                format!(
+                    "Spawn region · {} authored polygon points",
+                    object.shape_points.len()
+                )
+            } else {
+                String::new()
+            })
+            .size(12),
             text(format!("Status: {}", object.status))
                 .size(12)
                 .color(MUTED),
@@ -486,11 +527,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     "☑ Wildlife Spawns"
                 } else {
                     "☐ Wildlife Spawns"
-                }).style(design::secondary)
-                    .on_press(Message::LevelToggleWildlife),
-                text(format!("{wildlife_count} markers / areas")).size(11)
+                })
+                .style(design::secondary)
+                .on_press(Message::LevelToggleWildlife),
+                text(format!("{wildlife_count} markers / areas"))
+                    .size(11)
                     .style(design::muted),
-            ].spacing(8).align_y(iced::Center),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
             design::text_input("Search scene objects", &state.level_filter)
                 .on_input(Message::LevelFilterChanged),
             scrollable(outliner).height(Fill),
