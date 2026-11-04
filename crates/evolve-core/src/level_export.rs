@@ -539,7 +539,7 @@ pub fn export_level_scene_glb(
             .and_then(|v| v.to_str())
             .unwrap_or("CryEngine Level"),
     );
-    let mut resources = HashMap::<String, usize>::new();
+    let mut resources = HashMap::<(String, String), usize>::new();
     let mut geometry_instances = 0usize;
     let mut metadata_only = 0usize;
     if let Some(source) = terrain {
