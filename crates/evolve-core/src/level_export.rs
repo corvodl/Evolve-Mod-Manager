@@ -1048,7 +1048,24 @@ where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
         } else {
             LevelExportError::Io(e.error)
         }
-
+    })?;
+    Ok(LevelExportReport {
+        source_objects: scene.objects.len(),
+        exported_mesh_resources: resources.len() + terrain_tiles,
+        exported_mesh_instances: geometry_instances,
+        metadata_only_objects: metadata_only,
+        included_terrain: terrain.is_some(),
+        exported_lights: lights.len(),
+        terrain_tiles,
+        terrain_source_resolution,
+        output_bytes: bytes.len(),
+        original_geometry_only: authored_material_slots == 0,
+        authored_material_slots,
+        embedded_textures,
+        missing_material_sets,
+        missing_texture_references,
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
