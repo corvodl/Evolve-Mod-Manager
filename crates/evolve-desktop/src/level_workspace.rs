@@ -295,6 +295,25 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
     }
 }
 
+pub(super) fn fullscreen_view(state: &State) -> Element<'_, Message> {
+    column![
+        row![
+            text("Level Editor  /  Perspective").size(13),
+            space().width(Fill),
+            design::button("Exit Fullscreen (Esc)")
+                .style(design::secondary)
+                .on_press(Message::ToggleLevelViewportFullscreen),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
+        world_viewport(state),
+    ]
+    .spacing(4)
+    .width(Fill)
+    .height(Fill)
+    .into()
+}
+
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let Some(scene) = &state.level_scene else {
         return container(
