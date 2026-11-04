@@ -163,21 +163,44 @@ fn model_stem_key(value: &str) -> String {
         .collect()
 }
 
+fn is_elite_population(population: &str) -> bool {
+    population.to_ascii_lowercase().contains("elite")
+}
+
+fn append_population_alias(aliases: &mut Vec<String>, value: &str) {
+    let key = model_stem_key(value);
+    if !key.is_empty() && !aliases.contains(&key) {
+        aliases.push(key);
+    }
+}
+
 pub(super) fn population_model_aliases(population: &str) -> Vec<String> {
     let source = population.trim();
     if source.is_empty() || source.len() > 128 || !source.is_ascii() {
         return Vec::new();
     }
-    let mut aliases = vec![model_stem_key(source)];
+    let mut aliases = Vec::new();
+    append_population_alias(&mut aliases, source);
     let mut name = source.to_ascii_lowercase();
-    for suffix in ["_tutorial", "tutorial", "_elite", "elite", "_pet", "pet"] {
+    // Tutorial and pet suffixes are gameplay population variants, not
+    // necessarily separate render models. Elite is different: retain it
+    // as an explicit visual requirement, never drop it to use a normal mesh.
+    for suffix in ["_tutorial", "tutorial", "_pet", "pet"] {
         if name.ends_with(suffix) && name.len() > suffix.len() {
             name.truncate(name.len() - suffix.len());
             name = name.trim_end_matches('_').to_owned();
-            let key = model_stem_key(&name);
-            if !key.is_empty() && !aliases.contains(&key) {
-                aliases.push(key);
-            }
+            append_population_alias(&mut aliases, &name);
+        }
+    }
+    if is_elite_population(source) {
+        // Both TyrantElite and EliteTyrant are legitimate naming variants.
+        // A bare species stem is allowed only if its *asset path* contains
+        // an elite designation, enforced by select_wildlife_model.
+        let species = name.replace("elite", "").trim_matches('_').to_owned();
+        if !species.is_empty() {
+            append_population_alias(&mut aliases, &format!("{species}_elite"));
+            append_population_alias(&mut aliases, &format!("elite_{species}"));
+            append_population_alias(&mut aliases, &species);
         }
     }
     aliases
@@ -198,15 +221,27 @@ fn wildlife_render_rank(path: &str) -> Option<usize> {
 
 /// Do not arbitrarily select the first Trapjaw-looking file. If the best
 /// matching alias has several distinct model locations, show a marker only.
+fn elite_asset_path(path: &str) -> bool {
+    // Character authors may use TyrantElite.skinm or Elite/Tyrant.skinm.
+    // Both provide explicit elite provenance; a bare Tyrant.skinm does not.
+    path.replace('\\', "/")
+        .split('/')
+        .any(|segment| segment.to_ascii_lowercase().contains("elite"))
+}
+
 fn select_wildlife_model<'a>(
     paths: impl Iterator<Item = &'a String>,
     aliases: &[String],
+    elite_required: bool,
 ) -> Result<Option<String>, String> {
     let paths = paths.collect::<Vec<_>>();
     for alias in aliases {
         let mut matches = paths
             .iter()
             .filter_map(|path| {
+                if elite_asset_path(path) != elite_required {
+                    return None;
+                }
                 let stem = Path::new(path.as_str()).file_stem()?.to_str()?;
                 (model_stem_key(stem) == *alias)
                     .then(|| wildlife_render_rank(path).map(|rank| (rank, (*path).clone())))
@@ -977,6 +1012,7 @@ pub(super) fn assemble(
         let mut preview_scene = scene.clone();
         let mut wildlife_models = 0usize;
         let mut ambiguous_wildlife = 0usize;
+        let mut unresolved_elite = 0usize;
         for object in &mut preview_scene.objects {
             if !object.kind.eq_ignore_ascii_case("CreatureSpawn")
                 || !object.model.is_empty()
@@ -990,17 +1026,25 @@ pub(super) fn assemble(
                 continue;
             }
             let aliases = population_model_aliases(&object.populations[0]);
-            match select_wildlife_model(sources.files.keys(), &aliases) {
+            match select_wildlife_model(
+                sources.files.keys(),
+                &aliases,
+                is_elite_population(&object.populations[0]),
+            ) {
                 Ok(Some(model)) => {
                     object.model = model;
                     wildlife_models += 1;
                 }
                 Err(_) => ambiguous_wildlife += 1,
-                Ok(None) => (),
+                Ok(None) => {
+                    if is_elite_population(&object.populations[0]) {
+                        unresolved_elite += 1;
+                    }
+                }
             }
         }
         report.note(format!(
-            "{wildlife_models} single-population spawn placements linked to verified geometry by variant/base species; {ambiguous_wildlife} ambiguous variants retained as markers."
+            "{wildlife_models} single-population wildlife placements linked to verified model paths; {ambiguous_wildlife} ambiguous matches; {unresolved_elite} elite populations without an elite-specific model remain markers."
         ));
         // Scope material/DDS resolution to the same real installed Game
         // directory as geometry. Historical labels can be duplicated, so a
