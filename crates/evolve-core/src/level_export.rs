@@ -579,6 +579,18 @@ impl Assembler {
         Ok(Some(index))
     }
 
+    fn require_extension(&mut self,name:&str)->Result<(),LevelExportError> {
+        if self.document.get("extensionsUsed").is_none() {
+            self.document["extensionsUsed"]=json!([]);
+        }
+        let extensions=self.document["extensionsUsed"].as_array_mut()
+            .ok_or(LevelExportError::Limits)?;
+        if !extensions.iter().any(|entry|entry.as_str()==Some(name)) {
+            extensions.push(json!(name));
+        }
+        Ok(())
+    }
+
     /// Preserve authored leaf slot order, including NoDraw holes. glTF maps
     /// established texture channels directly; other CryEngine channels remain
     /// explicitly identified in extras, rather than assigned guessed semantics.
@@ -599,13 +611,27 @@ impl Assembler {
         }
         let mut value = json!({
             "name": slot.name,
-            "doubleSided": true,
             "pbrMetallicRoughness": pbr,
             "extras": {
                 "cryengine_shader": slot.shader,
                 "cryengine_original_maps": {},
                 "cryengine_shininess": slot.shininess,
-                "cryengine_glow_amount": slot.glow_amount
+                "cryengine_glow_amount": slot.glow_amount,
+                "cryengine_original_slot_name":slot.name,
+                "cryengine_alpha_glow":slot.alpha_glow,
+                "cryengine_ambient_multiplier":slot.ambient_multiplier,
+                "cryengine_shader_gen_mask":slot.shader_gen_mask,
+                "cryengine_specular_tint":slot.specular_tint,
+                "cryengine_diffuse_tint":slot.diffuse_tint,
+                "cryengine_alpha_test":slot.alpha_test,
+                "cryengine_opacity":slot.opacity,
+                "cryengine_diffuse_tex_mod":slot.diffuse_tex_mod,
+                "cryengine_decal_tex_mod":slot.decal_tex_mod,
+                "cryengine_layer_params":slot.layer_params,
+                "cryengine_detail_tile":slot.detail_tile,
+                "cryengine_foliage_transmit":slot.foliage_transmit,
+                "cryengine_indirect_color":slot.indirect_color,
+                "cryengine_pbr_mapping":"glTF is a neutral approximation of CryEngine parameters"
             }
         });
         if let Some(alpha_test) = slot.alpha_test {
@@ -614,8 +640,19 @@ impl Assembler {
         } else if slot.opacity.is_some_and(|x| x < 1.0) {
             value["alphaMode"] = json!("BLEND");
         }
-        if let Some(color) = slot.emissive_color {
-            value["emissiveFactor"] = json!(color);
+        if let Some(color)=slot.emissive_color {
+            let strength=color.iter().copied().fold(1f32,f32::max);
+            value["emissiveFactor"]=json!(color.map(|channel|channel/strength));
+            if strength>1. {
+                value["extensions"]["KHR_materials_emissive_strength"]=
+                    json!({"emissiveStrength":strength});
+                self.require_extension("KHR_materials_emissive_strength")?;
+            }
+        }
+        if let Some(tint)=slot.specular_tint {
+            value["extensions"]["KHR_materials_specular"]=
+                json!({"specularColorFactor":tint});
+            self.require_extension("KHR_materials_specular")?;
         }
         for reference in &slot.maps {
             let Some(texture) = self.source_texture(
@@ -630,12 +667,24 @@ impl Assembler {
             });
             match role {
                 "diffuse" => {
-                    value["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index":texture})
+                    value["pbrMetallicRoughness"]["baseColorTexture"]=json!({"index":texture});
+                    if let Some(tf)=slot.diffuse_tex_mod {
+                        let [su,sv,ou,ov]=tf.sample(0.);
+                        value["pbrMetallicRoughness"]["baseColorTexture"]
+                            ["extensions"]["KHR_texture_transform"]=
+                            json!({"scale":[su,sv],"offset":[ou,ov]});
+                        self.require_extension("KHR_texture_transform")?;
+                    }
                 }
                 "normals" | "normal" | "bumpmap" => {
                     // BC5 X/Y normal reconstruction and shader tangent orientation
                     // must be validated on real assets before claiming FBX parity.
                     value["normalTexture"] = json!({"index":texture});
+                }
+                "specular" | "specularcolor" => {
+                    value["extensions"]["KHR_materials_specular"]
+                        ["specularColorTexture"]=json!({"index":texture});
+                    self.require_extension("KHR_materials_specular")?;
                 }
                 "emissive" | "emittance" | "emission" | "glow" | "emissivecolor"
                 | "emissionmap" | "glowmap" | "selfillum" | "selfillumination" => {
@@ -651,6 +700,9 @@ impl Assembler {
             .as_array()
             .ok_or(LevelExportError::Limits)?
             .len();
+        // A unique material name lets Blender recover the exact MTL slot
+        // metadata even when two models reuse a generic "Default" leaf.
+        value["name"]=json!(format!("Evolve_MTL_{index:06} - {}",slot.name));
         self.document["materials"]
             .as_array_mut()
             .ok_or(LevelExportError::Limits)?
