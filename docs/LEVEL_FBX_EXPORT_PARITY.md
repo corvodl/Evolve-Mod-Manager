@@ -58,6 +58,40 @@ level mesh, terrain material, or texture was exported.
   selected, along with the multi-material split parents, and checks their
   survival after reimport.
 
+## Additional source-backed shader, terrain and geometry work
+
+- Streamed DDS .dds.0 and complete .dds.1..N fragments are resolved using the
+  exact selected imported game build. The DDS decoder enforces contiguous mip
+  sets and dimensions; no low-resolution fallback silently claims full quality.
+- BC5 normal-map RGB PNGs reconstruct positive tangent-space Z from the
+  original two channels; authored X/Y are unchanged. Y orientation remains an
+  in-game validation gate.
+- Preserve additional authored MTL fields (source GenMask, opacity/alpha test,
+  diffuse/specular tints, glow/ALPHAGLOW, shader params, original role paths,
+  decal and diffuse TexMods). glTF material names are unique by material
+  identity. Static diffuse tiling is expressed via KHR_texture_transform;
+  source specular uses KHR_materials_specular and overbright emissive factors
+  use KHR_materials_emissive_strength. All are **cross-renderer mappings**,
+  not Evolve shader equivalence.
+- When readable Heightmap.dat paint exists, the entire original categorical
+  LayerId bitmap is preserved as nearest-filtered lossless PNG (red byte is
+  original ID). Each terrain tile's triangles are grouped into materials
+  by their source categorical paint ID. The material keeps the original Layer
+  name, type, filter, brightness and tiling information; original Terrain.Layer
+  MTL paths and texture roles are resolved when unambiguous.
+- Painter grouping is **face-center classification only**. The baked source
+  terrain atlas remains the visible base; native layer transitions and high-pass
+  lighting are not faked.
+- Compiled CrChF MtlName declarations (0x08021014) now take precedence
+  over a same-stem material when exactly and safely resolvable; conflicting
+  authored references are rejected. Case-folded basename search is prohibited.
+- Untextured original static meshes without a UV0 stream may be retained
+  without inventing UVs. Image-sampled meshes still require authentic UV0;
+  disabling tangent generation for mixed UV-less scenes is explicitly
+  reported, not silently called shader parity.
+- Original object names are kept for level export. Joining all scene meshes
+  is disabled for levels (unlike the optional character FBX combine command).
+
 ## Remaining parity gaps (keep this PR in draft)
 
 1. **World geometry:** Verified multi-mesh CGF subnodes now have grouped
@@ -67,14 +101,18 @@ level mesh, terrain material, or texture was exported.
 2. **Vegetation:** existing original binary vegetation transforms are included
    when opening an imported map, but they still depend on verifiable model
    resolution and require Blender placement-count tests.
-3. **Terrain:** 4096-source heightmap resolution is still capped by the core
-   decoder's 2049 grid. RGB24 map-owned color tiles, layer paint IDs, layer
-   diffuse/normal blending, high-pass detail and exact native shader results
-   still need separate export handling and source-backed tests.
-4. **Shader parity:** DDS high-mip reconstruction, BC5 normal reconstruction,
-   specular/gloss/opacity, terrain detail, animated UV and CryEngine glow are
-   not yet proven equivalent to Blender's FBX materials. glTF extras alone
-   do not guarantee FBX metadata preservation.
+3. **Terrain:** 4096-source heightmap resolution remains capped by the core
+   decoder's 2049 grid. RGB24 map-owned color tiles and the native
+   high-pass/detail/height-assisted transition shader are still unresolved.
+   Paint IDs and authored layer inputs are preserved, **not** shaded 1:1.
+   Face-center material categorization alone cannot reconstruct subtriangle
+   transitions.
+4. **Shader parity:** complete mip sets and BC5 blue reconstruction are now
+   implemented in the source-export path, but renderer-specific normal Y,
+   embedded FBX images for every extra map role, gloss/opacity packed channels,
+   CryEngine glow-pass interaction, animated UV and alpha blending still
+   require verified conversion and actual game-vs-Blender tests. Not all glTF
+   extras are retained in FBX even when original source paths remain visible.
 5. **Round-trip verification:** CI builds and script regressions are necessary
    but do not substitute for actual Blender 4.2+/5.x reimports of Tutorial and
    Ice_Crashsite, comparing all meshes, material slots, texture resolution,
