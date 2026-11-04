@@ -152,6 +152,83 @@ fn render_candidates(raw: &str) -> Vec<String> {
     candidates
 }
 
+/// Population IDs select gameplay classes, not filenames. Try the exact
+/// variant first, then only recognized cosmetic/tutorial suffixes. Matching
+/// remains restricted to actual same-installation imported model members.
+fn model_stem_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+pub(super) fn population_model_aliases(population: &str) -> Vec<String> {
+    let source = population.trim();
+    if source.is_empty() || source.len() > 128 || !source.is_ascii() {
+        return Vec::new();
+    }
+    let mut aliases = vec![model_stem_key(source)];
+    let mut name = source.to_ascii_lowercase();
+    for suffix in ["_tutorial", "tutorial", "_elite", "elite", "_pet", "pet"] {
+        if name.ends_with(suffix) && name.len() > suffix.len() {
+            name.truncate(name.len() - suffix.len());
+            name = name.trim_end_matches('_').to_owned();
+            let key = model_stem_key(&name);
+            if !key.is_empty() && !aliases.contains(&key) {
+                aliases.push(key);
+            }
+        }
+    }
+    aliases
+}
+
+fn wildlife_render_rank(path: &str) -> Option<usize> {
+    let extension = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "skinm" => Some(0),
+        "cgfm" => Some(1),
+        "cgam" => Some(2),
+        "chrm" => Some(3),
+        "cgf" => Some(4),
+        "cga" => Some(5),
+        _ => None,
+    }
+}
+
+/// Do not arbitrarily select the first Trapjaw-looking file. If the best
+/// matching alias has several distinct model locations, show a marker only.
+fn select_wildlife_model<'a>(
+    paths: impl Iterator<Item = &'a String>,
+    aliases: &[String],
+) -> Result<Option<String>, String> {
+    let paths = paths.collect::<Vec<_>>();
+    for alias in aliases {
+        let mut matches = paths
+            .iter()
+            .filter_map(|path| {
+                let stem = Path::new(path.as_str()).file_stem()?.to_str()?;
+                (model_stem_key(stem) == *alias)
+                    .then(|| wildlife_render_rank(path).map(|rank| (rank, (*path).clone())))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            continue;
+        }
+        let owners = matches
+            .iter()
+            .filter_map(|(_, path)| Path::new(path).parent().map(|p| p.to_string_lossy().to_string()))
+            .collect::<HashSet<_>>();
+        if owners.len() != 1 {
+            return Err(format!("Ambiguous model sources for wildlife alias {alias}"));
+        }
+        matches.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        return Ok(matches.first().map(|(_, path)| path.clone()));
+    }
+    Ok(None)
+}
+
 fn relevant_asset(path: &str) -> bool {
     [".cgf", ".cga", ".cgfm", ".cgam", ".skinm", ".chrm", ".mtl"]
         .iter()
@@ -252,6 +329,7 @@ impl Index {
     fn new(
         selected: &ImportedPak,
         wanted: &HashSet<String>,
+        wildlife_stems: &HashSet<String>,
         report: &mut Report,
         project_inventory: Option<&Inventory>,
     ) -> Result<Self, String> {
@@ -337,7 +415,12 @@ impl Index {
                 let Some(key) = safe_virtual(&asset.relative_path) else {
                     continue;
                 };
-                if wanted.contains(&key) && relevant_asset(&key) {
+                let wildlife_candidate = wildlife_render_rank(&key).is_some()
+                    && Path::new(&key)
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .is_some_and(|stem| wildlife_stems.contains(&model_stem_key(stem)));
+                if (wanted.contains(&key) && relevant_asset(&key)) || wildlife_candidate {
                     checked += 1;
                     let path = root.join(&asset.relative_path);
                     // Only requested assets are authorized to be read. Never
@@ -856,7 +939,43 @@ pub(super) fn assemble(
                 }
             }
         }
-        let mut sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
+        // Gameplay identifiers such as Trapjaw_Tutorial do not name meshes.
+        let wildlife_stems = scene
+            .objects
+            .iter()
+            .filter(|object| object.kind.eq_ignore_ascii_case("CreatureSpawn")
+                && object.model.is_empty()
+                && object.populations.iter().filter(|p| !p.trim().is_empty()).count() == 1)
+            .flat_map(|object| {
+                object.populations.iter().flat_map(|population|
+                    population_model_aliases(population)).collect::<Vec<_>>()
+            })
+            .collect::<HashSet<_>>();
+        let mut sources =
+            Index::new(archive, &wanted, &wildlife_stems, &mut report, project_inventory)?;
+        let mut preview_scene = scene.clone();
+        let mut wildlife_models = 0usize;
+        let mut ambiguous_wildlife = 0usize;
+        for object in &mut preview_scene.objects {
+            if !object.kind.eq_ignore_ascii_case("CreatureSpawn")
+                || !object.model.is_empty()
+                || object.populations.iter().filter(|p| !p.trim().is_empty()).count() != 1
+            {
+                continue;
+            }
+            let aliases = population_model_aliases(&object.populations[0]);
+            match select_wildlife_model(sources.files.keys(), &aliases) {
+                Ok(Some(model)) => {
+                    object.model = model;
+                    wildlife_models += 1;
+                }
+                Err(_) => ambiguous_wildlife += 1,
+                Ok(None) => (),
+            }
+        }
+        report.note(format!(
+            "{wildlife_models} single-population spawn placements linked to verified geometry by variant/base species; {ambiguous_wildlife} ambiguous variants retained as markers."
+        ));
         // Scope material/DDS resolution to the same real installed Game
         // directory as geometry. Historical labels can be duplicated, so a
         // single old build label is not strong enough provenance by itself.
@@ -885,7 +1004,7 @@ pub(super) fn assemble(
         ));
         let decode_started = Instant::now();
         let mut decoded_pairs = decode_scene_sources(
-            scene,
+            &preview_scene,
             &sources,
             sources.library_root.as_deref(),
             sources.build.as_deref(),
@@ -903,7 +1022,7 @@ pub(super) fn assemble(
         let mut models = Vec::<world_instances::ModelGroup>::new();
         let mut failures = HashSet::<(String, String)>::new();
         let mut budget_hit = false;
-        for (object_index, object) in scene
+        for (object_index, object) in preview_scene
             .objects
             .iter()
             .enumerate()
@@ -1255,6 +1374,53 @@ pub(super) fn reproject_after_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wildlife_population_variant_prefers_exact_then_species_model() {
+        assert_eq!(
+            population_model_aliases("Trapjaw_Tutorial"),
+            vec!["trapjawtutorial", "trapjaw"]
+        );
+        assert_eq!(
+            population_model_aliases("TyrantElite_Tutorial"),
+            vec!["tyrantelitetutorial", "tyrantelite", "tyrant"]
+        );
+        let paths = [
+            "characters/wildlife/trapjaw/trapjaw.skinm".to_owned(),
+            "characters/wildlife/trapjaw/trapjaw.chrm".to_owned(),
+        ];
+        let model = select_wildlife_model(
+            paths.iter(),
+            &population_model_aliases("Trapjaw_Tutorial"),
+        ).unwrap();
+        assert_eq!(model.as_deref(), Some("characters/wildlife/trapjaw/trapjaw.skinm"));
+        let variant = [
+            "characters/wildlife/trapjaw/trapjaw.skinm".to_owned(),
+            "characters/wildlife/trapjaw/trapjaw_tutorial.skinm".to_owned(),
+        ];
+        let model = select_wildlife_model(
+            variant.iter(),
+            &population_model_aliases("Trapjaw_Tutorial"),
+        ).unwrap();
+        assert_eq!(model.as_deref(), Some("characters/wildlife/trapjaw/trapjaw_tutorial.skinm"));
+    }
+
+    #[test]
+    fn wildlife_population_lookup_refuses_ambiguous_models() {
+        let paths = [
+            "characters/wildlife/trapjaw/trapjaw.skinm".to_owned(),
+            "characters/other/trapjaw.skinm".to_owned(),
+        ];
+        assert!(select_wildlife_model(
+            paths.iter(),
+            &population_model_aliases("Trapjaw_Tutorial"),
+        ).is_err());
+        assert!(select_wildlife_model(
+            paths.iter(),
+            &population_model_aliases("MammothBird"),
+        ).unwrap().is_none());
+    }
+
+
 
     #[test]
     fn multi_material_group_splits_before_exceeding_residency_target() {
