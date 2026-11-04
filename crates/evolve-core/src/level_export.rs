@@ -8,9 +8,12 @@ use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::materials::{MaterialDocument, MaterialSlot, read_material};
 use crate::model::{ModelError, ModelInfo, RenderMesh, original_mesh_subsets, read_model};
 use crate::scene::{LevelScene, SceneError, load_level_scene};
-use crate::terrain::{TerrainError, TerrainMesh, MAX_RENDER_GRID, read_terrain};
+use crate::terrain::{MAX_RENDER_GRID, TerrainError, TerrainMesh, read_terrain};
 use image::{DynamicImage, ImageFormat};
-use quick_xml::{Reader, events::{BytesStart, Event}};
+use quick_xml::{
+    Reader,
+    events::{BytesStart, Event},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -76,7 +79,6 @@ pub struct LevelExportReport {
     pub missing_texture_references: usize,
 }
 
-
 const MAX_LIGHT_SOURCES: usize = 2_048;
 const MAX_LIGHT_LAYER_BYTES: usize = 48 * 1024 * 1024;
 
@@ -106,50 +108,80 @@ struct PendingLight {
     enabled: bool,
 }
 fn light_attr(node: &BytesStart<'_>, key: &[u8]) -> Option<String> {
-    node.attributes().flatten()
+    node.attributes()
+        .flatten()
         .find(|attr| attr.key.as_ref().eq_ignore_ascii_case(key))
         .and_then(|attr| attr.unescape_value().ok().map(|text| text.into_owned()))
 }
 fn light_value(node: &BytesStart<'_>, keys: &[&[u8]]) -> Option<f32> {
-    keys.iter().find_map(|key| light_attr(node,key))
-        .and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite())
+    keys.iter()
+        .find_map(|key| light_attr(node, key))
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| v.is_finite())
 }
 fn light_color(node: &BytesStart<'_>) -> Option<[f32; 3]> {
-    let text = [b"DiffuseColor".as_slice(), b"clrDiffuse", b"Color", b"color"]
-        .iter().find_map(|key| light_attr(node,key))?;
-    let rgb = text.split(',').map(|v| v.trim().parse::<f32>().ok())
+    let text = [
+        b"DiffuseColor".as_slice(),
+        b"clrDiffuse",
+        b"Color",
+        b"color",
+    ]
+    .iter()
+    .find_map(|key| light_attr(node, key))?;
+    let rgb = text
+        .split(',')
+        .map(|v| v.trim().parse::<f32>().ok())
         .collect::<Vec<_>>();
-    if rgb.len() != 3 { return None; }
+    if rgb.len() != 3 {
+        return None;
+    }
     let c = [rgb[0]?, rgb[1]?, rgb[2]?];
-    c.iter().all(|v| v.is_finite() && (0.0..=16.0).contains(v)).then_some(c)
+    c.iter()
+        .all(|v| v.is_finite() && (0.0..=16.0).contains(v))
+        .then_some(c)
 }
 impl PendingLight {
     fn read_props(&mut self, node: &BytesStart<'_>) {
-        if light_attr(node,b"bFakeLight").is_some_and(|x| x == "1") {
+        if light_attr(node, b"bFakeLight").is_some_and(|x| x == "1") {
             self.enabled = false;
         }
-        if light_attr(node,b"bActive").or_else(|| light_attr(node,b"Active"))
+        if light_attr(node, b"bActive")
+            .or_else(|| light_attr(node, b"Active"))
             .is_some_and(|v| v == "0" || v.eq_ignore_ascii_case("false"))
         {
             self.enabled = false;
         }
-        if let Some(radius) = light_value(node,&[b"Radius",b"fRadius",b"LightRadius"])
+        if let Some(radius) = light_value(node, &[b"Radius", b"fRadius", b"LightRadius"])
             .filter(|v| (0.1..=100_000.0).contains(v))
-        { self.radius=Some(radius); }
-        if let Some(intensity) = light_value(node,&[
-            b"DiffuseMultiplier", b"fDiffuseMultiplier", b"LightIntensity",b"Intensity"
-        ]).filter(|v| (0.0..=1_000_000.0).contains(v)) {
-            self.intensity=Some(intensity);
+        {
+            self.radius = Some(radius);
         }
-        if let Some(color) = light_color(node) { self.color=Some(color); }
-        if let Some(fov) = light_value(node,&[
-            b"ProjectorFov", b"fProjectorFov", b"FOV",b"fFov"
-        ]).filter(|fov| (1.0..179.0).contains(fov)) {
-            self.cone_degrees=Some(fov);
+        if let Some(intensity) = light_value(
+            node,
+            &[
+                b"DiffuseMultiplier",
+                b"fDiffuseMultiplier",
+                b"LightIntensity",
+                b"Intensity",
+            ],
+        )
+        .filter(|v| (0.0..=1_000_000.0).contains(v))
+        {
+            self.intensity = Some(intensity);
         }
-        if let Some(size) = light_value(node,&[b"fAttenuationBulbSize"])
-            .filter(|v| *v > 0.0 && *v < 100_000.0)
-        { self.bulb_size=Some(size); }
+        if let Some(color) = light_color(node) {
+            self.color = Some(color);
+        }
+        if let Some(fov) = light_value(node, &[b"ProjectorFov", b"fProjectorFov", b"FOV", b"fFov"])
+            .filter(|fov| (1.0..179.0).contains(fov))
+        {
+            self.cone_degrees = Some(fov);
+        }
+        if let Some(size) =
+            light_value(node, &[b"fAttenuationBulbSize"]).filter(|v| *v > 0.0 && *v < 100_000.0)
+        {
+            self.bulb_size = Some(size);
+        }
     }
 }
 fn complete_light(
@@ -157,83 +189,124 @@ fn complete_light(
     objects: &HashMap<String, &crate::scene::PlacedObject>,
     lights: &mut Vec<ExportLight>,
 ) {
-    let Some(source) = current.take() else { return; };
-    if !source.enabled { return; }
-    let Some(actor)=objects.get(&source.id) else { return; };
-    let (Some(radius),Some(intensity),Some(color))=
-        (source.radius,source.intensity,source.color) else { return; };
+    let Some(source) = current.take() else {
+        return;
+    };
+    if !source.enabled {
+        return;
+    }
+    let Some(actor) = objects.get(&source.id) else {
+        return;
+    };
+    let (Some(radius), Some(intensity), Some(color)) =
+        (source.radius, source.intensity, source.color)
+    else {
+        return;
+    };
     if !actor.world.position.iter().all(|v| v.is_finite())
         || !actor.world.quaternion.iter().all(|v| v.is_finite())
-    { return; }
-    lights.push(ExportLight{
-        id: actor.id.clone(), name: actor.name.clone(),
-        world:actor.world, color, intensity, radius,
-        cone_degrees:source.cone_degrees, bulb_size:source.bulb_size
+    {
+        return;
+    }
+    lights.push(ExportLight {
+        id: actor.id.clone(),
+        name: actor.name.clone(),
+        world: actor.world,
+        color,
+        intensity,
+        radius,
+        cone_degrees: source.cone_degrees,
+        bulb_size: source.bulb_size,
     });
 }
 /// Match GUIDs rather than guessing from names. Only positively authored
 /// lights become Blender objects; flare-only, disabled, or incomplete records
 /// are not replaced with artificial defaults.
-fn authored_lights(source: &[u8], scene: &LevelScene) -> Result<Vec<ExportLight>, LevelExportError> {
-    if source.len()>MAX_LIGHT_LAYER_BYTES {
-        return Err(LevelExportError::Material("Light layer exceeds supported size".into()));
+fn authored_lights(
+    source: &[u8],
+    scene: &LevelScene,
+) -> Result<Vec<ExportLight>, LevelExportError> {
+    if source.len() > MAX_LIGHT_LAYER_BYTES {
+        return Err(LevelExportError::Material(
+            "Light layer exceeds supported size".into(),
+        ));
     }
-    let data=crate::cryxml::xml_bytes(source,MAX_LIGHT_LAYER_BYTES)
+    let data = crate::cryxml::xml_bytes(source, MAX_LIGHT_LAYER_BYTES)
         .map_err(|e| LevelExportError::Material(format!("Light XML: {e}")))?;
-    let objects=scene.objects.iter().filter(|o| !o.hidden)
-        .map(|o|(o.id.to_ascii_lowercase(),o)).collect::<HashMap<_,_>>();
-    let mut reader=Reader::from_reader(data.as_ref());
-    let (mut depth,mut pending,mut result)=(0usize,None,Vec::new());
+    let objects = scene
+        .objects
+        .iter()
+        .filter(|o| !o.hidden)
+        .map(|o| (o.id.to_ascii_lowercase(), o))
+        .collect::<HashMap<_, _>>();
+    let mut reader = Reader::from_reader(data.as_ref());
+    let (mut depth, mut pending, mut result) = (0usize, None, Vec::new());
     loop {
-        let event=reader.read_event()
+        let event = reader
+            .read_event()
             .map_err(|e| LevelExportError::Material(format!("Light XML: {e}")))?;
-        let starts=matches!(&event,Event::Start(_));
+        let starts = matches!(&event, Event::Start(_));
         match event {
-            Event::Start(node)|Event::Empty(node) => {
-                let current_depth=depth+1;
-                if current_depth>128 { return Err(LevelExportError::Limits); }
-                let tag=node.name();
-                let entity=tag.as_ref().eq_ignore_ascii_case(b"Object")
+            Event::Start(node) | Event::Empty(node) => {
+                let current_depth = depth + 1;
+                if current_depth > 128 {
+                    return Err(LevelExportError::Limits);
+                }
+                let tag = node.name();
+                let entity = tag.as_ref().eq_ignore_ascii_case(b"Object")
                     || tag.as_ref().eq_ignore_ascii_case(b"Entity");
                 if entity {
-                    let class=light_attr(&node,b"EntityClass")
-                        .or_else(||light_attr(&node,b"Class"))
-                        .unwrap_or_default().to_ascii_lowercase();
-                    let kind=light_attr(&node,b"Type").unwrap_or_default().to_ascii_lowercase();
-                    let is_light=matches!(class.as_str(),
-                        "light"|"lightentity"|"pointlight"|"spotlight")
-                        || (kind=="light" && class.is_empty());
+                    let class = light_attr(&node, b"EntityClass")
+                        .or_else(|| light_attr(&node, b"Class"))
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
+                    let kind = light_attr(&node, b"Type")
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
+                    let is_light = matches!(
+                        class.as_str(),
+                        "light" | "lightentity" | "pointlight" | "spotlight"
+                    ) || (kind == "light" && class.is_empty());
                     if is_light {
-                        if let Some(id)=light_attr(&node,b"Id")
-                            .or_else(||light_attr(&node,b"EntityId")) {
-                            let mut light=PendingLight{
-                                id:id.to_ascii_lowercase(), depth:current_depth,
-                                enabled:true, ..Default::default()
+                        if let Some(id) =
+                            light_attr(&node, b"Id").or_else(|| light_attr(&node, b"EntityId"))
+                        {
+                            let mut light = PendingLight {
+                                id: id.to_ascii_lowercase(),
+                                depth: current_depth,
+                                enabled: true,
+                                ..Default::default()
                             };
                             light.read_props(&node);
-                            pending=Some(light);
+                            pending = Some(light);
                         }
                     }
-                } else if let Some(light)=pending.as_mut()
-                    && current_depth>light.depth && current_depth<=light.depth+7
-                { light.read_props(&node); }
-                if starts { depth+=1; }
-                else if entity && pending.as_ref().is_some_and(|p|p.depth==current_depth) {
-                    complete_light(&mut pending,&objects,&mut result);
+                } else if let Some(light) = pending.as_mut()
+                    && current_depth > light.depth
+                    && current_depth <= light.depth + 7
+                {
+                    light.read_props(&node);
                 }
-                if result.len()>MAX_LIGHT_SOURCES {return Err(LevelExportError::Limits);}
-            }
-            Event::End(_)=>{
-                if pending.as_ref().is_some_and(|p|p.depth==depth) {
-                    complete_light(&mut pending,&objects,&mut result);
+                if starts {
+                    depth += 1;
+                } else if entity && pending.as_ref().is_some_and(|p| p.depth == current_depth) {
+                    complete_light(&mut pending, &objects, &mut result);
                 }
-                depth=depth.saturating_sub(1);
+                if result.len() > MAX_LIGHT_SOURCES {
+                    return Err(LevelExportError::Limits);
+                }
             }
-            Event::DocType(_)|Event::GeneralRef(_)=>{
+            Event::End(_) => {
+                if pending.as_ref().is_some_and(|p| p.depth == depth) {
+                    complete_light(&mut pending, &objects, &mut result);
+                }
+                depth = depth.saturating_sub(1);
+            }
+            Event::DocType(_) | Event::GeneralRef(_) => {
                 return Err(LevelExportError::Material("Unsafe light XML entity".into()));
             }
-            Event::Eof=>break,
-            _=>{}
+            Event::Eof => break,
+            _ => {}
         }
     }
     Ok(result)
@@ -241,10 +314,15 @@ fn authored_lights(source: &[u8], scene: &LevelScene) -> Result<Vec<ExportLight>
 /// CryEngine spotlights shine along local +X; glTF punctual spots shine
 /// along local -Z. Rotate only the light node; the source mesh remains intact.
 fn light_spot_rotation(source: [f32; 4]) -> [f32; 4] {
-    let [w,x,y,z]=source;
-    let h=std::f32::consts::FRAC_1_SQRT_2;
-    let [p,q,r,t]=[h,0.0,-h,0.0];
-    [w*p-x*q-y*r-z*t,w*q+x*p+y*t-z*r,w*r-x*t+y*p+z*q,w*t+x*r-y*q+z*p]
+    let [w, x, y, z] = source;
+    let h = std::f32::consts::FRAC_1_SQRT_2;
+    let [p, q, r, t] = [h, 0.0, -h, 0.0];
+    [
+        w * p - x * q - y * r - z * t,
+        w * q + x * p + y * t - z * r,
+        w * r - x * t + y * p + z * q,
+        w * t + x * r - y * q + z * p,
+    ]
 }
 
 struct Assembler {
@@ -388,17 +466,20 @@ impl Assembler {
         resolve: &mut R,
         virtual_path: &str,
     ) -> Result<Option<usize>, LevelExportError>
-    where R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>
+    where
+        R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
     {
         let cache_key = virtual_path.to_ascii_lowercase();
         if let Some(index) = self.cached_images.get(&cache_key) {
             return Ok(Some(*index));
         }
-        let source = if let Some(source)=resolve(virtual_path)? {
+        let source = if let Some(source) = resolve(virtual_path)? {
             Some(source)
         } else if virtual_path.to_ascii_lowercase().ends_with(".dds") {
             resolve(&format!("{virtual_path}.0"))?
-        } else { None };
+        } else {
+            None
+        };
         let Some(source) = source else {
             self.missing_texture_references += 1;
             return Ok(None);
@@ -460,7 +541,8 @@ impl Assembler {
         slot: &MaterialSlot,
         resolve: &mut R,
     ) -> Result<usize, LevelExportError>
-    where R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>
+    where
+        R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
     {
         let mut pbr = json!({"metallicFactor":0.0,"roughnessFactor":1.0});
         if let Some(tint) = slot.diffuse_tint {
@@ -537,10 +619,9 @@ impl Assembler {
         material: Option<&MaterialDocument>,
         root: &Path,
     ) -> Result<usize, LevelExportError> {
-        self.add_textured_mesh_resolved(
-            mesh,source_bytes,material,
-            &mut |path| Ok(exact_geometry(root,path).ok())
-        )
+        self.add_textured_mesh_resolved(mesh, source_bytes, material, &mut |path| {
+            Ok(exact_geometry(root, path).ok())
+        })
     }
     fn add_textured_mesh_resolved<R>(
         &mut self,
@@ -549,7 +630,8 @@ impl Assembler {
         material: Option<&MaterialDocument>,
         resolve: &mut R,
     ) -> Result<usize, LevelExportError>
-    where R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>
+    where
+        R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
     {
         let id = self.add_mesh(mesh)?;
         let Some(document) = material else {
@@ -660,27 +742,50 @@ impl Assembler {
     /// intensity is not an assertion of native illumination parity.
     /// Use the authored baked terrain color, never a synthetic 1x1 texture.
     /// An absent or undecodable terrain package leaves untextured geometry.
-    fn add_terrain_color(&mut self, rgba: image::RgbaImage) -> Result<usize,LevelExportError> {
-        let mut png=Vec::new();
-        DynamicImage::ImageRgba8(rgba).write_to(
-            &mut Cursor::new(&mut png),ImageFormat::Png
-        ).map_err(|e|LevelExportError::Material(e.to_string()))?;
-        while !self.binary.len().is_multiple_of(4) {self.binary.push(0);}
-        if self.binary.len().checked_add(png.len()).is_none_or(|n|n>MAX_SCENE_GLB) {
+    fn add_terrain_color(&mut self, rgba: image::RgbaImage) -> Result<usize, LevelExportError> {
+        let mut png = Vec::new();
+        DynamicImage::ImageRgba8(rgba)
+            .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            .map_err(|e| LevelExportError::Material(e.to_string()))?;
+        while !self.binary.len().is_multiple_of(4) {
+            self.binary.push(0);
+        }
+        if self
+            .binary
+            .len()
+            .checked_add(png.len())
+            .is_none_or(|n| n > MAX_SCENE_GLB)
+        {
             return Err(LevelExportError::Limits);
         }
-        let at=self.binary.len();
+        let at = self.binary.len();
         self.binary.extend_from_slice(&png);
-        let view=self.document["bufferViews"].as_array().ok_or(LevelExportError::Limits)?.len();
-        self.document["bufferViews"].as_array_mut().ok_or(LevelExportError::Limits)?
+        let view = self.document["bufferViews"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len();
+        self.document["bufferViews"]
+            .as_array_mut()
+            .ok_or(LevelExportError::Limits)?
             .push(json!({"buffer":0,"byteOffset":at,"byteLength":png.len()}));
-        let img=self.document["images"].as_array().ok_or(LevelExportError::Limits)?.len();
+        let img = self.document["images"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len();
         self.document["images"].as_array_mut().ok_or(LevelExportError::Limits)?
             .push(json!({"name":"Source baked TerrainTexture.pak","bufferView":view,"mimeType":"image/png"}));
-        let tex=self.document["textures"].as_array().ok_or(LevelExportError::Limits)?.len();
-        self.document["textures"].as_array_mut().ok_or(LevelExportError::Limits)?
+        let tex = self.document["textures"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len();
+        self.document["textures"]
+            .as_array_mut()
+            .ok_or(LevelExportError::Limits)?
             .push(json!({"source":img}));
-        let id=self.document["materials"].as_array().ok_or(LevelExportError::Limits)?.len();
+        let id = self.document["materials"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len();
         self.document["materials"].as_array_mut().ok_or(LevelExportError::Limits)?.push(json!({
             "name":"CryEngine baked terrain color",
             "pbrMetallicRoughness":{"baseColorTexture":{"index":tex},"metallicFactor":0.0,"roughnessFactor":1.0},
@@ -690,8 +795,8 @@ impl Assembler {
     }
 
     fn add_light(&mut self, light: &ExportLight) -> Result<(), LevelExportError> {
-        let is_spot=light.cone_degrees.is_some();
-        let mut definition=json!({
+        let is_spot = light.cone_degrees.is_some();
+        let mut definition = json!({
             "name":light.name,
             "type":if is_spot {"spot"} else {"point"},
             "color":light.color,
@@ -705,32 +810,42 @@ impl Assembler {
                 "conversion_note":"glTF attenuation and photometry are approximate"
             }
         });
-        if let Some(degrees)=light.cone_degrees {
-            definition["spot"]=json!({
+        if let Some(degrees) = light.cone_degrees {
+            definition["spot"] = json!({
                 "innerConeAngle":0.0,
                 "outerConeAngle":(degrees.to_radians()*0.5)
             });
         }
         if self.document.get("extensions").is_none() {
-            self.document["extensions"]=json!({"KHR_lights_punctual":{"lights":[]}});
-            self.document["extensionsUsed"]=json!(["KHR_lights_punctual"]);
+            self.document["extensions"] = json!({"KHR_lights_punctual":{"lights":[]}});
+            self.document["extensionsUsed"] = json!(["KHR_lights_punctual"]);
         }
-        let index=self.document["extensions"]["KHR_lights_punctual"]["lights"]
-            .as_array().ok_or(LevelExportError::Limits)?.len();
+        let index = self.document["extensions"]["KHR_lights_punctual"]["lights"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len();
         self.document["extensions"]["KHR_lights_punctual"]["lights"]
-            .as_array_mut().ok_or(LevelExportError::Limits)?.push(definition);
+            .as_array_mut()
+            .ok_or(LevelExportError::Limits)?
+            .push(definition);
         self.add_node(
-            &light.name,None,Some(light.world),
+            &light.name,
+            None,
+            Some(light.world),
             json!({"source_id":light.id,"kind":"CryEngineLight",
                 "original_rotation_wxyz":light.world.quaternion}),
         )?;
-        let last=self.document["nodes"].as_array().ok_or(LevelExportError::Limits)?.len()-1;
-        self.document["nodes"][last]["extensions"]=json!({"KHR_lights_punctual":{"light":index}});
+        let last = self.document["nodes"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len()
+            - 1;
+        self.document["nodes"][last]["extensions"] = json!({"KHR_lights_punctual":{"light":index}});
         if is_spot {
-            let q=light_spot_rotation(light.world.quaternion);
-            self.document["nodes"][last]["rotation"]=json!([q[1],q[2],q[3],q[0]]);
+            let q = light_spot_rotation(light.world.quaternion);
+            self.document["nodes"][last]["rotation"] = json!([q[1], q[2], q[3], q[0]]);
         }
-        self.lights+=1;
+        self.lights += 1;
         Ok(())
     }
     fn finish(mut self) -> Result<Vec<u8>, LevelExportError> {
@@ -803,56 +918,70 @@ const TERRAIN_TILE_QUADS: usize = 256;
 /// Split the maximum decoded terrain grid into bounded source-UV0 mesh tiles.
 /// All tile vertices stay in original absolute world coordinates, so adjacent
 /// tiles are exactly coincident and Blender can edit them independently.
-fn terrain_mesh_tiles(source: &TerrainMesh) -> Result<Vec<RenderMesh>,LevelExportError> {
-    let stride=source.info.stride as usize;
-    if stride==0 {return Err(LevelExportError::Limits);}
-    let sampled=|total:u32| {
-        let mut positions=(0..total).step_by(stride).collect::<Vec<_>>();
-        if positions.last().copied()!=Some(total-1) { positions.push(total-1); }
+fn terrain_mesh_tiles(source: &TerrainMesh) -> Result<Vec<RenderMesh>, LevelExportError> {
+    let stride = source.info.stride as usize;
+    if stride == 0 {
+        return Err(LevelExportError::Limits);
+    }
+    let sampled = |total: u32| {
+        let mut positions = (0..total).step_by(stride).collect::<Vec<_>>();
+        if positions.last().copied() != Some(total - 1) {
+            positions.push(total - 1);
+        }
         positions.len()
     };
-    let nx=sampled(source.info.width);
-    let ny=sampled(source.info.height);
-    if nx.checked_mul(ny)!=Some(source.vertices.len()) || nx<2 || ny<2
-        || source.normals.len()!=source.vertices.len()
-        || source.uv.len()!=source.vertices.len()
-    {return Err(LevelExportError::Limits);}
-    let mut result=Vec::new();
-    for x0 in (0..nx-1).step_by(TERRAIN_TILE_QUADS) {
-        let x1=(x0+TERRAIN_TILE_QUADS).min(nx-1);
-        for y0 in (0..ny-1).step_by(TERRAIN_TILE_QUADS) {
-            let y1=(y0+TERRAIN_TILE_QUADS).min(ny-1);
-            let rows=y1-y0+1;
-            let cols=x1-x0+1;
-            let mut positions=Vec::with_capacity(rows*cols);
-            let mut normals=Vec::with_capacity(rows*cols);
-            let mut uv=Vec::with_capacity(rows*cols);
+    let nx = sampled(source.info.width);
+    let ny = sampled(source.info.height);
+    if nx.checked_mul(ny) != Some(source.vertices.len())
+        || nx < 2
+        || ny < 2
+        || source.normals.len() != source.vertices.len()
+        || source.uv.len() != source.vertices.len()
+    {
+        return Err(LevelExportError::Limits);
+    }
+    let mut result = Vec::new();
+    for x0 in (0..nx - 1).step_by(TERRAIN_TILE_QUADS) {
+        let x1 = (x0 + TERRAIN_TILE_QUADS).min(nx - 1);
+        for y0 in (0..ny - 1).step_by(TERRAIN_TILE_QUADS) {
+            let y1 = (y0 + TERRAIN_TILE_QUADS).min(ny - 1);
+            let rows = y1 - y0 + 1;
+            let cols = x1 - x0 + 1;
+            let mut positions = Vec::with_capacity(rows * cols);
+            let mut normals = Vec::with_capacity(rows * cols);
+            let mut uv = Vec::with_capacity(rows * cols);
             for x in x0..=x1 {
                 for y in y0..=y1 {
-                    let index=x*ny+y;
+                    let index = x * ny + y;
                     positions.push(source.vertices[index]);
                     normals.push(source.normals[index]);
                     uv.push(source.uv[index]);
                 }
             }
-            let mut indices=Vec::with_capacity((cols-1)*(rows-1)*6);
-            for x in 0..cols-1 {
-                for y in 0..rows-1 {
-                    let a=(x*rows+y) as u32;
-                    let b=a+rows as u32;
-                    let c=a+1;
-                    indices.extend_from_slice(&[a,b,c,b,b+1,c]);
+            let mut indices = Vec::with_capacity((cols - 1) * (rows - 1) * 6);
+            for x in 0..cols - 1 {
+                for y in 0..rows - 1 {
+                    let a = (x * rows + y) as u32;
+                    let b = a + rows as u32;
+                    let c = a + 1;
+                    indices.extend_from_slice(&[a, b, c, b, b + 1, c]);
                 }
             }
-            result.push(RenderMesh{
-                vertex_alpha:None,
-                info:ModelInfo{
-                    format:format!("CryEngine Terrain Tile ({x0},{y0})"),
-                    version:1, chunk_count:0, vertex_count:positions.len(),
-                    triangle_count:indices.len()/3,
-                    original_uv0:true,original_normals:true
+            result.push(RenderMesh {
+                vertex_alpha: None,
+                info: ModelInfo {
+                    format: format!("CryEngine Terrain Tile ({x0},{y0})"),
+                    version: 1,
+                    chunk_count: 0,
+                    vertex_count: positions.len(),
+                    triangle_count: indices.len() / 3,
+                    original_uv0: true,
+                    original_normals: true,
                 },
-                positions,indices,uv0:Some(uv),normals:Some(normals)
+                positions,
+                indices,
+                uv0: Some(uv),
+                normals: Some(normals),
             });
         }
     }
@@ -861,36 +990,64 @@ fn terrain_mesh_tiles(source: &TerrainMesh) -> Result<Vec<RenderMesh>,LevelExpor
 fn original_terrain_color(source: &Path) -> Option<image::RgbaImage> {
     // The map's own TerrainTexture.pak is the only admissible baked color.
     // Other installed maps or similarly-named global DDS files are not used.
-    let folder=source.parent()?;
-    let map=if folder.file_name()?.to_string_lossy().eq_ignore_ascii_case("LevelData") {
+    let folder = source.parent()?;
+    let map = if folder
+        .file_name()?
+        .to_string_lossy()
+        .eq_ignore_ascii_case("LevelData")
+    {
         folder.parent()?
-    }else{folder};
-    let color=map.join("TerrainTexture.pak");
-    let meta=fs::symlink_metadata(&color).ok()?;
-    if !meta.file_type().is_file(){return None;}
+    } else {
+        folder
+    };
+    let color = map.join("TerrainTexture.pak");
+    let meta = fs::symlink_metadata(&color).ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
     crate::terrain_tiles::read_terrain_texture_atlas(&color)
-        .ok().filter(|atlas| !atlas.incomplete).map(|atlas|atlas.image)
+        .ok()
+        .filter(|atlas| !atlas.incomplete)
+        .map(|atlas| atlas.image)
 }
 
 /// Build a complete *verified geometry* scene from a level layer/mission XML,
 /// an exact extraction root and optional source Heightmap.dat. Every referenced
 /// render model must be present or the operation fails without creating a GLB.
 pub fn export_level_scene_glb(
-    placement:&Path,asset_root:&Path,terrain:Option<&Path>,destination:&Path
-)->Result<LevelExportReport,LevelExportError> {
+    placement: &Path,
+    asset_root: &Path,
+    terrain: Option<&Path>,
+    destination: &Path,
+) -> Result<LevelExportReport, LevelExportError> {
     if !placement.is_file() || fs::symlink_metadata(placement)?.file_type().is_symlink() {
         return Err(LevelExportError::Missing(
-            "Select original mission XML or LYR".into()
+            "Select original mission XML or LYR".into(),
         ));
     }
-    let scene=load_level_scene(placement)?;
-    let bytes=fs::read(placement)?;
-    let sources=vec![(placement.file_name().unwrap_or_default().to_string_lossy().into_owned(),bytes)];
-    let label=placement.file_stem().and_then(|p|p.to_str()).unwrap_or("CryEngine Level");
-    let root=asset_root.canonicalize()?;
+    let scene = load_level_scene(placement)?;
+    let bytes = fs::read(placement)?;
+    let sources = vec![(
+        placement
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        bytes,
+    )];
+    let label = placement
+        .file_stem()
+        .and_then(|p| p.to_str())
+        .unwrap_or("CryEngine Level");
+    let root = asset_root.canonicalize()?;
     export_level_scene_glb_with_scene(
-        &scene,&sources,label,asset_root,terrain,destination,
-        |virtual_path|Ok(exact_geometry(&root,virtual_path).ok()),
+        &scene,
+        &sources,
+        label,
+        asset_root,
+        terrain,
+        destination,
+        |virtual_path| Ok(exact_geometry(&root, virtual_path).ok()),
     )
 }
 
@@ -898,15 +1055,16 @@ pub fn export_level_scene_glb(
 /// VegetationMap.dat placements. `resolve` must use verified same-install
 /// asset-library paths; no project-wide basename fallback is allowed.
 pub fn export_level_scene_glb_with_scene<R>(
-    scene:&LevelScene,
-    sources:&[(String,Vec<u8>)],
-    label:&str,
-    asset_root:&Path,
-    terrain:Option<&Path>,
-    destination:&Path,
-    mut resolve:R,
-)->Result<LevelExportReport,LevelExportError>
-where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
+    scene: &LevelScene,
+    sources: &[(String, Vec<u8>)],
+    label: &str,
+    asset_root: &Path,
+    terrain: Option<&Path>,
+    destination: &Path,
+    mut resolve: R,
+) -> Result<LevelExportReport, LevelExportError>
+where
+    R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
 {
     let root = asset_root.canonicalize()?;
     if !root.is_dir() || fs::symlink_metadata(asset_root)?.file_type().is_symlink() {
@@ -923,38 +1081,41 @@ where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
     if !parent.is_dir() || fs::symlink_metadata(parent)?.file_type().is_symlink() {
         return Err(LevelExportError::Exists);
     }
-    let mut source_lights=Vec::new();
-    for (_,bytes) in sources {
-        source_lights.extend(authored_lights(bytes,scene)?);
+    let mut source_lights = Vec::new();
+    for (_, bytes) in sources {
+        source_lights.extend(authored_lights(bytes, scene)?);
     }
-    let mut used=std::collections::HashSet::new();
-    let lights=source_lights.into_iter()
-        .filter(|light|used.insert(light.id.to_ascii_lowercase()))
+    let mut used = std::collections::HashSet::new();
+    let lights = source_lights
+        .into_iter()
+        .filter(|light| used.insert(light.id.to_ascii_lowercase()))
         .collect::<Vec<_>>();
-    let mut assembler=Assembler::new(label);
+    let mut assembler = Assembler::new(label);
     let mut resources = HashMap::<(String, String), usize>::new();
     let mut geometry_instances = 0usize;
     let mut metadata_only = 0usize;
-    let mut terrain_tiles=0usize;
-    let mut terrain_source_resolution=true;
+    let mut terrain_tiles = 0usize;
+    let mut terrain_source_resolution = true;
     if let Some(source) = terrain {
-        let terrain_data=read_terrain(source,MAX_RENDER_GRID)?;
-        terrain_source_resolution=terrain_data.info.stride==1;
-        let color=original_terrain_color(source)
-            .map(|image|assembler.add_terrain_color(image)).transpose()?;
+        let terrain_data = read_terrain(source, MAX_RENDER_GRID)?;
+        terrain_source_resolution = terrain_data.info.stride == 1;
+        let color = original_terrain_color(source)
+            .map(|image| assembler.add_terrain_color(image))
+            .transpose()?;
         for mesh in terrain_mesh_tiles(&terrain_data)? {
-            let index=assembler.add_mesh(&mesh)?;
-            if let Some(material)=color {
-                assembler.document["meshes"][index]["primitives"][0]["material"]=json!(material);
+            let index = assembler.add_mesh(&mesh)?;
+            if let Some(material) = color {
+                assembler.document["meshes"][index]["primitives"][0]["material"] = json!(material);
             }
             assembler.add_node(
                 &mesh.info.format,
-                Some(index),None,
+                Some(index),
+                None,
                 json!({"source":"Heightmap.dat","terrain_tile":true,
                     "source_sample_stride":terrain_data.info.stride}),
             )?;
-            terrain_tiles+=1;
-            geometry_instances+=1;
+            terrain_tiles += 1;
+            geometry_instances += 1;
         }
     }
     for object in &scene.objects {
@@ -970,29 +1131,37 @@ where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
             } else {
                 // Exact authored source first, then its exact compiled partner;
                 // a similarly named asset elsewhere is never considered.
-                let name=&object.model;
-                let mut candidates=vec![name.clone()];
-                let ext=Path::new(name).extension().and_then(|x|x.to_str())
-                    .unwrap_or_default().to_ascii_lowercase();
-                if matches!(ext.as_str(),"cgf"|"cga"|"chr"|"skin") {
-                    let compiled=Path::new(name).with_extension(format!("{ext}m"))
-                        .to_string_lossy().to_string();
+                let name = &object.model;
+                let mut candidates = vec![name.clone()];
+                let ext = Path::new(name)
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if matches!(ext.as_str(), "cgf" | "cga" | "chr" | "skin") {
+                    let compiled = Path::new(name)
+                        .with_extension(format!("{ext}m"))
+                        .to_string_lossy()
+                        .to_string();
                     candidates.push(compiled);
                 }
-                let mut loaded=None;
-                let mut errors=Vec::new();
+                let mut loaded = None;
+                let mut errors = Vec::new();
                 for candidate in candidates {
-                    if let Some(path)=resolve(&candidate)? {
+                    if let Some(path) = resolve(&candidate)? {
                         match read_model(&path) {
-                            Ok(mesh)=>{loaded=Some((mesh,path));break;},
-                            Err(error)=>errors.push(format!("{candidate}: {error}")),
+                            Ok(mesh) => {
+                                loaded = Some((mesh, path));
+                                break;
+                            }
+                            Err(error) => errors.push(format!("{candidate}: {error}")),
                         }
                     }
                 }
-                let (mesh,path)=loaded.ok_or_else(||LevelExportError::Missing(
-                    format!("{}: {}",object.model,errors.join("; "))
-                ))?;
-                let bytes=fs::read(&path)?;
+                let (mesh, path) = loaded.ok_or_else(|| {
+                    LevelExportError::Missing(format!("{}: {}", object.model, errors.join("; ")))
+                })?;
+                let bytes = fs::read(&path)?;
                 let virtual_material = if object.material.trim().is_empty() {
                     let stem = object
                         .model
@@ -1004,10 +1173,12 @@ where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
                 } else {
                     format!("{}.mtl", object.material)
                 };
-                let authored=resolve(&virtual_material)?
-                    .and_then(|mtl|read_material(&mtl).ok());
-                let id=assembler.add_textured_mesh_resolved(
-                    &mesh,&bytes,authored.as_ref(),&mut resolve
+                let authored = resolve(&virtual_material)?.and_then(|mtl| read_material(&mtl).ok());
+                let id = assembler.add_textured_mesh_resolved(
+                    &mesh,
+                    &bytes,
+                    authored.as_ref(),
+                    &mut resolve,
                 )?;
                 resources.insert(key, id);
                 Some(id)
@@ -1071,41 +1242,53 @@ mod tests {
     use super::*;
     #[test]
     fn full_grid_terrain_is_split_without_changing_original_uvs() {
-        let w=260usize;
-        let h=260usize;
-        let size=w*h;
-        let mut verts=Vec::with_capacity(size);
-        let mut normals=Vec::with_capacity(size);
-        let mut uv=Vec::with_capacity(size);
+        let w = 260usize;
+        let h = 260usize;
+        let size = w * h;
+        let mut verts = Vec::with_capacity(size);
+        let mut normals = Vec::with_capacity(size);
+        let mut uv = Vec::with_capacity(size);
         for x in 0..w {
             for y in 0..h {
-                verts.push([x as f32,y as f32,(x+y) as f32*0.1]);
-                normals.push([0.,0.,1.]);
-                uv.push([x as f32/(w-1) as f32,y as f32/(h-1) as f32]);
+                verts.push([x as f32, y as f32, (x + y) as f32 * 0.1]);
+                normals.push([0., 0., 1.]);
+                uv.push([x as f32 / (w - 1) as f32, y as f32 / (h - 1) as f32]);
             }
         }
-        let terrain=TerrainMesh {
-            info:crate::terrain::TerrainInfo{
-                width:w as u32,height:h as u32,unit:1.,max_height:100.,
-                decoded_samples:size,stride:1
+        let terrain = TerrainMesh {
+            info: crate::terrain::TerrainInfo {
+                width: w as u32,
+                height: h as u32,
+                unit: 1.,
+                max_height: 100.,
+                decoded_samples: size,
+                stride: 1,
             },
-            vertices:verts,indices:vec![],normals,uv
+            vertices: verts,
+            indices: vec![],
+            normals,
+            uv,
         };
-        let tiles=terrain_mesh_tiles(&terrain).unwrap();
-        assert_eq!(tiles.len(),4);
-        assert_eq!(tiles.iter().map(|tile|tile.indices.len()/3).sum::<usize>(),
-            2*(w-1)*(h-1));
+        let tiles = terrain_mesh_tiles(&terrain).unwrap();
+        assert_eq!(tiles.len(), 4);
+        assert_eq!(
+            tiles
+                .iter()
+                .map(|tile| tile.indices.len() / 3)
+                .sum::<usize>(),
+            2 * (w - 1) * (h - 1)
+        );
         for tile in &tiles {
-            assert!(tile.positions.len()<=257*257);
-            for (position,texture) in tile.positions.iter().zip(tile.uv0.as_ref().unwrap()) {
-                assert!((position[0]/(w-1) as f32-texture[0]).abs()<1e-6);
-                assert!((position[1]/(h-1) as f32-texture[1]).abs()<1e-6);
+            assert!(tile.positions.len() <= 257 * 257);
+            for (position, texture) in tile.positions.iter().zip(tile.uv0.as_ref().unwrap()) {
+                assert!((position[0] / (w - 1) as f32 - texture[0]).abs() < 1e-6);
+                assert!((position[1] / (h - 1) as f32 - texture[1]).abs() < 1e-6);
             }
         }
     }
     #[test]
     fn source_lights_export_as_moveable_gltf_punctual_nodes() {
-        let data=br#"<Objects>
+        let data = br#"<Objects>
             <Object Id="LIGHT-1" Name="Lamp" Type="Entity" EntityClass="Light"
                 Pos="11,12,13">
                 <Properties Radius="20" DiffuseMultiplier="4"
@@ -1118,28 +1301,40 @@ mod tests {
                     DiffuseColor="1,1,1" bFakeLight="1"/>
             </Object>
         </Objects>"#;
-        let scene=crate::scene::parse_level_scene(&[("fixture",data)]).unwrap();
-        let lights=authored_lights(data,&scene).unwrap();
-        assert_eq!(lights.len(),1);
-        assert_eq!(lights[0].radius,20.);
-        let mut exporter=Assembler::new("Lamp fixture");
+        let scene = crate::scene::parse_level_scene(&[("fixture", data)]).unwrap();
+        let lights = authored_lights(data, &scene).unwrap();
+        assert_eq!(lights.len(), 1);
+        assert_eq!(lights[0].radius, 20.);
+        let mut exporter = Assembler::new("Lamp fixture");
         exporter.add_light(&lights[0]).unwrap();
-        assert_eq!(exporter.document["extensionsUsed"][0],"KHR_lights_punctual");
-        assert_eq!(exporter.document["extensions"]["KHR_lights_punctual"]["lights"][0]["type"],"spot");
-        assert_eq!(exporter.document["nodes"][1]["extensions"]["KHR_lights_punctual"]["light"],0);
-        assert_eq!(exporter.document["nodes"][1]["translation"],json!([11.,12.,13.]));
+        assert_eq!(
+            exporter.document["extensionsUsed"][0],
+            "KHR_lights_punctual"
+        );
+        assert_eq!(
+            exporter.document["extensions"]["KHR_lights_punctual"]["lights"][0]["type"],
+            "spot"
+        );
+        assert_eq!(
+            exporter.document["nodes"][1]["extensions"]["KHR_lights_punctual"]["light"],
+            0
+        );
+        assert_eq!(
+            exporter.document["nodes"][1]["translation"],
+            json!([11., 12., 13.])
+        );
     }
     #[test]
     fn spotlight_basis_maps_gltf_negative_z_to_cryengine_positive_x() {
-        let [w,x,y,z]=light_spot_rotation([1.,0.,0.,0.]);
-        let direction=[
-            -2.0*(x*z+w*y),
-            -2.0*(y*z-w*x),
-            -(1.0-2.0*(x*x+y*y)),
+        let [w, x, y, z] = light_spot_rotation([1., 0., 0., 0.]);
+        let direction = [
+            -2.0 * (x * z + w * y),
+            -2.0 * (y * z - w * x),
+            -(1.0 - 2.0 * (x * x + y * y)),
         ];
-        assert!((direction[0]-1.).abs()<1e-5);
-        assert!(direction[1].abs()<1e-5);
-        assert!(direction[2].abs()<1e-5);
+        assert!((direction[0] - 1.).abs() < 1e-5);
+        assert!(direction[1].abs() < 1e-5);
+        assert!(direction[2].abs() < 1e-5);
     }
     #[test]
     fn creates_distinct_instance_nodes_under_common_zup_basis() {
