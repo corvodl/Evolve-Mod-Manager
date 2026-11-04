@@ -8,7 +8,7 @@ use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::materials::{MaterialDocument, MaterialSlot, read_material};
 use crate::model::{ModelError, ModelInfo, RenderMesh, original_mesh_subsets, read_model};
 use crate::scene::{LevelScene, SceneError, load_level_scene};
-use crate::terrain::{TerrainError, read_terrain};
+use crate::terrain::{TerrainError, TerrainMesh, MAX_RENDER_GRID, read_terrain};
 use image::{DynamicImage, ImageFormat};
 use quick_xml::{Reader, events::{BytesStart, Event}};
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,12 @@ pub struct LevelExportReport {
     /// Actual source-authored point/spot light objects exported via KHR_lights_punctual.
     #[serde(default)]
     pub exported_lights: usize,
+    /// Number of separately selectable terrain tile meshes.
+    #[serde(default)]
+    pub terrain_tiles: usize,
+    /// Full source sample fidelity; false when the terrain decoder had to stride.
+    #[serde(default)]
+    pub terrain_source_resolution: bool,
     pub output_bytes: usize,
     /// Only recognized and verified render geometry is exported. Materials,
     /// vegetation instance payloads, collision and game scripting are separate.
@@ -636,6 +642,37 @@ impl Assembler {
     /// glTF KHR_lights_punctual is supported by Blender's glTF importer.
     /// The raw CryEngine multiplier is kept in extras: glTF photometric
     /// intensity is not an assertion of native illumination parity.
+    /// Use the authored baked terrain color, never a synthetic 1x1 texture.
+    /// An absent or undecodable terrain package leaves untextured geometry.
+    fn add_terrain_color(&mut self, rgba: image::RgbaImage) -> Result<usize,LevelExportError> {
+        let mut png=Vec::new();
+        DynamicImage::ImageRgba8(rgba).write_to(
+            &mut Cursor::new(&mut png),ImageFormat::Png
+        ).map_err(|e|LevelExportError::Material(e.to_string()))?;
+        while !self.binary.len().is_multiple_of(4) {self.binary.push(0);}
+        if self.binary.len().checked_add(png.len()).is_none_or(|n|n>MAX_SCENE_GLB) {
+            return Err(LevelExportError::Limits);
+        }
+        let at=self.binary.len();
+        self.binary.extend_from_slice(&png);
+        let view=self.document["bufferViews"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["bufferViews"].as_array_mut().ok_or(LevelExportError::Limits)?
+            .push(json!({"buffer":0,"byteOffset":at,"byteLength":png.len()}));
+        let img=self.document["images"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["images"].as_array_mut().ok_or(LevelExportError::Limits)?
+            .push(json!({"name":"Source baked TerrainTexture.pak","bufferView":view,"mimeType":"image/png"}));
+        let tex=self.document["textures"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["textures"].as_array_mut().ok_or(LevelExportError::Limits)?
+            .push(json!({"source":img}));
+        let id=self.document["materials"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["materials"].as_array_mut().ok_or(LevelExportError::Limits)?.push(json!({
+            "name":"CryEngine baked terrain color",
+            "pbrMetallicRoughness":{"baseColorTexture":{"index":tex},"metallicFactor":0.0,"roughnessFactor":1.0},
+            "extras":{"source":"TerrainTexture.pak","terrain_layers":"Not baked into the original atlas exporter"}
+        }));
+        Ok(id)
+    }
+
     fn add_light(&mut self, light: &ExportLight) -> Result<(), LevelExportError> {
         let is_spot=light.cone_degrees.is_some();
         let mut definition=json!({
@@ -745,26 +782,78 @@ fn exact_geometry(root: &Path, virtual_path: &str) -> Result<PathBuf, LevelExpor
     }
     Ok(resolved)
 }
-fn terrain_mesh(path: &Path) -> Result<RenderMesh, LevelExportError> {
-    let terrain = read_terrain(path, 257)?;
-    let points = terrain.vertices.len();
-    let triangles = terrain.indices.len() / 3;
-    Ok(RenderMesh {
-        vertex_alpha: None,
-        info: ModelInfo {
-            format: "CryEngine terrain surface".into(),
-            version: 1,
-            chunk_count: 0,
-            vertex_count: points,
-            triangle_count: triangles,
-            original_uv0: true,
-            original_normals: true,
-        },
-        positions: terrain.vertices,
-        indices: terrain.indices,
-        uv0: Some(terrain.uv),
-        normals: Some(terrain.normals),
-    })
+const TERRAIN_TILE_QUADS: usize = 256;
+
+/// Split the maximum decoded terrain grid into bounded source-UV0 mesh tiles.
+/// All tile vertices stay in original absolute world coordinates, so adjacent
+/// tiles are exactly coincident and Blender can edit them independently.
+fn terrain_mesh_tiles(source: &TerrainMesh) -> Result<Vec<RenderMesh>,LevelExportError> {
+    let stride=source.info.stride as usize;
+    if stride==0 {return Err(LevelExportError::Limits);}
+    let sampled=|total:u32| {
+        let mut positions=(0..total).step_by(stride).collect::<Vec<_>>();
+        if positions.last().copied()!=Some(total-1) { positions.push(total-1); }
+        positions.len()
+    };
+    let nx=sampled(source.info.width);
+    let ny=sampled(source.info.height);
+    if nx.checked_mul(ny)!=Some(source.vertices.len()) || nx<2 || ny<2
+        || source.normals.len()!=source.vertices.len()
+        || source.uv.len()!=source.vertices.len()
+    {return Err(LevelExportError::Limits);}
+    let mut result=Vec::new();
+    for x0 in (0..nx-1).step_by(TERRAIN_TILE_QUADS) {
+        let x1=(x0+TERRAIN_TILE_QUADS).min(nx-1);
+        for y0 in (0..ny-1).step_by(TERRAIN_TILE_QUADS) {
+            let y1=(y0+TERRAIN_TILE_QUADS).min(ny-1);
+            let rows=y1-y0+1;
+            let cols=x1-x0+1;
+            let mut positions=Vec::with_capacity(rows*cols);
+            let mut normals=Vec::with_capacity(rows*cols);
+            let mut uv=Vec::with_capacity(rows*cols);
+            for x in x0..=x1 {
+                for y in y0..=y1 {
+                    let index=x*ny+y;
+                    positions.push(source.vertices[index]);
+                    normals.push(source.normals[index]);
+                    uv.push(source.uv[index]);
+                }
+            }
+            let mut indices=Vec::with_capacity((cols-1)*(rows-1)*6);
+            for x in 0..cols-1 {
+                for y in 0..rows-1 {
+                    let a=(x*rows+y) as u32;
+                    let b=a+rows as u32;
+                    let c=a+1;
+                    indices.extend_from_slice(&[a,b,c,b,b+1,c]);
+                }
+            }
+            result.push(RenderMesh{
+                vertex_alpha:None,
+                info:ModelInfo{
+                    format:format!("CryEngine Terrain Tile ({x0},{y0})"),
+                    version:1, chunk_count:0, vertex_count:positions.len(),
+                    triangle_count:indices.len()/3,
+                    original_uv0:true,original_normals:true
+                },
+                positions,indices,uv0:Some(uv),normals:Some(normals)
+            });
+        }
+    }
+    Ok(result)
+}
+fn original_terrain_color(source: &Path) -> Option<image::RgbaImage> {
+    // The map's own TerrainTexture.pak is the only admissible baked color.
+    // Other installed maps or similarly-named global DDS files are not used.
+    let folder=source.parent()?;
+    let map=if folder.file_name()?.to_string_lossy().eq_ignore_ascii_case("LevelData") {
+        folder.parent()?
+    }else{folder};
+    let color=map.join("TerrainTexture.pak");
+    let meta=fs::symlink_metadata(&color).ok()?;
+    if !meta.file_type().is_file(){return None;}
+    crate::terrain_tiles::read_terrain_texture_atlas(&color)
+        .ok().filter(|atlas| !atlas.incomplete).map(|atlas|atlas.image)
 }
 
 /// Build a complete *verified geometry* scene from a level layer/mission XML,
@@ -807,16 +896,27 @@ pub fn export_level_scene_glb(
     let mut resources = HashMap::<(String, String), usize>::new();
     let mut geometry_instances = 0usize;
     let mut metadata_only = 0usize;
+    let mut terrain_tiles=0usize;
+    let mut terrain_source_resolution=true;
     if let Some(source) = terrain {
-        let mesh = terrain_mesh(source)?;
-        let index = assembler.add_mesh(&mesh)?;
-        assembler.add_node(
-            "CryEngine Terrain",
-            Some(index),
-            None,
-            json!({"source":source.file_name().and_then(|n|n.to_str()).unwrap_or("Heightmap.dat")}),
-        )?;
-        geometry_instances += 1;
+        let terrain_data=read_terrain(source,MAX_RENDER_GRID)?;
+        terrain_source_resolution=terrain_data.info.stride==1;
+        let color=original_terrain_color(source)
+            .map(|image|assembler.add_terrain_color(image)).transpose()?;
+        for mesh in terrain_mesh_tiles(&terrain_data)? {
+            let index=assembler.add_mesh(&mesh)?;
+            if let Some(material)=color {
+                assembler.document["meshes"][index]["primitives"][0]["material"]=json!(material);
+            }
+            assembler.add_node(
+                &mesh.info.format,
+                Some(index),None,
+                json!({"source":"Heightmap.dat","terrain_tile":true,
+                    "source_sample_stride":terrain_data.info.stride}),
+            )?;
+            terrain_tiles+=1;
+            geometry_instances+=1;
+        }
     }
     for object in &scene.objects {
         let mesh_id = if object.model.is_empty() {
@@ -889,11 +989,13 @@ pub fn export_level_scene_glb(
     })?;
     Ok(LevelExportReport {
         source_objects: scene.objects.len(),
-        exported_mesh_resources: resources.len() + usize::from(terrain.is_some()),
+        exported_mesh_resources: resources.len() + terrain_tiles,
         exported_mesh_instances: geometry_instances,
         metadata_only_objects: metadata_only,
         included_terrain: terrain.is_some(),
         exported_lights: lights.len(),
+        terrain_tiles,
+        terrain_source_resolution,
         output_bytes: bytes.len(),
         original_geometry_only: authored_material_slots == 0,
         authored_material_slots,
@@ -905,6 +1007,40 @@ pub fn export_level_scene_glb(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn full_grid_terrain_is_split_without_changing_original_uvs() {
+        let w=260usize;
+        let h=260usize;
+        let size=w*h;
+        let mut verts=Vec::with_capacity(size);
+        let mut normals=Vec::with_capacity(size);
+        let mut uv=Vec::with_capacity(size);
+        for x in 0..w {
+            for y in 0..h {
+                verts.push([x as f32,y as f32,(x+y) as f32*0.1]);
+                normals.push([0.,0.,1.]);
+                uv.push([x as f32/(w-1) as f32,y as f32/(h-1) as f32]);
+            }
+        }
+        let terrain=TerrainMesh {
+            info:crate::terrain::TerrainInfo{
+                width:w as u32,height:h as u32,unit:1.,max_height:100.,
+                decoded_samples:size,stride:1
+            },
+            vertices:verts,indices:vec![],normals,uv
+        };
+        let tiles=terrain_mesh_tiles(&terrain).unwrap();
+        assert_eq!(tiles.len(),4);
+        assert_eq!(tiles.iter().map(|tile|tile.indices.len()/3).sum::<usize>(),
+            2*(w-1)*(h-1));
+        for tile in &tiles {
+            assert!(tile.positions.len()<=257*257);
+            for (position,texture) in tile.positions.iter().zip(tile.uv0.as_ref().unwrap()) {
+                assert!((position[0]/(w-1) as f32-texture[0]).abs()<1e-6);
+                assert!((position[1]/(h-1) as f32-texture[1]).abs()<1e-6);
+            }
+        }
+    }
     #[test]
     fn source_lights_export_as_moveable_gltf_punctual_nodes() {
         let data=br#"<Objects>
