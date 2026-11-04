@@ -1258,6 +1258,51 @@ fn embedded_mtl_names(bytes:&[u8])->Vec<String> {
     names
 }
 
+/// Resolve explicit or embedded model MtlName dependencies with selected
+/// build provenance. If multiple distinct original sources match, never
+/// silently pick the first archive or a similar model basename.
+fn source_model_material<R>(
+    virtual_model:&str,explicit:&str,bytes:&[u8],resolve:&mut R
+)->Result<Option<PathBuf>,LevelExportError>
+where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
+{
+    if !explicit.trim().is_empty() {
+        let key=explicit.trim().replace('\\',"/");
+        let key=if key.to_ascii_lowercase().ends_with(".mtl"){key}else{format!("{key}.mtl")};
+        return resolve(&key);
+    }
+    let hints=embedded_mtl_names(bytes);
+    if !hints.is_empty() {
+        let parent=virtual_model.rsplit_once('/').map_or("",|(folder,_)|folder);
+        let mut unique=Vec::new();
+        for hint in hints {
+            let rooted=["objects/","materials/","characters/","levels/"]
+                .iter().any(|prefix|hint.to_ascii_lowercase().starts_with(prefix));
+            let mut candidates=Vec::new();
+            if !rooted && !parent.is_empty() {
+                candidates.push(format!("{parent}/{hint}"));
+            }
+            candidates.push(hint);
+            for virtual_path in candidates {
+                if let Some(path)=resolve(&virtual_path)?
+                    && !unique.contains(&path) {
+                    unique.push(path);
+                }
+            }
+        }
+        if unique.len()>1 {
+            return Err(LevelExportError::Material(format!(
+                "Conflicting authored MtlName references for {virtual_model}"
+            )));
+        }
+        // Explicit MtlName exists. Missing means missing, not permission
+        // to borrow an unrelated same-stem material.
+        return Ok(unique.pop());
+    }
+    let stem=virtual_model.rsplit_once('.').map_or(virtual_model,|(stem,_)|stem);
+    resolve(&format!("{stem}.mtl"))
+}
+
 fn exact_geometry(root: &Path, virtual_path: &str) -> Result<PathBuf, LevelExportError> {
     let normalized = safe_member_name(virtual_path)
         .map_err(|_| LevelExportError::Missing(virtual_path.into()))?;
@@ -1507,35 +1552,27 @@ where
                         if let Ok(parts)=read_world_model_parts_with_subsets(&path)
                             && !parts.is_empty()
                         {
-                            loaded=Some((parts,path));
+                            loaded=Some((parts,path,candidate));
                             break;
                         }
                         match read_model(&path) {
                             Ok(mesh)=>{
                                 loaded=Some((vec![WorldModelPart{
                                     mesh,subsets:Vec::new(),has_subset_table:false
-                                }],path));
+                                }],path,candidate));
                                 break;
                             }
                             Err(error)=>errors.push(format!("{candidate}: {error}")),
                         }
                     }
                 }
-                let (parts,path)=loaded.ok_or_else(||LevelExportError::Missing(
+                let (parts,path,virtual_source)=loaded.ok_or_else(||LevelExportError::Missing(
                     format!("{}: {}",object.model,errors.join("; "))
                 ))?;
                 let bytes=fs::read(&path)?;
-                let virtual_material=if object.material.trim().is_empty() {
-                    let stem=object.model.rsplit_once('.')
-                        .map_or(object.model.as_str(),|(stem,_)|stem);
-                    format!("{stem}.mtl")
-                } else if object.material.to_ascii_lowercase().ends_with(".mtl") {
-                    object.material.clone()
-                } else {
-                    format!("{}.mtl",object.material)
-                };
-                let authored=resolve(&virtual_material)?
-                    .and_then(|material|read_material(&material).ok());
+                let authored=source_model_material(
+                    &virtual_source,&object.material,&bytes,&mut resolve
+                )?.and_then(|material|read_material(&material).ok());
                 let mut ids=Vec::new();
                 for part in parts {
                     // An explicit empty ranges slice means the source part
