@@ -1637,6 +1637,37 @@ where
 mod tests {
     use super::*;
     #[test]
+    fn crchf_source_mtlname_is_preferred_over_lookalike_stem() {
+        let mut chunk=vec![0u8;16+16+132];
+        chunk[..5].copy_from_slice(b"CrChF");
+        chunk[8..12].copy_from_slice(&1u32.to_le_bytes());
+        chunk[12..16].copy_from_slice(&16u32.to_le_bytes());
+        chunk[16..20].copy_from_slice(&0x08021014u32.to_le_bytes());
+        chunk[24..28].copy_from_slice(&132u32.to_le_bytes());
+        chunk[28..32].copy_from_slice(&32u32.to_le_bytes());
+        let hint=b"materials/maps/verified.mtl";
+        chunk[32..32+hint.len()].copy_from_slice(hint);
+        assert_eq!(embedded_mtl_names(&chunk),["materials/maps/verified.mtl"]);
+        let path=std::path::PathBuf::from("/verified/maps/material.mtl");
+        let resolved=source_model_material(
+            "objects/rock.cgf","",&chunk,&mut |virtual_path|{
+                if virtual_path=="materials/maps/verified.mtl" {
+                    Ok(Some(path.clone()))
+                } else {Ok(None)}
+            }
+        ).unwrap();
+        assert_eq!(resolved,Some(path));
+        assert_eq!(source_model_material(
+            "objects/rock.cgf","",&chunk,&mut |_key|Ok(None)
+        ).unwrap(),None);
+        // An exact authored MtlName cannot be replaced with a similarly
+        // spelled basename or a same-stem MTL when it is unresolved.
+        let malicious=b"../wrong/build.mtl";
+        chunk[32..32+hint.len()].fill(0);
+        chunk[32..32+malicious.len()].copy_from_slice(malicious);
+        assert!(embedded_mtl_names(&chunk).is_empty());
+    }
+    #[test]
     fn painted_terrain_retains_source_categorical_layer_face_groups() {
         let mesh=RenderMesh {
             vertex_alpha:None,
