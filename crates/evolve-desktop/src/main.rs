@@ -12038,7 +12038,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             // dropping terrain when the optional manual field is blank.
             let terrain = if state.terrain_source.trim().is_empty() {
                 if same_loaded_scene {
-                    state.library_map.as_ref()
+                    state
+                        .library_map
+                        .as_ref()
                         .and_then(|(_, maps, index)| maps.get(*index))
                         .and_then(|map| map.terrain.as_ref())
                         .map(|relative| PathBuf::from(&state.assets_root).join(relative))
