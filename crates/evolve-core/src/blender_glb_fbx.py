@@ -17,6 +17,9 @@ from blender_fbx_safety import (prepare_export_materials, validate_blender_meshe
 from blender_static_fbx_basis import original_static_bounds, verify_static_world_bounds
 from blender_level_paint import (extract_original_layer_id_png,
                                  layer_id_sidecar_path, publish_layer_id_sidecar)
+from blender_level_roundtrip import (mesh_snapshot, light_snapshot,
+                                     verify_mesh_snapshot, verify_light_snapshot,
+                                     verify_independent_movement)
 from blender_export_hierarchy import (original_part_labels, name_static_meshes,
                                       character_root, combine_source_meshes, clean_name)
 
@@ -156,6 +159,10 @@ def run():
     validate_blender_meshes(meshes, rigged=any(o.type == 'ARMATURE' for o in visible),
                             embed_textures=embed_textures,
                             allow_uvless=level_scene)
+    # Snapshot numeric source data before FBX import destroys Blender objects.
+    # Every level export must be reimported, not just static CDF/rig cases.
+    audit_meshes = mesh_snapshot(meshes) if level_scene else None
+    audit_lights = light_snapshot(source_lights) if level_scene else None
     bpy.ops.object.select_all(action='DESELECT')
     for obj in visible:
         obj.select_set(True)
@@ -199,7 +206,9 @@ def run():
     exported_light_count = len(source_lights)
     exported_placement_groups = len(placement_roots)
     exported_source_groups = [o.name for o in source_placement_groups]
-    if source_material_ids or native_bounds is not None:
+    audited_geometry_count = 0
+    audited_movable = False
+    if source_material_ids or native_bounds is not None or level_scene:
         bpy.ops.wm.read_factory_settings(use_empty=True)
         bpy.ops.import_scene.fbx(filepath=str(destination))
         arms = [o for o in bpy.data.objects if o.type == 'ARMATURE']
@@ -211,6 +220,11 @@ def run():
         if len(roundtrip_lights) != exported_light_count:
             raise RuntimeError('FBX light objects missing after Blender reimport')
         if level_scene:
+            audited_geometry_count = verify_mesh_snapshot(
+                audit_meshes, mesh_snapshot(roundtrip))
+            verify_light_snapshot(audit_lights, light_snapshot(roundtrip_lights))
+            audited_movable = verify_independent_movement(
+                roundtrip, bpy.context.view_layer)
             exported_groups = [o for o in bpy.data.objects
                                if o.name.startswith('EvolvePlacement_')]
             if len(exported_groups) != exported_placement_groups:
@@ -236,6 +250,8 @@ def run():
         "fbx_optimization": optimized,
         "meshes": exported_mesh_count,
         "lights": exported_light_count,
+        "roundtrip_verified_meshes": audited_geometry_count,
+        "independent_movement_checked": audited_movable,
         "untextured_geometry_without_uv0": int(uvless),
         "editable_placement_groups": exported_placement_groups,
         "original_multi_mesh_groups": len(exported_source_groups),
