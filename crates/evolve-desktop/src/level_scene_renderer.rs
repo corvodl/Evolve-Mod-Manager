@@ -753,6 +753,37 @@ fn decode_scene_pair(
     DecodedPair { render, material }
 }
 
+/// A source-space indicator, not a reconstructed animal. CreatureSpawn
+/// populations only name game archetypes; the level files contain no mesh
+/// path. Keep their true locations visible without pretending to resolve one.
+fn wildlife_marker_mesh() -> RenderMesh {
+    let positions = vec![
+        [-1.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0], [0.0, 1.0, 0.0],
+        [0.0, 0.0, 3.0], [0.0, 0.0, -0.25],
+    ];
+    let indices = vec![
+        0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4,
+        2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5,
+    ];
+    RenderMesh {
+        info: ModelInfo {
+            format: "Wildlife spawn location marker (editor only)".into(),
+            version: 1,
+            chunk_count: 0,
+            vertex_count: positions.len(),
+            triangle_count: indices.len() / 3,
+            original_uv0: false,
+            original_normals: false,
+        },
+        positions,
+        indices,
+        uv0: None,
+        normals: None,
+        vertex_alpha: None,
+    }
+}
+
 pub(super) fn assemble(
     archive: &ImportedPak,
     scene: Option<&LevelScene>,
@@ -1094,6 +1125,35 @@ pub(super) fn assemble(
         }
         if budget_hit {
             report.note("Original unique model resource cap reached; some geometry resources could not be resolved.".into());
+        }
+        // Expose actual CreatureSpawn / ZooKeeperShape positions as bounded
+        // read-only indicator geometry. No unrelated wildlife model is guessed.
+        let markers = scene.objects.iter().enumerate()
+            .filter(|(_, o)| !o.hidden && o.is_wildlife_spawn())
+            .take(20000)
+            .map(|(object_index, object)| world_instances::Instance {
+                object_index,
+                transform: Transform {
+                    position: object.world.position,
+                    // Editor markers stay upright regardless of author yaw.
+                    quaternion: [1.0, 0.0, 0.0, 0.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+            })
+            .collect::<Vec<_>>();
+        if !markers.is_empty() {
+            let mesh = wildlife_marker_mesh();
+            let count = markers.len();
+            models.push(world_instances::ModelGroup {
+                radius: world_instances::radius(&mesh),
+                surfaces: vec![neutral(0, mesh.indices.len() as u32)],
+                mesh: std::sync::Arc::new(mesh),
+                instances: markers,
+            });
+            report.note(format!(
+                "{count} source wildlife spawn/area markers available in the visibility category; creature models require verified population-to-mesh definitions."
+            ));
+            report.placed += count;
         }
         world.groups = models;
         world.instance_count = report.placed;
