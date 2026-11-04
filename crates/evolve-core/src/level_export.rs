@@ -353,6 +353,7 @@ struct Assembler {
     missing_texture_references: usize,
     lights: usize,
     paint_materials: HashMap<u8,usize>,
+    paint_map_texture: Option<usize>,
 }
 impl Assembler {
     fn new(label: &str) -> Self {
@@ -380,6 +381,7 @@ impl Assembler {
             missing_texture_references: 0,
             lights: 0,
             paint_materials: HashMap::new(),
+            paint_map_texture: None,
         }
     }
     fn add_mesh(&mut self, mesh: &RenderMesh) -> Result<usize, LevelExportError> {
@@ -881,6 +883,52 @@ impl Assembler {
         Ok(())
     }
 
+    /// Embed the *complete* authored LayerId bitmap as a nearest-neighbor
+    /// PNG, with each original category byte in R. The original X-major
+    /// CryEngine bitmap is transposed into ordinary PNG row-major coordinates
+    /// only; no color mixing or palette guesses are performed.
+    fn embed_paint_map(&mut self,paint:&TerrainPaintMap)
+        ->Result<usize,LevelExportError> {
+        if let Some(id)=self.paint_map_texture{return Ok(id);}
+        let rgba=image::RgbaImage::from_fn(paint.width,paint.height,|x,y|{
+            image::Rgba([paint.id_at(x,y).unwrap_or(255),0,0,255])
+        });
+        let mut png=Vec::new();
+        DynamicImage::ImageRgba8(rgba).write_to(
+            &mut Cursor::new(&mut png),ImageFormat::Png
+        ).map_err(|e|LevelExportError::Material(e.to_string()))?;
+        while !self.binary.len().is_multiple_of(4) {self.binary.push(0);}
+        if self.binary.len().checked_add(png.len()).is_none_or(|n|n>MAX_SCENE_GLB) {
+            return Err(LevelExportError::Limits);
+        }
+        let offset=self.binary.len();
+        self.binary.extend_from_slice(&png);
+        let view=self.document["bufferViews"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["bufferViews"].as_array_mut().ok_or(LevelExportError::Limits)?
+            .push(json!({"buffer":0,"byteOffset":offset,"byteLength":png.len()}));
+        let image=self.document["images"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["images"].as_array_mut().ok_or(LevelExportError::Limits)?
+            .push(json!({"name":"Original CryEngine LayerId (categorical)",
+                "bufferView":view,"mimeType":"image/png"}));
+        if self.document.get("samplers").is_none() {
+            self.document["samplers"]=json!([]);
+        }
+        let sampler=self.document["samplers"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["samplers"].as_array_mut().ok_or(LevelExportError::Limits)?
+            .push(json!({"magFilter":9728,"minFilter":9728,"wrapS":33071,"wrapT":33071}));
+        let texture=self.document["textures"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["textures"].as_array_mut().ok_or(LevelExportError::Limits)?
+            .push(json!({"source":image,"sampler":sampler}));
+        self.document["extras"]["original_categorical_terrain_paint"]=json!({
+            "texture":texture,"width":paint.width,"height":paint.height,
+            "encoding":"PNG R = exact original LayerId, row-major pixels",
+            "layer_ids_not_surface_type_ids":true,
+            "blending":"native CryEngine transition not applied"
+        });
+        self.paint_map_texture=Some(texture);
+        Ok(texture)
+    }
+
     /// Source LayerId is categorically distinct from SurfaceTypeID. This
     /// assigns original IDs to editable face material groups; it does NOT
     /// purport to replicate CryEngine's paint boundary blending.
@@ -890,10 +938,15 @@ impl Assembler {
     where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
     {
         if let Some(&at)=self.paint_materials.get(&id) {return Ok(at);}
+        let paint_texture=self.embed_paint_map(paint)?;
         let candidates=paint.layers.iter().filter(|l|l.id==id).collect::<Vec<_>>();
         let layer=(candidates.len()==1).then(||candidates[0]);
         let mut value=baked.map(|at|self.document["materials"][at].clone())
             .unwrap_or_else(||json!({"pbrMetallicRoughness":{"metallicFactor":0.,"roughnessFactor":1.}}));
+        // Occupy the standard glTF occlusion slot with zero strength so
+        // importers retain the exact categorical PNG without changing the
+        // original baked terrain color or pretending it is ambient occlusion.
+        value["occlusionTexture"]=json!({"index":paint_texture,"strength":0.0});
         value["name"]=json!(format!("Terrain LayerId {id} - {}",
             layer.map_or("unresolved",|l|l.name.as_str())));
         value["extras"]["cryengine_terrain_paint"]=json!({
