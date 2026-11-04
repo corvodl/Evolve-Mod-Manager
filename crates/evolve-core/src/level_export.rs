@@ -660,6 +660,60 @@ mod tests {
         assert!(json["nodes"][0]["rotation"].is_array());
     }
     #[test]
+    fn single_source_leaf_becomes_a_real_gltf_material() {
+        let model = RenderMesh {
+            vertex_alpha: None,
+            info: ModelInfo {
+                format: "fixture".into(), version: 1, chunk_count: 1,
+                vertex_count: 3, triangle_count: 1,
+                original_uv0: true, original_normals: true,
+            },
+            positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+            indices: vec![0, 1, 2],
+            uv0: Some(vec![[0., 0.], [1., 0.], [0., 1.]]),
+            normals: Some(vec![[0., 0., 1.]; 3]),
+        };
+        let root = tempfile::tempdir().unwrap();
+        let authored = crate::materials::parse_material(
+            br#"<Material Name="verified" Shader="Illum" Diffuse="1,1,1" Opacity="0.5"/>"#
+        ).unwrap();
+        let mut exporter = Assembler::new("fixture");
+        exporter.add_textured_mesh(&model, b"unsupported-subset", Some(&authored), root.path()).unwrap();
+        let binary = exporter.finish().unwrap();
+        let json_size = u32::from_le_bytes(binary[12..16].try_into().unwrap()) as usize;
+        let document: Value = serde_json::from_slice(&binary[20..20 + json_size]).unwrap();
+        assert_eq!(document["materials"].as_array().unwrap().len(), 1);
+        assert_eq!(document["meshes"][0]["primitives"][0]["material"], 0);
+        assert_eq!(document["materials"][0]["alphaMode"], "BLEND");
+        assert_eq!(document["extras"]["geometry_only"], false);
+    }
+    #[test]
+    fn ambiguous_multi_leaf_without_original_subsets_is_unassigned() {
+        let mesh = RenderMesh {
+            vertex_alpha: None,
+            info: ModelInfo {
+                format: "fixture".into(), version: 1, chunk_count: 1,
+                vertex_count: 3, triangle_count: 1,
+                original_uv0: true, original_normals: false,
+            },
+            positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+            indices: vec![0, 1, 2],
+            uv0: Some(vec![[0., 0.], [1., 0.], [0., 1.]]),
+            normals: None,
+        };
+        let authored = crate::materials::parse_material(
+            br#"<Material Name="root"><SubMaterials><Material Name="a"/><Material Name="b"/></SubMaterials></Material>"#
+        ).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut exporter = Assembler::new("fixture");
+        exporter.add_textured_mesh(&mesh, b"invalid-subsets", Some(&authored), root.path()).unwrap();
+        let binary = exporter.finish().unwrap();
+        let json_size = u32::from_le_bytes(binary[12..16].try_into().unwrap()) as usize;
+        let document: Value = serde_json::from_slice(&binary[20..20 + json_size]).unwrap();
+        assert!(document["meshes"][0]["primitives"][0].get("material").is_none());
+        assert_eq!(document["extras"]["missing_material_sets"], 1);
+    }
+    #[test]
     fn refuses_missing_assets_without_creating_output() {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("mission.xml");
