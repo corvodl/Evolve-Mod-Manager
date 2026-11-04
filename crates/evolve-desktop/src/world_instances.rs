@@ -579,6 +579,9 @@ pub(super) struct Instance {
 pub(super) struct World {
     pub groups: Vec<ModelGroup>,
     pub instance_count: usize,
+    pub wildlife_distances: Option<evolve_core::zookeeper::SpawnDistances>,
+    pub wildlife_shapes: Arc<Vec<(bool, Vec<[f32; 3]>)>>,
+    pub wildlife_links: Arc<Vec<([f32; 3], [f32; 3])>>,
     pub time_of_day: Option<Arc<super::level_environment::TimeOfDay>>,
     pub fog_profile: Option<super::level_environment::FogProfile>,
     pub source_resources: super::level_environment::ResourceSummary,
@@ -1707,6 +1710,11 @@ pub(super) struct Renderer {
     beam_group: wgpu::BindGroup,
     beam_buffer: wgpu::Buffer,
     beam_count: u32,
+    wildlife_pipeline: wgpu::RenderPipeline,
+    wildlife_group: wgpu::BindGroup,
+    wildlife_buffer: wgpu::Buffer,
+    wildlife_count: u32,
+    wildlife_last_origin: Option<[f32; 2]>,
     sky_uniform: wgpu::Buffer,
     local_uniform: wgpu::Buffer,
     hdr_uniform: wgpu::Buffer,
@@ -2964,6 +2972,62 @@ impl Renderer {
             ],
         });
 
+        let wildlife_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Read-only ZooKeeper ground guide"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "world_wildlife_overlay.wgsl"
+            ))),
+        });
+        let wildlife_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Non-pickable wildlife rings and home polygons"),
+            layout: Some(&light_point_pipe_layout),
+            vertex: wgpu::VertexState {
+                module: &wildlife_shader,
+                entry_point: Some("vs_wildlife"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &wildlife_shader,
+                entry_point: Some("fs_wildlife"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            // Guides are a separate overlay: no light, shadows, or picking.
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let wildlife_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Empty wildlife overlay"),
+            contents: bytemuck::cast_slice(&[[0.0_f32; 4]; 2]),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let wildlife_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Wildlife overlay camera and lines"),
+            layout: &light_point_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wildlife_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         let particle_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Authored particle sprite"),
             entries: &[
@@ -3358,6 +3422,11 @@ impl Renderer {
             beam_group,
             beam_buffer,
             beam_count: 0,
+            wildlife_pipeline,
+            wildlife_group,
+            wildlife_buffer,
+            wildlife_count: 0,
+            wildlife_last_origin: None,
             sky_uniform,
             local_uniform,
             hdr_uniform,
@@ -3924,6 +3993,8 @@ impl Renderer {
             self.sky_active = false;
             self.light_point_count = 0;
             self.beam_count = 0;
+            self.wildlife_count = 0;
+            self.wildlife_last_origin = None;
             self.groups.clear();
             self.cache.clear();
             self.source_hashes.clear();
@@ -3980,6 +4051,7 @@ impl Renderer {
             self.update_sky_source(device, queue, world);
             self.update_light_point_sources(device, world);
             self.update_source_spotlight_beams(device, world);
+            self.wildlife_last_origin = None;
             world.gpu_progress.pending.store(1, Ordering::Relaxed);
         }
         let hour = if hour.is_finite() {
@@ -4040,6 +4112,7 @@ impl Renderer {
             return;
         };
         let uniform = CameraGpu::make(camera, yaw, pitch, aspect, zoom);
+        self.update_wildlife_overlay(device, world, camera.position);
         let camera_changed = self.last_camera != Some(uniform);
         if camera_changed {
             self.update_local_lights(queue, world, uniform);
@@ -5098,6 +5171,160 @@ impl Renderer {
         pass.draw(0..6, 0..self.light_point_count);
     }
 
+    fn update_wildlife_overlay(&mut self, device: &wgpu::Device, world: &World, camera: [f32; 3]) {
+        if world.wildlife_distances.is_none() && world.wildlife_shapes.is_empty() {
+            self.wildlife_count = 0;
+            return;
+        }
+        let origin = [camera[0], camera[1]];
+        if self
+            .wildlife_last_origin
+            .is_some_and(|previous| previous == origin)
+        {
+            return;
+        }
+        self.wildlife_last_origin = Some(origin);
+        let terrain = world
+            .groups
+            .iter()
+            .find(|group| group.mesh.info.format == "CryEngine Heightmap.dat");
+        let ground = |x: f32, y: f32, fallback: f32| {
+            terrain
+                .and_then(|group| {
+                    let points = &group.mesh.positions;
+                    if points.len() < 4 {
+                        return None;
+                    }
+                    let rows = points.iter().take_while(|p| p[0] == points[0][0]).count();
+                    let columns = points.len().checked_div(rows)?;
+                    if rows < 2 || columns < 2 {
+                        return None;
+                    }
+                    let dx = (points[rows][0] - points[0][0]).abs();
+                    let dy = (points[1][1] - points[0][1]).abs();
+                    if dx < 1e-6 || dy < 1e-6 {
+                        return None;
+                    }
+                    let gx = (x - points[0][0]) / dx;
+                    let gy = (y - points[0][1]) / dy;
+                    if gx < 0.0 || gy < 0.0 || gx >= (columns - 1) as f32 || gy >= (rows - 1) as f32
+                    {
+                        return None;
+                    }
+                    let col = gx.floor() as usize;
+                    let row = gy.floor() as usize;
+                    let tx = gx - col as f32;
+                    let ty = gy - row as f32;
+                    let at = |i: usize, j: usize| points[i * rows + j][2];
+                    Some(
+                        (at(col, row) * (1.0 - tx) + at(col + 1, row) * tx) * (1.0 - ty)
+                            + (at(col, row + 1) * (1.0 - tx) + at(col + 1, row + 1) * tx) * ty,
+                    )
+                })
+                .unwrap_or(fallback)
+                + 0.4
+        };
+        let mut points = Vec::<[[f32; 4]; 2]>::new();
+        let mut segment = |a: [f32; 3], b: [f32; 3], tint: [f32; 4], use_terrain: bool| {
+            for p in [a, b] {
+                points.push([
+                    [
+                        p[0],
+                        p[1],
+                        if use_terrain {
+                            ground(p[0], p[1], p[2])
+                        } else {
+                            p[2] + 0.4
+                        },
+                        1.0,
+                    ],
+                    tint,
+                ]);
+            }
+        };
+        const SECTIONS: usize = 128;
+        for (radius, tint) in world.wildlife_distances.map_or(Vec::new(), |distances| {
+            vec![
+                (distances.minimum, [0.95, 0.32, 0.22, 0.85]),
+                (distances.maximum, [0.25, 0.95, 0.42, 0.85]),
+                (distances.despawn, [0.98, 0.72, 0.22, 0.85]),
+            ]
+        }) {
+            if radius <= 0.0 || radius > 10000.0 {
+                continue;
+            }
+            for i in 0..SECTIONS {
+                let angle = |index: usize| index as f32 * std::f32::consts::TAU / SECTIONS as f32;
+                let a = angle(i);
+                let b = angle(i + 1);
+                segment(
+                    [
+                        origin[0] + radius * a.cos(),
+                        origin[1] + radius * a.sin(),
+                        camera[2],
+                    ],
+                    [
+                        origin[0] + radius * b.cos(),
+                        origin[1] + radius * b.sin(),
+                        camera[2],
+                    ],
+                    tint,
+                    true,
+                );
+            }
+        }
+        for (use_terrain, polygon) in world.wildlife_shapes.iter().take(1024) {
+            for pair in polygon.windows(2) {
+                segment(pair[0], pair[1], [0.99, 0.67, 0.18, 0.8], *use_terrain);
+            }
+            if polygon.len() > 2 {
+                segment(
+                    *polygon.last().unwrap_or(&polygon[0]),
+                    polygon[0],
+                    [0.99, 0.67, 0.18, 0.8],
+                    *use_terrain,
+                );
+            }
+        }
+        for &(spawn, home) in world.wildlife_links.iter().take(20000) {
+            segment(spawn, home, [0.54, 0.78, 0.95, 0.52], true);
+        }
+        if points.is_empty() {
+            self.wildlife_count = 0;
+            return;
+        }
+        self.wildlife_count = points.len() as u32;
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera spawn band and ZooKeeper home areas"),
+            contents: bytemuck::cast_slice(&points),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        self.wildlife_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Read-only wildlife overlay"),
+            layout: &self.light_point_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.camera_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buffer.as_entire_binding(),
+                },
+            ],
+        });
+        self.wildlife_buffer = buffer;
+    }
+
+    pub fn draw_wildlife_overlay<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        if self.wildlife_count == 0 {
+            return;
+        }
+        pass.set_pipeline(&self.wildlife_pipeline);
+        pass.set_bind_group(0, &self.wildlife_group, &[]);
+        pass.draw(0..self.wildlife_count, 0..1);
+    }
+
     fn update_source_spotlight_beams(&mut self, device: &wgpu::Device, world: &World) {
         // These are a bounded, non-native transparent approximation of
         // source-authored spotlight scattering. Never render omni lights as
@@ -5419,6 +5646,14 @@ mod tests {
         naga::front::wgsl::parse_str(wgsl).expect("source point corona shader parses");
         assert!(wgsl.contains("fn fs_light("));
         assert!(wgsl.contains("var<storage,read> sources"));
+    }
+
+    #[test]
+    fn wildlife_overlay_shader_parses() {
+        let source = include_str!("world_wildlife_overlay.wgsl");
+        naga::front::wgsl::parse_str(source).expect("wildlife overlay WGSL");
+        assert!(source.contains("fn vs_wildlife("));
+        assert!(source.contains("fn fs_wildlife("));
     }
 
     #[test]

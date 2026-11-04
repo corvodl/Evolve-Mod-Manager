@@ -1305,6 +1305,7 @@ fn open_selected(
         scene.as_ref(),
         terrain.as_ref().map(|(mesh, _)| mesh),
         project_inventory.as_ref(),
+        false,
     )?;
     if terrain.is_some()
         && let Some(package) = &terrain_pak

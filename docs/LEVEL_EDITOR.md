@@ -167,23 +167,25 @@ in the Outliner, and the authored polygon outlines in the 2D overview.
 Toggling visibility reuses assembled geometry and textures; it never
 rescans or rewrites source PAKs.
 
-The marker overlay is always available when enabled. For a spawn with a
-single nonempty population, the importer now also tries exact-variant and
-base-species model stems in the **verified same-installation Asset Library**.
-For example, `Trapjaw_Tutorial` searches `Trapjaw_Tutorial` and then
-`Trapjaw`. An elite population such as `TyrantElite_Tutorial` **must**
-use an explicitly elite/albino-labeled asset, e.g. `TyrantElite.skinm`,
-`TyrantAlbino.skinm`, or an `Elite/Tyrant.skinm` or
-`Albino/Tyrant.skinm` path. It never substitutes the ordinary
-`Tyrant.skinm` model; if no distinct elite/albino model is verified, a location
-marker remains instead. This also prevents normal populations from being
-displayed using elite model paths. Only a unique verified model path is used.
-Some elites may depend on runtime material/effect swaps rather than separate
-mesh paths; those visuals are not claimed until confirmed against source files.
-Ambiguous/missing matches, or multi-population spawns that could generate
-different creatures, remain indicator markers instead of inventing an animal.
-The preview uses the existing source-mesh/material decoder and may still
-report unsupported or incomplete skeletal attachments. Source population IDs
-are never renamed or rewritten. Population spawn timing and rules are not
-simulated. Native model parity and source-polygon placement must be validated
-against actual imported Stage 2 maps.
+The first time the toggle is enabled, a background worker reads the selected
+installation's `libs/ZooKeeper/ZooKeeper.xml`,
+`libs/EntityArchetypes/AI.xml`, and `libs/ZooKeeper/WildlifeSpawning.xml`.
+The lookup follows population `base` chains, recognizes `AI.Creatures.*`
+archetypes, and loads only their declared `.cdf` paths through the Model
+Viewer's source-backed character assembly and material loader. For example,
+`TyrantElite_Tutorial` declares `tyrant_elite.cdf`; appearance is never
+selected by filename similarity. The selected Asset Library build wins over
+stale imports of the same PAK. On later toggles, the decoded groups are reused
+without re-scanning. Missing/class-only populations and multi-population
+spawns remain markers; Diagnostics lists the unresolved names and full
+multi-population candidate lists. `AI.NPC*` spawns are identified separately
+in Diagnostics, not presented as resolved wildlife models.
+
+The camera is the read-only player reference. Red/green/amber 30/110/120 m
+guide rings (or the selected installation's authored values) and ZooKeeper
+home polygons appear in a separate, non-pickable 3D overlay and in the 2D
+overview. A shape with `ZooKeeperUseTerrainHeight=1` is projected onto the
+authored terrain; associated spawns link to their named home shape. The 2D
+overview tints spawns by their distance to the camera. These guides show
+authored distance parameters, **not** runtime timing, caps, spawn weights,
+AI activation, or a gameplay simulation. Source PAKs are never changed.
