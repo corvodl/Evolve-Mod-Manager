@@ -39,11 +39,40 @@ def run():
     visible = [o for o in bpy.data.objects if o.type in ('MESH','ARMATURE','LIGHT')]
     source_lights = [o for o in visible if o.type == 'LIGHT']
     source_meshes = [o for o in visible if o.type == 'MESH']
+    # A source level placement may contain several authored material leaves.
+    # Blender's material splitting otherwise makes those pieces independent,
+    # so group them by their ORIGINAL object before changing topology.
+    with source.open('rb') as glb_file:
+        header = glb_file.read(20)
+        if header[:4] != b'glTF' or header[16:20] != b'JSON':
+            raise RuntimeError('Invalid GLB scene before placement grouping')
+        import struct
+        json_len = struct.unpack_from('<I', header, 12)[0]
+        if json_len > 64 * 1024 * 1024:
+            raise RuntimeError('Oversized scene metadata')
+        doc = json.loads(glb_file.read(json_len))
+    level_scene = doc.get('extras', {}).get('source') == 'CryEngine Stage 2 level'
+    placement_roots = []
+    if level_scene:
+        for index, mesh in enumerate(source_meshes):
+            if len({p.material_index for p in mesh.data.polygons}) < 2:
+                continue
+            anchor = bpy.data.objects.new('EvolvePlacement_%06d' % index, None)
+            bpy.context.scene.collection.objects.link(anchor)
+            world = mesh.matrix_world.copy()
+            anchor.matrix_world = world
+            mesh.parent = anchor
+            mesh.matrix_world = world
+            placement_roots.append(anchor)
     source_material_ids = material_records_from_glb(source)
     if source_material_ids:
         bind_original_material_ids(source_meshes, 0, source.stem,
                                    source_material_ids)
     meshes = prepare_original_uv(source_meshes)
+    if level_scene and placement_roots:
+        for anchor in placement_roots:
+            if not any(obj.parent is anchor for obj in meshes):
+                raise RuntimeError('Original placement lost all material fragments')
     preserve_or_reconstruct_normals(meshes, glb_source_normals(source))
     visible = [o for o in bpy.data.objects if o in visible or o in meshes]
     if not meshes:
@@ -77,6 +106,10 @@ def run():
     source_shading = normal_samples(meshes)
     armatures = [obj for obj in visible if obj.type == "ARMATURE"]
     export_root = character_root(root_name, meshes, armatures)
+    for anchor in placement_roots:
+        world = anchor.matrix_world.copy()
+        anchor.parent = export_root
+        anchor.matrix_world = world
     # glTF punctual lights import as real Blender LIGHT objects.
     # Reparent them while retaining their world matrices, so every light is
     # independently movable when the resulting FBX is opened in Blender.
@@ -84,7 +117,7 @@ def run():
         world = light.matrix_world.copy()
         light.parent = export_root
         light.matrix_world = world
-    visible = armatures + meshes + source_lights + [export_root]
+    visible = armatures + meshes + source_lights + placement_roots + [export_root]
     prepare_export_materials(meshes, embed_textures, destination)
     source_normal_maps = normal_image_names(meshes) if not embed_textures else set()
     validate_blender_meshes(meshes, rigged=any(o.type == 'ARMATURE' for o in visible),
@@ -128,6 +161,7 @@ def run():
     exported_mesh_count = len(meshes)
     exported_armature_count = sum(obj.type == 'ARMATURE' for obj in visible)
     exported_light_count = len(source_lights)
+    exported_placement_groups = len(placement_roots)
     if source_material_ids or native_bounds is not None:
         bpy.ops.wm.read_factory_settings(use_empty=True)
         bpy.ops.import_scene.fbx(filepath=str(destination))
@@ -139,6 +173,11 @@ def run():
         roundtrip_lights = [o for o in bpy.data.objects if o.type == 'LIGHT']
         if len(roundtrip_lights) != exported_light_count:
             raise RuntimeError('FBX light objects missing after Blender reimport')
+        if level_scene:
+            exported_groups = [o for o in bpy.data.objects
+                               if o.name.startswith('EvolvePlacement_')]
+            if len(exported_groups) != exported_placement_groups:
+                raise RuntimeError('FBX lost editable multi-material placement groups')
         if native_bounds is not None:
             if arms:
                 raise RuntimeError("Unrigged FBX unexpectedly gained an armature")
@@ -152,6 +191,7 @@ def run():
         "fbx_optimization": optimized,
         "meshes": exported_mesh_count,
         "lights": exported_light_count,
+        "editable_placement_groups": exported_placement_groups,
         "armatures": exported_armature_count,
         "animations_included": include_animation,
         "character_root": root_name,
