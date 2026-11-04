@@ -3002,8 +3002,15 @@ impl Renderer {
                 cull_mode: None,
                 ..Default::default()
             },
-            // Guides are a separate overlay: no light, shadows, or picking.
-            depth_stencil: None,
+            // Guides share the scene pass attachment but never write or test
+            // depth, affect lighting, or participate in the picking pass.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
