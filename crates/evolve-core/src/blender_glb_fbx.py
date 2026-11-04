@@ -129,6 +129,7 @@ def run():
     bpy.ops.export_scene.fbx(
         filepath=str(destination),
         use_selection=True,
+        use_custom_props=True,
         object_types={'MESH', 'ARMATURE', 'EMPTY', 'LIGHT'},
         apply_unit_scale=True,
         bake_space_transform=False,
