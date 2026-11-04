@@ -51,11 +51,19 @@ level mesh, terrain material, or texture was exported.
   placements before material splitting so all resulting parts can be moved
   together; reimport checks the placement-group count.
 
+- Verified world CGF render parts are decoded independently, each with its own
+  source SUBSETS material IDs, then parented under one editable actor placement.
+  Physics-only node geometry is excluded by the existing world model decoder.
+- Blender FBX conversion keeps the original multi-mesh actor parent empties
+  selected, along with the multi-material split parents, and checks their
+  survival after reimport.
+
 ## Remaining parity gaps (keep this PR in draft)
 
-1. **World geometry:** Multi-mesh CGF render nodes need per-part authored
-   subset IDs and instanced hierarchy; wildlife spawns without a verified mesh
-   path remain metadata only. Unsupported render formats must not be faked.
+1. **World geometry:** Verified multi-mesh CGF subnodes now have grouped
+   placement hierarchies, but wildlife spawns without a verified render path
+   remain metadata only. Unsupported geometry, skeletal/compound objects and
+   source mesh part reimport counts need real-map acceptance tests.
 2. **Vegetation:** existing original binary vegetation transforms are included
    when opening an imported map, but they still depend on verifiable model
    resolution and require Blender placement-count tests.
