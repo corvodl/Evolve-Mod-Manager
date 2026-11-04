@@ -10,6 +10,7 @@ use crate::model::{ModelError, ModelInfo, RenderMesh, original_mesh_subsets, rea
 use crate::scene::{LevelScene, SceneError, load_level_scene};
 use crate::terrain::{TerrainError, read_terrain};
 use image::{DynamicImage, ImageFormat};
+use quick_xml::{Reader, events::{BytesStart, Event}};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -52,6 +53,9 @@ pub struct LevelExportReport {
     pub exported_mesh_instances: usize,
     pub metadata_only_objects: usize,
     pub included_terrain: bool,
+    /// Actual source-authored point/spot light objects exported via KHR_lights_punctual.
+    #[serde(default)]
+    pub exported_lights: usize,
     pub output_bytes: usize,
     /// Only recognized and verified render geometry is exported. Materials,
     /// vegetation instance payloads, collision and game scripting are separate.
@@ -66,6 +70,177 @@ pub struct LevelExportReport {
     pub missing_texture_references: usize,
 }
 
+
+const MAX_LIGHT_SOURCES: usize = 2_048;
+const MAX_LIGHT_LAYER_BYTES: usize = 48 * 1024 * 1024;
+
+/// Export candidate extracted exclusively from an original Light/LightEntity
+/// XML element and matched to the scene's resolved world-transform GUID.
+#[derive(Clone, Debug)]
+struct ExportLight {
+    id: String,
+    name: String,
+    world: crate::scene::Transform,
+    color: [f32; 3],
+    intensity: f32,
+    radius: f32,
+    cone_degrees: Option<f32>,
+    bulb_size: Option<f32>,
+}
+
+#[derive(Default)]
+struct PendingLight {
+    id: String,
+    depth: usize,
+    radius: Option<f32>,
+    color: Option<[f32; 3]>,
+    intensity: Option<f32>,
+    cone_degrees: Option<f32>,
+    bulb_size: Option<f32>,
+    enabled: bool,
+}
+fn light_attr(node: &BytesStart<'_>, key: &[u8]) -> Option<String> {
+    node.attributes().flatten()
+        .find(|attr| attr.key.as_ref().eq_ignore_ascii_case(key))
+        .and_then(|attr| attr.unescape_value().ok().map(|text| text.into_owned()))
+}
+fn light_value(node: &BytesStart<'_>, keys: &[&[u8]]) -> Option<f32> {
+    keys.iter().find_map(|key| light_attr(node,key))
+        .and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite())
+}
+fn light_color(node: &BytesStart<'_>) -> Option<[f32; 3]> {
+    let text = [b"DiffuseColor".as_slice(), b"clrDiffuse", b"Color", b"color"]
+        .iter().find_map(|key| light_attr(node,key))?;
+    let rgb = text.split(',').map(|v| v.trim().parse::<f32>().ok())
+        .collect::<Vec<_>>();
+    if rgb.len() != 3 { return None; }
+    let c = [rgb[0]?, rgb[1]?, rgb[2]?];
+    c.iter().all(|v| v.is_finite() && (0.0..=16.0).contains(v)).then_some(c)
+}
+impl PendingLight {
+    fn read_props(&mut self, node: &BytesStart<'_>) {
+        if light_attr(node,b"bFakeLight").is_some_and(|x| x == "1") {
+            self.enabled = false;
+        }
+        if light_attr(node,b"bActive").or_else(|| light_attr(node,b"Active"))
+            .is_some_and(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+        {
+            self.enabled = false;
+        }
+        if let Some(radius) = light_value(node,&[b"Radius",b"fRadius",b"LightRadius"])
+            .filter(|v| (0.1..=100_000.0).contains(v))
+        { self.radius=Some(radius); }
+        if let Some(intensity) = light_value(node,&[
+            b"DiffuseMultiplier", b"fDiffuseMultiplier", b"LightIntensity",b"Intensity"
+        ]).filter(|v| (0.0..=1_000_000.0).contains(v)) {
+            self.intensity=Some(intensity);
+        }
+        if let Some(color) = light_color(node) { self.color=Some(color); }
+        if let Some(fov) = light_value(node,&[
+            b"ProjectorFov", b"fProjectorFov", b"FOV",b"fFov"
+        ]).filter(|fov| (1.0..179.0).contains(fov)) {
+            self.cone_degrees=Some(fov);
+        }
+        if let Some(size) = light_value(node,&[b"fAttenuationBulbSize"])
+            .filter(|v| *v > 0.0 && *v < 100_000.0)
+        { self.bulb_size=Some(size); }
+    }
+}
+fn complete_light(
+    current: &mut Option<PendingLight>,
+    objects: &HashMap<String, &crate::scene::PlacedObject>,
+    lights: &mut Vec<ExportLight>,
+) {
+    let Some(source) = current.take() else { return; };
+    if !source.enabled { return; }
+    let Some(actor)=objects.get(&source.id) else { return; };
+    let (Some(radius),Some(intensity),Some(color))=
+        (source.radius,source.intensity,source.color) else { return; };
+    if !actor.world.position.iter().all(|v| v.is_finite())
+        || !actor.world.quaternion.iter().all(|v| v.is_finite())
+    { return; }
+    lights.push(ExportLight{
+        id: actor.id.clone(), name: actor.name.clone(),
+        world:actor.world, color, intensity, radius,
+        cone_degrees:source.cone_degrees, bulb_size:source.bulb_size
+    });
+}
+/// Match GUIDs rather than guessing from names. Only positively authored
+/// lights become Blender objects; flare-only, disabled, or incomplete records
+/// are not replaced with artificial defaults.
+fn authored_lights(source: &[u8], scene: &LevelScene) -> Result<Vec<ExportLight>, LevelExportError> {
+    if source.len()>MAX_LIGHT_LAYER_BYTES {
+        return Err(LevelExportError::Material("Light layer exceeds supported size".into()));
+    }
+    let data=crate::cryxml::xml_bytes(source,MAX_LIGHT_LAYER_BYTES)
+        .map_err(|e| LevelExportError::Material(format!("Light XML: {e}")))?;
+    let objects=scene.objects.iter().filter(|o| !o.hidden)
+        .map(|o|(o.id.to_ascii_lowercase(),o)).collect::<HashMap<_,_>>();
+    let mut reader=Reader::from_reader(data.as_ref());
+    let (mut depth,mut pending,mut result)=(0usize,None,Vec::new());
+    loop {
+        let event=reader.read_event()
+            .map_err(|e| LevelExportError::Material(format!("Light XML: {e}")))?;
+        let starts=matches!(&event,Event::Start(_));
+        match event {
+            Event::Start(node)|Event::Empty(node) => {
+                let current_depth=depth+1;
+                if current_depth>128 { return Err(LevelExportError::Limits); }
+                let tag=node.name();
+                let entity=tag.as_ref().eq_ignore_ascii_case(b"Object")
+                    || tag.as_ref().eq_ignore_ascii_case(b"Entity");
+                if entity {
+                    let class=light_attr(&node,b"EntityClass")
+                        .or_else(||light_attr(&node,b"Class"))
+                        .unwrap_or_default().to_ascii_lowercase();
+                    let kind=light_attr(&node,b"Type").unwrap_or_default().to_ascii_lowercase();
+                    let is_light=matches!(class.as_str(),
+                        "light"|"lightentity"|"pointlight"|"spotlight")
+                        || (kind=="light" && class.is_empty());
+                    if is_light {
+                        if let Some(id)=light_attr(&node,b"Id")
+                            .or_else(||light_attr(&node,b"EntityId")) {
+                            let mut light=PendingLight{
+                                id:id.to_ascii_lowercase(), depth:current_depth,
+                                enabled:true, ..Default::default()
+                            };
+                            light.read_props(&node);
+                            pending=Some(light);
+                        }
+                    }
+                } else if let Some(light)=pending.as_mut()
+                    && current_depth>light.depth && current_depth<=light.depth+7
+                { light.read_props(&node); }
+                if starts { depth+=1; }
+                else if entity && pending.as_ref().is_some_and(|p|p.depth==current_depth) {
+                    complete_light(&mut pending,&objects,&mut result);
+                }
+                if result.len()>MAX_LIGHT_SOURCES {return Err(LevelExportError::Limits);}
+            }
+            Event::End(_)=>{
+                if pending.as_ref().is_some_and(|p|p.depth==depth) {
+                    complete_light(&mut pending,&objects,&mut result);
+                }
+                depth=depth.saturating_sub(1);
+            }
+            Event::DocType(_)|Event::GeneralRef(_)=>{
+                return Err(LevelExportError::Material("Unsafe light XML entity".into()));
+            }
+            Event::Eof=>break,
+            _=>{}
+        }
+    }
+    Ok(result)
+}
+/// CryEngine spotlights shine along local +X; glTF punctual spots shine
+/// along local -Z. Rotate only the light node; the source mesh remains intact.
+fn light_spot_rotation(source: [f32; 4]) -> [f32; 4] {
+    let [w,x,y,z]=source;
+    let h=std::f32::consts::FRAC_1_SQRT_2;
+    let [p,q,r,t]=[h,0.0,-h,0.0];
+    [w*p-x*q-y*r-z*t,w*q+x*p+y*t-z*r,w*r-x*t+y*p+z*q,w*t+x*r-y*q+z*p]
+}
+
 struct Assembler {
     document: Value,
     binary: Vec<u8>,
@@ -74,6 +249,7 @@ struct Assembler {
     cached_images: HashMap<String, usize>,
     missing_material_sets: usize,
     missing_texture_references: usize,
+    lights: usize,
 }
 impl Assembler {
     fn new(label: &str) -> Self {
@@ -99,6 +275,7 @@ impl Assembler {
             cached_images: HashMap::new(),
             missing_material_sets: 0,
             missing_texture_references: 0,
+            lights: 0,
         }
     }
     fn add_mesh(&mut self, mesh: &RenderMesh) -> Result<usize, LevelExportError> {
@@ -456,6 +633,53 @@ impl Assembler {
         self.instances += 1;
         Ok(())
     }
+    /// glTF KHR_lights_punctual is supported by Blender's glTF importer.
+    /// The raw CryEngine multiplier is kept in extras: glTF photometric
+    /// intensity is not an assertion of native illumination parity.
+    fn add_light(&mut self, light: &ExportLight) -> Result<(), LevelExportError> {
+        let is_spot=light.cone_degrees.is_some();
+        let mut definition=json!({
+            "name":light.name,
+            "type":if is_spot {"spot"} else {"point"},
+            "color":light.color,
+            "intensity":light.intensity,
+            "range":light.radius,
+            "extras":{
+                "source_id":light.id,
+                "cryengine_diffuse_multiplier":light.intensity,
+                "cryengine_radius":light.radius,
+                "cryengine_bulb_size":light.bulb_size,
+                "conversion_note":"glTF attenuation and photometry are approximate"
+            }
+        });
+        if let Some(degrees)=light.cone_degrees {
+            definition["spot"]=json!({
+                "innerConeAngle":0.0,
+                "outerConeAngle":(degrees.to_radians()*0.5)
+            });
+        }
+        if self.document.get("extensions").is_none() {
+            self.document["extensions"]=json!({"KHR_lights_punctual":{"lights":[]}});
+            self.document["extensionsUsed"]=json!(["KHR_lights_punctual"]);
+        }
+        let index=self.document["extensions"]["KHR_lights_punctual"]["lights"]
+            .as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["extensions"]["KHR_lights_punctual"]["lights"]
+            .as_array_mut().ok_or(LevelExportError::Limits)?.push(definition);
+        self.add_node(
+            &light.name,None,Some(light.world),
+            json!({"source_id":light.id,"kind":"CryEngineLight",
+                "original_rotation_wxyz":light.world.quaternion}),
+        )?;
+        let last=self.document["nodes"].as_array().ok_or(LevelExportError::Limits)?.len()-1;
+        self.document["nodes"][last]["extensions"]=json!({"KHR_lights_punctual":{"light":index}});
+        if is_spot {
+            let q=light_spot_rotation(light.world.quaternion);
+            self.document["nodes"][last]["rotation"]=json!([q[1],q[2],q[3],q[0]]);
+        }
+        self.lights+=1;
+        Ok(())
+    }
     fn finish(mut self) -> Result<Vec<u8>, LevelExportError> {
         if self.meshes == 0 {
             return Err(LevelExportError::Missing(
@@ -573,6 +797,7 @@ pub fn export_level_scene_glb(
         return Err(LevelExportError::Exists);
     }
     let scene: LevelScene = load_level_scene(placement)?;
+    let lights = authored_lights(&fs::read(placement)?, &scene)?;
     let mut assembler = Assembler::new(
         placement
             .file_stem()
@@ -640,6 +865,9 @@ pub fn export_level_scene_glb(
                    "material_reference":object.material,"hidden":object.hidden}),
         )?;
     }
+    for light in &lights {
+        assembler.add_light(light)?;
+    }
     let authored_material_slots = assembler.document["materials"]
         .as_array()
         .map_or(0, Vec::len);
@@ -665,6 +893,7 @@ pub fn export_level_scene_glb(
         exported_mesh_instances: geometry_instances,
         metadata_only_objects: metadata_only,
         included_terrain: terrain.is_some(),
+        exported_lights: lights.len(),
         output_bytes: bytes.len(),
         original_geometry_only: authored_material_slots == 0,
         authored_material_slots,
@@ -676,6 +905,44 @@ pub fn export_level_scene_glb(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_lights_export_as_moveable_gltf_punctual_nodes() {
+        let data=br#"<Objects>
+            <Object Id="LIGHT-1" Name="Lamp" Type="Entity" EntityClass="Light"
+                Pos="11,12,13">
+                <Properties Radius="20" DiffuseMultiplier="4"
+                    DiffuseColor="0.25,0.5,1" ProjectorFov="80"
+                    fAttenuationBulbSize="0.4" />
+            </Object>
+            <Object Id="FAKE" Name="Flare" Type="Entity" EntityClass="Light"
+                Pos="0,0,0">
+                <Properties Radius="10" DiffuseMultiplier="2"
+                    DiffuseColor="1,1,1" bFakeLight="1"/>
+            </Object>
+        </Objects>"#;
+        let scene=crate::scene::parse_level_scene(&[("fixture",data)]).unwrap();
+        let lights=authored_lights(data,&scene).unwrap();
+        assert_eq!(lights.len(),1);
+        assert_eq!(lights[0].radius,20.);
+        let mut exporter=Assembler::new("Lamp fixture");
+        exporter.add_light(&lights[0]).unwrap();
+        assert_eq!(exporter.document["extensionsUsed"][0],"KHR_lights_punctual");
+        assert_eq!(exporter.document["extensions"]["KHR_lights_punctual"]["lights"][0]["type"],"spot");
+        assert_eq!(exporter.document["nodes"][1]["extensions"]["KHR_lights_punctual"]["light"],0);
+        assert_eq!(exporter.document["nodes"][1]["translation"],json!([11.,12.,13.]));
+    }
+    #[test]
+    fn spotlight_basis_maps_gltf_negative_z_to_cryengine_positive_x() {
+        let [w,x,y,z]=light_spot_rotation([1.,0.,0.,0.]);
+        let direction=[
+            -2.0*(x*z+w*y),
+            -2.0*(y*z-w*x),
+            -(1.0-2.0*(x*x+y*y)),
+        ];
+        assert!((direction[0]-1.).abs()<1e-5);
+        assert!(direction[1].abs()<1e-5);
+        assert!(direction[2].abs()<1e-5);
+    }
     #[test]
     fn creates_distinct_instance_nodes_under_common_zup_basis() {
         let model = RenderMesh {
