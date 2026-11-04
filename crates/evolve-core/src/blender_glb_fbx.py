@@ -36,7 +36,8 @@ def run():
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
     bpy.ops.import_scene.gltf(filepath=str(source))
-    visible = [o for o in bpy.data.objects if o.type in ('MESH','ARMATURE')]
+    visible = [o for o in bpy.data.objects if o.type in ('MESH','ARMATURE','LIGHT')]
+    source_lights = [o for o in visible if o.type == 'LIGHT']
     source_meshes = [o for o in visible if o.type == 'MESH']
     source_material_ids = material_records_from_glb(source)
     if source_material_ids:
@@ -76,7 +77,14 @@ def run():
     source_shading = normal_samples(meshes)
     armatures = [obj for obj in visible if obj.type == "ARMATURE"]
     export_root = character_root(root_name, meshes, armatures)
-    visible = armatures + meshes + [export_root]
+    # glTF punctual lights import as real Blender LIGHT objects.
+    # Reparent them while retaining their world matrices, so every light is
+    # independently movable when the resulting FBX is opened in Blender.
+    for light in source_lights:
+        world = light.matrix_world.copy()
+        light.parent = export_root
+        light.matrix_world = world
+    visible = armatures + meshes + source_lights + [export_root]
     prepare_export_materials(meshes, embed_textures, destination)
     source_normal_maps = normal_image_names(meshes) if not embed_textures else set()
     validate_blender_meshes(meshes, rigged=any(o.type == 'ARMATURE' for o in visible),
@@ -88,7 +96,7 @@ def run():
     bpy.ops.export_scene.fbx(
         filepath=str(destination),
         use_selection=True,
-        object_types={'MESH', 'ARMATURE', 'EMPTY'},
+        object_types={'MESH', 'ARMATURE', 'EMPTY', 'LIGHT'},
         apply_unit_scale=True,
         bake_space_transform=False,
         axis_forward='-Y', axis_up='Z',
@@ -119,6 +127,7 @@ def run():
     # Never read attributes through source meshes/visible after this point.
     exported_mesh_count = len(meshes)
     exported_armature_count = sum(obj.type == 'ARMATURE' for obj in visible)
+    exported_light_count = len(source_lights)
     if source_material_ids or native_bounds is not None:
         bpy.ops.wm.read_factory_settings(use_empty=True)
         bpy.ops.import_scene.fbx(filepath=str(destination))
@@ -127,6 +136,9 @@ def run():
                   if bone.custom_shape is not None}
         roundtrip = [o for o in bpy.data.objects
                      if o.type == 'MESH' and o not in shapes]
+        roundtrip_lights = [o for o in bpy.data.objects if o.type == 'LIGHT']
+        if len(roundtrip_lights) != exported_light_count:
+            raise RuntimeError('FBX light objects missing after Blender reimport')
         if native_bounds is not None:
             if arms:
                 raise RuntimeError("Unrigged FBX unexpectedly gained an armature")
@@ -139,6 +151,7 @@ def run():
     print(json.dumps({
         "fbx_optimization": optimized,
         "meshes": exported_mesh_count,
+        "lights": exported_light_count,
         "armatures": exported_armature_count,
         "animations_included": include_animation,
         "character_root": root_name,
