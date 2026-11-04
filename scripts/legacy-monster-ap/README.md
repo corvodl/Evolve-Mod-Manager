@@ -10,11 +10,11 @@ Starting from the previously adapted `m40` `scripts/frame_1/DoAction.as`:
 
 1. Copy it to a new FFDec script-import tree and run
    `python tools/patch_preround_m41.py <copied-DoAction.as>`.
-2. Supply an external `tools/index.pkl` containing the extracted Stage 2 asset
+2. Supply an external `index.pkl` containing the extracted Stage 2 asset
    index (`lowercase member path -> (tag, directory, member path, ...)`), with
    the indexed ability XML in the corresponding `directory/files/member path`.
    Generate `monster_ability_info.as` with
-   `python tools/generate_monster_abilities.py <output.as>`.
+   `python tools/generate_monster_abilities.py <output.as> <external-index.pkl>`.
 3. Copy the **m41** ActionScript to a new import tree and run
    `python tools/patch_preround_m42.py <copied-DoAction.as> <output.as>`.
    Import that tree into the adapted base movie using FFDec. Keep the

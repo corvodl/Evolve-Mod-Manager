@@ -32,7 +32,8 @@ def at(params, key, level):
 
 
 def build():
-    index = pickle.load(open(os.path.join(ROOT, "tools", "index.pkl"), "rb"))
+    index_path = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, "tools", "index.pkl")
+    index = pickle.load(open(index_path, "rb"))
     result = {}
     for subtype, group in GROUPS.items():
         slots = {}
