@@ -218,10 +218,16 @@ fn select_wildlife_model<'a>(
         }
         let owners = matches
             .iter()
-            .filter_map(|(_, path)| Path::new(path).parent().map(|p| p.to_string_lossy().to_string()))
+            .filter_map(|(_, path)| {
+                Path::new(path)
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+            })
             .collect::<HashSet<_>>();
         if owners.len() != 1 {
-            return Err(format!("Ambiguous model sources for wildlife alias {alias}"));
+            return Err(format!(
+                "Ambiguous model sources for wildlife alias {alias}"
+            ));
         }
         matches.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
         return Ok(matches.first().map(|(_, path)| path.clone()));
@@ -943,23 +949,43 @@ pub(super) fn assemble(
         let wildlife_stems = scene
             .objects
             .iter()
-            .filter(|object| object.kind.eq_ignore_ascii_case("CreatureSpawn")
-                && object.model.is_empty()
-                && object.populations.iter().filter(|p| !p.trim().is_empty()).count() == 1)
+            .filter(|object| {
+                object.kind.eq_ignore_ascii_case("CreatureSpawn")
+                    && object.model.is_empty()
+                    && object
+                        .populations
+                        .iter()
+                        .filter(|p| !p.trim().is_empty())
+                        .count()
+                        == 1
+            })
             .flat_map(|object| {
-                object.populations.iter().flat_map(|population|
-                    population_model_aliases(population)).collect::<Vec<_>>()
+                object
+                    .populations
+                    .iter()
+                    .flat_map(|population| population_model_aliases(population))
+                    .collect::<Vec<_>>()
             })
             .collect::<HashSet<_>>();
-        let mut sources =
-            Index::new(archive, &wanted, &wildlife_stems, &mut report, project_inventory)?;
+        let mut sources = Index::new(
+            archive,
+            &wanted,
+            &wildlife_stems,
+            &mut report,
+            project_inventory,
+        )?;
         let mut preview_scene = scene.clone();
         let mut wildlife_models = 0usize;
         let mut ambiguous_wildlife = 0usize;
         for object in &mut preview_scene.objects {
             if !object.kind.eq_ignore_ascii_case("CreatureSpawn")
                 || !object.model.is_empty()
-                || object.populations.iter().filter(|p| !p.trim().is_empty()).count() != 1
+                || object
+                    .populations
+                    .iter()
+                    .filter(|p| !p.trim().is_empty())
+                    .count()
+                    != 1
             {
                 continue;
             }
@@ -1388,11 +1414,13 @@ mod tests {
             "characters/wildlife/trapjaw/trapjaw.skinm".to_owned(),
             "characters/wildlife/trapjaw/trapjaw.chrm".to_owned(),
         ];
-        let model = select_wildlife_model(
-            paths.iter(),
-            &population_model_aliases("Trapjaw_Tutorial"),
-        ).unwrap();
-        assert_eq!(model.as_deref(), Some("characters/wildlife/trapjaw/trapjaw.skinm"));
+        let model =
+            select_wildlife_model(paths.iter(), &population_model_aliases("Trapjaw_Tutorial"))
+                .unwrap();
+        assert_eq!(
+            model.as_deref(),
+            Some("characters/wildlife/trapjaw/trapjaw.skinm")
+        );
         let variant = [
             "characters/wildlife/trapjaw/trapjaw.skinm".to_owned(),
             "characters/wildlife/trapjaw/trapjaw_tutorial.skinm".to_owned(),
@@ -1400,8 +1428,12 @@ mod tests {
         let model = select_wildlife_model(
             variant.iter(),
             &population_model_aliases("Trapjaw_Tutorial"),
-        ).unwrap();
-        assert_eq!(model.as_deref(), Some("characters/wildlife/trapjaw/trapjaw_tutorial.skinm"));
+        )
+        .unwrap();
+        assert_eq!(
+            model.as_deref(),
+            Some("characters/wildlife/trapjaw/trapjaw_tutorial.skinm")
+        );
     }
 
     #[test]
@@ -1410,17 +1442,16 @@ mod tests {
             "characters/wildlife/trapjaw/trapjaw.skinm".to_owned(),
             "characters/other/trapjaw.skinm".to_owned(),
         ];
-        assert!(select_wildlife_model(
-            paths.iter(),
-            &population_model_aliases("Trapjaw_Tutorial"),
-        ).is_err());
-        assert!(select_wildlife_model(
-            paths.iter(),
-            &population_model_aliases("MammothBird"),
-        ).unwrap().is_none());
+        assert!(
+            select_wildlife_model(paths.iter(), &population_model_aliases("Trapjaw_Tutorial"),)
+                .is_err()
+        );
+        assert!(
+            select_wildlife_model(paths.iter(), &population_model_aliases("MammothBird"),)
+                .unwrap()
+                .is_none()
+        );
     }
-
-
 
     #[test]
     fn multi_material_group_splits_before_exceeding_residency_target() {
