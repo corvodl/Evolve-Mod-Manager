@@ -1865,6 +1865,32 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verified_original_baked_terrain_keeps_pixel_resolution_and_rgb() {
+        let mut exporter = Assembler::new("Verified map RGB24");
+        let source = image::RgbaImage::from_fn(4, 4, |x, y| {
+            image::Rgba([(x * 35) as u8, (y * 40) as u8, 83, 255])
+        });
+        let material = exporter.add_terrain_color(
+            source.clone(),
+            "Original map-owned baked terrain (verified Level Editor atlas)",
+        ).unwrap();
+        assert_eq!(material, 0);
+        assert_eq!(
+            exporter.document["images"][0]["name"],
+            "Original map-owned baked terrain (verified Level Editor atlas)"
+        );
+        assert_eq!(
+            exporter.document["materials"][material]["pbrMetallicRoughness"]
+                ["baseColorTexture"]["index"], 0
+        );
+        let decoded = image::load_from_memory(&exporter.binary)
+            .unwrap().into_rgba8();
+        assert_eq!(decoded.dimensions(), source.dimensions());
+        assert_eq!(decoded.as_raw(), source.as_raw());
+    }
+
     #[test]
     fn crchf_source_mtlname_is_preferred_over_lookalike_stem() {
         let mut chunk = vec![0u8; 16 + 16 + 132];
