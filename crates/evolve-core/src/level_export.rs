@@ -6,9 +6,14 @@ use crate::archive::safe_member_name;
 use crate::dds::{DdsFormat, decode_dds_rgba, decode_dds_rgba_with_parts};
 use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::materials::{MaterialDocument, MaterialSlot, read_material};
-use crate::model::{ModelError, ModelInfo, RenderMesh, original_mesh_subsets, read_model, read_world_model_parts_with_subsets, WorldModelPart};
+use crate::model::{
+    ModelError, ModelInfo, RenderMesh, WorldModelPart, original_mesh_subsets, read_model,
+    read_world_model_parts_with_subsets,
+};
 use crate::scene::{LevelScene, SceneError, load_level_scene};
-use crate::terrain::{MAX_RENDER_GRID, TerrainError, TerrainMesh, TerrainPaintMap, read_terrain, read_terrain_paint};
+use crate::terrain::{
+    MAX_RENDER_GRID, TerrainError, TerrainMesh, TerrainPaintMap, read_terrain, read_terrain_paint,
+};
 use image::{DynamicImage, ImageFormat};
 use quick_xml::{
     Reader,
@@ -332,14 +337,14 @@ fn light_spot_rotation(source: [f32; 4]) -> [f32; 4] {
 /// normal components in BC5. This changes only the PNG for Blender's
 /// tangent-space normal slot: diffuse/packed R-G data is never reclassified.
 /// No Y inversion is applied without in-game shader verification.
-fn reconstruct_bc5_normal(rgba:&mut image::RgbaImage) {
+fn reconstruct_bc5_normal(rgba: &mut image::RgbaImage) {
     for pixel in rgba.pixels_mut() {
-        let x=f32::from(pixel[0])/127.5-1.0;
-        let y=f32::from(pixel[1])/127.5-1.0;
-        let z=(1.0-x*x-y*y).max(0.0).sqrt();
-        let len=(x*x+y*y+z*z).sqrt().max(f32::EPSILON);
-        pixel[2]=((z/len+1.0)*127.5).round().clamp(0.0,255.0) as u8;
-        pixel[3]=255;
+        let x = f32::from(pixel[0]) / 127.5 - 1.0;
+        let y = f32::from(pixel[1]) / 127.5 - 1.0;
+        let z = (1.0 - x * x - y * y).max(0.0).sqrt();
+        let len = (x * x + y * y + z * z).sqrt().max(f32::EPSILON);
+        pixel[2] = ((z / len + 1.0) * 127.5).round().clamp(0.0, 255.0) as u8;
+        pixel[3] = 255;
     }
 }
 
@@ -352,7 +357,7 @@ struct Assembler {
     missing_material_sets: usize,
     missing_texture_references: usize,
     lights: usize,
-    paint_materials: HashMap<u8,usize>,
+    paint_materials: HashMap<u8, usize>,
     paint_map_texture: Option<usize>,
 }
 impl Assembler {
@@ -492,7 +497,7 @@ impl Assembler {
     where
         R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
     {
-        let cache_key = format!("{}:{}",virtual_path.to_ascii_lowercase(),normal_map);
+        let cache_key = format!("{}:{}", virtual_path.to_ascii_lowercase(), normal_map);
         if let Some(index) = self.cached_images.get(&cache_key) {
             return Ok(Some(*index));
         }
@@ -511,29 +516,36 @@ impl Assembler {
         // from the exact same installed game. Ask the verified resolver for
         // every numbered candidate; the DDS decoder checks contiguity and
         // byte lengths before permitting the reconstructed image.
-        let decoded=match decode_dds_rgba(&source) {
-            Ok(decoded)=>Ok(decoded),
-            Err(initial) if source.file_name().and_then(|n|n.to_str())
-                .is_some_and(|n|n.to_ascii_lowercase().ends_with(".dds.0")) => {
-                let mut external=Vec::new();
+        let decoded = match decode_dds_rgba(&source) {
+            Ok(decoded) => Ok(decoded),
+            Err(initial)
+                if source
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.to_ascii_lowercase().ends_with(".dds.0")) =>
+            {
+                let mut external = Vec::new();
                 for n in 1..20 {
-                    let candidate=format!("{virtual_path}.{n}");
-                    if let Some(part)=resolve(&candidate)? {
-                        if part.parent()!=source.parent() {
+                    let candidate = format!("{virtual_path}.{n}");
+                    if let Some(part) = resolve(&candidate)? {
+                        if part.parent() != source.parent() {
                             external.push(part);
                         }
                     }
                 }
-                if external.is_empty(){Err(initial)}
-                else {decode_dds_rgba_with_parts(&source,&external)}
+                if external.is_empty() {
+                    Err(initial)
+                } else {
+                    decode_dds_rgba_with_parts(&source, &external)
+                }
             }
-            Err(error)=>Err(error),
+            Err(error) => Err(error),
         };
-        let Ok((info,mut rgba))=decoded else {
-            self.missing_texture_references+=1;
+        let Ok((info, mut rgba)) = decoded else {
+            self.missing_texture_references += 1;
             return Ok(None);
         };
-        if normal_map && info.format==DdsFormat::Bc5 {
+        if normal_map && info.format == DdsFormat::Bc5 {
             reconstruct_bc5_normal(&mut rgba);
         }
         let mut png = Vec::new();
@@ -581,13 +593,14 @@ impl Assembler {
         Ok(Some(index))
     }
 
-    fn require_extension(&mut self,name:&str)->Result<(),LevelExportError> {
+    fn require_extension(&mut self, name: &str) -> Result<(), LevelExportError> {
         if self.document.get("extensionsUsed").is_none() {
-            self.document["extensionsUsed"]=json!([]);
+            self.document["extensionsUsed"] = json!([]);
         }
-        let extensions=self.document["extensionsUsed"].as_array_mut()
+        let extensions = self.document["extensionsUsed"]
+            .as_array_mut()
             .ok_or(LevelExportError::Limits)?;
-        if !extensions.iter().any(|entry|entry.as_str()==Some(name)) {
+        if !extensions.iter().any(|entry| entry.as_str() == Some(name)) {
             extensions.push(json!(name));
         }
         Ok(())
@@ -606,8 +619,12 @@ impl Assembler {
     {
         let mut pbr = json!({"metallicFactor":0.0,"roughnessFactor":1.0});
         if let Some(tint) = slot.diffuse_tint {
-            pbr["baseColorFactor"] =
-                json!([tint[0].clamp(0.,1.),tint[1].clamp(0.,1.),tint[2].clamp(0.,1.),slot.opacity.unwrap_or(1.0)]);
+            pbr["baseColorFactor"] = json!([
+                tint[0].clamp(0., 1.),
+                tint[1].clamp(0., 1.),
+                tint[2].clamp(0., 1.),
+                slot.opacity.unwrap_or(1.0)
+            ]);
         } else if let Some(opacity) = slot.opacity {
             pbr["baseColorFactor"] = json!([1.0, 1.0, 1.0, opacity]);
         }
@@ -641,8 +658,7 @@ impl Assembler {
         // them as an opaque white placeholder in Blender.
         if slot.shader.eq_ignore_ascii_case("NoDraw") {
             value["alphaMode"] = json!("BLEND");
-            value["pbrMetallicRoughness"]["baseColorFactor"] =
-                json!([1.0, 1.0, 1.0, 0.0]);
+            value["pbrMetallicRoughness"]["baseColorFactor"] = json!([1.0, 1.0, 1.0, 0.0]);
             value["extras"]["cryengine_no_draw"] = json!(true);
         } else if let Some(alpha_test) = slot.alpha_test {
             value["alphaMode"] = json!("MASK");
@@ -650,25 +666,27 @@ impl Assembler {
         } else if slot.opacity.is_some_and(|x| x < 1.0) {
             value["alphaMode"] = json!("BLEND");
         }
-        if let Some(color)=slot.emissive_color {
-            let strength=color.iter().copied().fold(1f32,f32::max);
-            value["emissiveFactor"]=json!(color.map(|channel|channel/strength));
-            if strength>1. {
-                value["extensions"]["KHR_materials_emissive_strength"]=
+        if let Some(color) = slot.emissive_color {
+            let strength = color.iter().copied().fold(1f32, f32::max);
+            value["emissiveFactor"] = json!(color.map(|channel| channel / strength));
+            if strength > 1. {
+                value["extensions"]["KHR_materials_emissive_strength"] =
                     json!({"emissiveStrength":strength});
                 self.require_extension("KHR_materials_emissive_strength")?;
             }
         }
-        if let Some(tint)=slot.specular_tint {
-            value["extensions"]["KHR_materials_specular"]=
+        if let Some(tint) = slot.specular_tint {
+            value["extensions"]["KHR_materials_specular"] =
                 json!({"specularColorFactor":tint.map(|value|value.clamp(0.,1.))});
             self.require_extension("KHR_materials_specular")?;
         }
         for reference in &slot.maps {
             let Some(texture) = self.source_texture(
-                resolve,&reference.path,
-                matches!(reference.role.as_str(),"normals"|"normal"|"bumpmap")
-            )? else {
+                resolve,
+                &reference.path,
+                matches!(reference.role.as_str(), "normals" | "normal" | "bumpmap"),
+            )?
+            else {
                 continue;
             };
             let role = reference.role.as_str();
@@ -677,11 +695,10 @@ impl Assembler {
             });
             match role {
                 "diffuse" => {
-                    value["pbrMetallicRoughness"]["baseColorTexture"]=json!({"index":texture});
-                    if let Some(tf)=slot.diffuse_tex_mod {
-                        let [su,sv,ou,ov]=tf.sample(0.);
-                        value["pbrMetallicRoughness"]["baseColorTexture"]
-                            ["extensions"]["KHR_texture_transform"]=
+                    value["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index":texture});
+                    if let Some(tf) = slot.diffuse_tex_mod {
+                        let [su, sv, ou, ov] = tf.sample(0.);
+                        value["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]["KHR_texture_transform"] =
                             json!({"scale":[su,sv],"offset":[ou,ov]});
                         self.require_extension("KHR_texture_transform")?;
                     }
@@ -692,8 +709,8 @@ impl Assembler {
                     value["normalTexture"] = json!({"index":texture});
                 }
                 "specular" | "specularcolor" => {
-                    value["extensions"]["KHR_materials_specular"]
-                        ["specularColorTexture"]=json!({"index":texture});
+                    value["extensions"]["KHR_materials_specular"]["specularColorTexture"] =
+                        json!({"index":texture});
                     self.require_extension("KHR_materials_specular")?;
                 }
                 "emissive" | "emittance" | "emission" | "glow" | "emissivecolor"
@@ -712,7 +729,7 @@ impl Assembler {
             .len();
         // A unique material name lets Blender recover the exact MTL slot
         // metadata even when two models reuse a generic "Default" leaf.
-        value["name"]=json!(format!("Evolve_MTL_{index:06} - {}",slot.name));
+        value["name"] = json!(format!("Evolve_MTL_{index:06} - {}", slot.name));
         self.document["materials"]
             .as_array_mut()
             .ok_or(LevelExportError::Limits)?
@@ -730,8 +747,8 @@ impl Assembler {
         material: Option<&MaterialDocument>,
         root: &Path,
     ) -> Result<usize, LevelExportError> {
-        self.add_textured_mesh_resolved(mesh,source_bytes,material,None,&mut |path| {
-            Ok(exact_geometry(root,path).ok())
+        self.add_textured_mesh_resolved(mesh, source_bytes, material, None, &mut |path| {
+            Ok(exact_geometry(root, path).ok())
         })
     }
     fn add_textured_mesh_resolved<R>(
@@ -739,7 +756,7 @@ impl Assembler {
         mesh: &RenderMesh,
         source_bytes: &[u8],
         material: Option<&MaterialDocument>,
-        original_ranges: Option<&[(u32,u32,u32)]>,
+        original_ranges: Option<&[(u32, u32, u32)]>,
         resolve: &mut R,
     ) -> Result<usize, LevelExportError>
     where
@@ -755,7 +772,8 @@ impl Assembler {
             ids.push(self.source_material(slot, resolve)?);
         }
         let old = self.document["meshes"][id]["primitives"][0].clone();
-        let ranges = original_ranges.map(|ranges|ranges.to_vec())
+        let ranges = original_ranges
+            .map(|ranges| ranges.to_vec())
             .or_else(|| original_mesh_subsets(source_bytes, mesh.indices.len()).ok())
             .filter(|ranges| {
                 !ranges.is_empty()
@@ -856,29 +874,51 @@ impl Assembler {
     /// world transform belongs to one parent node, so moving one placement
     /// does not transform a different instance of that model.
     fn add_placement(
-        &mut self,object:&crate::scene::PlacedObject,meshes:&[usize],
-    ) -> Result<(),LevelExportError> {
-        let metadata=json!({"source_id":object.id,"layer":object.layer,
+        &mut self,
+        object: &crate::scene::PlacedObject,
+        meshes: &[usize],
+    ) -> Result<(), LevelExportError> {
+        let metadata = json!({"source_id":object.id,"layer":object.layer,
             "type":object.kind,"parent_guid":object.parent,
             "material_reference":object.material,"hidden":object.hidden});
-        if meshes.len()<=1 {
-            return self.add_node(&object.name,meshes.first().copied(),Some(object.world),metadata);
+        if meshes.len() <= 1 {
+            return self.add_node(
+                &object.name,
+                meshes.first().copied(),
+                Some(object.world),
+                metadata,
+            );
         }
-        self.add_node(&object.name,None,Some(object.world),metadata)?;
-        let parent=self.document["nodes"].as_array().ok_or(LevelExportError::Limits)?.len()-1;
-        self.document["nodes"][parent]["children"]=json!([]);
-        for (i,mesh) in meshes.iter().copied().enumerate() {
+        self.add_node(&object.name, None, Some(object.world), metadata)?;
+        let parent = self.document["nodes"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len()
+            - 1;
+        self.document["nodes"][parent]["children"] = json!([]);
+        for (i, mesh) in meshes.iter().copied().enumerate() {
             self.add_node(
-                &format!("{} | Render part {}",object.name,i),
-                Some(mesh),None,
+                &format!("{} | Render part {}", object.name, i),
+                Some(mesh),
+                None,
                 json!({"original_part":i,"source_id":object.id}),
             )?;
-            let child=self.document["nodes"].as_array().ok_or(LevelExportError::Limits)?.len()-1;
-            let detached=self.document["nodes"][0]["children"]
-                .as_array_mut().ok_or(LevelExportError::Limits)?.pop();
-            if detached!=Some(json!(child)) {return Err(LevelExportError::Limits);}
+            let child = self.document["nodes"]
+                .as_array()
+                .ok_or(LevelExportError::Limits)?
+                .len()
+                - 1;
+            let detached = self.document["nodes"][0]["children"]
+                .as_array_mut()
+                .ok_or(LevelExportError::Limits)?
+                .pop();
+            if detached != Some(json!(child)) {
+                return Err(LevelExportError::Limits);
+            }
             self.document["nodes"][parent]["children"]
-                .as_array_mut().ok_or(LevelExportError::Limits)?.push(json!(child));
+                .as_array_mut()
+                .ok_or(LevelExportError::Limits)?
+                .push(json!(child));
         }
         Ok(())
     }
@@ -887,45 +927,73 @@ impl Assembler {
     /// PNG, with each original category byte in R. The original X-major
     /// CryEngine bitmap is transposed into ordinary PNG row-major coordinates
     /// only; no color mixing or palette guesses are performed.
-    fn embed_paint_map(&mut self,paint:&TerrainPaintMap)
-        ->Result<usize,LevelExportError> {
-        if let Some(id)=self.paint_map_texture{return Ok(id);}
-        let rgba=image::RgbaImage::from_fn(paint.width,paint.height,|x,y|{
-            image::Rgba([paint.id_at(x,y).unwrap_or(255),0,0,255])
+    fn embed_paint_map(&mut self, paint: &TerrainPaintMap) -> Result<usize, LevelExportError> {
+        if let Some(id) = self.paint_map_texture {
+            return Ok(id);
+        }
+        let rgba = image::RgbaImage::from_fn(paint.width, paint.height, |x, y| {
+            image::Rgba([paint.id_at(x, y).unwrap_or(255), 0, 0, 255])
         });
-        let mut png=Vec::new();
-        DynamicImage::ImageRgba8(rgba).write_to(
-            &mut Cursor::new(&mut png),ImageFormat::Png
-        ).map_err(|e|LevelExportError::Material(e.to_string()))?;
-        while !self.binary.len().is_multiple_of(4) {self.binary.push(0);}
-        if self.binary.len().checked_add(png.len()).is_none_or(|n|n>MAX_SCENE_GLB) {
+        let mut png = Vec::new();
+        DynamicImage::ImageRgba8(rgba)
+            .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            .map_err(|e| LevelExportError::Material(e.to_string()))?;
+        while !self.binary.len().is_multiple_of(4) {
+            self.binary.push(0);
+        }
+        if self
+            .binary
+            .len()
+            .checked_add(png.len())
+            .is_none_or(|n| n > MAX_SCENE_GLB)
+        {
             return Err(LevelExportError::Limits);
         }
-        let offset=self.binary.len();
+        let offset = self.binary.len();
         self.binary.extend_from_slice(&png);
-        let view=self.document["bufferViews"].as_array().ok_or(LevelExportError::Limits)?.len();
-        self.document["bufferViews"].as_array_mut().ok_or(LevelExportError::Limits)?
+        let view = self.document["bufferViews"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len();
+        self.document["bufferViews"]
+            .as_array_mut()
+            .ok_or(LevelExportError::Limits)?
             .push(json!({"buffer":0,"byteOffset":offset,"byteLength":png.len()}));
-        let image=self.document["images"].as_array().ok_or(LevelExportError::Limits)?.len();
-        self.document["images"].as_array_mut().ok_or(LevelExportError::Limits)?
+        let image = self.document["images"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len();
+        self.document["images"]
+            .as_array_mut()
+            .ok_or(LevelExportError::Limits)?
             .push(json!({"name":"Original CryEngine LayerId (categorical)",
                 "bufferView":view,"mimeType":"image/png"}));
         if self.document.get("samplers").is_none() {
-            self.document["samplers"]=json!([]);
+            self.document["samplers"] = json!([]);
         }
-        let sampler=self.document["samplers"].as_array().ok_or(LevelExportError::Limits)?.len();
-        self.document["samplers"].as_array_mut().ok_or(LevelExportError::Limits)?
+        let sampler = self.document["samplers"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len();
+        self.document["samplers"]
+            .as_array_mut()
+            .ok_or(LevelExportError::Limits)?
             .push(json!({"magFilter":9728,"minFilter":9728,"wrapS":33071,"wrapT":33071}));
-        let texture=self.document["textures"].as_array().ok_or(LevelExportError::Limits)?.len();
-        self.document["textures"].as_array_mut().ok_or(LevelExportError::Limits)?
+        let texture = self.document["textures"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len();
+        self.document["textures"]
+            .as_array_mut()
+            .ok_or(LevelExportError::Limits)?
             .push(json!({"source":image,"sampler":sampler}));
-        self.document["extras"]["original_categorical_terrain_paint"]=json!({
+        self.document["extras"]["original_categorical_terrain_paint"] = json!({
             "texture":texture,"width":paint.width,"height":paint.height,
             "encoding":"PNG R = exact original LayerId, row-major pixels",
             "layer_ids_not_surface_type_ids":true,
             "blending":"native CryEngine transition not applied"
         });
-        self.paint_map_texture=Some(texture);
+        self.paint_map_texture = Some(texture);
         Ok(texture)
     }
 
@@ -933,23 +1001,39 @@ impl Assembler {
     /// assigns original IDs to editable face material groups; it does NOT
     /// purport to replicate CryEngine's paint boundary blending.
     fn paint_material<R>(
-        &mut self,id:u8,paint:&TerrainPaintMap,baked:Option<usize>,resolve:&mut R
-    )->Result<usize,LevelExportError>
-    where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
+        &mut self,
+        id: u8,
+        paint: &TerrainPaintMap,
+        baked: Option<usize>,
+        resolve: &mut R,
+    ) -> Result<usize, LevelExportError>
+    where
+        R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
     {
-        if let Some(&at)=self.paint_materials.get(&id) {return Ok(at);}
-        let paint_texture=self.embed_paint_map(paint)?;
-        let candidates=paint.layers.iter().filter(|l|l.id==id).collect::<Vec<_>>();
-        let layer=(candidates.len()==1).then(||candidates[0]);
-        let mut value=baked.map(|at|self.document["materials"][at].clone())
-            .unwrap_or_else(||json!({"pbrMetallicRoughness":{"metallicFactor":0.,"roughnessFactor":1.}}));
+        if let Some(&at) = self.paint_materials.get(&id) {
+            return Ok(at);
+        }
+        let paint_texture = self.embed_paint_map(paint)?;
+        let candidates = paint
+            .layers
+            .iter()
+            .filter(|l| l.id == id)
+            .collect::<Vec<_>>();
+        let layer = (candidates.len() == 1).then(|| candidates[0]);
+        let mut value = baked
+            .map(|at| self.document["materials"][at].clone())
+            .unwrap_or_else(
+                || json!({"pbrMetallicRoughness":{"metallicFactor":0.,"roughnessFactor":1.}}),
+            );
         // Occupy the standard glTF occlusion slot with zero strength so
         // importers retain the exact categorical PNG without changing the
         // original baked terrain color or pretending it is ambient occlusion.
-        value["occlusionTexture"]=json!({"index":paint_texture,"strength":0.0});
-        value["name"]=json!(format!("Terrain LayerId {id} - {}",
-            layer.map_or("unresolved",|l|l.name.as_str())));
-        value["extras"]["cryengine_terrain_paint"]=json!({
+        value["occlusionTexture"] = json!({"index":paint_texture,"strength":0.0});
+        value["name"] = json!(format!(
+            "Terrain LayerId {id} - {}",
+            layer.map_or("unresolved", |l| l.name.as_str())
+        ));
+        value["extras"]["cryengine_terrain_paint"] = json!({
             "source_layer_id":id,
             "authored_bindings":candidates.len(),
             "layer":layer.map(|l|json!({
@@ -963,116 +1047,154 @@ impl Assembler {
         // Resolve only the authored Terrain.Layer MTL for this exact paint ID.
         // The baked map remains the base RGB; detail images and parameters
         // are preserved without assuming the game's high-pass blend equation.
-        let authored_path=layer
-            .map(|l|l.surface_type.trim().replace('\\',"/"))
-            .filter(|path|!path.is_empty())
-            .map(|path|if path.to_ascii_lowercase().ends_with(".mtl"){
-                path
-            }else{format!("{path}.mtl")});
-        value["extras"]["cryengine_terrain_paint"]["mtl_reference"]=json!(authored_path);
-        if let Some(path)=authored_path {
-            if let Some(source)=resolve(&path)? {
+        let authored_path = layer
+            .map(|l| l.surface_type.trim().replace('\\', "/"))
+            .filter(|path| !path.is_empty())
+            .map(|path| {
+                if path.to_ascii_lowercase().ends_with(".mtl") {
+                    path
+                } else {
+                    format!("{path}.mtl")
+                }
+            });
+        value["extras"]["cryengine_terrain_paint"]["mtl_reference"] = json!(authored_path);
+        if let Some(path) = authored_path {
+            if let Some(source) = resolve(&path)? {
                 match read_material(&source) {
-                    Ok(mtl)=>{
-                        let slots=mtl.slots.iter().filter(|s|
-                            s.shader.eq_ignore_ascii_case("Terrain.Layer")
-                        ).collect::<Vec<_>>();
-                        value["extras"]["cryengine_terrain_paint"]["mtl_layer_slot_count"]=
+                    Ok(mtl) => {
+                        let slots = mtl
+                            .slots
+                            .iter()
+                            .filter(|s| s.shader.eq_ignore_ascii_case("Terrain.Layer"))
+                            .collect::<Vec<_>>();
+                        value["extras"]["cryengine_terrain_paint"]["mtl_layer_slot_count"] =
                             json!(slots.len());
-                        if slots.len()==1 {
-                            let slot=slots[0];
-                            value["extras"]["cryengine_terrain_paint"]["layer_params"]=
+                        if slots.len() == 1 {
+                            let slot = slots[0];
+                            value["extras"]["cryengine_terrain_paint"]["layer_params"] =
                                 json!(slot.layer_params);
-                            value["extras"]["cryengine_terrain_paint"]["detail_tiling"]=
+                            value["extras"]["cryengine_terrain_paint"]["detail_tiling"] =
                                 json!(slot.detail_tile);
-                            value["extras"]["cryengine_terrain_paint"]["shininess"]=
+                            value["extras"]["cryengine_terrain_paint"]["shininess"] =
                                 json!(slot.shininess);
-                            value["extras"]["cryengine_terrain_paint"]["native_shader"]=
+                            value["extras"]["cryengine_terrain_paint"]["native_shader"] =
                                 json!(slot.shader);
                             for map in &slot.maps {
-                                let normal=matches!(map.role.as_str(),
-                                    "normals"|"normal"|"bumpmap");
-                                if let Some(texture)=self.source_texture(resolve,&map.path,normal)?{
+                                let normal =
+                                    matches!(map.role.as_str(), "normals" | "normal" | "bumpmap");
+                                if let Some(texture) =
+                                    self.source_texture(resolve, &map.path, normal)?
+                                {
                                     value["extras"]["cryengine_terrain_paint"]["source_maps"]
-                                        [map.role.as_str()]=json!({
-                                            "texture":texture,"source":map.path
-                                        });
+                                        [map.role.as_str()] = json!({
+                                        "texture":texture,"source":map.path
+                                    });
                                     if normal {
-                                        value["normalTexture"]=json!({"index":texture});
+                                        value["normalTexture"] = json!({"index":texture});
                                     }
                                 }
                             }
                         }
                     }
-                    Err(error)=>{
-                        value["extras"]["cryengine_terrain_paint"]["mtl_error"]=
+                    Err(error) => {
+                        value["extras"]["cryengine_terrain_paint"]["mtl_error"] =
                             json!(error.to_string());
                     }
                 }
             } else {
-                value["extras"]["cryengine_terrain_paint"]["mtl_error"]=
+                value["extras"]["cryengine_terrain_paint"]["mtl_error"] =
                     json!("Missing exact-build authored terrain MTL");
             }
         }
-        let at=self.document["materials"].as_array().ok_or(LevelExportError::Limits)?.len();
-        self.document["materials"].as_array_mut().ok_or(LevelExportError::Limits)?.push(value);
-        self.paint_materials.insert(id,at);
+        let at = self.document["materials"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len();
+        self.document["materials"]
+            .as_array_mut()
+            .ok_or(LevelExportError::Limits)?
+            .push(value);
+        self.paint_materials.insert(id, at);
         Ok(at)
     }
 
     /// Reorder this tile's index buffer into categorical paint-material face
     /// groups, without moving vertices, changing UV0, or adding guesswork.
     fn painted_tile(
-        &mut self,mesh_id:usize,mesh:&RenderMesh,
-        paint:&TerrainPaintMap,baked:Option<usize>,resolve:&mut impl FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
-    )->Result<(),LevelExportError> {
-        let uv=mesh.uv0.as_ref().ok_or(LevelExportError::Limits)?;
-        if paint.width<2 || paint.height<2 || uv.len()!=mesh.positions.len()
-            || mesh.indices.len()%3!=0 {return Err(LevelExportError::Limits);}
-        let mut groups=BTreeMap::<u8,Vec<u32>>::new();
-        for tri in mesh.indices.chunks_exact(3) {
-            let mut center=[0f32;2];
-            for &vertex in tri {
-                let point=uv.get(vertex as usize).ok_or(LevelExportError::Limits)?;
-                center[0]+=point[0]/3.; center[1]+=point[1]/3.;
-            }
-            let x=(center[0].clamp(0.,1.)*(paint.width-1) as f32).round() as u32;
-            let y=(center[1].clamp(0.,1.)*(paint.height-1) as f32).round() as u32;
-            let id=paint.id_at(x,y).ok_or(LevelExportError::Limits)?;
-            groups.entry(id).or_default().extend_from_slice(tri);
-        }
-        let base=self.document["meshes"][mesh_id]["primitives"][0].clone();
-        let accessor=base["indices"].as_u64().ok_or(LevelExportError::Limits)? as usize;
-        let info=&self.document["accessors"][accessor];
-        if info["componentType"]!=5125 {return Err(LevelExportError::Limits);}
-        let view=info["bufferView"].as_u64().ok_or(LevelExportError::Limits)? as usize;
-        let offset=self.document["bufferViews"][view]["byteOffset"].as_u64()
-            .and_then(|at|at.checked_add(info["byteOffset"].as_u64().unwrap_or(0)))
-            .ok_or(LevelExportError::Limits)? as usize;
-        if offset.checked_add(mesh.indices.len()*4).is_none_or(|end|end>self.binary.len()) {
+        &mut self,
+        mesh_id: usize,
+        mesh: &RenderMesh,
+        paint: &TerrainPaintMap,
+        baked: Option<usize>,
+        resolve: &mut impl FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
+    ) -> Result<(), LevelExportError> {
+        let uv = mesh.uv0.as_ref().ok_or(LevelExportError::Limits)?;
+        if paint.width < 2
+            || paint.height < 2
+            || uv.len() != mesh.positions.len()
+            || mesh.indices.len() % 3 != 0
+        {
             return Err(LevelExportError::Limits);
         }
-        let info_offset=info["byteOffset"].as_u64().unwrap_or(0) as usize;
-        let mut cursor=0usize;
-        let mut prims=Vec::new();
-        for (id,triangles) in groups {
-            let material=self.paint_material(id,paint,baked,resolve)?;
-            for (i,index) in triangles.iter().enumerate() {
-                let at=offset+(cursor+i)*4;
-                self.binary[at..at+4].copy_from_slice(&index.to_le_bytes());
+        let mut groups = BTreeMap::<u8, Vec<u32>>::new();
+        for tri in mesh.indices.chunks_exact(3) {
+            let mut center = [0f32; 2];
+            for &vertex in tri {
+                let point = uv.get(vertex as usize).ok_or(LevelExportError::Limits)?;
+                center[0] += point[0] / 3.;
+                center[1] += point[1] / 3.;
             }
-            let next=self.document["accessors"].as_array().ok_or(LevelExportError::Limits)?.len();
-            self.document["accessors"].as_array_mut().ok_or(LevelExportError::Limits)?.push(json!({
-                "bufferView":view,"byteOffset":info_offset+cursor*4,
-                "componentType":5125,"type":"SCALAR","count":triangles.len()
-            }));
-            let mut p=base.clone();
-            p["indices"]=json!(next);
-            p["material"]=json!(material);
-            prims.push(p);
-            cursor+=triangles.len();
+            let x = (center[0].clamp(0., 1.) * (paint.width - 1) as f32).round() as u32;
+            let y = (center[1].clamp(0., 1.) * (paint.height - 1) as f32).round() as u32;
+            let id = paint.id_at(x, y).ok_or(LevelExportError::Limits)?;
+            groups.entry(id).or_default().extend_from_slice(tri);
         }
-        self.document["meshes"][mesh_id]["primitives"]=json!(prims);
+        let base = self.document["meshes"][mesh_id]["primitives"][0].clone();
+        let accessor = base["indices"].as_u64().ok_or(LevelExportError::Limits)? as usize;
+        let info = &self.document["accessors"][accessor];
+        if info["componentType"] != 5125 {
+            return Err(LevelExportError::Limits);
+        }
+        let view = info["bufferView"]
+            .as_u64()
+            .ok_or(LevelExportError::Limits)? as usize;
+        let offset = self.document["bufferViews"][view]["byteOffset"]
+            .as_u64()
+            .and_then(|at| at.checked_add(info["byteOffset"].as_u64().unwrap_or(0)))
+            .ok_or(LevelExportError::Limits)? as usize;
+        if offset
+            .checked_add(mesh.indices.len() * 4)
+            .is_none_or(|end| end > self.binary.len())
+        {
+            return Err(LevelExportError::Limits);
+        }
+        let info_offset = info["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let mut cursor = 0usize;
+        let mut prims = Vec::new();
+        for (id, triangles) in groups {
+            let material = self.paint_material(id, paint, baked, resolve)?;
+            for (i, index) in triangles.iter().enumerate() {
+                let at = offset + (cursor + i) * 4;
+                self.binary[at..at + 4].copy_from_slice(&index.to_le_bytes());
+            }
+            let next = self.document["accessors"]
+                .as_array()
+                .ok_or(LevelExportError::Limits)?
+                .len();
+            self.document["accessors"]
+                .as_array_mut()
+                .ok_or(LevelExportError::Limits)?
+                .push(json!({
+                    "bufferView":view,"byteOffset":info_offset+cursor*4,
+                    "componentType":5125,"type":"SCALAR","count":triangles.len()
+                }));
+            let mut p = base.clone();
+            p["indices"] = json!(next);
+            p["material"] = json!(material);
+            prims.push(p);
+            cursor += triangles.len();
+        }
+        self.document["meshes"][mesh_id]["primitives"] = json!(prims);
         Ok(())
     }
 
@@ -1232,28 +1354,61 @@ impl Assembler {
     }
 }
 /// Author-declared CrChF MtlName (0x08021014) references only.
-fn embedded_mtl_names(bytes:&[u8])->Vec<String> {
-    if bytes.len()<32 || bytes.get(..5)!=Some(b"CrChF"){return Vec::new();}
-    let read=|at:usize|->Option<usize>{
-        Some(u32::from_le_bytes(bytes.get(at..at+4)?.try_into().ok()?) as usize)
+fn embedded_mtl_names(bytes: &[u8]) -> Vec<String> {
+    if bytes.len() < 32 || bytes.get(..5) != Some(b"CrChF") {
+        return Vec::new();
+    }
+    let read = |at: usize| -> Option<usize> {
+        Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?) as usize)
     };
-    let (Some(count),Some(start))=(read(8),read(12)) else{return Vec::new();};
-    if count==0 || count>10_000 || start<16
-        || start.checked_add(count*16).is_none_or(|n|n>bytes.len()) {return Vec::new();}
-    let mut names=Vec::<String>::new();
+    let (Some(count), Some(start)) = (read(8), read(12)) else {
+        return Vec::new();
+    };
+    if count == 0
+        || count > 10_000
+        || start < 16
+        || start
+            .checked_add(count * 16)
+            .is_none_or(|n| n > bytes.len())
+    {
+        return Vec::new();
+    }
+    let mut names = Vec::<String>::new();
     for i in 0..count {
-        let at=start+i*16;
-        if read(at)!=Some(0x08021014){continue;}
-        let (Some(len),Some(offset))=(read(at+8),read(at+12)) else{continue;};
-        if len<132 || offset<start+count*16
-            || offset.checked_add(len).is_none_or(|n|n>bytes.len()){continue;}
-        let Some(field)=bytes.get(offset..offset+128) else{continue;};
-        let Some(zero)=field.iter().position(|b|*b==0) else{continue;};
-        let Ok(raw)=std::str::from_utf8(&field[..zero]) else{continue;};
-        let name=raw.trim().replace('\\',"/");
-        let name=if name.to_ascii_lowercase().ends_with(".mtl"){name}else{format!("{name}.mtl")};
-        if safe_member_name(&name).is_err(){continue;}
-        if !names.iter().any(|known|known.eq_ignore_ascii_case(&name)){names.push(name);}
+        let at = start + i * 16;
+        if read(at) != Some(0x08021014) {
+            continue;
+        }
+        let (Some(len), Some(offset)) = (read(at + 8), read(at + 12)) else {
+            continue;
+        };
+        if len < 132
+            || offset < start + count * 16
+            || offset.checked_add(len).is_none_or(|n| n > bytes.len())
+        {
+            continue;
+        }
+        let Some(field) = bytes.get(offset..offset + 128) else {
+            continue;
+        };
+        let Some(zero) = field.iter().position(|b| *b == 0) else {
+            continue;
+        };
+        let Ok(raw) = std::str::from_utf8(&field[..zero]) else {
+            continue;
+        };
+        let name = raw.trim().replace('\\', "/");
+        let name = if name.to_ascii_lowercase().ends_with(".mtl") {
+            name
+        } else {
+            format!("{name}.mtl")
+        };
+        if safe_member_name(&name).is_err() {
+            continue;
+        }
+        if !names.iter().any(|known| known.eq_ignore_ascii_case(&name)) {
+            names.push(name);
+        }
     }
     names
 }
@@ -1262,35 +1417,47 @@ fn embedded_mtl_names(bytes:&[u8])->Vec<String> {
 /// build provenance. If multiple distinct original sources match, never
 /// silently pick the first archive or a similar model basename.
 fn source_model_material<R>(
-    virtual_model:&str,explicit:&str,bytes:&[u8],resolve:&mut R
-)->Result<Option<PathBuf>,LevelExportError>
-where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
+    virtual_model: &str,
+    explicit: &str,
+    bytes: &[u8],
+    resolve: &mut R,
+) -> Result<Option<PathBuf>, LevelExportError>
+where
+    R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
 {
     if !explicit.trim().is_empty() {
-        let key=explicit.trim().replace('\\',"/");
-        let key=if key.to_ascii_lowercase().ends_with(".mtl"){key}else{format!("{key}.mtl")};
+        let key = explicit.trim().replace('\\', "/");
+        let key = if key.to_ascii_lowercase().ends_with(".mtl") {
+            key
+        } else {
+            format!("{key}.mtl")
+        };
         return resolve(&key);
     }
-    let hints=embedded_mtl_names(bytes);
+    let hints = embedded_mtl_names(bytes);
     if !hints.is_empty() {
-        let parent=virtual_model.rsplit_once('/').map_or("",|(folder,_)|folder);
-        let mut unique=Vec::new();
+        let parent = virtual_model
+            .rsplit_once('/')
+            .map_or("", |(folder, _)| folder);
+        let mut unique = Vec::new();
         for hint in hints {
-            let rooted=["objects/","materials/","characters/","levels/"]
-                .iter().any(|prefix|hint.to_ascii_lowercase().starts_with(prefix));
-            let mut candidates=Vec::new();
+            let rooted = ["objects/", "materials/", "characters/", "levels/"]
+                .iter()
+                .any(|prefix| hint.to_ascii_lowercase().starts_with(prefix));
+            let mut candidates = Vec::new();
             if !rooted && !parent.is_empty() {
                 candidates.push(format!("{parent}/{hint}"));
             }
             candidates.push(hint);
             for virtual_path in candidates {
-                if let Some(path)=resolve(&virtual_path)?
-                    && !unique.contains(&path) {
+                if let Some(path) = resolve(&virtual_path)?
+                    && !unique.contains(&path)
+                {
                     unique.push(path);
                 }
             }
         }
-        if unique.len()>1 {
+        if unique.len() > 1 {
             return Err(LevelExportError::Material(format!(
                 "Conflicting authored MtlName references for {virtual_model}"
             )));
@@ -1299,7 +1466,9 @@ where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
         // to borrow an unrelated same-stem material.
         return Ok(unique.pop());
     }
-    let stem=virtual_model.rsplit_once('.').map_or(virtual_model,|(stem,_)|stem);
+    let stem = virtual_model
+        .rsplit_once('.')
+        .map_or(virtual_model, |(stem, _)| stem);
     resolve(&format!("{stem}.mtl"))
 }
 
@@ -1506,15 +1675,15 @@ where
     let mut terrain_source_resolution = true;
     if let Some(source) = terrain {
         let terrain_data = read_terrain(source, MAX_RENDER_GRID)?;
-        let paint=read_terrain_paint(source)?;
+        let paint = read_terrain_paint(source)?;
         terrain_source_resolution = terrain_data.info.stride == 1;
         let color = original_terrain_color(source)
             .map(|image| assembler.add_terrain_color(image))
             .transpose()?;
         for mesh in terrain_mesh_tiles(&terrain_data)? {
             let index = assembler.add_mesh(&mesh)?;
-            if let Some(paint)=paint.as_ref() {
-                assembler.painted_tile(index,&mesh,paint,color,&mut resolve)?;
+            if let Some(paint) = paint.as_ref() {
+                assembler.painted_tile(index, &mesh, paint, color, &mut resolve)?;
             } else if let Some(material) = color {
                 assembler.document["meshes"][index]["primitives"][0]["material"] = json!(material);
             }
@@ -1533,69 +1702,92 @@ where
         let mesh_ids = if object.model.is_empty() {
             Vec::new()
         } else {
-            let key=(object.model.to_ascii_lowercase(),object.material.to_ascii_lowercase());
-            if let Some(ids)=resources.get(&key) {
+            let key = (
+                object.model.to_ascii_lowercase(),
+                object.material.to_ascii_lowercase(),
+            );
+            if let Some(ids) = resources.get(&key) {
                 ids.clone()
             } else {
-                let name=&object.model;
-                let mut candidates=vec![name.clone()];
-                let ext=Path::new(name).extension().and_then(|x|x.to_str())
-                    .unwrap_or_default().to_ascii_lowercase();
-                if matches!(ext.as_str(),"cgf"|"cga"|"chr"|"skin") {
-                    candidates.push(Path::new(name).with_extension(format!("{ext}m"))
-                        .to_string_lossy().to_string());
+                let name = &object.model;
+                let mut candidates = vec![name.clone()];
+                let ext = Path::new(name)
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if matches!(ext.as_str(), "cgf" | "cga" | "chr" | "skin") {
+                    candidates.push(
+                        Path::new(name)
+                            .with_extension(format!("{ext}m"))
+                            .to_string_lossy()
+                            .to_string(),
+                    );
                 }
-                let mut loaded=None;
-                let mut errors=Vec::new();
+                let mut loaded = None;
+                let mut errors = Vec::new();
                 for candidate in candidates {
-                    if let Some(path)=resolve(&candidate)? {
-                        if let Ok(parts)=read_world_model_parts_with_subsets(&path)
+                    if let Some(path) = resolve(&candidate)? {
+                        if let Ok(parts) = read_world_model_parts_with_subsets(&path)
                             && !parts.is_empty()
                         {
-                            loaded=Some((parts,path,candidate));
+                            loaded = Some((parts, path, candidate));
                             break;
                         }
                         match read_model(&path) {
-                            Ok(mesh)=>{
-                                loaded=Some((vec![WorldModelPart{
-                                    mesh,subsets:Vec::new(),has_subset_table:false
-                                }],path,candidate));
+                            Ok(mesh) => {
+                                loaded = Some((
+                                    vec![WorldModelPart {
+                                        mesh,
+                                        subsets: Vec::new(),
+                                        has_subset_table: false,
+                                    }],
+                                    path,
+                                    candidate,
+                                ));
                                 break;
                             }
-                            Err(error)=>errors.push(format!("{candidate}: {error}")),
+                            Err(error) => errors.push(format!("{candidate}: {error}")),
                         }
                     }
                 }
-                let (parts,path,virtual_source)=loaded.ok_or_else(||LevelExportError::Missing(
-                    format!("{}: {}",object.model,errors.join("; "))
-                ))?;
-                let bytes=fs::read(&path)?;
-                let authored=source_model_material(
-                    &virtual_source,&object.material,&bytes,&mut resolve
-                )?.and_then(|material|read_material(&material).ok());
-                let mut ids=Vec::new();
+                let (parts, path, virtual_source) = loaded.ok_or_else(|| {
+                    LevelExportError::Missing(format!("{}: {}", object.model, errors.join("; ")))
+                })?;
+                let bytes = fs::read(&path)?;
+                let authored =
+                    source_model_material(&virtual_source, &object.material, &bytes, &mut resolve)?
+                        .and_then(|material| read_material(&material).ok());
+                let mut ids = Vec::new();
                 for part in parts {
                     // An explicit empty ranges slice means the source part
                     // has no table; do not borrow another mesh's subset IDs.
-                    let known=Some(part.subsets.as_slice());
-                    let index=assembler.add_textured_mesh_resolved(
-                        &part.mesh,&bytes,authored.as_ref(),known,&mut resolve
+                    let known = Some(part.subsets.as_slice());
+                    let index = assembler.add_textured_mesh_resolved(
+                        &part.mesh,
+                        &bytes,
+                        authored.as_ref(),
+                        known,
+                        &mut resolve,
                     )?;
                     ids.push(index);
                 }
-                resources.insert(key,ids.clone());
+                resources.insert(key, ids.clone());
                 ids
             }
         };
-        if mesh_ids.is_empty() {metadata_only+=1;}
-        else {geometry_instances+=1;}
-        assembler.add_placement(object,&mesh_ids)?;
+        if mesh_ids.is_empty() {
+            metadata_only += 1;
+        } else {
+            geometry_instances += 1;
+        }
+        assembler.add_placement(object, &mesh_ids)?;
     }
     for light in &lights {
         assembler.add_light(light)?;
     }
-    let assembler_mesh_count=assembler.meshes;
-    let terrain_painted_layer_ids=assembler.paint_materials.len();
+    let assembler_mesh_count = assembler.meshes;
+    let terrain_painted_layer_ids = assembler.paint_materials.len();
     let authored_material_slots = assembler.document["materials"]
         .as_array()
         .map_or(0, Vec::len);
@@ -1638,95 +1830,124 @@ mod tests {
     use super::*;
     #[test]
     fn crchf_source_mtlname_is_preferred_over_lookalike_stem() {
-        let mut chunk=vec![0u8;16+16+132];
+        let mut chunk = vec![0u8; 16 + 16 + 132];
         chunk[..5].copy_from_slice(b"CrChF");
         chunk[8..12].copy_from_slice(&1u32.to_le_bytes());
         chunk[12..16].copy_from_slice(&16u32.to_le_bytes());
         chunk[16..20].copy_from_slice(&0x08021014u32.to_le_bytes());
         chunk[24..28].copy_from_slice(&132u32.to_le_bytes());
         chunk[28..32].copy_from_slice(&32u32.to_le_bytes());
-        let hint=b"materials/maps/verified.mtl";
-        chunk[32..32+hint.len()].copy_from_slice(hint);
-        assert_eq!(embedded_mtl_names(&chunk),["materials/maps/verified.mtl"]);
-        let path=std::path::PathBuf::from("/verified/maps/material.mtl");
-        let resolved=source_model_material(
-            "objects/rock.cgf","",&chunk,&mut |virtual_path|{
-                if virtual_path=="materials/maps/verified.mtl" {
-                    Ok(Some(path.clone()))
-                } else {Ok(None)}
+        let hint = b"materials/maps/verified.mtl";
+        chunk[32..32 + hint.len()].copy_from_slice(hint);
+        assert_eq!(embedded_mtl_names(&chunk), ["materials/maps/verified.mtl"]);
+        let path = std::path::PathBuf::from("/verified/maps/material.mtl");
+        let resolved = source_model_material("objects/rock.cgf", "", &chunk, &mut |virtual_path| {
+            if virtual_path == "materials/maps/verified.mtl" {
+                Ok(Some(path.clone()))
+            } else {
+                Ok(None)
             }
-        ).unwrap();
-        assert_eq!(resolved,Some(path));
-        assert_eq!(source_model_material(
-            "objects/rock.cgf","",&chunk,&mut |_key|Ok(None)
-        ).unwrap(),None);
+        })
+        .unwrap();
+        assert_eq!(resolved, Some(path));
+        assert_eq!(
+            source_model_material("objects/rock.cgf", "", &chunk, &mut |_key| Ok(None)).unwrap(),
+            None
+        );
         // An exact authored MtlName cannot be replaced with a similarly
         // spelled basename or a same-stem MTL when it is unresolved.
-        let malicious=b"../wrong/build.mtl";
-        chunk[32..32+hint.len()].fill(0);
-        chunk[32..32+malicious.len()].copy_from_slice(malicious);
+        let malicious = b"../wrong/build.mtl";
+        chunk[32..32 + hint.len()].fill(0);
+        chunk[32..32 + malicious.len()].copy_from_slice(malicious);
         assert!(embedded_mtl_names(&chunk).is_empty());
     }
     #[test]
     fn painted_terrain_retains_source_categorical_layer_face_groups() {
-        let mesh=RenderMesh {
-            vertex_alpha:None,
-            info:ModelInfo{
-                format:"terrain fixture".into(),version:1,chunk_count:1,
-                vertex_count:4,triangle_count:2,
-                original_uv0:true,original_normals:true
+        let mesh = RenderMesh {
+            vertex_alpha: None,
+            info: ModelInfo {
+                format: "terrain fixture".into(),
+                version: 1,
+                chunk_count: 1,
+                vertex_count: 4,
+                triangle_count: 2,
+                original_uv0: true,
+                original_normals: true,
             },
-            positions:vec![[0.,0.,0.],[1.,0.,0.],[0.,1.,0.],[1.,1.,0.]],
-            indices:vec![0,1,2,1,3,2],
-            uv0:Some(vec![[0.,0.],[1.,0.],[0.,1.],[1.,1.]]),
-            normals:Some(vec![[0.,0.,1.];4]),
+            positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.]],
+            indices: vec![0, 1, 2, 1, 3, 2],
+            uv0: Some(vec![[0., 0.], [1., 0.], [0., 1.], [1., 1.]]),
+            normals: Some(vec![[0., 0., 1.]; 4]),
         };
-        let paint=TerrainPaintMap {
-            width:2,height:2,
-            layer_names:std::collections::BTreeMap::from([
-                (3,"Grass".into()),(7,"Rock".into())
+        let paint = TerrainPaintMap {
+            width: 2,
+            height: 2,
+            layer_names: std::collections::BTreeMap::from([
+                (3, "Grass".into()),
+                (7, "Rock".into()),
             ]),
-            layers:vec![
+            layers: vec![
                 crate::terrain::TerrainLayerDefinition {
-                    id:3,name:"Grass".into(),surface_type:"Materials/Grass".into(),
-                    filter_color:None,brightness:None,tiling:None
+                    id: 3,
+                    name: "Grass".into(),
+                    surface_type: "Materials/Grass".into(),
+                    filter_color: None,
+                    brightness: None,
+                    tiling: None,
                 },
                 crate::terrain::TerrainLayerDefinition {
-                    id:7,name:"Rock".into(),surface_type:"Materials/Rock".into(),
-                    filter_color:None,brightness:None,tiling:None
+                    id: 7,
+                    name: "Rock".into(),
+                    surface_type: "Materials/Rock".into(),
+                    filter_color: None,
+                    brightness: None,
+                    tiling: None,
                 },
             ],
-            surface_types:vec![],
-            ids:vec![3,3,7,7]
+            surface_types: vec![],
+            ids: vec![3, 3, 7, 7],
         };
-        let mut result=Assembler::new("terrain");
-        let id=result.add_mesh(&mesh).unwrap();
-        result.painted_tile(id,&mesh,&paint,None).unwrap();
-        let primitives=result.document["meshes"][0]["primitives"].as_array().unwrap();
-        assert_eq!(primitives.len(),2);
-        assert_eq!(result.paint_materials.len(),2);
-        assert_eq!(primitives.iter().map(|p|{
-            result.document["accessors"][p["indices"].as_u64().unwrap() as usize]["count"]
-                .as_u64().unwrap()
-        }).sum::<u64>(),6);
-        assert_eq!(result.document["materials"][0]["extras"]
-            ["cryengine_terrain_paint"]["source_layer_id"],3);
-        assert_eq!(result.document["materials"][1]["extras"]
-            ["cryengine_terrain_paint"]["source_layer_id"],7);
+        let mut result = Assembler::new("terrain");
+        let id = result.add_mesh(&mesh).unwrap();
+        result.painted_tile(id, &mesh, &paint, None).unwrap();
+        let primitives = result.document["meshes"][0]["primitives"]
+            .as_array()
+            .unwrap();
+        assert_eq!(primitives.len(), 2);
+        assert_eq!(result.paint_materials.len(), 2);
+        assert_eq!(
+            primitives
+                .iter()
+                .map(|p| {
+                    result.document["accessors"][p["indices"].as_u64().unwrap() as usize]["count"]
+                        .as_u64()
+                        .unwrap()
+                })
+                .sum::<u64>(),
+            6
+        );
+        assert_eq!(
+            result.document["materials"][0]["extras"]["cryengine_terrain_paint"]["source_layer_id"],
+            3
+        );
+        assert_eq!(
+            result.document["materials"][1]["extras"]["cryengine_terrain_paint"]["source_layer_id"],
+            7
+        );
     }
     #[test]
     fn bc5_reconstruction_keeps_xy_and_restores_positive_z_for_blender() {
-        let mut image=image::RgbaImage::from_pixel(2,1,image::Rgba([128,128,0,74]));
-        image.put_pixel(1,0,image::Rgba([255,128,0,9]));
+        let mut image = image::RgbaImage::from_pixel(2, 1, image::Rgba([128, 128, 0, 74]));
+        image.put_pixel(1, 0, image::Rgba([255, 128, 0, 9]));
         reconstruct_bc5_normal(&mut image);
-        let center=image.get_pixel(0,0);
-        assert_eq!(center[0],128);
-        assert_eq!(center[1],128);
-        assert_eq!(center[2],255);
-        assert_eq!(center[3],255);
-        let edge=image.get_pixel(1,0);
-        assert_eq!(edge[0],255);
-        assert!(edge[2]>=124 && edge[2]<=130);
+        let center = image.get_pixel(0, 0);
+        assert_eq!(center[0], 128);
+        assert_eq!(center[1], 128);
+        assert_eq!(center[2], 255);
+        assert_eq!(center[3], 255);
+        let edge = image.get_pixel(1, 0);
+        assert_eq!(edge[0], 255);
+        assert!(edge[2] >= 124 && edge[2] <= 130);
     }
     #[test]
     fn source_nodraw_is_invisible_but_keeps_its_original_material_slot() {
@@ -1735,44 +1956,64 @@ mod tests {
                 <Material Name="Visible" Shader="Illum" />
                 <Material Name="Helper" Shader="NoDraw" />
             </SubMaterials></Material>"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(material.slots.len(), 2);
-        let folder=tempfile::tempdir().unwrap();
-        let mut exporter=Assembler::new("NoDraw test");
+        let folder = tempfile::tempdir().unwrap();
+        let mut exporter = Assembler::new("NoDraw test");
         for slot in &material.slots {
-            exporter.source_material(slot,&mut |_path|Ok(None)).unwrap();
+            exporter
+                .source_material(slot, &mut |_path| Ok(None))
+                .unwrap();
         }
-        assert_eq!(exporter.document["materials"][0]["alphaMode"], serde_json::Value::Null);
+        assert_eq!(
+            exporter.document["materials"][0]["alphaMode"],
+            serde_json::Value::Null
+        );
         assert_eq!(exporter.document["materials"][1]["alphaMode"], "BLEND");
         assert_eq!(
-            exporter.document["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"][3],0.0
+            exporter.document["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"][3],
+            0.0
         );
-        assert_eq!(exporter.document["materials"][1]["extras"]["cryengine_no_draw"],true);
+        assert_eq!(
+            exporter.document["materials"][1]["extras"]["cryengine_no_draw"],
+            true
+        );
         drop(folder);
     }
     #[test]
     fn multi_part_actor_has_one_movable_transform_parent() {
-        let xml=br#"<Objects><Object Id="actor-a" Name="Tree"
+        let xml = br#"<Objects><Object Id="actor-a" Name="Tree"
             Pos="15,25,35" Scale="2,2,2"/></Objects>"#;
-        let scene=crate::scene::parse_level_scene(&[("fixture",xml)]).unwrap();
-        let obj=&scene.objects[0];
-        let mesh=RenderMesh {
-            vertex_alpha:None,
-            info:ModelInfo{format:"fixture".into(),version:1,chunk_count:1,
-                vertex_count:3,triangle_count:1,
-                original_uv0:true,original_normals:false},
-            positions:vec![[0.,0.,0.],[1.,0.,0.],[0.,1.,0.]],
-            indices:vec![0,1,2],uv0:Some(vec![[0.,0.],[1.,0.],[0.,1.]]),
-            normals:None,
+        let scene = crate::scene::parse_level_scene(&[("fixture", xml)]).unwrap();
+        let obj = &scene.objects[0];
+        let mesh = RenderMesh {
+            vertex_alpha: None,
+            info: ModelInfo {
+                format: "fixture".into(),
+                version: 1,
+                chunk_count: 1,
+                vertex_count: 3,
+                triangle_count: 1,
+                original_uv0: true,
+                original_normals: false,
+            },
+            positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+            indices: vec![0, 1, 2],
+            uv0: Some(vec![[0., 0.], [1., 0.], [0., 1.]]),
+            normals: None,
         };
-        let mut export=Assembler::new("fixture");
-        let a=export.add_mesh(&mesh).unwrap();
-        let b=export.add_mesh(&mesh).unwrap();
-        export.add_placement(obj,&[a,b]).unwrap();
-        assert_eq!(export.document["nodes"][0]["children"],json!([1]));
-        assert_eq!(export.document["nodes"][1]["translation"],json!([15.,25.,35.]));
-        assert_eq!(export.document["nodes"][1]["scale"],json!([2.,2.,2.]));
-        assert_eq!(export.document["nodes"][1]["children"],json!([2,3]));
+        let mut export = Assembler::new("fixture");
+        let a = export.add_mesh(&mesh).unwrap();
+        let b = export.add_mesh(&mesh).unwrap();
+        export.add_placement(obj, &[a, b]).unwrap();
+        assert_eq!(export.document["nodes"][0]["children"], json!([1]));
+        assert_eq!(
+            export.document["nodes"][1]["translation"],
+            json!([15., 25., 35.])
+        );
+        assert_eq!(export.document["nodes"][1]["scale"], json!([2., 2., 2.]));
+        assert_eq!(export.document["nodes"][1]["children"], json!([2, 3]));
         assert!(export.document["nodes"][2].get("translation").is_none());
         assert!(export.document["nodes"][3].get("translation").is_none());
     }
