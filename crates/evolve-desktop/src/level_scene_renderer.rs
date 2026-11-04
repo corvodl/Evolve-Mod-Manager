@@ -1450,17 +1450,16 @@ mod tests {
             population_model_aliases("Trapjaw_Tutorial"),
             vec!["trapjawtutorial", "trapjaw"]
         );
-        assert_eq!(
-            population_model_aliases("TyrantElite_Tutorial"),
-            vec!["tyrantelitetutorial", "tyrantelite", "tyrant"]
-        );
         let paths = [
             "characters/wildlife/trapjaw/trapjaw.skinm".to_owned(),
             "characters/wildlife/trapjaw/trapjaw.chrm".to_owned(),
         ];
-        let model =
-            select_wildlife_model(paths.iter(), &population_model_aliases("Trapjaw_Tutorial"))
-                .unwrap();
+        let model = select_wildlife_model(
+            paths.iter(),
+            &population_model_aliases("Trapjaw_Tutorial"),
+            false,
+        )
+        .unwrap();
         assert_eq!(
             model.as_deref(),
             Some("characters/wildlife/trapjaw/trapjaw.skinm")
@@ -1472,11 +1471,77 @@ mod tests {
         let model = select_wildlife_model(
             variant.iter(),
             &population_model_aliases("Trapjaw_Tutorial"),
+            false,
         )
         .unwrap();
         assert_eq!(
             model.as_deref(),
             Some("characters/wildlife/trapjaw/trapjaw_tutorial.skinm")
+        );
+    }
+
+    #[test]
+    fn elite_wildlife_never_falls_back_to_regular_visuals() {
+        assert_eq!(
+            population_model_aliases("TyrantElite_Tutorial"),
+            vec!["tyrantelitetutorial", "tyrantelite", "elitetyrant", "tyrant"]
+        );
+        assert_eq!(
+            population_model_aliases("EliteTyrant_Tutorial"),
+            vec!["elitetyranttutorial", "elitetyrant", "tyrantelite", "tyrant"]
+        );
+        // The final species alias is only valid inside a verified elite path.
+        let normal_only = ["characters/wildlife/tyrant/tyrant.skinm".to_owned()];
+        assert!(
+            select_wildlife_model(
+                normal_only.iter(),
+                &population_model_aliases("TyrantElite_Tutorial"),
+                true,
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        let variants = [
+            "characters/wildlife/tyrant/tyrant.skinm".to_owned(),
+            "characters/wildlife/tyrant/tyrantelite.skinm".to_owned(),
+        ];
+        assert_eq!(
+            select_wildlife_model(
+                variants.iter(),
+                &population_model_aliases("TyrantElite_Tutorial"),
+                true,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("characters/wildlife/tyrant/tyrantelite.skinm")
+        );
+        // Some source archives may put the elite version in its own directory
+        // while keeping the original species filename.
+        let elite_folder = [
+            "characters/wildlife/tyrant/tyrant.skinm".to_owned(),
+            "characters/wildlife/elite/tyrant.skinm".to_owned(),
+        ];
+        assert_eq!(
+            select_wildlife_model(
+                elite_folder.iter(),
+                &population_model_aliases("TyrantElite_Tutorial"),
+                true,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("characters/wildlife/elite/tyrant.skinm")
+        );
+        // Normal Tyrant must not be promoted to the elite variant either.
+        assert_eq!(
+            select_wildlife_model(
+                variants.iter(),
+                &population_model_aliases("Tyrant_Tutorial"),
+                false,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("characters/wildlife/tyrant/tyrant.skinm")
         );
     }
 
@@ -1487,13 +1552,21 @@ mod tests {
             "characters/other/trapjaw.skinm".to_owned(),
         ];
         assert!(
-            select_wildlife_model(paths.iter(), &population_model_aliases("Trapjaw_Tutorial"),)
-                .is_err()
+            select_wildlife_model(
+                paths.iter(),
+                &population_model_aliases("Trapjaw_Tutorial"),
+                false,
+            )
+            .is_err()
         );
         assert!(
-            select_wildlife_model(paths.iter(), &population_model_aliases("MammothBird"),)
-                .unwrap()
-                .is_none()
+            select_wildlife_model(
+                paths.iter(),
+                &population_model_aliases("MammothBird"),
+                false,
+            )
+            .unwrap()
+            .is_none()
         );
     }
 
