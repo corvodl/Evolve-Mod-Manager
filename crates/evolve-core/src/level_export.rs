@@ -883,6 +883,7 @@ impl Assembler {
         if offset.checked_add(mesh.indices.len()*4).is_none_or(|end|end>self.binary.len()) {
             return Err(LevelExportError::Limits);
         }
+        let info_offset=info["byteOffset"].as_u64().unwrap_or(0) as usize;
         let mut cursor=0usize;
         let mut prims=Vec::new();
         for (id,triangles) in groups {
@@ -893,7 +894,7 @@ impl Assembler {
             }
             let next=self.document["accessors"].as_array().ok_or(LevelExportError::Limits)?.len();
             self.document["accessors"].as_array_mut().ok_or(LevelExportError::Limits)?.push(json!({
-                "bufferView":view,"byteOffset":cursor*4,
+                "bufferView":view,"byteOffset":info_offset+cursor*4,
                 "componentType":5125,"type":"SCALAR","count":triangles.len()
             }));
             let mut p=base.clone();
@@ -1402,6 +1403,53 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn painted_terrain_retains_source_categorical_layer_face_groups() {
+        let mesh=RenderMesh {
+            vertex_alpha:None,
+            info:ModelInfo{
+                format:"terrain fixture".into(),version:1,chunk_count:1,
+                vertex_count:4,triangle_count:2,
+                original_uv0:true,original_normals:true
+            },
+            positions:vec![[0.,0.,0.],[1.,0.,0.],[0.,1.,0.],[1.,1.,0.]],
+            indices:vec![0,1,2,1,3,2],
+            uv0:Some(vec![[0.,0.],[1.,0.],[0.,1.],[1.,1.]]),
+            normals:Some(vec![[0.,0.,1.];4]),
+        };
+        let paint=TerrainPaintMap {
+            width:2,height:2,
+            layer_names:std::collections::BTreeMap::from([
+                (3,"Grass".into()),(7,"Rock".into())
+            ]),
+            layers:vec![
+                crate::terrain::TerrainLayerDefinition {
+                    id:3,name:"Grass".into(),surface_type:"Materials/Grass".into(),
+                    filter_color:None,brightness:None,tiling:None
+                },
+                crate::terrain::TerrainLayerDefinition {
+                    id:7,name:"Rock".into(),surface_type:"Materials/Rock".into(),
+                    filter_color:None,brightness:None,tiling:None
+                },
+            ],
+            surface_types:vec![],
+            ids:vec![3,3,7,7]
+        };
+        let mut result=Assembler::new("terrain");
+        let id=result.add_mesh(&mesh).unwrap();
+        result.painted_tile(id,&mesh,&paint,None).unwrap();
+        let primitives=result.document["meshes"][0]["primitives"].as_array().unwrap();
+        assert_eq!(primitives.len(),2);
+        assert_eq!(result.paint_materials.len(),2);
+        assert_eq!(primitives.iter().map(|p|{
+            result.document["accessors"][p["indices"].as_u64().unwrap() as usize]["count"]
+                .as_u64().unwrap()
+        }).sum::<u64>(),6);
+        assert_eq!(result.document["materials"][0]["extras"]
+            ["cryengine_terrain_paint"]["source_layer_id"],3);
+        assert_eq!(result.document["materials"][1]["extras"]
+            ["cryengine_terrain_paint"]["source_layer_id"],7);
+    }
     #[test]
     fn bc5_reconstruction_keeps_xy_and_restores_positive_z_for_blender() {
         let mut image=image::RgbaImage::from_pixel(2,1,image::Rgba([128,128,0,74]));
