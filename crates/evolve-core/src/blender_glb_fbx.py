@@ -15,6 +15,8 @@ from blender_material_ids import (material_records_from_glb, bind_original_mater
 from blender_fbx_safety import (prepare_export_materials, validate_blender_meshes,
                                optimize_binary_fbx, normal_image_names)
 from blender_static_fbx_basis import original_static_bounds, verify_static_world_bounds
+from blender_level_paint import (extract_original_layer_id_png,
+                                 layer_id_sidecar_path, publish_layer_id_sidecar)
 from blender_export_hierarchy import (original_part_labels, name_static_meshes,
                                       character_root, combine_source_meshes, clean_name)
 
@@ -52,6 +54,13 @@ def run():
             raise RuntimeError('Oversized scene metadata')
         doc = json.loads(glb_file.read(json_len))
     level_scene = doc.get('extras', {}).get('source') == 'CryEngine Stage 2 level'
+    original_paint_png = (extract_original_layer_id_png(source) if level_scene else None)
+    if original_paint_png is not None:
+        target = layer_id_sidecar_path(destination)
+        if target.exists() and (not target.is_file() or
+                                target.read_bytes() != original_paint_png):
+            raise RuntimeError('Terrain paint sidecar destination already exists: ' +
+                               str(target))
     if level_scene and combine_meshes:
         raise RuntimeError('Level FBX export must keep source placements separately movable')
     # Multi-part original CGFs already have a parent placement node in glTF.
@@ -215,6 +224,11 @@ def run():
             verify_original_material_ids(roundtrip, [source_material_ids])
             verify_material_uv_distributions(
                 source_material_uvs, source_material_uv_distributions(roundtrip))
+    # Original LayerId pixels are categorical, not reconstructed terrain
+    # colors. Blender FBX cannot preserve an unused glTF occlusion texture
+    # losslessly; keep the exact source bitmap as a deterministic sidecar.
+    if original_paint_png is not None:
+        publish_layer_id_sidecar(destination, original_paint_png)
     print(json.dumps({
         "fbx_optimization": optimized,
         "meshes": exported_mesh_count,
