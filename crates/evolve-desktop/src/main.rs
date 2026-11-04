@@ -2971,11 +2971,17 @@ fn refresh_wildlife_visibility(state: &mut State) {
     if let Some(scene) = &state.level_scene {
         for group in &mut filtered.groups {
             group.instances.retain(|instance| {
-                scene.objects.get(instance.object_index)
+                scene
+                    .objects
+                    .get(instance.object_index)
                     .is_none_or(|object| !object.is_wildlife_spawn())
             });
         }
-        filtered.instance_count = filtered.groups.iter().map(|group| group.instances.len()).sum();
+        filtered.instance_count = filtered
+            .groups
+            .iter()
+            .map(|group| group.instances.len())
+            .sum();
     }
     state.level_world = Some(Arc::new(filtered));
 }
@@ -7972,7 +7978,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LevelToggleWildlife => {
             state.level_show_wildlife = !state.level_show_wildlife;
             refresh_wildlife_visibility(state);
-        },
+        }
         Message::LevelSidebarTabSelected(tab) => state.level_sidebar_tab = tab,
         Message::LevelZoomChanged(value) => state.level_zoom = value.clamp(0.3, 3.0),
         Message::LevelTimeOfDayChanged(value) => {
