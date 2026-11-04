@@ -1201,11 +1201,11 @@ impl Assembler {
     /// Use the authored baked terrain color, never a synthetic 1x1 texture.
     /// An absent or undecodable terrain package leaves untextured geometry.
     fn add_terrain_color(
-        &mut self, rgba: image::RgbaImage, source_label: &str,
+        &mut self,
+        rgba: image::RgbaImage,
+        source_label: &str,
     ) -> Result<usize, LevelExportError> {
-        if rgba.width() == 0 || rgba.height() == 0
-            || rgba.width() > 4096 || rgba.height() > 4096
-        {
+        if rgba.width() == 0 || rgba.height() == 0 || rgba.width() > 4096 || rgba.height() > 4096 {
             return Err(LevelExportError::Limits);
         }
         let mut png = Vec::new();
@@ -1237,7 +1237,9 @@ impl Assembler {
             .as_array()
             .ok_or(LevelExportError::Limits)?
             .len();
-        self.document["images"].as_array_mut().ok_or(LevelExportError::Limits)?
+        self.document["images"]
+            .as_array_mut()
+            .ok_or(LevelExportError::Limits)?
             .push(json!({"name":source_label,"bufferView":view,"mimeType":"image/png"}));
         let tex = self.document["textures"]
             .as_array()
@@ -1651,7 +1653,14 @@ where
     R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
 {
     export_level_scene_glb_with_scene_color(
-        scene, sources, label, asset_root, terrain, None, destination, resolve,
+        scene,
+        sources,
+        label,
+        asset_root,
+        terrain,
+        None,
+        destination,
+        resolve,
     )
 }
 
@@ -1708,13 +1717,12 @@ where
         terrain_source_resolution = terrain_data.info.stride == 1;
         let color = if let Some(baked) = original_baked_color {
             Some(assembler.add_terrain_color(
-                baked.clone(), "Original map-owned baked terrain (verified Level Editor atlas)",
+                baked.clone(),
+                "Original map-owned baked terrain (verified Level Editor atlas)",
             )?)
         } else {
             original_terrain_color(source)
-                .map(|image| assembler.add_terrain_color(
-                    image, "Source baked TerrainTexture.pak",
-                ))
+                .map(|image| assembler.add_terrain_color(image, "Source baked TerrainTexture.pak"))
                 .transpose()?
         };
         for mesh in terrain_mesh_tiles(&terrain_data)? {
@@ -1872,21 +1880,24 @@ mod tests {
         let source = image::RgbaImage::from_fn(4, 4, |x, y| {
             image::Rgba([(x * 35) as u8, (y * 40) as u8, 83, 255])
         });
-        let material = exporter.add_terrain_color(
-            source.clone(),
-            "Original map-owned baked terrain (verified Level Editor atlas)",
-        ).unwrap();
+        let material = exporter
+            .add_terrain_color(
+                source.clone(),
+                "Original map-owned baked terrain (verified Level Editor atlas)",
+            )
+            .unwrap();
         assert_eq!(material, 0);
         assert_eq!(
             exporter.document["images"][0]["name"],
             "Original map-owned baked terrain (verified Level Editor atlas)"
         );
         assert_eq!(
-            exporter.document["materials"][material]["pbrMetallicRoughness"]
-                ["baseColorTexture"]["index"], 0
+            exporter.document["materials"][material]["pbrMetallicRoughness"]["baseColorTexture"]["index"],
+            0
         );
         let decoded = image::load_from_memory(&exporter.binary)
-            .unwrap().into_rgba8();
+            .unwrap()
+            .into_rgba8();
         assert_eq!(decoded.dimensions(), source.dimensions());
         assert_eq!(decoded.as_raw(), source.as_raw());
     }
