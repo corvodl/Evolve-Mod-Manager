@@ -1254,7 +1254,7 @@ impl Assembler {
         self.document["materials"].as_array_mut().ok_or(LevelExportError::Limits)?.push(json!({
             "name":"CryEngine baked terrain color",
             "pbrMetallicRoughness":{"baseColorTexture":{"index":tex},"metallicFactor":0.0,"roughnessFactor":1.0},
-            "extras":{"source":"TerrainTexture.pak","terrain_layers":"Not baked into the original atlas exporter"}
+            "extras":{"source":source_label,"terrain_layers":"Native detail shading not included in baked RGB export"}
         }));
         Ok(id)
     }
