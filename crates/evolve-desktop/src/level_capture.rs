@@ -75,6 +75,20 @@ fn capture_real_map_views() {
             group.mesh.info.format != "Wildlife spawn location marker (editor only)"
         });
         merged.groups.extend(wildlife.groups.iter().cloned());
+        if std::env::var_os("EVOLVE_CAPTURE_WILDLIFE_ONLY").is_some() {
+            // Diagnostic capture only: remove regular world meshes and
+            // vegetation so authored spawn models can be inspected unobscured.
+            let scene = map.scene.as_ref().unwrap();
+            merged.groups.retain(|group| {
+                group.instances.iter().any(|instance| {
+                    instance.object_index == usize::MAX
+                        || scene
+                            .objects
+                            .get(instance.object_index)
+                            .is_some_and(|object| object.is_wildlife_spawn())
+                })
+            });
+        }
         merged.wildlife_distances = wildlife.wildlife_distances;
         merged.wildlife_shapes = wildlife.wildlife_shapes.clone();
         merged.wildlife_links = wildlife.wildlife_links.clone();
