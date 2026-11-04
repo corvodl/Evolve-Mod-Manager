@@ -758,13 +758,15 @@ fn decode_scene_pair(
 /// path. Keep their true locations visible without pretending to resolve one.
 fn wildlife_marker_mesh() -> RenderMesh {
     let positions = vec![
-        [-1.0, 0.0, 0.0], [1.0, 0.0, 0.0],
-        [0.0, -1.0, 0.0], [0.0, 1.0, 0.0],
-        [0.0, 0.0, 3.0], [0.0, 0.0, -0.25],
+        [-1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 3.0],
+        [0.0, 0.0, -0.25],
     ];
     let indices = vec![
-        0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4,
-        2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5,
+        0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4, 2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5,
     ];
     RenderMesh {
         info: ModelInfo {
@@ -1128,7 +1130,10 @@ pub(super) fn assemble(
         }
         // Expose actual CreatureSpawn / ZooKeeperShape positions as bounded
         // read-only indicator geometry. No unrelated wildlife model is guessed.
-        let markers = scene.objects.iter().enumerate()
+        let markers = scene
+            .objects
+            .iter()
+            .enumerate()
             .filter(|(_, o)| !o.hidden && o.is_wildlife_spawn())
             .take(20000)
             .map(|(object_index, object)| world_instances::Instance {
