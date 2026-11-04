@@ -6,7 +6,7 @@ use crate::archive::safe_member_name;
 use crate::dds::decode_dds_rgba;
 use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::materials::{MaterialDocument, MaterialSlot, read_material};
-use crate::model::{ModelError, ModelInfo, RenderMesh, original_mesh_subsets, read_model};
+use crate::model::{ModelError, ModelInfo, RenderMesh, original_mesh_subsets, read_model, read_world_model_parts_with_subsets, WorldModelPart};
 use crate::scene::{LevelScene, SceneError, load_level_scene};
 use crate::terrain::{MAX_RENDER_GRID, TerrainError, TerrainMesh, read_terrain};
 use image::{DynamicImage, ImageFormat};
@@ -619,8 +619,8 @@ impl Assembler {
         material: Option<&MaterialDocument>,
         root: &Path,
     ) -> Result<usize, LevelExportError> {
-        self.add_textured_mesh_resolved(mesh, source_bytes, material, &mut |path| {
-            Ok(exact_geometry(root, path).ok())
+        self.add_textured_mesh_resolved(mesh,source_bytes,material,None,&mut |path| {
+            Ok(exact_geometry(root,path).ok())
         })
     }
     fn add_textured_mesh_resolved<R>(
@@ -628,6 +628,7 @@ impl Assembler {
         mesh: &RenderMesh,
         source_bytes: &[u8],
         material: Option<&MaterialDocument>,
+        original_ranges: Option<&[(u32,u32,u32)]>,
         resolve: &mut R,
     ) -> Result<usize, LevelExportError>
     where
@@ -643,8 +644,8 @@ impl Assembler {
             ids.push(self.source_material(slot, resolve)?);
         }
         let old = self.document["meshes"][id]["primitives"][0].clone();
-        let ranges = original_mesh_subsets(source_bytes, mesh.indices.len())
-            .ok()
+        let ranges = original_ranges.map(|ranges|ranges.to_vec())
+            .or_else(|| original_mesh_subsets(source_bytes, mesh.indices.len()).ok())
             .filter(|ranges| {
                 !ranges.is_empty()
                     && ranges
@@ -740,6 +741,37 @@ impl Assembler {
     /// glTF KHR_lights_punctual is supported by Blender's glTF importer.
     /// The raw CryEngine multiplier is kept in extras: glTF photometric
     /// intensity is not an assertion of native illumination parity.
+    /// A source CGF can contain multiple render meshes. The original actor
+    /// world transform belongs to one parent node, so moving one placement
+    /// does not transform a different instance of that model.
+    fn add_placement(
+        &mut self,object:&crate::scene::PlacedObject,meshes:&[usize],
+    ) -> Result<(),LevelExportError> {
+        let metadata=json!({"source_id":object.id,"layer":object.layer,
+            "type":object.kind,"parent_guid":object.parent,
+            "material_reference":object.material,"hidden":object.hidden});
+        if meshes.len()<=1 {
+            return self.add_node(&object.name,meshes.first().copied(),Some(object.world),metadata);
+        }
+        self.add_node(&object.name,None,Some(object.world),metadata)?;
+        let parent=self.document["nodes"].as_array().ok_or(LevelExportError::Limits)?.len()-1;
+        self.document["nodes"][parent]["children"]=json!([]);
+        for (i,mesh) in meshes.iter().copied().enumerate() {
+            self.add_node(
+                &format!("{} | Render part {}",object.name,i),
+                Some(mesh),None,
+                json!({"original_part":i,"source_id":object.id}),
+            )?;
+            let child=self.document["nodes"].as_array().ok_or(LevelExportError::Limits)?.len()-1;
+            let detached=self.document["nodes"][0]["children"]
+                .as_array_mut().ok_or(LevelExportError::Limits)?.pop();
+            if detached!=Some(json!(child)) {return Err(LevelExportError::Limits);}
+            self.document["nodes"][parent]["children"]
+                .as_array_mut().ok_or(LevelExportError::Limits)?.push(json!(child));
+        }
+        Ok(())
+    }
+
     /// Use the authored baked terrain color, never a synthetic 1x1 texture.
     /// An absent or undecodable terrain package leaves untextured geometry.
     fn add_terrain_color(&mut self, rgba: image::RgbaImage) -> Result<usize, LevelExportError> {
