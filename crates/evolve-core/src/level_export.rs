@@ -876,9 +876,11 @@ impl Assembler {
     /// Source LayerId is categorically distinct from SurfaceTypeID. This
     /// assigns original IDs to editable face material groups; it does NOT
     /// purport to replicate CryEngine's paint boundary blending.
-    fn paint_material(
-        &mut self,id:u8,paint:&TerrainPaintMap,baked:Option<usize>
-    )->Result<usize,LevelExportError> {
+    fn paint_material<R>(
+        &mut self,id:u8,paint:&TerrainPaintMap,baked:Option<usize>,resolve:&mut R
+    )->Result<usize,LevelExportError>
+    where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
+    {
         if let Some(&at)=self.paint_materials.get(&id) {return Ok(at);}
         let candidates=paint.layers.iter().filter(|l|l.id==id).collect::<Vec<_>>();
         let layer=(candidates.len()==1).then(||candidates[0]);
@@ -897,6 +899,60 @@ impl Assembler {
             "face_assignment":"original categorical LayerId sampled at triangle center",
             "native_height_and_detail_blending":"not reproduced"
         });
+        // Resolve only the authored Terrain.Layer MTL for this exact paint ID.
+        // The baked map remains the base RGB; detail images and parameters
+        // are preserved without assuming the game's high-pass blend equation.
+        let authored_path=layer
+            .map(|l|l.surface_type.trim().replace('\\',"/"))
+            .filter(|path|!path.is_empty())
+            .map(|path|if path.to_ascii_lowercase().ends_with(".mtl"){
+                path
+            }else{format!("{path}.mtl")});
+        value["extras"]["cryengine_terrain_paint"]["mtl_reference"]=json!(authored_path);
+        if let Some(path)=authored_path {
+            if let Some(source)=resolve(&path)? {
+                match read_material(&source) {
+                    Ok(mtl)=>{
+                        let slots=mtl.slots.iter().filter(|s|
+                            s.shader.eq_ignore_ascii_case("Terrain.Layer")
+                        ).collect::<Vec<_>>();
+                        value["extras"]["cryengine_terrain_paint"]["mtl_layer_slot_count"]=
+                            json!(slots.len());
+                        if slots.len()==1 {
+                            let slot=slots[0];
+                            value["extras"]["cryengine_terrain_paint"]["layer_params"]=
+                                json!(slot.layer_params);
+                            value["extras"]["cryengine_terrain_paint"]["detail_tiling"]=
+                                json!(slot.detail_tile);
+                            value["extras"]["cryengine_terrain_paint"]["shininess"]=
+                                json!(slot.shininess);
+                            value["extras"]["cryengine_terrain_paint"]["native_shader"]=
+                                json!(slot.shader);
+                            for map in &slot.maps {
+                                let normal=matches!(map.role.as_str(),
+                                    "normals"|"normal"|"bumpmap");
+                                if let Some(texture)=self.source_texture(resolve,&map.path,normal)?{
+                                    value["extras"]["cryengine_terrain_paint"]["source_maps"]
+                                        [map.role.as_str()]=json!({
+                                            "texture":texture,"source":map.path
+                                        });
+                                    if normal {
+                                        value["normalTexture"]=json!({"index":texture});
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(error)=>{
+                        value["extras"]["cryengine_terrain_paint"]["mtl_error"]=
+                            json!(error.to_string());
+                    }
+                }
+            } else {
+                value["extras"]["cryengine_terrain_paint"]["mtl_error"]=
+                    json!("Missing exact-build authored terrain MTL");
+            }
+        }
         let at=self.document["materials"].as_array().ok_or(LevelExportError::Limits)?.len();
         self.document["materials"].as_array_mut().ok_or(LevelExportError::Limits)?.push(value);
         self.paint_materials.insert(id,at);
@@ -907,7 +963,7 @@ impl Assembler {
     /// groups, without moving vertices, changing UV0, or adding guesswork.
     fn painted_tile(
         &mut self,mesh_id:usize,mesh:&RenderMesh,
-        paint:&TerrainPaintMap,baked:Option<usize>
+        paint:&TerrainPaintMap,baked:Option<usize>,resolve:&mut impl FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
     )->Result<(),LevelExportError> {
         let uv=mesh.uv0.as_ref().ok_or(LevelExportError::Limits)?;
         if paint.width<2 || paint.height<2 || uv.len()!=mesh.positions.len()
@@ -939,7 +995,7 @@ impl Assembler {
         let mut cursor=0usize;
         let mut prims=Vec::new();
         for (id,triangles) in groups {
-            let material=self.paint_material(id,paint,baked)?;
+            let material=self.paint_material(id,paint,baked,resolve)?;
             for (i,index) in triangles.iter().enumerate() {
                 let at=offset+(cursor+i)*4;
                 self.binary[at..at+4].copy_from_slice(&index.to_le_bytes());
@@ -1325,7 +1381,7 @@ where
         for mesh in terrain_mesh_tiles(&terrain_data)? {
             let index = assembler.add_mesh(&mesh)?;
             if let Some(paint)=paint.as_ref() {
-                assembler.painted_tile(index,&mesh,paint,color)?;
+                assembler.painted_tile(index,&mesh,paint,color,&mut resolve)?;
             } else if let Some(material) = color {
                 assembler.document["meshes"][index]["primitives"][0]["material"] = json!(material);
             }
