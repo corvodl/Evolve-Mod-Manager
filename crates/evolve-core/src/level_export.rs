@@ -876,20 +876,42 @@ fn original_terrain_color(source: &Path) -> Option<image::RgbaImage> {
 /// an exact extraction root and optional source Heightmap.dat. Every referenced
 /// render model must be present or the operation fails without creating a GLB.
 pub fn export_level_scene_glb(
-    placement: &Path,
-    asset_root: &Path,
-    terrain: Option<&Path>,
-    destination: &Path,
-) -> Result<LevelExportReport, LevelExportError> {
+    placement:&Path,asset_root:&Path,terrain:Option<&Path>,destination:&Path
+)->Result<LevelExportReport,LevelExportError> {
+    if !placement.is_file() || fs::symlink_metadata(placement)?.file_type().is_symlink() {
+        return Err(LevelExportError::Missing(
+            "Select original mission XML or LYR".into()
+        ));
+    }
+    let scene=load_level_scene(placement)?;
+    let bytes=fs::read(placement)?;
+    let sources=vec![(placement.file_name().unwrap_or_default().to_string_lossy().into_owned(),bytes)];
+    let label=placement.file_stem().and_then(|p|p.to_str()).unwrap_or("CryEngine Level");
+    let root=asset_root.canonicalize()?;
+    export_level_scene_glb_with_scene(
+        &scene,&sources,label,asset_root,terrain,destination,
+        |virtual_path|Ok(exact_geometry(&root,virtual_path).ok()),
+    )
+}
+
+/// Exports the exact multi-layer editor scene including its already-decoded
+/// VegetationMap.dat placements. `resolve` must use verified same-install
+/// asset-library paths; no project-wide basename fallback is allowed.
+pub fn export_level_scene_glb_with_scene<R>(
+    scene:&LevelScene,
+    sources:&[(String,Vec<u8>)],
+    label:&str,
+    asset_root:&Path,
+    terrain:Option<&Path>,
+    destination:&Path,
+    mut resolve:R,
+)->Result<LevelExportReport,LevelExportError>
+where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
+{
     let root = asset_root.canonicalize()?;
     if !root.is_dir() || fs::symlink_metadata(asset_root)?.file_type().is_symlink() {
         return Err(LevelExportError::Missing(
             "Select an actual extracted asset folder".into(),
-        ));
-    }
-    if !placement.is_file() || fs::symlink_metadata(placement)?.file_type().is_symlink() {
-        return Err(LevelExportError::Missing(
-            "Select original mission XML or LYR".into(),
         ));
     }
     if destination.extension().and_then(|e| e.to_str()) != Some("glb")
@@ -901,14 +923,15 @@ pub fn export_level_scene_glb(
     if !parent.is_dir() || fs::symlink_metadata(parent)?.file_type().is_symlink() {
         return Err(LevelExportError::Exists);
     }
-    let scene: LevelScene = load_level_scene(placement)?;
-    let lights = authored_lights(&fs::read(placement)?, &scene)?;
-    let mut assembler = Assembler::new(
-        placement
-            .file_stem()
-            .and_then(|v| v.to_str())
-            .unwrap_or("CryEngine Level"),
-    );
+    let mut source_lights=Vec::new();
+    for (_,bytes) in sources {
+        source_lights.extend(authored_lights(bytes,scene)?);
+    }
+    let mut used=std::collections::HashSet::new();
+    let lights=source_lights.into_iter()
+        .filter(|light|used.insert(light.id.to_ascii_lowercase()))
+        .collect::<Vec<_>>();
+    let mut assembler=Assembler::new(label);
     let mut resources = HashMap::<(String, String), usize>::new();
     let mut geometry_instances = 0usize;
     let mut metadata_only = 0usize;
@@ -945,9 +968,31 @@ pub fn export_level_scene_glb(
             if let Some(id) = resources.get(&key) {
                 Some(*id)
             } else {
-                let path = exact_geometry(&root, &object.model)?;
-                let mesh = read_model(&path)?;
-                let bytes = fs::read(&path)?;
+                // Exact authored source first, then its exact compiled partner;
+                // a similarly named asset elsewhere is never considered.
+                let name=&object.model;
+                let mut candidates=vec![name.clone()];
+                let ext=Path::new(name).extension().and_then(|x|x.to_str())
+                    .unwrap_or_default().to_ascii_lowercase();
+                if matches!(ext.as_str(),"cgf"|"cga"|"chr"|"skin") {
+                    let compiled=Path::new(name).with_extension(format!("{ext}m"))
+                        .to_string_lossy().to_string();
+                    candidates.push(compiled);
+                }
+                let mut loaded=None;
+                let mut errors=Vec::new();
+                for candidate in candidates {
+                    if let Some(path)=resolve(&candidate)? {
+                        match read_model(&path) {
+                            Ok(mesh)=>{loaded=Some((mesh,path));break;},
+                            Err(error)=>errors.push(format!("{candidate}: {error}")),
+                        }
+                    }
+                }
+                let (mesh,path)=loaded.ok_or_else(||LevelExportError::Missing(
+                    format!("{}: {}",object.model,errors.join("; "))
+                ))?;
+                let bytes=fs::read(&path)?;
                 let virtual_material = if object.material.trim().is_empty() {
                     let stem = object
                         .model
@@ -959,10 +1004,11 @@ pub fn export_level_scene_glb(
                 } else {
                     format!("{}.mtl", object.material)
                 };
-                let authored = exact_geometry(&root, &virtual_material)
-                    .ok()
-                    .and_then(|mtl| read_material(&mtl).ok());
-                let id = assembler.add_textured_mesh(&mesh, &bytes, authored.as_ref(), &root)?;
+                let authored=resolve(&virtual_material)?
+                    .and_then(|mtl|read_material(&mtl).ok());
+                let id=assembler.add_textured_mesh_resolved(
+                    &mesh,&bytes,authored.as_ref(),&mut resolve
+                )?;
                 resources.insert(key, id);
                 Some(id)
             }
@@ -1002,24 +1048,7 @@ pub fn export_level_scene_glb(
         } else {
             LevelExportError::Io(e.error)
         }
-    })?;
-    Ok(LevelExportReport {
-        source_objects: scene.objects.len(),
-        exported_mesh_resources: resources.len() + terrain_tiles,
-        exported_mesh_instances: geometry_instances,
-        metadata_only_objects: metadata_only,
-        included_terrain: terrain.is_some(),
-        exported_lights: lights.len(),
-        terrain_tiles,
-        terrain_source_resolution,
-        output_bytes: bytes.len(),
-        original_geometry_only: authored_material_slots == 0,
-        authored_material_slots,
-        embedded_textures,
-        missing_material_sets,
-        missing_texture_references,
-    })
-}
+
 #[cfg(test)]
 mod tests {
     use super::*;
