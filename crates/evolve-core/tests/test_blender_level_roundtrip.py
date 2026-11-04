@@ -10,12 +10,16 @@ from blender_level_roundtrip import (
 )
 
 
+class Translation:
+    def __init__(self, x, y, z):
+        self.x, self.y, self.z = x, y, z
+    def __iter__(self):
+        return iter((self.x, self.y, self.z))
+
+
 class Matrix:
     def __init__(self,x=0,y=0,z=0):
-        self.translation=type("Translation",(),{})()
-        self.translation.x=x
-        self.translation.y=y
-        self.translation.z=z
+        self.translation=Translation(x,y,z)
     def __matmul__(self,vertex):
         return (vertex[0]+self.translation.x,
                 vertex[1]+self.translation.y,
