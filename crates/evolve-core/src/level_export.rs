@@ -8,7 +8,7 @@ use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::materials::{MaterialDocument, MaterialSlot, read_material};
 use crate::model::{ModelError, ModelInfo, RenderMesh, original_mesh_subsets, read_model, read_world_model_parts_with_subsets, WorldModelPart};
 use crate::scene::{LevelScene, SceneError, load_level_scene};
-use crate::terrain::{MAX_RENDER_GRID, TerrainError, TerrainMesh, read_terrain};
+use crate::terrain::{MAX_RENDER_GRID, TerrainError, TerrainMesh, TerrainPaintMap, read_terrain, read_terrain_paint};
 use image::{DynamicImage, ImageFormat};
 use quick_xml::{
     Reader,
@@ -16,7 +16,7 @@ use quick_xml::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{self, Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -62,6 +62,9 @@ pub struct LevelExportReport {
     /// Number of separately selectable terrain tile meshes.
     #[serde(default)]
     pub terrain_tiles: usize,
+    /// Authored categorical paint LayerIds represented as selectable materials.
+    #[serde(default)]
+    pub terrain_painted_layer_ids: usize,
     /// Full source sample fidelity; false when the terrain decoder had to stride.
     #[serde(default)]
     pub terrain_source_resolution: bool,
@@ -349,6 +352,7 @@ struct Assembler {
     missing_material_sets: usize,
     missing_texture_references: usize,
     lights: usize,
+    paint_materials: HashMap<u8,usize>,
 }
 impl Assembler {
     fn new(label: &str) -> Self {
@@ -375,6 +379,7 @@ impl Assembler {
             missing_material_sets: 0,
             missing_texture_references: 0,
             lights: 0,
+            paint_materials: HashMap::new(),
         }
     }
     fn add_mesh(&mut self, mesh: &RenderMesh) -> Result<usize, LevelExportError> {
@@ -816,6 +821,91 @@ impl Assembler {
         Ok(())
     }
 
+    /// Source LayerId is categorically distinct from SurfaceTypeID. This
+    /// assigns original IDs to editable face material groups; it does NOT
+    /// purport to replicate CryEngine's paint boundary blending.
+    fn paint_material(
+        &mut self,id:u8,paint:&TerrainPaintMap,baked:Option<usize>
+    )->Result<usize,LevelExportError> {
+        if let Some(&at)=self.paint_materials.get(&id) {return Ok(at);}
+        let candidates=paint.layers.iter().filter(|l|l.id==id).collect::<Vec<_>>();
+        let layer=(candidates.len()==1).then(||candidates[0]);
+        let mut value=baked.map(|at|self.document["materials"][at].clone())
+            .unwrap_or_else(||json!({"pbrMetallicRoughness":{"metallicFactor":0.,"roughnessFactor":1.}}));
+        value["name"]=json!(format!("Terrain LayerId {id} - {}",
+            layer.map_or("unresolved",|l|l.name.as_str())));
+        value["extras"]["cryengine_terrain_paint"]=json!({
+            "source_layer_id":id,
+            "authored_bindings":candidates.len(),
+            "layer":layer.map(|l|json!({
+                "name":l.name,"surface_type":l.surface_type,
+                "filter_color":l.filter_color,"brightness":l.brightness,
+                "tiling":l.tiling
+            })),
+            "face_assignment":"original categorical LayerId sampled at triangle center",
+            "native_height_and_detail_blending":"not reproduced"
+        });
+        let at=self.document["materials"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["materials"].as_array_mut().ok_or(LevelExportError::Limits)?.push(value);
+        self.paint_materials.insert(id,at);
+        Ok(at)
+    }
+
+    /// Reorder this tile's index buffer into categorical paint-material face
+    /// groups, without moving vertices, changing UV0, or adding guesswork.
+    fn painted_tile(
+        &mut self,mesh_id:usize,mesh:&RenderMesh,
+        paint:&TerrainPaintMap,baked:Option<usize>
+    )->Result<(),LevelExportError> {
+        let uv=mesh.uv0.as_ref().ok_or(LevelExportError::Limits)?;
+        if paint.width<2 || paint.height<2 || uv.len()!=mesh.positions.len()
+            || mesh.indices.len()%3!=0 {return Err(LevelExportError::Limits);}
+        let mut groups=BTreeMap::<u8,Vec<u32>>::new();
+        for tri in mesh.indices.chunks_exact(3) {
+            let mut center=[0f32;2];
+            for &vertex in tri {
+                let point=uv.get(vertex as usize).ok_or(LevelExportError::Limits)?;
+                center[0]+=point[0]/3.; center[1]+=point[1]/3.;
+            }
+            let x=(center[0].clamp(0.,1.)*(paint.width-1) as f32).round() as u32;
+            let y=(center[1].clamp(0.,1.)*(paint.height-1) as f32).round() as u32;
+            let id=paint.id_at(x,y).ok_or(LevelExportError::Limits)?;
+            groups.entry(id).or_default().extend_from_slice(tri);
+        }
+        let base=self.document["meshes"][mesh_id]["primitives"][0].clone();
+        let accessor=base["indices"].as_u64().ok_or(LevelExportError::Limits)? as usize;
+        let info=&self.document["accessors"][accessor];
+        if info["componentType"]!=5125 {return Err(LevelExportError::Limits);}
+        let view=info["bufferView"].as_u64().ok_or(LevelExportError::Limits)? as usize;
+        let offset=self.document["bufferViews"][view]["byteOffset"].as_u64()
+            .and_then(|at|at.checked_add(info["byteOffset"].as_u64().unwrap_or(0)))
+            .ok_or(LevelExportError::Limits)? as usize;
+        if offset.checked_add(mesh.indices.len()*4).is_none_or(|end|end>self.binary.len()) {
+            return Err(LevelExportError::Limits);
+        }
+        let mut cursor=0usize;
+        let mut prims=Vec::new();
+        for (id,triangles) in groups {
+            let material=self.paint_material(id,paint,baked)?;
+            for (i,index) in triangles.iter().enumerate() {
+                let at=offset+(cursor+i)*4;
+                self.binary[at..at+4].copy_from_slice(&index.to_le_bytes());
+            }
+            let next=self.document["accessors"].as_array().ok_or(LevelExportError::Limits)?.len();
+            self.document["accessors"].as_array_mut().ok_or(LevelExportError::Limits)?.push(json!({
+                "bufferView":view,"byteOffset":cursor*4,
+                "componentType":5125,"type":"SCALAR","count":triangles.len()
+            }));
+            let mut p=base.clone();
+            p["indices"]=json!(next);
+            p["material"]=json!(material);
+            prims.push(p);
+            cursor+=triangles.len();
+        }
+        self.document["meshes"][mesh_id]["primitives"]=json!(prims);
+        Ok(())
+    }
+
     /// Use the authored baked terrain color, never a synthetic 1x1 texture.
     /// An absent or undecodable terrain package leaves untextured geometry.
     fn add_terrain_color(&mut self, rgba: image::RgbaImage) -> Result<usize, LevelExportError> {
@@ -1174,13 +1264,16 @@ where
     let mut terrain_source_resolution = true;
     if let Some(source) = terrain {
         let terrain_data = read_terrain(source, MAX_RENDER_GRID)?;
+        let paint=read_terrain_paint(source)?;
         terrain_source_resolution = terrain_data.info.stride == 1;
         let color = original_terrain_color(source)
             .map(|image| assembler.add_terrain_color(image))
             .transpose()?;
         for mesh in terrain_mesh_tiles(&terrain_data)? {
             let index = assembler.add_mesh(&mesh)?;
-            if let Some(material) = color {
+            if let Some(paint)=paint.as_ref() {
+                assembler.painted_tile(index,&mesh,paint,color)?;
+            } else if let Some(material) = color {
                 assembler.document["meshes"][index]["primitives"][0]["material"] = json!(material);
             }
             assembler.add_node(
@@ -1268,6 +1361,7 @@ where
         assembler.add_light(light)?;
     }
     let assembler_mesh_count=assembler.meshes;
+    let terrain_painted_layer_ids=assembler.paint_materials.len();
     let authored_material_slots = assembler.document["materials"]
         .as_array()
         .map_or(0, Vec::len);
@@ -1295,6 +1389,7 @@ where
         included_terrain: terrain.is_some(),
         exported_lights: lights.len(),
         terrain_tiles,
+        terrain_painted_layer_ids,
         terrain_source_resolution,
         output_bytes: bytes.len(),
         original_geometry_only: authored_material_slots == 0,
