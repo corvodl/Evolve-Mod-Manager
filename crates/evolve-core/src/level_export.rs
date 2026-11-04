@@ -1200,7 +1200,14 @@ impl Assembler {
 
     /// Use the authored baked terrain color, never a synthetic 1x1 texture.
     /// An absent or undecodable terrain package leaves untextured geometry.
-    fn add_terrain_color(&mut self, rgba: image::RgbaImage) -> Result<usize, LevelExportError> {
+    fn add_terrain_color(
+        &mut self, rgba: image::RgbaImage, source_label: &str,
+    ) -> Result<usize, LevelExportError> {
+        if rgba.width() == 0 || rgba.height() == 0
+            || rgba.width() > 4096 || rgba.height() > 4096
+        {
+            return Err(LevelExportError::Limits);
+        }
         let mut png = Vec::new();
         DynamicImage::ImageRgba8(rgba)
             .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
@@ -1231,7 +1238,7 @@ impl Assembler {
             .ok_or(LevelExportError::Limits)?
             .len();
         self.document["images"].as_array_mut().ok_or(LevelExportError::Limits)?
-            .push(json!({"name":"Source baked TerrainTexture.pak","bufferView":view,"mimeType":"image/png"}));
+            .push(json!({"name":source_label,"bufferView":view,"mimeType":"image/png"}));
         let tex = self.document["textures"]
             .as_array()
             .ok_or(LevelExportError::Limits)?
@@ -1638,6 +1645,28 @@ pub fn export_level_scene_glb_with_scene<R>(
     asset_root: &Path,
     terrain: Option<&Path>,
     destination: &Path,
+    resolve: R,
+) -> Result<LevelExportReport, LevelExportError>
+where
+    R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
+{
+    export_level_scene_glb_with_scene_color(
+        scene, sources, label, asset_root, terrain, None, destination, resolve,
+    )
+}
+
+/// Export the exact, already-verified baked terrain image that the currently
+/// opened Level Editor displays. This supports same-map RGB24 tile atlases
+/// (which are not a raw TerrainTexture.pak file) without guessing paths or
+/// converting original game archives. No lighting/detail preview is baked in.
+pub fn export_level_scene_glb_with_scene_color<R>(
+    scene: &LevelScene,
+    sources: &[(String, Vec<u8>)],
+    label: &str,
+    asset_root: &Path,
+    terrain: Option<&Path>,
+    original_baked_color: Option<&image::RgbaImage>,
+    destination: &Path,
     mut resolve: R,
 ) -> Result<LevelExportReport, LevelExportError>
 where
@@ -1677,9 +1706,17 @@ where
         let terrain_data = read_terrain(source, MAX_RENDER_GRID)?;
         let paint = read_terrain_paint(source)?;
         terrain_source_resolution = terrain_data.info.stride == 1;
-        let color = original_terrain_color(source)
-            .map(|image| assembler.add_terrain_color(image))
-            .transpose()?;
+        let color = if let Some(baked) = original_baked_color {
+            Some(assembler.add_terrain_color(
+                baked.clone(), "Original map-owned baked terrain (verified Level Editor atlas)",
+            )?)
+        } else {
+            original_terrain_color(source)
+                .map(|image| assembler.add_terrain_color(
+                    image, "Source baked TerrainTexture.pak",
+                ))
+                .transpose()?
+        };
         for mesh in terrain_mesh_tiles(&terrain_data)? {
             let index = assembler.add_mesh(&mesh)?;
             if let Some(paint) = paint.as_ref() {
