@@ -1264,6 +1264,32 @@ where
 mod tests {
     use super::*;
     #[test]
+    fn multi_part_actor_has_one_movable_transform_parent() {
+        let xml=br#"<Objects><Object Id="actor-a" Name="Tree"
+            Pos="15,25,35" Scale="2,2,2"/></Objects>"#;
+        let scene=crate::scene::parse_level_scene(&[("fixture",xml)]).unwrap();
+        let obj=&scene.objects[0];
+        let mesh=RenderMesh {
+            vertex_alpha:None,
+            info:ModelInfo{format:"fixture".into(),version:1,chunk_count:1,
+                vertex_count:3,triangle_count:1,
+                original_uv0:true,original_normals:false},
+            positions:vec![[0.,0.,0.],[1.,0.,0.],[0.,1.,0.]],
+            indices:vec![0,1,2],uv0:Some(vec![[0.,0.],[1.,0.],[0.,1.]]),
+            normals:None,
+        };
+        let mut export=Assembler::new("fixture");
+        let a=export.add_mesh(&mesh).unwrap();
+        let b=export.add_mesh(&mesh).unwrap();
+        export.add_placement(obj,&[a,b]).unwrap();
+        assert_eq!(export.document["nodes"][0]["children"],json!([1]));
+        assert_eq!(export.document["nodes"][1]["translation"],json!([15.,25.,35.]));
+        assert_eq!(export.document["nodes"][1]["scale"],json!([2.,2.,2.]));
+        assert_eq!(export.document["nodes"][1]["children"],json!([2,3]));
+        assert!(export.document["nodes"][2].get("translation").is_none());
+        assert!(export.document["nodes"][3].get("translation").is_none());
+    }
+    #[test]
     fn full_grid_terrain_is_split_without_changing_original_uvs() {
         let w = 260usize;
         let h = 260usize;
