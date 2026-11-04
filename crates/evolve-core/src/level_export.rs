@@ -1308,6 +1308,20 @@ where
 mod tests {
     use super::*;
     #[test]
+    fn bc5_reconstruction_keeps_xy_and_restores_positive_z_for_blender() {
+        let mut image=image::RgbaImage::from_pixel(2,1,image::Rgba([128,128,0,74]));
+        image.put_pixel(1,0,image::Rgba([255,128,0,9]));
+        reconstruct_bc5_normal(&mut image);
+        let center=image.get_pixel(0,0);
+        assert_eq!(center[0],128);
+        assert_eq!(center[1],128);
+        assert_eq!(center[2],255);
+        assert_eq!(center[3],255);
+        let edge=image.get_pixel(1,0);
+        assert_eq!(edge[0],255);
+        assert!(edge[2]>=124 && edge[2]<=130);
+    }
+    #[test]
     fn multi_part_actor_has_one_movable_transform_parent() {
         let xml=br#"<Objects><Object Id="actor-a" Name="Tree"
             Pos="15,25,35" Scale="2,2,2"/></Objects>"#;
