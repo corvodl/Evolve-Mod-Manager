@@ -102,6 +102,23 @@ def shaded_sample(normals=None, tangents=None, binormals=None, compressed=False)
 
 
 class FBXSafetyTests(unittest.TestCase):
+    def test_untextured_source_mesh_without_uv_is_allowed_only_explicitly(self):
+        version, roots, footer = _read_nodes(sample())
+        objects = next(n for n in roots if n.name == b"Objects")
+        geometry = objects.children_named(b"Geometry")[0]
+        geometry.children = [child for child in geometry.children
+                             if child.name != b"LayerElementUV"]
+        with self.assertRaisesRegex(FBXValidationError, "missing UV layers"):
+            _validate_geometry(objects)
+        self.assertEqual(_validate_geometry(objects, allow_uvless=True), 1)
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "source_helper.fbx"
+            path.write_bytes(_write_nodes(version, roots, footer))
+            optimize_binary_fbx(path, embed_textures=True, allow_uvless=True)
+            exported = next(n for n in _read_nodes(path.read_bytes())[1]
+                            if n.name == b"Objects")
+            self.assertEqual(_validate_geometry(exported, allow_uvless=True), 1)
+
     def test_sparse_cluster_and_identical_pose_optimization(self):
         with tempfile.TemporaryDirectory() as folder:
             path = pathlib.Path(folder)/"test.fbx"
