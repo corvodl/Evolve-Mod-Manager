@@ -12057,10 +12057,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 (None, None, Vec::new())
             };
             let original_baked_color = if same_loaded_scene {
-                state.level_world_source.as_ref()
+                state
+                    .level_world_source
+                    .as_ref()
                     .and_then(|world| world.groups.first())
-                    .filter(|group| group.instances.first()
-                        .is_some_and(|item| item.object_index == usize::MAX))
+                    .filter(|group| {
+                        group
+                            .instances
+                            .first()
+                            .is_some_and(|item| item.object_index == usize::MAX)
+                    })
                     .and_then(|group| group.surfaces.first())
                     .and_then(|surface| surface.diffuse.clone())
             } else {
