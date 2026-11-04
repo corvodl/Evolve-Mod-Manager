@@ -193,13 +193,15 @@ pub(super) fn population_model_aliases(population: &str) -> Vec<String> {
         }
     }
     if is_elite_population(source) {
-        // Both TyrantElite and EliteTyrant are legitimate naming variants.
-        // A bare species stem is allowed only if its *asset path* contains
-        // an elite designation, enforced by select_wildlife_model.
+        // Evolve's Elite wildlife may be authored as Albino instead of Elite.
+        // Both prefixes and suffixes are recognized; plain species stems are
+        // usable only in a separately labeled elite/albino asset directory.
         let species = name.replace("elite", "").trim_matches('_').to_owned();
         if !species.is_empty() {
             append_population_alias(&mut aliases, &format!("{species}_elite"));
             append_population_alias(&mut aliases, &format!("elite_{species}"));
+            append_population_alias(&mut aliases, &format!("{species}_albino"));
+            append_population_alias(&mut aliases, &format!("albino_{species}"));
             append_population_alias(&mut aliases, &species);
         }
     }
@@ -222,11 +224,13 @@ fn wildlife_render_rank(path: &str) -> Option<usize> {
 /// Do not arbitrarily select the first Trapjaw-looking file. If the best
 /// matching alias has several distinct model locations, show a marker only.
 fn elite_asset_path(path: &str) -> bool {
-    // Character authors may use TyrantElite.skinm or Elite/Tyrant.skinm.
-    // Both provide explicit elite provenance; a bare Tyrant.skinm does not.
-    path.replace('\\', "/")
-        .split('/')
-        .any(|segment| segment.to_ascii_lowercase().contains("elite"))
+    // Character authors may use TyrantElite.skinm, TyrantAlbino.skinm,
+    // Elite/Tyrant.skinm, or Albino/Tyrant.skinm. A bare Tyrant.skinm
+    // has no evidence of an elite appearance.
+    path.replace('\\', "/").split('/').any(|segment| {
+        let segment = segment.to_ascii_lowercase();
+        segment.contains("elite") || segment.contains("albino")
+    })
 }
 
 fn select_wildlife_model<'a>(
@@ -1484,11 +1488,25 @@ mod tests {
     fn elite_wildlife_never_falls_back_to_regular_visuals() {
         assert_eq!(
             population_model_aliases("TyrantElite_Tutorial"),
-            vec!["tyrantelitetutorial", "tyrantelite", "elitetyrant", "tyrant"]
+            vec![
+                "tyrantelitetutorial",
+                "tyrantelite",
+                "elitetyrant",
+                "tyrantalbino",
+                "albinotyrant",
+                "tyrant"
+            ]
         );
         assert_eq!(
             population_model_aliases("EliteTyrant_Tutorial"),
-            vec!["elitetyranttutorial", "elitetyrant", "tyrantelite", "tyrant"]
+            vec![
+                "elitetyranttutorial",
+                "elitetyrant",
+                "tyrantelite",
+                "tyrantalbino",
+                "albinotyrant",
+                "tyrant"
+            ]
         );
         // The final species alias is only valid inside a verified elite path.
         let normal_only = ["characters/wildlife/tyrant/tyrant.skinm".to_owned()];
@@ -1515,6 +1533,30 @@ mod tests {
             .unwrap()
             .as_deref(),
             Some("characters/wildlife/tyrant/tyrantelite.skinm")
+        );
+        let albino_variant = [
+            "characters/wildlife/tyrant/tyrant.skinm".to_owned(),
+            "characters/wildlife/tyrant/tyrant_albino.skinm".to_owned(),
+        ];
+        assert_eq!(
+            select_wildlife_model(
+                albino_variant.iter(),
+                &population_model_aliases("TyrantElite_Tutorial"),
+                true,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("characters/wildlife/tyrant/tyrant_albino.skinm")
+        );
+        // The regular population must never select the Albino skin.
+        assert!(
+            select_wildlife_model(
+                albino_variant.iter().skip(1),
+                &population_model_aliases("Tyrant_Tutorial"),
+                false,
+            )
+            .unwrap()
+            .is_none()
         );
         // Some source archives may put the elite version in its own directory
         // while keeping the original species filename.
