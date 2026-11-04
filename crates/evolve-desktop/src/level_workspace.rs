@@ -62,6 +62,7 @@ struct SceneOverview {
     scene: Arc<LevelScene>,
     selected_indices: std::collections::HashSet<usize>,
     zoom: f32,
+    show_wildlife: bool,
 }
 impl SceneOverview {
     fn extents(&self) -> ([f32; 2], f32) {
@@ -127,8 +128,45 @@ impl canvas::Program<Message> for SceneOverview {
         let (center, extent) = self.extents();
         let step = self.scene.objects.len().div_ceil(12000).max(1);
         for (index, obj) in self.scene.objects.iter().enumerate().step_by(step) {
-            if obj.hidden {
+            if obj.hidden || (obj.is_wildlife_spawn() && !self.show_wildlife) {
                 continue;
+            }
+            // Area outlines are authored local-space polygons. Rotate by the
+            // placement's world quaternion rather than displaying an invented
+            // axis-aligned rectangle.
+            if obj.kind.eq_ignore_ascii_case("ZooKeeperShape") && obj.shape_points.len() >= 2 {
+                let q = obj.world.quaternion;
+                let mut vertices = Vec::with_capacity(obj.shape_points.len());
+                for vertex in &obj.shape_points {
+                    let v = [
+                        vertex[0] * obj.world.scale[0],
+                        vertex[1] * obj.world.scale[1],
+                        vertex[2] * obj.world.scale[2],
+                    ];
+                    let u = [q[1], q[2], q[3]];
+                    let cross = [
+                        u[1]*v[2]-u[2]*v[1],
+                        u[2]*v[0]-u[0]*v[2],
+                        u[0]*v[1]-u[1]*v[0],
+                    ];
+                    let dot = u[0]*v[0]+u[1]*v[1]+u[2]*v[2];
+                    let factor = q[0]*q[0]-u[0]*u[0]-u[1]*u[1]-u[2]*u[2];
+                    let rotated = [
+                        factor*v[0]+2.0*dot*u[0]+2.0*q[0]*cross[0],
+                        factor*v[1]+2.0*dot*u[1]+2.0*q[0]*cross[1],
+                    ];
+                    vertices.push(self.point(
+                        [obj.world.position[0]+rotated[0],obj.world.position[1]+rotated[1],0.0],
+                        bounds,center,extent
+                    ));
+                }
+                let path = Path::new(|builder| {
+                    builder.move_to(vertices[0]);
+                    for vertex in vertices.iter().skip(1) { builder.line_to(*vertex); }
+                    builder.close();
+                });
+                frame.stroke(&path, Stroke::default().with_width(1.5)
+                    .with_color(Color::from_rgb(0.95,0.70,0.16)));
             }
             let point = self.point(obj.world.position, bounds, center, extent);
             if point.x < -10.0
@@ -144,6 +182,8 @@ impl canvas::Program<Message> for SceneOverview {
                 &dot,
                 if selected {
                     Color::from_rgb(0.96, 0.24, 0.33)
+                } else if obj.is_wildlife_spawn() {
+                    Color::from_rgb(0.95, 0.70, 0.16)
                 } else {
                     Color::from_rgb(0.68, 0.75, 0.83)
                 },
@@ -170,7 +210,7 @@ impl canvas::Program<Message> for SceneOverview {
         let mut distance = f32::INFINITY;
         let (center, extent) = self.extents();
         for (index, obj) in self.scene.objects.iter().enumerate().take(50_000) {
-            if obj.hidden {
+            if obj.hidden || (obj.is_wildlife_spawn() && !self.show_wildlife) {
                 continue;
             }
             let world = self.point(obj.world.position, bounds, center, extent);
@@ -264,6 +304,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let mut outliner = column![].spacing(2);
     let query = state.level_filter.to_ascii_lowercase();
     let mut visible = 0usize;
+    let wildlife_count = scene.objects.iter().filter(|obj| obj.is_wildlife_spawn()).count();
     for (index, obj) in scene.objects.iter().enumerate() {
         if !query.is_empty()
             && !obj.name.to_ascii_lowercase().contains(&query)
@@ -274,7 +315,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         }
         if visible < 180 {
             outliner = outliner.push(
-                button(text(format!("{}  /  {}", obj.layer, obj.name)).size(12))
+                button(text(if obj.kind.eq_ignore_ascii_case("CreatureSpawn") {
+                    format!("Wildlife · {} / {} [{}]", obj.layer, obj.name,
+                        if obj.populations.is_empty() { "unknown".to_owned() }
+                        else { obj.populations.join(", ") })
+                } else if obj.kind.eq_ignore_ascii_case("ZooKeeperShape") {
+                    format!("Spawn area · {} / {}", obj.layer, obj.name)
+                } else {
+                    format!("{}  /  {}", obj.layer, obj.name)
+                }).size(12))
                     .width(Fill)
                     .padding([7, 9])
                     .style(if state.level_selection.indices.contains(&index) {
@@ -297,7 +346,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text(format!("Position: {:?}", object.world.position)).size(12),
             text(format!("Rotation (wxyz): {:?}", object.world.quaternion)).size(12),
             text(format!("Scale: {:?}", object.world.scale)).size(12),
-            text(format!("Model: {}", object.model)).size(12),
+            text(format!("Model: {}", if object.model.is_empty() && object.is_wildlife_spawn() {
+                "Unresolved source population (marker only)"
+            } else { &object.model })).size(12),
+            text(if object.kind.eq_ignore_ascii_case("CreatureSpawn") {
+                format!("Populations: {} · Home area: {}",
+                    object.populations.join(", "), object.home_area)
+            } else if object.kind.eq_ignore_ascii_case("ZooKeeperShape") {
+                format!("Spawn region · {} authored polygon points", object.shape_points.len())
+            } else { String::new() }).size(12),
             text(format!("Status: {}", object.status))
                 .size(12)
                 .color(MUTED),
@@ -391,6 +448,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                             scene: scene.clone(),
                             selected_indices: state.level_selection.indices.clone(),
                             zoom: state.level_zoom.max(0.3),
+                            show_wildlife: state.level_show_wildlife,
                         })
                         .width(Fill)
                         .height(Length::Fixed(175.0)),
@@ -423,6 +481,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let outliner_panel = container(
         column![
             text("Scene Outliner").size(15),
+            row![
+                design::button(if state.level_show_wildlife {
+                    "☑ Wildlife Spawns"
+                } else {
+                    "☐ Wildlife Spawns"
+                }).style(design::secondary)
+                    .on_press(Message::LevelToggleWildlife),
+                text(format!("{wildlife_count} markers / areas")).size(11)
+                    .style(design::muted),
+            ].spacing(8).align_y(iced::Center),
             design::text_input("Search scene objects", &state.level_filter)
                 .on_input(Message::LevelFilterChanged),
             scrollable(outliner).height(Fill),
