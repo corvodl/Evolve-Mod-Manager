@@ -3,15 +3,18 @@
 //! one separately editable Blender node per placement and original UV0.
 //! Missing render dependencies fail closed, instead of faking a whole map.
 use crate::archive::safe_member_name;
+use crate::dds::decode_dds_rgba;
 use crate::glb::{GlbError, geometry_glb_bytes};
-use crate::model::{ModelError, ModelInfo, RenderMesh, read_model};
+use crate::materials::{MaterialDocument, MaterialSlot, read_material};
+use crate::model::{ModelError, ModelInfo, RenderMesh, original_mesh_subsets, read_model};
+use image::{DynamicImage, ImageFormat};
 use crate::scene::{LevelScene, SceneError, load_level_scene};
 use crate::terrain::{TerrainError, read_terrain};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Cursor, Write};
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
@@ -31,6 +34,8 @@ pub enum LevelExportError {
     Mesh(#[from] GlbError),
     #[error("Missing or unsafe level asset: {0}")]
     Missing(String),
+    #[error("Source material/texture export failed: {0}")]
+    Material(String),
     #[error("Level scene exceeds GLB export limits")]
     Limits,
     #[error("Output already exists")]
@@ -51,6 +56,14 @@ pub struct LevelExportReport {
     /// Only recognized and verified render geometry is exported. Materials,
     /// vegetation instance payloads, collision and game scripting are separate.
     pub original_geometry_only: bool,
+    #[serde(default)]
+    pub authored_material_slots: usize,
+    #[serde(default)]
+    pub embedded_textures: usize,
+    #[serde(default)]
+    pub missing_material_sets: usize,
+    #[serde(default)]
+    pub missing_texture_references: usize,
 }
 
 struct Assembler {
@@ -58,6 +71,9 @@ struct Assembler {
     binary: Vec<u8>,
     meshes: usize,
     instances: usize,
+    cached_images: HashMap<String, usize>,
+    missing_material_sets: usize,
+    missing_texture_references: usize,
 }
 impl Assembler {
     fn new(label: &str) -> Self {
@@ -71,6 +87,7 @@ impl Assembler {
                 "children":[]
             }],
             "meshes":[], "bufferViews":[], "accessors":[],
+            "materials":[], "images":[], "textures":[],
             "buffers":[{"byteLength":0}],
             "extras":{"source":"CryEngine Stage 2 level","geometry_only":true}
         });
@@ -79,6 +96,9 @@ impl Assembler {
             binary: Vec::new(),
             meshes: 0,
             instances: 0,
+            cached_images: HashMap::new(),
+            missing_material_sets: 0,
+            missing_texture_references: 0,
         }
     }
     fn add_mesh(&mut self, mesh: &RenderMesh) -> Result<usize, LevelExportError> {
@@ -177,6 +197,189 @@ impl Assembler {
         self.meshes += 1;
         Ok(id)
     }
+    /// Each source map is embedded as PNG at its original decoded mip dimensions.
+    /// We deliberately do not fabricate unknown maps or borrow same-name DDS
+    /// files from a different extraction root.
+    fn source_texture(
+        &mut self,
+        root: &Path,
+        virtual_path: &str,
+    ) -> Result<Option<usize>, LevelExportError> {
+        let cache_key = virtual_path.to_ascii_lowercase();
+        if let Some(index) = self.cached_images.get(&cache_key) {
+            return Ok(Some(*index));
+        }
+        let source = exact_geometry(root, virtual_path).or_else(|_| {
+            if virtual_path.to_ascii_lowercase().ends_with(".dds") {
+                exact_geometry(root, &format!("{virtual_path}.0"))
+            } else {
+                Err(LevelExportError::Missing(virtual_path.into()))
+            }
+        });
+        let Ok(source) = source else {
+            self.missing_texture_references += 1;
+            return Ok(None);
+        };
+        let Ok((_, rgba)) = decode_dds_rgba(&source) else {
+            self.missing_texture_references += 1;
+            return Ok(None);
+        };
+        let mut png = Vec::new();
+        DynamicImage::ImageRgba8(rgba)
+            .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            .map_err(|error| LevelExportError::Material(error.to_string()))?;
+        while !self.binary.len().is_multiple_of(4) {
+            self.binary.push(0);
+        }
+        if self.binary.len().checked_add(png.len()).is_none_or(|n| n > MAX_SCENE_GLB) {
+            return Err(LevelExportError::Limits);
+        }
+        let offset = self.binary.len();
+        self.binary.extend_from_slice(&png);
+        let view = self.document["bufferViews"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["bufferViews"].as_array_mut().ok_or(LevelExportError::Limits)?
+            .push(json!({"buffer":0,"byteOffset":offset,"byteLength":png.len()}));
+        let image = self.document["images"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["images"].as_array_mut().ok_or(LevelExportError::Limits)?
+            .push(json!({"name":virtual_path,"bufferView":view,"mimeType":"image/png"}));
+        let index = self.document["textures"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["textures"].as_array_mut().ok_or(LevelExportError::Limits)?
+            .push(json!({"source":image}));
+        self.cached_images.insert(cache_key, index);
+        Ok(Some(index))
+    }
+
+    /// Preserve authored leaf slot order, including NoDraw holes. glTF maps
+    /// established texture channels directly; other CryEngine channels remain
+    /// explicitly identified in extras, rather than assigned guessed semantics.
+    fn source_material(
+        &mut self,
+        slot: &MaterialSlot,
+        root: &Path,
+    ) -> Result<usize, LevelExportError> {
+        let mut pbr = json!({"metallicFactor":0.0,"roughnessFactor":1.0});
+        if let Some(tint) = slot.diffuse_tint {
+            pbr["baseColorFactor"] = json!([tint[0],tint[1],tint[2],slot.opacity.unwrap_or(1.0)]);
+        } else if let Some(opacity) = slot.opacity {
+            pbr["baseColorFactor"] = json!([1.0,1.0,1.0,opacity]);
+        }
+        let mut value = json!({
+            "name": slot.name,
+            "doubleSided": true,
+            "pbrMetallicRoughness": pbr,
+            "extras": {
+                "cryengine_shader": slot.shader,
+                "cryengine_original_maps": {},
+                "cryengine_shininess": slot.shininess,
+                "cryengine_glow_amount": slot.glow_amount
+            }
+        });
+        if let Some(alpha_test) = slot.alpha_test {
+            value["alphaMode"] = json!("MASK");
+            value["alphaCutoff"] = json!(alpha_test);
+        } else if slot.opacity.is_some_and(|x| x < 1.0) {
+            value["alphaMode"] = json!("BLEND");
+        }
+        if let Some(color) = slot.emissive_color {
+            value["emissiveFactor"] = json!(color);
+        }
+        for reference in &slot.maps {
+            let Some(texture) = self.source_texture(root, &reference.path)? else {
+                continue;
+            };
+            let role = reference.role.as_str();
+            value["extras"]["cryengine_original_maps"][role] = json!({
+                "texture":texture,"source":reference.path
+            });
+            match role {
+                "diffuse" => value["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index":texture}),
+                "normals" | "normal" | "bumpmap" => {
+                    // BC5 X/Y normal reconstruction and shader tangent orientation
+                    // must be validated on real assets before claiming FBX parity.
+                    value["normalTexture"] = json!({"index":texture});
+                }
+                "emissive" | "emittance" | "emission" | "glow" |
+                "emissivecolor" | "emissionmap" | "glowmap" |
+                "selfillum" | "selfillumination" => {
+                    value["emissiveTexture"] = json!({"index":texture});
+                    if value.get("emissiveFactor").is_none() {
+                        value["emissiveFactor"] = json!([1.0,1.0,1.0]);
+                    }
+                }
+                _ => {} // Extra channels remain traceable, never silently reclassified.
+            }
+        }
+        let index = self.document["materials"].as_array().ok_or(LevelExportError::Limits)?.len();
+        self.document["materials"].as_array_mut().ok_or(LevelExportError::Limits)?.push(value);
+        Ok(index)
+    }
+
+    /// Split source triangles by their verified CryEngine material subset IDs.
+    /// In the absence of a verified subset table only single-leaf materials may
+    /// be bound; multi-leaf guesses would silently color the wrong polygons.
+    fn add_textured_mesh(
+        &mut self,
+        mesh: &RenderMesh,
+        source_bytes: &[u8],
+        material: Option<&MaterialDocument>,
+        root: &Path,
+    ) -> Result<usize, LevelExportError> {
+        let id = self.add_mesh(mesh)?;
+        let Some(document) = material else {
+            self.missing_material_sets += 1;
+            return Ok(id);
+        };
+        let mut ids = Vec::with_capacity(document.slots.len());
+        for slot in &document.slots {
+            ids.push(self.source_material(slot, root)?);
+        }
+        let old = self.document["meshes"][id]["primitives"][0].clone();
+        let ranges = original_mesh_subsets(source_bytes, mesh.indices.len())
+            .ok()
+            .filter(|ranges| {
+                !ranges.is_empty()
+                    && ranges.iter().all(|(_, count, _)| *count > 0 && count.is_multiple_of(3))
+                    && ranges.iter().try_fold(0u32, |cursor, (first, count, _)| {
+                        (*first == cursor).then(|| cursor.checked_add(*count)).flatten()
+                    }) == Some(mesh.indices.len() as u32)
+            });
+        let mut primitives = Vec::new();
+        if let Some(ranges) = ranges {
+            let accessor = old["indices"].as_u64().ok_or(LevelExportError::Limits)? as usize;
+            let original = self.document["accessors"][accessor].clone();
+            let base = original["byteOffset"].as_u64().unwrap_or(0);
+            for (first, count, material_id) in ranges {
+                let mut primitive = old.clone();
+                let id = self.document["accessors"].as_array().ok_or(LevelExportError::Limits)?.len();
+                self.document["accessors"].as_array_mut().ok_or(LevelExportError::Limits)?
+                    .push(json!({
+                        "bufferView": original["bufferView"],
+                        "byteOffset": base + u64::from(first)*4,
+                        "componentType": 5125,
+                        "count":count,
+                        "type":"SCALAR"
+                    }));
+                primitive["indices"] = json!(id);
+                if let Some(slot) = ids.get(material_id as usize) {
+                    primitive["material"] = json!(slot);
+                } else {
+                    self.missing_material_sets += 1;
+                }
+                primitives.push(primitive);
+            }
+        } else {
+            let mut primitive = old;
+            if ids.len() == 1 {
+                primitive["material"] = json!(ids[0]);
+            } else {
+                self.missing_material_sets += 1;
+            }
+            primitives.push(primitive);
+        }
+        self.document["meshes"][id]["primitives"] = json!(primitives);
+        Ok(id)
+    }
+
     fn add_node(
         &mut self,
         name: &str,
@@ -225,6 +428,11 @@ impl Assembler {
         if self.binary.len() > MAX_SCENE_GLB {
             return Err(LevelExportError::Limits);
         }
+        self.document["extras"]["geometry_only"] = json!(
+            self.document["materials"].as_array().is_none_or(|m| m.is_empty())
+        );
+        self.document["extras"]["missing_material_sets"] = json!(self.missing_material_sets);
+        self.document["extras"]["missing_texture_references"] = json!(self.missing_texture_references);
         self.document["buffers"][0]["byteLength"] = json!(self.binary.len());
         let mut json_data = serde_json::to_vec(&self.document)?;
         while !json_data.len().is_multiple_of(4) {
@@ -349,13 +557,24 @@ pub fn export_level_scene_glb(
         let mesh_id = if object.model.is_empty() {
             None
         } else {
-            let key = object.model.to_ascii_lowercase();
+            let key = (object.model.to_ascii_lowercase(), object.material.to_ascii_lowercase());
             if let Some(id) = resources.get(&key) {
                 Some(*id)
             } else {
                 let path = exact_geometry(&root, &object.model)?;
                 let mesh = read_model(&path)?;
-                let id = assembler.add_mesh(&mesh)?;
+                let bytes = fs::read(&path)?;
+                let virtual_material = if object.material.trim().is_empty() {
+                    let stem = object.model.rsplit_once('.').map_or(object.model.as_str(), |(stem, _)| stem);
+                    format!("{stem}.mtl")
+                } else if object.material.to_ascii_lowercase().ends_with(".mtl") {
+                    object.material.clone()
+                } else {
+                    format!("{}.mtl", object.material)
+                };
+                let authored = exact_geometry(&root, &virtual_material).ok()
+                    .and_then(|mtl| read_material(&mtl).ok());
+                let id = assembler.add_textured_mesh(&mesh, &bytes, authored.as_ref(), &root)?;
                 resources.insert(key, id);
                 Some(id)
             }
@@ -374,6 +593,10 @@ pub fn export_level_scene_glb(
                    "material_reference":object.material,"hidden":object.hidden}),
         )?;
     }
+    let authored_material_slots = assembler.document["materials"].as_array().map_or(0, Vec::len);
+    let embedded_textures = assembler.document["textures"].as_array().map_or(0, Vec::len);
+    let missing_material_sets = assembler.missing_material_sets;
+    let missing_texture_references = assembler.missing_texture_references;
     let bytes = assembler.finish()?;
     let mut stage = NamedTempFile::new_in(parent)?;
     stage.write_all(&bytes)?;
@@ -392,7 +615,11 @@ pub fn export_level_scene_glb(
         metadata_only_objects: metadata_only,
         included_terrain: terrain.is_some(),
         output_bytes: bytes.len(),
-        original_geometry_only: true,
+        original_geometry_only: authored_material_slots == 0,
+        authored_material_slots,
+        embedded_textures,
+        missing_material_sets,
+        missing_texture_references,
     })
 }
 #[cfg(test)]
