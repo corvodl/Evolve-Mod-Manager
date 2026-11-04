@@ -479,6 +479,9 @@ struct State {
     level_surfaces: Option<Arc<Vec<textured::Surface>>>,
     level_picks: Option<Arc<Vec<level_scene_renderer::PickRange>>>,
     level_world: Option<Arc<world_instances::World>>,
+    /// Immutable assembled scene for regenerating the wildlife visibility filter.
+    level_world_source: Option<Arc<world_instances::World>>,
+    level_show_wildlife: bool,
     level_project: Option<modding_projects::ProjectRow>,
     level_open_after_copy: bool,
     level_diagnostics: Vec<String>,
@@ -2473,6 +2476,7 @@ enum Message {
     LightStrengthChanged(f32),
     LevelSelect(usize),
     LevelFilterChanged(String),
+    LevelToggleWildlife,
     LevelSidebarTabSelected(LevelSidebarTab),
     LevelZoomChanged(f32),
     LevelTimeOfDayChanged(f32),
@@ -2949,6 +2953,31 @@ fn is_viewer_preview_source(path: &str) -> bool {
             let mip = suffix.strip_suffix('a').unwrap_or(suffix);
             mip.parse::<u8>().is_ok_and(|n| n < 20)
         })
+}
+
+/// Rebuild only the lightweight instancing/visibility list. Retain the
+/// original source-resolved meshes so turning the category on never re-scans
+/// texture dependencies or re-decodes the entire map.
+fn refresh_wildlife_visibility(state: &mut State) {
+    let Some(source) = &state.level_world_source else {
+        state.level_world = None;
+        return;
+    };
+    if state.level_show_wildlife {
+        state.level_world = Some(source.clone());
+        return;
+    }
+    let mut filtered = (**source).clone();
+    if let Some(scene) = &state.level_scene {
+        for group in &mut filtered.groups {
+            group.instances.retain(|instance| {
+                scene.objects.get(instance.object_index)
+                    .is_none_or(|object| !object.is_wildlife_spawn())
+            });
+        }
+        filtered.instance_count = filtered.groups.iter().map(|group| group.instances.len()).sum();
+    }
+    state.level_world = Some(Arc::new(filtered));
 }
 
 fn sync_level_fields(state: &mut State) {
@@ -7940,6 +7969,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LevelFilterChanged(value) => state.level_filter = value,
+        Message::LevelToggleWildlife => {
+            state.level_show_wildlife = !state.level_show_wildlife;
+            refresh_wildlife_visibility(state);
+        },
         Message::LevelSidebarTabSelected(tab) => state.level_sidebar_tab = tab,
         Message::LevelZoomChanged(value) => state.level_zoom = value.clamp(0.3, 3.0),
         Message::LevelTimeOfDayChanged(value) => {
@@ -8034,10 +8067,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 .store(1, std::sync::atomic::Ordering::Relaxed);
                             state.model = Some(Arc::new(reprojected));
                         }
-                        if let Some(world) = &state.level_world {
-                            state.level_world = Some(Arc::new(world.updated(&edited)));
+                        if let Some(world) = &state.level_world_source {
+                            state.level_world_source = Some(Arc::new(world.updated(&edited)));
                         }
                         state.level_scene = Some(Arc::new(edited));
+                        refresh_wildlife_visibility(state);
                         sync_level_fields(state);
                         state.status =
                             "Local transform preview updated; export a separate layer to save it."
@@ -13301,6 +13335,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Terrain(mesh, info)) => {
                     state.level_world = None;
+                    state.level_world_source = None;
                     state.cdf_surfaces = None;
                     state.cdf_report = None;
                     state.cdf_rest_mesh = None;
@@ -13340,6 +13375,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let loaded = *loaded;
                     state.level_diagnostics = loaded.diagnostics.clone();
                     state.level_show_overview = false;
+                    state.level_show_wildlife = false;
                     state.level_sidebar_tab = LevelSidebarTab::Actors;
                     let map_name = loaded.maps[loaded.index].name.clone();
                     state.input = loaded
@@ -13397,7 +13433,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .time_of_day
                             .as_ref()
                             .map_or(12.0, |profile| profile.initial_hour);
-                        state.level_world = Some(assembled.world.clone());
+                        state.level_world_source = Some(assembled.world.clone());
+                        refresh_wildlife_visibility(state);
                         state.level_surfaces = Some(Arc::new(assembled.surfaces));
                         state.level_picks = Some(Arc::new(assembled.picks));
                         state
@@ -13406,6 +13443,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.model = Some(Arc::new(assembled.mesh));
                     } else {
                         state.level_world = None;
+                        state.level_world_source = None;
                         state.level_surfaces = None;
                         state.level_picks = None;
                         state.model = loaded
@@ -13448,6 +13486,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::Level(scene, source, hash)) => {
                     state.library_map = None;
                     state.level_world = None;
+                    state.level_world_source = None;
                     state.level_project = None;
                     state.level_surfaces = None;
                     state.level_picks = None;
