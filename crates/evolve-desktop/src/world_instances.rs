@@ -3002,12 +3002,12 @@ impl Renderer {
                 cull_mode: None,
                 ..Default::default()
             },
-            // Guides share the scene pass attachment but never write or test
-            // depth, affect lighting, or participate in the picking pass.
+            // Depth-test the authored ground guides behind walls without
+            // writing depth, affecting lighting, or participating in picking.
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

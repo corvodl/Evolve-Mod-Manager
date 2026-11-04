@@ -27,9 +27,9 @@ fn vs_wildlife(@builtin(vertex_index) vertex: u32) -> Output {
     output.clip = vec4<f32>(2.0, 2.0, 2.0, 1.0);
   } else {
     output.clip = vec4<f32>(
-      dot(delta, camera.right.xyz) / (depth * camera.right.w),
-      dot(delta, camera.up.xyz) / (depth * camera.up.w),
-      0.9999, 1.0
+      dot(delta, camera.right.xyz) / camera.right.w,
+      dot(delta, camera.up.xyz) / camera.up.w,
+      depth - camera.forward.w, depth
     );
   }
   output.tint = point.tint;
