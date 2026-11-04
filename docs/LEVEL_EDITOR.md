@@ -167,12 +167,16 @@ in the Outliner, and the authored polygon outlines in the 2D overview.
 Toggling visibility reuses assembled geometry and textures; it never
 rescans or rewrites source PAKs.
 
-These are **editor markers, not wildlife character models**. In the sampled
-Tutorial level, CreatureSpawn objects reference population names such as
-`MammothBird` and `Marshstrider`, but no geometry paths. A population-to-
-character model lookup requires verified same-build game archetype definitions;
-matching based solely on names is forbidden. The original model rendering
-pipeline remains active for any wildlife spawn that explicitly references a
-verified mesh. Population spawn timing and rules are not simulated.
-The rendering and source-polygon placement must be visually checked against
-an actual imported Stage 2 map before claiming in-game parity.
+The marker overlay is always available when enabled. For a spawn with a
+single nonempty population, the importer now also tries exact-variant and
+base-species model stems in the **verified same-installation Asset Library**.
+For example, `Trapjaw_Tutorial` searches `Trapjaw_Tutorial` and then
+`Trapjaw`; `TyrantElite_Tutorial` similarly falls back through
+`TyrantElite` to `Tyrant`. Only a unique verified model path is used.
+Ambiguous/missing matches, or multi-population spawns that could generate
+different creatures, remain indicator markers instead of inventing an animal.
+The preview uses the existing source-mesh/material decoder and may still
+report unsupported or incomplete skeletal attachments. Source population IDs
+are never renamed or rewritten. Population spawn timing and rules are not
+simulated. Native model parity and source-polygon placement must be validated
+against actual imported Stage 2 maps.
