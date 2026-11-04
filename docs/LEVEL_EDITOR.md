@@ -153,3 +153,26 @@ shadow cascades or light-probe parity.
 Actual Stage 2 maps need screenshot comparison for BC5 channel orientation,
 specular levels, emissive tuning, mirrored buildings/vegetation and the
 reported originally missing DDS files. The source game files remain unchanged.
+
+
+## Wildlife Spawns visibility (source-authored)
+
+The Scene Outliner has a **Wildlife Spawns** toggle, initially off. The
+editor reads `CreatureSpawn` and `ZooKeeperShape` declarations from the
+selected map's original .lyr/mission XML. Creature spawns retain their
+`Properties/Populations` (Population1–4) and `HomeAreaName` attributes;
+ZooKeeper areas retain local polygon vertices. An enabled layer shows
+selectable marker meshes in the perspective world view, population names
+in the Outliner, and the authored polygon outlines in the 2D overview.
+Toggling visibility reuses assembled geometry and textures; it never
+rescans or rewrites source PAKs.
+
+These are **editor markers, not wildlife character models**. In the sampled
+Tutorial level, CreatureSpawn objects reference population names such as
+`MammothBird` and `Marshstrider`, but no geometry paths. A population-to-
+character model lookup requires verified same-build game archetype definitions;
+matching based solely on names is forbidden. The original model rendering
+pipeline remains active for any wildlife spawn that explicitly references a
+verified mesh. Population spawn timing and rules are not simulated.
+The rendering and source-polygon placement must be visually checked against
+an actual imported Stage 2 map before claiming in-game parity.
