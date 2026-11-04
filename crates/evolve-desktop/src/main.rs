@@ -12028,16 +12028,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select level XML/LYR, extracted asset root, Blender executable and NEW .fbx output.".into();
                 return Task::none();
             }
-            let terrain = if state.terrain_source.trim().is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(&state.terrain_source))
-            };
             let same_loaded_scene = state
                 .level_source
                 .as_ref()
                 .is_some_and(|loaded| loaded == &PathBuf::from(&state.input))
                 && state.level_scene.is_some();
+            // The opened Level Editor already knows the exact imported
+            // map-owned Heightmap.dat. Export it automatically rather than
+            // dropping terrain when the optional manual field is blank.
+            let terrain = if state.terrain_source.trim().is_empty() {
+                if same_loaded_scene {
+                    state.library_map.as_ref()
+                        .and_then(|(_, maps, index)| maps.get(*index))
+                        .and_then(|map| map.terrain.as_ref())
+                        .map(|relative| PathBuf::from(&state.assets_root).join(relative))
+                } else {
+                    None
+                }
+            } else {
+                Some(PathBuf::from(&state.terrain_source))
+            };
             let (assembled, archive, source_layers) = if same_loaded_scene {
                 if let Some((archive, maps, index)) = &state.library_map {
                     let files = maps
