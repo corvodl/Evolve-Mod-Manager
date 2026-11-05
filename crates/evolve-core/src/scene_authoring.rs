@@ -64,6 +64,12 @@ impl LayerAuthoringEdit {
     }
 }
 
+fn authored_display_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b" _-.()#".contains(&b))
+}
+
 fn bounded_guid(s: &str) -> bool {
     let raw = s
         .strip_prefix('{')
@@ -357,11 +363,7 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             ..
         } => {
             if !bounded_guid(new_guid)
-                || name.is_empty()
-                || name.len() > 128
-                || !name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b" _-.()".contains(&b))
+                || !authored_display_name(name)
                 || model.is_empty()
                 || model.len() > 256
                 || model.starts_with('/')
@@ -465,8 +467,8 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             events.drain(start..=end);
         }
         LayerAuthoringEdit::Duplicate { new_guid, name, .. } => {
-            if !bounded_name(new_guid)
-                || !bounded_name(name)
+            if !bounded_guid(new_guid)
+                || !authored_display_name(name)
                 || original
                     .objects
                     .iter()
