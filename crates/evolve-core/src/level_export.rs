@@ -1200,6 +1200,45 @@ impl Assembler {
         Ok(())
     }
 
+    /// Preserve one movable level placement containing independently named
+    /// original CDF render attachments. The static CDF's local transforms
+    /// remain subordinate to the scene actor's authored world matrix.
+    fn add_cdf_placement(
+        &mut self,
+        object:&crate::scene::PlacedObject,
+        original:&str,
+        parts:&[CdfRenderPart],
+    )->Result<(),LevelExportError> {
+        if parts.is_empty() {return Err(LevelExportError::Limits);}
+        self.add_node(
+            &object.name,None,Some(object.world),
+            json!({"source_id":object.id,"layer":object.layer,
+                "type":object.kind,"parent_guid":object.parent,
+                "cdf_source":original,"static_cdf_attachments":parts.len(),
+                "skeletal_animation_exported":false,
+                "bone_socket_mounts_verified":false}),
+        )?;
+        let parent=self.document["nodes"].as_array()
+            .ok_or(LevelExportError::Limits)?.len()-1;
+        self.document["nodes"][parent]["children"]=json!([]);
+        for part in parts {
+            self.add_node(
+                &format!("{} | {}",object.name,part.name),
+                Some(part.mesh),Some(part.local),
+                json!({"source_id":object.id,"cdf_attachment":part.name,
+                    "cdf_binding":part.binding,"cdf_static_only":true}),
+            )?;
+            let child=self.document["nodes"].as_array()
+                .ok_or(LevelExportError::Limits)?.len()-1;
+            let detached=self.document["nodes"][0]["children"]
+                .as_array_mut().ok_or(LevelExportError::Limits)?.pop();
+            if detached != Some(json!(child)){return Err(LevelExportError::Limits);}
+            self.document["nodes"][parent]["children"]
+                .as_array_mut().ok_or(LevelExportError::Limits)?.push(json!(child));
+        }
+        Ok(())
+    }
+
     /// Use the authored baked terrain color, never a synthetic 1x1 texture.
     /// An absent or undecodable terrain package leaves untextured geometry.
     fn add_terrain_color(
@@ -1831,6 +1870,7 @@ where
         .collect::<Vec<_>>();
     let mut assembler = Assembler::new(label);
     let mut resources = HashMap::<(String, String), Vec<usize>>::new();
+    let mut cdf_resources = HashMap::<(String, String), Vec<CdfRenderPart>>::new();
     let mut geometry_instances = 0usize;
     let mut metadata_only = 0usize;
     let mut terrain_tiles = 0usize;
@@ -1868,6 +1908,24 @@ where
         }
     }
     for object in &scene.objects {
+        if object.model.to_ascii_lowercase().ends_with(".cdf") {
+            let key=(
+                object.model.to_ascii_lowercase(),
+                object.material.to_ascii_lowercase(),
+            );
+            let parts=if let Some(parts)=cdf_resources.get(&key) {
+                parts.clone()
+            } else {
+                let parts=original_cdf_render_parts(
+                    &object.model,&object.material,&mut assembler,&mut resolve
+                )?;
+                cdf_resources.insert(key,parts.clone());
+                parts
+            };
+            assembler.add_cdf_placement(object,&object.model,&parts)?;
+            geometry_instances+=1;
+            continue;
+        }
         let mesh_ids = if object.model.is_empty() {
             Vec::new()
         } else {
