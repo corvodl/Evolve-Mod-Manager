@@ -597,10 +597,7 @@ pub fn edit_native_layer_bytes(
         .map_err(|error| SceneError::Xml(error.to_string()))?;
     let decoded = crate::cryxml::xml_bytes(&native, MAX_BYTES)
         .map_err(|error| SceneError::Xml(error.to_string()))?;
-    let rebuilt = parse_level_scene(&[("project-round-trip", &decoded)])?;
-    if rebuilt.objects.is_empty() {
-        return Err(SceneError::Limits);
-    }
+    parse_level_scene(&[("project-round-trip", &decoded)])?;
     Ok(native)
 }
 
