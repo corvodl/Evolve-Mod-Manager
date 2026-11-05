@@ -185,9 +185,56 @@ fn parse_events(xml: &[u8]) -> Result<Vec<Event<'static>>, SceneError> {
     Ok(events)
 }
 
+/// CryEngine's <Entities><Entity Id="..."/> children are links to
+/// existing placed entities, not fresh placements. Exclude these exact
+/// ID-only references when matching an authored entity for mutation.
+fn entity_references(events: &[Event<'static>]) -> Result<HashSet<usize>, SceneError> {
+    let mut parents: Vec<Vec<u8>> = Vec::new();
+    let mut links = HashSet::new();
+    for (index, event) in events.iter().enumerate() {
+        if let Event::Start(element) | Event::Empty(element) = event {
+            if element.name().as_ref().eq_ignore_ascii_case(b"Entity")
+                && parents.last().is_some_and(|name| name.eq_ignore_ascii_case(b"Entities"))
+                && parents.iter().any(|name| {
+                    [b"Object".as_slice(), b"Entity", b"Brush", b"Prefab"]
+                        .iter().any(|tag| name.eq_ignore_ascii_case(tag))
+                })
+            {
+                let mut has_id = false;
+                let mut id_only = true;
+                for attr in element.attributes() {
+                    let attr = attr.map_err(|e| SceneError::Xml(e.to_string()))?;
+                    if attr.key.as_ref().eq_ignore_ascii_case(b"Id")
+                        || attr.key.as_ref().eq_ignore_ascii_case(b"EntityId")
+                    {
+                        has_id = true;
+                    } else {
+                        id_only = false;
+                    }
+                }
+                if has_id && id_only {
+                    links.insert(index);
+                }
+            }
+        }
+        match event {
+            Event::Start(element) => parents.push(element.name().as_ref().to_vec()),
+            Event::End(_) => {
+                parents.pop();
+            }
+            _ => {}
+        }
+    }
+    Ok(links)
+}
+
 fn find_object(events: &[Event<'static>], guid: &str) -> Result<(usize, usize), SceneError> {
+    let links = entity_references(events)?;
     let mut match_range = None;
     for (i, event) in events.iter().enumerate() {
+        if links.contains(&i) {
+            continue;
+        }
         let start = match event {
             Event::Start(e) | Event::Empty(e) if placement_tag(event) => e,
             _ => continue,
@@ -643,6 +690,22 @@ mod tests {
         let plain = edit_native_layer_bytes(XML, &mutation).unwrap();
         assert!(!plain.starts_with(b"CryXmlB\0"));
         assert!(parse_level_scene(&[("plain", &plain)]).is_ok());
+    }
+
+    #[test]
+    fn changing_actual_entity_ignores_id_only_nested_references() {
+        let source = br#"<ObjectLayer><LayerObjects><Object Type="Entity" Id="actor" Name="Actor" Pos="1,2,3"/><Object Type="ReverbVolume" Id="reverb" Name="Volume"><Entities><Entity Id="actor"/></Entities></Object></LayerObjects></ObjectLayer>"#;
+        let transformed = edit_layer_bytes(source, &LayerAuthoringEdit::Transform {
+            guid: "actor".into(),
+            transform: Transform {
+                position: [5.0, 6.0, 7.0],
+                ..Transform::default()
+            }
+        }).unwrap();
+        let scene = parse_level_scene(&[("edited", &transformed)]).unwrap();
+        assert_eq!(scene.objects.len(), 2);
+        assert_eq!(scene.objects[0].local.position, [5.0, 6.0, 7.0]);
+        assert!(String::from_utf8_lossy(&transformed).contains("<Entity Id=\"actor\""));
     }
 
     #[test]
