@@ -6,6 +6,8 @@ use evolve_core::scene_authoring::{LayerAuthoringEdit, SpawnPropertiesEdit};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum TextField {
+    NewObjectName,
+    NewObjectModel,
     Populations,
     HomeArea,
     SpawnWeight,
@@ -21,6 +23,8 @@ pub(super) enum TextField {
 
 #[derive(Debug)]
 pub(super) struct Fields {
+    pub new_object_name: String,
+    pub new_object_model: String,
     pub populations: String,
     pub home_area: String,
     pub spawn_weight: String,
@@ -39,6 +43,8 @@ pub(super) struct Fields {
 impl Default for Fields {
     fn default() -> Self {
         Self {
+            new_object_name: String::new(),
+            new_object_model: String::new(),
             populations: String::new(),
             home_area: String::new(),
             spawn_weight: "1".into(),
@@ -58,12 +64,16 @@ impl Default for Fields {
 
 impl Fields {
     pub fn sync(&mut self, selected: Option<&PlacedObject>) {
+        self.new_object_name.clear();
+        self.new_object_model.clear();
         self.populations.clear();
         self.home_area.clear();
         self.polygon.clear();
         let Some(object) = selected else {
             return;
         };
+        self.new_object_name = format!("{}_new", object.name);
+        self.new_object_model.clone_from(&object.model);
         self.populations = object.populations.join(", ");
         self.home_area.clone_from(&object.home_area);
         self.spawn_weight = object.wildlife.spawn_weight.unwrap_or(1.0).to_string();
@@ -89,6 +99,8 @@ impl Fields {
 
     pub fn change(&mut self, key: TextField, value: String) {
         match key {
+            TextField::NewObjectName => self.new_object_name = value,
+            TextField::NewObjectModel => self.new_object_model = value,
             TextField::Populations => self.populations = value,
             TextField::HomeArea => self.home_area = value,
             TextField::SpawnWeight => self.spawn_weight = value,
@@ -255,6 +267,11 @@ pub(super) fn placement_editor<'a>(
             crate::design::button("Delete placement").on_press(Message::LevelDeleteSelected),
         ]
         .spacing(6),
+        text("Add a geometry instance in this same source layer").size(12),
+        edit_field("New object name", &forms.new_object_name, TextField::NewObjectName),
+        edit_field("Exact model path (.cgf/.cdf/...)", &forms.new_object_model, TextField::NewObjectModel),
+        crate::design::button("Add geometry to Modding project")
+            .on_press(Message::LevelAddGeometry),
         text("Each action saves the owning LYR/XML project member with a verified backup.")
             .size(11)
             .style(crate::design::muted),
