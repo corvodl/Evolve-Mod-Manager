@@ -1148,16 +1148,29 @@ fn model_preview_lookup(
 
 /// Both level formats must export the same opened, original-source-backed scene.
 /// A map selected from the Asset Library is not the generic manual-path export.
+struct OpenedLevelExport<'a> {
+    src: &'a Path,
+    root: &'a Path,
+    terrain: Option<&'a Path>,
+    assembled: Option<&'a LevelScene>,
+    archive: Option<&'a evolve_core::ImportedPak>,
+    source_layers: &'a [PathBuf],
+    original_baked_color: Option<&'a ::image::RgbaImage>,
+}
+
 fn export_opened_level_scene_glb(
-    src: &Path,
-    root: &Path,
-    terrain: Option<&Path>,
+    source: OpenedLevelExport<'_>,
     destination: &Path,
-    assembled: Option<&LevelScene>,
-    archive: Option<&evolve_core::ImportedPak>,
-    source_layers: &[PathBuf],
-    original_baked_color: Option<&::image::RgbaImage>,
 ) -> Result<evolve_core::LevelExportReport, String> {
+    let OpenedLevelExport {
+        src,
+        root,
+        terrain,
+        assembled,
+        archive,
+        source_layers,
+        original_baked_color,
+    } = source;
     match (assembled, archive) {
         (Some(assembled), Some(archive)) => {
             let inventory = imported_archive_files(archive).map_err(|e| e.to_string())?;
@@ -2292,14 +2305,16 @@ impl Operation {
                 let folder = tempfile::tempdir().map_err(|e| e.to_string())?;
                 let scene_glb = folder.path().join("level-scene.glb");
                 let scene = export_opened_level_scene_glb(
-                    &src,
-                    &root,
-                    terrain.as_deref(),
+                    OpenedLevelExport {
+                        src: &src,
+                        root: &root,
+                        terrain: terrain.as_deref(),
+                        assembled: assembled.as_deref(),
+                        archive: archive.as_ref(),
+                        source_layers: &source_layers,
+                        original_baked_color: original_baked_color.as_deref(),
+                    },
                     &scene_glb,
-                    assembled.as_deref(),
-                    archive.as_ref(),
-                    &source_layers,
-                    original_baked_color.as_deref(),
                 )?;
                 convert_glb_to_fbx(&blender, &scene_glb, &dest, AnimationPolicy::default())
                     .map_err(|e| e.to_string())?;
@@ -2320,14 +2335,16 @@ impl Operation {
                 original_baked_color,
             ) => {
                 let scene = export_opened_level_scene_glb(
-                    &src,
-                    &root,
-                    terrain.as_deref(),
+                    OpenedLevelExport {
+                        src: &src,
+                        root: &root,
+                        terrain: terrain.as_deref(),
+                        assembled: assembled.as_deref(),
+                        archive: archive.as_ref(),
+                        source_layers: &source_layers,
+                        original_baked_color: original_baked_color.as_deref(),
+                    },
                     &dest,
-                    assembled.as_deref(),
-                    archive.as_ref(),
-                    &source_layers,
-                    original_baked_color.as_deref(),
                 )?;
                 Ok(Completed::LevelExported(
                     scene.exported_mesh_resources,
