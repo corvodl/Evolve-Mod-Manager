@@ -112,7 +112,8 @@ class StaticFBXBasisTests(unittest.TestCase):
                        "root_name": "Emet", "combine_meshes": False,
                        "source_lights": [], "placement_roots": [],
                        "source_placement_groups": [], "uvless": False,
-                       "audited_geometry_count": 0, "audited_movable": False}
+                       "audited_geometry_count": 0, "audited_movable": False,
+                       "source_edge_count": 0}
             compile_snippet = lambda statements: compile(
                 ast.fix_missing_locations(ast.Module(
                     body=statements, type_ignores=[])), "<lifecycle-test>", "exec")
@@ -131,6 +132,7 @@ class StaticFBXBasisTests(unittest.TestCase):
             self.assertEqual(result["original_multi_mesh_groups"], 0)
             self.assertEqual(result["untextured_geometry_without_uv0"], 0)
             self.assertEqual(result["roundtrip_verified_meshes"], 0)
+            self.assertEqual(result["original_paint_boundary_edges"], 0)
             self.assertFalse(result["independent_movement_checked"])
             self.assertEqual(result["output_bytes"], destination.stat().st_size)
 
