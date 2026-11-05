@@ -1205,36 +1205,53 @@ impl Assembler {
     /// remain subordinate to the scene actor's authored world matrix.
     fn add_cdf_placement(
         &mut self,
-        object:&crate::scene::PlacedObject,
-        original:&str,
-        parts:&[CdfRenderPart],
-    )->Result<(),LevelExportError> {
-        if parts.is_empty() {return Err(LevelExportError::Limits);}
+        object: &crate::scene::PlacedObject,
+        original: &str,
+        parts: &[CdfRenderPart],
+    ) -> Result<(), LevelExportError> {
+        if parts.is_empty() {
+            return Err(LevelExportError::Limits);
+        }
         self.add_node(
-            &object.name,None,Some(object.world),
+            &object.name,
+            None,
+            Some(object.world),
             json!({"source_id":object.id,"layer":object.layer,
                 "type":object.kind,"parent_guid":object.parent,
                 "cdf_source":original,"static_cdf_attachments":parts.len(),
                 "skeletal_animation_exported":false,
                 "bone_socket_mounts_verified":false}),
         )?;
-        let parent=self.document["nodes"].as_array()
-            .ok_or(LevelExportError::Limits)?.len()-1;
-        self.document["nodes"][parent]["children"]=json!([]);
+        let parent = self.document["nodes"]
+            .as_array()
+            .ok_or(LevelExportError::Limits)?
+            .len()
+            - 1;
+        self.document["nodes"][parent]["children"] = json!([]);
         for part in parts {
             self.add_node(
-                &format!("{} | {}",object.name,part.name),
-                Some(part.mesh),Some(part.local),
+                &format!("{} | {}", object.name, part.name),
+                Some(part.mesh),
+                Some(part.local),
                 json!({"source_id":object.id,"cdf_attachment":part.name,
                     "cdf_binding":part.binding,"cdf_static_only":true}),
             )?;
-            let child=self.document["nodes"].as_array()
-                .ok_or(LevelExportError::Limits)?.len()-1;
-            let detached=self.document["nodes"][0]["children"]
-                .as_array_mut().ok_or(LevelExportError::Limits)?.pop();
-            if detached != Some(json!(child)){return Err(LevelExportError::Limits);}
+            let child = self.document["nodes"]
+                .as_array()
+                .ok_or(LevelExportError::Limits)?
+                .len()
+                - 1;
+            let detached = self.document["nodes"][0]["children"]
+                .as_array_mut()
+                .ok_or(LevelExportError::Limits)?
+                .pop();
+            if detached != Some(json!(child)) {
+                return Err(LevelExportError::Limits);
+            }
             self.document["nodes"][parent]["children"]
-                .as_array_mut().ok_or(LevelExportError::Limits)?.push(json!(child));
+                .as_array_mut()
+                .ok_or(LevelExportError::Limits)?
+                .push(json!(child));
         }
         Ok(())
     }
@@ -1415,13 +1432,13 @@ struct CdfRenderPart {
 }
 
 fn exact_compiled_model(binding: &str) -> Option<String> {
-    let (stem,extension)=binding.rsplit_once('.')?;
+    let (stem, extension) = binding.rsplit_once('.')?;
     match extension.to_ascii_lowercase().as_str() {
-        "skin"=>Some(format!("{stem}.skinm")),
-        "chr"=>Some(format!("{stem}.chrm")),
-        "cgf"=>Some(format!("{stem}.cgfm")),
-        "cga"=>Some(format!("{stem}.cgam")),
-        _=>None,
+        "skin" => Some(format!("{stem}.skinm")),
+        "chr" => Some(format!("{stem}.chrm")),
+        "cgf" => Some(format!("{stem}.cgfm")),
+        "cga" => Some(format!("{stem}.cgam")),
+        _ => None,
     }
 }
 
@@ -1431,88 +1448,98 @@ fn exact_compiled_model(binding: &str) -> Option<String> {
 /// bind-pose solver; export refuses those cases rather than leaving equipment
 /// or arms at the character origin.
 fn original_cdf_render_parts<R>(
-    original:&str,
-    material_override:&str,
-    assembler:&mut Assembler,
-    resolve:&mut R,
-)->Result<Vec<CdfRenderPart>,LevelExportError>
-where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
+    original: &str,
+    material_override: &str,
+    assembler: &mut Assembler,
+    resolve: &mut R,
+) -> Result<Vec<CdfRenderPart>, LevelExportError>
+where
+    R: FnMut(&str) -> Result<Option<PathBuf>, LevelExportError>,
 {
-    let path=resolve(original)?.ok_or_else(||LevelExportError::Missing(
-        format!("CDF source missing: {original}")
-    ))?;
-    let source=read_cdf(&path).map_err(|e|
-        LevelExportError::Material(format!("CDF {original}: {e}"))
-    )?;
-    let (_, selected)=select_attachments(&source).map_err(|e|
-        LevelExportError::Material(format!("CDF {original}: {e}"))
-    )?;
-    let mut output=Vec::new();
+    let path = resolve(original)?
+        .ok_or_else(|| LevelExportError::Missing(format!("CDF source missing: {original}")))?;
+    let source =
+        read_cdf(&path).map_err(|e| LevelExportError::Material(format!("CDF {original}: {e}")))?;
+    let (_, selected) = select_attachments(&source)
+        .map_err(|e| LevelExportError::Material(format!("CDF {original}: {e}")))?;
+    let mut output = Vec::new();
     for attachment in &source.attachments {
-        if !selected.contains(&attachment.name.as_str()){continue;}
-        if matches!(attachment.kind,AttachmentKind::Bone) ||
-           attachment.bone_name.is_some()
-        {
+        if !selected.contains(&attachment.name.as_str()) {
+            continue;
+        }
+        if matches!(attachment.kind, AttachmentKind::Bone) || attachment.bone_name.is_some() {
             return Err(LevelExportError::Missing(format!(
-                "CDF {original} attachment {} needs a verified skeletal bone socket;                  no guessed bind-pose transform was exported",attachment.name
+                "CDF {original} attachment {} needs a verified skeletal bone socket;                  no guessed bind-pose transform was exported",
+                attachment.name
             )));
         }
-        let rotation=attachment.rotation.unwrap_or([1.,0.,0.,0.]);
-        let norm=rotation.iter().map(|x|x*x).sum::<f32>();
-        if !norm.is_finite() || (norm-1.).abs()>0.1 {
+        let rotation = attachment.rotation.unwrap_or([1., 0., 0., 0.]);
+        let norm = rotation.iter().map(|x| x * x).sum::<f32>();
+        if !norm.is_finite() || (norm - 1.).abs() > 0.1 {
             return Err(LevelExportError::Material(format!(
                 "CDF {original} attachment {} has an invalid original quaternion",
                 attachment.name
             )));
         }
-        let mut local=crate::scene::Transform::default();
-        local.position=attachment.position.unwrap_or([0.;3]);
-        local.quaternion=rotation.map(|x|x/norm.sqrt());
-        let mut candidates=Vec::new();
-        if let Some(compiled)=exact_compiled_model(&attachment.binding) {
+        let mut local = crate::scene::Transform::default();
+        local.position = attachment.position.unwrap_or([0.; 3]);
+        local.quaternion = rotation.map(|x| x / norm.sqrt());
+        let mut candidates = Vec::new();
+        if let Some(compiled) = exact_compiled_model(&attachment.binding) {
             candidates.push(compiled);
         }
         candidates.push(attachment.binding.clone());
-        let mut source_mesh=None;
-        let mut errors=Vec::new();
+        let mut source_mesh = None;
+        let mut errors = Vec::new();
         for virtual_path in candidates {
-            if let Some(file)=resolve(&virtual_path)? {
-                let parts=read_world_model_parts_with_subsets(&file)
-                    .ok().filter(|parts|!parts.is_empty())
-                    .or_else(||read_model(&file).ok().map(|mesh|vec![
-                        WorldModelPart {
-                            mesh,subsets:Vec::new(),has_subset_table:false
-                        }
-                    ]));
-                if let Some(parts)=parts {
-                    source_mesh=Some((file,virtual_path,parts));
+            if let Some(file) = resolve(&virtual_path)? {
+                let parts = read_world_model_parts_with_subsets(&file)
+                    .ok()
+                    .filter(|parts| !parts.is_empty())
+                    .or_else(|| {
+                        read_model(&file).ok().map(|mesh| {
+                            vec![WorldModelPart {
+                                mesh,
+                                subsets: Vec::new(),
+                                has_subset_table: false,
+                            }]
+                        })
+                    });
+                if let Some(parts) = parts {
+                    source_mesh = Some((file, virtual_path, parts));
                     break;
                 }
-                errors.push(format!("{}: unsupported render data",virtual_path));
+                errors.push(format!("{}: unsupported render data", virtual_path));
             }
         }
-        let (file,virtual_path,meshes)=source_mesh.ok_or_else(||
+        let (file, virtual_path, meshes) = source_mesh.ok_or_else(|| {
             LevelExportError::Missing(format!(
                 "CDF {original} attachment {}: {} ({})",
-                attachment.name,attachment.binding,errors.join("; ")
+                attachment.name,
+                attachment.binding,
+                errors.join("; ")
             ))
-        )?;
-        let bytes=fs::read(&file)?;
-        let override_mtl=if material_override.is_empty() {
+        })?;
+        let bytes = fs::read(&file)?;
+        let override_mtl = if material_override.is_empty() {
             attachment.material.as_deref().unwrap_or("")
-        }else{material_override};
-        let authored=source_model_material(
-            &virtual_path,override_mtl,&bytes,resolve
-        )?.and_then(|mtl|read_material(&mtl).ok());
-        for (subnode,part) in meshes.into_iter().enumerate() {
-            let index=assembler.add_textured_mesh_resolved(
-                &part.mesh,&bytes,authored.as_ref(),
-                Some(part.subsets.as_slice()),resolve
+        } else {
+            material_override
+        };
+        let authored = source_model_material(&virtual_path, override_mtl, &bytes, resolve)?
+            .and_then(|mtl| read_material(&mtl).ok());
+        for (subnode, part) in meshes.into_iter().enumerate() {
+            let index = assembler.add_textured_mesh_resolved(
+                &part.mesh,
+                &bytes,
+                authored.as_ref(),
+                Some(part.subsets.as_slice()),
+                resolve,
             )?;
             output.push(CdfRenderPart {
-                name:format!("{} | Render {}",attachment.name,subnode),
-                binding:attachment.binding.clone(),
-                mesh:index,
+                name: format!("{} | Render {}", attachment.name, subnode),
+                binding: attachment.binding.clone(),
+                mesh: index,
                 local,
             });
         }
@@ -1909,21 +1936,24 @@ where
     }
     for object in &scene.objects {
         if object.model.to_ascii_lowercase().ends_with(".cdf") {
-            let key=(
+            let key = (
                 object.model.to_ascii_lowercase(),
                 object.material.to_ascii_lowercase(),
             );
-            let parts=if let Some(parts)=cdf_resources.get(&key) {
+            let parts = if let Some(parts) = cdf_resources.get(&key) {
                 parts.clone()
             } else {
-                let parts=original_cdf_render_parts(
-                    &object.model,&object.material,&mut assembler,&mut resolve
+                let parts = original_cdf_render_parts(
+                    &object.model,
+                    &object.material,
+                    &mut assembler,
+                    &mut resolve,
                 )?;
-                cdf_resources.insert(key,parts.clone());
+                cdf_resources.insert(key, parts.clone());
                 parts
             };
-            assembler.add_cdf_placement(object,&object.model,&parts)?;
-            geometry_instances+=1;
+            assembler.add_cdf_placement(object, &object.model, &parts)?;
+            geometry_instances += 1;
             continue;
         }
         let mesh_ids = if object.model.is_empty() {
@@ -2165,7 +2195,9 @@ mod tests {
         };
         let mut result = Assembler::new("terrain");
         let id = result.add_mesh(&mesh).unwrap();
-        result.painted_tile(id, &mesh, &paint, None, &mut |_path| Ok(None)).unwrap();
+        result
+            .painted_tile(id, &mesh, &paint, None, &mut |_path| Ok(None))
+            .unwrap();
         let primitives = result.document["meshes"][0]["primitives"]
             .as_array()
             .unwrap();
@@ -2239,12 +2271,14 @@ mod tests {
     }
     #[test]
     fn cdf_static_attachments_have_original_names_and_independent_actor_parent() {
-        let dir=tempfile::tempdir().unwrap();
-        let root=dir.path();
-        let definition=root.join("creature.cdf");
-        let body=root.join("body.skinm");
-        let head=root.join("head.skinm");
-        fs::write(&definition,br#"<CharacterDefinition>
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let definition = root.join("creature.cdf");
+        let body = root.join("body.skinm");
+        let head = root.join("head.skinm");
+        fs::write(
+            &definition,
+            br#"<CharacterDefinition>
             <Model File="characters/test/skeleton.chr"/>
             <AttachmentList>
                 <Attachment AName="body" Type="CA_SKIN"
@@ -2253,57 +2287,77 @@ mod tests {
                     Binding="characters/test/head.skin"
                     Position="1,2,3"/>
             </AttachmentList>
-        </CharacterDefinition>"#).unwrap();
-        let geometry=crate::model::tests::fixture();
-        fs::write(&body,&geometry).unwrap();
-        fs::write(&head,&geometry).unwrap();
-        let mut export=Assembler::new("CDF test");
-        let parts=original_cdf_render_parts(
-            "characters/test/creature.cdf","",&mut export,&mut |name|{
+        </CharacterDefinition>"#,
+        )
+        .unwrap();
+        let geometry = crate::model::tests::fixture();
+        fs::write(&body, &geometry).unwrap();
+        fs::write(&head, &geometry).unwrap();
+        let mut export = Assembler::new("CDF test");
+        let parts = original_cdf_render_parts(
+            "characters/test/creature.cdf",
+            "",
+            &mut export,
+            &mut |name| {
                 Ok(match name.to_ascii_lowercase().as_str() {
-                    "characters/test/creature.cdf"=>Some(definition.clone()),
-                    "characters/test/body.skinm"=>Some(body.clone()),
-                    "characters/test/head.skinm"=>Some(head.clone()),
-                    _=>None,
+                    "characters/test/creature.cdf" => Some(definition.clone()),
+                    "characters/test/body.skinm" => Some(body.clone()),
+                    "characters/test/head.skinm" => Some(head.clone()),
+                    _ => None,
                 })
-            }
-        ).unwrap();
-        assert_eq!(parts.len(),2);
+            },
+        )
+        .unwrap();
+        assert_eq!(parts.len(), 2);
         assert!(parts[0].name.starts_with("body |"));
         assert!(parts[1].name.starts_with("head |"));
-        let level=crate::scene::parse_level_scene(&[(
-            "fixture",br#"<Objects><Object Id="one" Name="Wildlife"
-            Pos="9,8,7" Scale="1,1,1"/></Objects>"#
-        )]).unwrap();
-        export.add_cdf_placement(
-            &level.objects[0],"characters/test/creature.cdf",&parts
-        ).unwrap();
-        assert_eq!(export.document["nodes"][0]["children"],json!([1]));
-        assert_eq!(export.document["nodes"][1]["translation"],json!([9.,8.,7.]));
-        assert_eq!(export.document["nodes"][1]["children"],json!([2,3]));
-        assert_eq!(export.document["nodes"][3]["translation"],json!([1.,2.,3.]));
-        assert_eq!(export.document["nodes"][2]["extras"]["cdf_binding"],
-            "characters/test/body.skin");
+        let level = crate::scene::parse_level_scene(&[(
+            "fixture",
+            br#"<Objects><Object Id="one" Name="Wildlife"
+            Pos="9,8,7" Scale="1,1,1"/></Objects>"#,
+        )])
+        .unwrap();
+        export
+            .add_cdf_placement(&level.objects[0], "characters/test/creature.cdf", &parts)
+            .unwrap();
+        assert_eq!(export.document["nodes"][0]["children"], json!([1]));
+        assert_eq!(
+            export.document["nodes"][1]["translation"],
+            json!([9., 8., 7.])
+        );
+        assert_eq!(export.document["nodes"][1]["children"], json!([2, 3]));
+        assert_eq!(
+            export.document["nodes"][3]["translation"],
+            json!([1., 2., 3.])
+        );
+        assert_eq!(
+            export.document["nodes"][2]["extras"]["cdf_binding"],
+            "characters/test/body.skin"
+        );
     }
 
     #[test]
     fn cdf_bone_attachment_refuses_to_guess_skeleton_socket_transform() {
-        let dir=tempfile::tempdir().unwrap();
-        let definition=dir.path().join("bone.cdf");
-        fs::write(&definition,br#"<CharacterDefinition>
+        let dir = tempfile::tempdir().unwrap();
+        let definition = dir.path().join("bone.cdf");
+        fs::write(
+            &definition,
+            br#"<CharacterDefinition>
             <Model File="characters/test/skeleton.chr"/>
             <AttachmentList>
                 <Attachment AName="arm" Type="CA_BONE"
                     BoneName="Bip01 R Hand"
                     Binding="objects/arm.cgf"/>
             </AttachmentList>
-        </CharacterDefinition>"#).unwrap();
-        let mut export=Assembler::new("CDF socket");
-        let err=original_cdf_render_parts(
-            "characters/test/bone.cdf","",&mut export,&mut |key|{
-                Ok((key=="characters/test/bone.cdf").then(||definition.clone()))
-            }
-        ).unwrap_err();
+        </CharacterDefinition>"#,
+        )
+        .unwrap();
+        let mut export = Assembler::new("CDF socket");
+        let err =
+            original_cdf_render_parts("characters/test/bone.cdf", "", &mut export, &mut |key| {
+                Ok((key == "characters/test/bone.cdf").then(|| definition.clone()))
+            })
+            .unwrap_err();
         assert!(err.to_string().contains("verified skeletal bone socket"));
     }
 
