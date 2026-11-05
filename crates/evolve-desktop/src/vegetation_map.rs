@@ -406,7 +406,12 @@ pub(super) fn edit_instances(bytes: &[u8], edit: VegetationEdit) -> Result<Vec<u
     let mut cursor = Cursor::new(bytes);
     let xml = cursor.string(MAX_XML)?;
     let (version, source_models) = prototypes(xml.as_bytes())?;
-    let stride = match version { 1 => 19, 2 => 30, 3 => 33, _ => return Err("Unsupported vegetation record version".into()) };
+    let stride = match version {
+        1 => 19,
+        2 => 30,
+        3 => 33,
+        _ => return Err("Unsupported vegetation record version".into()),
+    };
     let count = cursor.u32()? as usize;
     if count == 0 || count > MAX_NAMED {
         return Err("Unsupported number of vegetation data blocks".into());
@@ -424,7 +429,9 @@ pub(super) fn edit_instances(bytes: &[u8], edit: VegetationEdit) -> Result<Vec<u
         }
         let data_at = cursor.pos;
         let original = cursor.take(packed_len)?;
-        if name != "VegetationInstancesArray" { continue; }
+        if name != "VegetationInstancesArray" {
+            continue;
+        }
         if match_block.is_some() {
             return Err("Duplicate vegetation instance data blocks".into());
         }
@@ -450,20 +457,30 @@ pub(super) fn edit_instances(bytes: &[u8], edit: VegetationEdit) -> Result<Vec<u
         }
         let count = records.len() / stride;
         let index = match &edit {
-            VegetationEdit::Move { index, .. } | VegetationEdit::Scale { index, .. }
-            | VegetationEdit::Duplicate { index, .. } | VegetationEdit::Delete { index } => *index,
+            VegetationEdit::Move { index, .. }
+            | VegetationEdit::Scale { index, .. }
+            | VegetationEdit::Duplicate { index, .. }
+            | VegetationEdit::Delete { index } => *index,
         };
         if index >= count {
             return Err("Selected vegetation record not found".into());
         }
         let start = index * stride;
         let (prototype, scale) = if version < 3 {
-            (records[start + 16] as usize, f32::from_le_bytes(records[start+12..start+16].try_into().unwrap()))
+            (
+                records[start + 16] as usize,
+                f32::from_le_bytes(records[start + 12..start + 16].try_into().unwrap()),
+            )
         } else {
-            (u32::from_le_bytes(records[start+16..start+20].try_into().unwrap()) as usize,
-             f32::from_le_bytes(records[start+12..start+16].try_into().unwrap()))
+            (
+                u32::from_le_bytes(records[start + 16..start + 20].try_into().unwrap()) as usize,
+                f32::from_le_bytes(records[start + 12..start + 16].try_into().unwrap()),
+            )
         };
-        if prototype >= source_models.len() || !scale.is_finite() || !(0.00001..=10000.0).contains(&scale) {
+        if prototype >= source_models.len()
+            || !scale.is_finite()
+            || !(0.00001..=10000.0).contains(&scale)
+        {
             return Err("Vegetation prototype or scale is invalid".into());
         }
         match &edit {
@@ -472,27 +489,30 @@ pub(super) fn edit_instances(bytes: &[u8], edit: VegetationEdit) -> Result<Vec<u
                     return Err("Invalid vegetation position".into());
                 }
                 for (axis, value) in position.iter().enumerate() {
-                    records[start + axis * 4..start + axis * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                    records[start + axis * 4..start + axis * 4 + 4]
+                        .copy_from_slice(&value.to_le_bytes());
                 }
             }
             VegetationEdit::Scale { scale, .. } => {
                 if !scale.is_finite() || !(0.00001..=10000.0).contains(scale) {
                     return Err("Invalid vegetation scale".into());
                 }
-                records[start+12..start+16].copy_from_slice(&scale.to_le_bytes());
+                records[start + 12..start + 16].copy_from_slice(&scale.to_le_bytes());
             }
             VegetationEdit::Duplicate { position, .. } => {
-                if count >= MAX_INSTANCES || !position.iter().all(|p| p.is_finite() && p.abs() <= 1e8) {
+                if count >= MAX_INSTANCES
+                    || !position.iter().all(|p| p.is_finite() && p.abs() <= 1e8)
+                {
                     return Err("Unsafe vegetation copy count or position".into());
                 }
-                let mut duplicate = records[start..start+stride].to_vec();
+                let mut duplicate = records[start..start + stride].to_vec();
                 for (axis, value) in position.iter().enumerate() {
-                    duplicate[axis*4..axis*4+4].copy_from_slice(&value.to_le_bytes());
+                    duplicate[axis * 4..axis * 4 + 4].copy_from_slice(&value.to_le_bytes());
                 }
                 records.extend_from_slice(&duplicate);
             }
             VegetationEdit::Delete { .. } => {
-                records.drain(start..start+stride);
+                records.drain(start..start + stride);
             }
         }
         if records.len() > MAX_BINARY {
@@ -525,7 +545,11 @@ pub(super) fn edit_instances(bytes: &[u8], edit: VegetationEdit) -> Result<Vec<u
         return Err("Extra bytes after VegetationMap.dat blocks".into());
     }
     let output = match_block.ok_or("Missing original VegetationInstancesArray")?;
-    let mut parsed = LevelScene { schema: 1, objects: Vec::new(), diagnostics: Vec::new() };
+    let mut parsed = LevelScene {
+        schema: 1,
+        objects: Vec::new(),
+        diagnostics: Vec::new(),
+    };
     let _ = decode(&output, &mut parsed)?;
     Ok(output)
 }
@@ -563,17 +587,29 @@ mod tests {
         }
         record.extend_from_slice(&0u32.to_le_bytes());
         record.push(255);
-        for angle in [0.5f32, 0.0, 0.0] { record.extend_from_slice(&angle.to_le_bytes()); }
+        for angle in [0.5f32, 0.0, 0.0] {
+            record.extend_from_slice(&angle.to_le_bytes());
+        }
         let source = archive(xml, &record);
-        let moved = edit_instances(&source, VegetationEdit::Move {
-            index: 0, position: [50.0, 20.0, 30.0],
-        }).unwrap();
+        let moved = edit_instances(
+            &source,
+            VegetationEdit::Move {
+                index: 0,
+                position: [50.0, 20.0, 30.0],
+            },
+        )
+        .unwrap();
         let mut scene = blank();
         assert_eq!(decode(&moved, &mut scene).unwrap().instances, 1);
         assert_eq!(scene.objects[0].world.position, [50.0, 20.0, 30.0]);
-        let copied = edit_instances(&moved, VegetationEdit::Duplicate {
-            index: 0, position: [60.0, 20.0, 30.0],
-        }).unwrap();
+        let copied = edit_instances(
+            &moved,
+            VegetationEdit::Duplicate {
+                index: 0,
+                position: [60.0, 20.0, 30.0],
+            },
+        )
+        .unwrap();
         assert_eq!(decode(&copied, &mut blank()).unwrap().instances, 2);
         let removed = edit_instances(&copied, VegetationEdit::Delete { index: 0 }).unwrap();
         let mut scene = blank();
