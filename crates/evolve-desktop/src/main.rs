@@ -934,7 +934,7 @@ enum Operation {
         Vec<(String, evolve_core::Transform)>,
         PathBuf,
     ),
-    SaveProjectSource(ProjectRow, PathBuf, ProjectLevelMutation, PathBuf),
+    SaveProjectSource(ProjectRow, PathBuf, ProjectLevelMutation, PathBuf, PathBuf),
     ExportEditedLevel(
         PathBuf,
         PathBuf,
@@ -1854,7 +1854,7 @@ impl Operation {
                 )?;
                 Ok(Completed::ProjectLevelSaved(project, saved))
             }
-            Self::SaveProjectSource(project, source, edit, projects_root) => {
+            Self::SaveProjectSource(project, source, edit, projects_root, library_root) => {
                 // Only an original member in the selected managed project's
                 // extracted files tree may be edited. Original game PAKs and
                 // imported Asset Library roots are never writable here.
@@ -1876,6 +1876,26 @@ impl Operation {
                 let original = std::fs::read(&source).map_err(|e| e.to_string())?;
                 let output = match edit {
                     ProjectLevelMutation::Xml(change) => {
+                        if let evolve_core::scene_authoring::LayerAuthoringEdit::Insert { model, .. } =
+                            &change
+                        {
+                            if project.source_build.trim().is_empty() {
+                                return Err("A selected source game build is required to add geometry.".into());
+                            }
+                            match resolve_imported_reference(
+                                &library_root,
+                                model,
+                                Some(&project.source_build),
+                            ).map_err(|error| error.to_string())? {
+                                LibraryReferenceStatus::Found(_) => {}
+                                LibraryReferenceStatus::Missing => {
+                                    return Err(format!("Geometry asset not found in selected installed game build: {model}"));
+                                }
+                                LibraryReferenceStatus::Ambiguous(_) => {
+                                    return Err(format!("Geometry asset has conflicting versions in the selected game build: {model}"));
+                                }
+                            }
+                        }
                         if !(member.to_ascii_lowercase().ends_with(".lyr")
                             || member.to_ascii_lowercase().ends_with(".xml"))
                         {
@@ -2548,6 +2568,7 @@ enum Message {
     LevelAuthoringChanged(level_authoring::TextField, String),
     LevelAuthoringToggleEnabled,
     LevelAuthoringToggleRoundStart,
+    LevelAddGeometry,
     LevelDuplicateSelected,
     LevelDeleteSelected,
     LevelSaveWildlifeSpawn,
@@ -3182,10 +3203,50 @@ fn submit_level_project_edit(
     }
     let project = state.level_project.clone().unwrap();
     let projects_root = PathBuf::from(&state.preferences.projects);
+    let library_root = PathBuf::from(&state.library_root);
     launch(
         state,
-        Operation::SaveProjectSource(project, source, change, projects_root),
+        Operation::SaveProjectSource(project, source, change, projects_root, library_root),
     )
+}
+
+/// Preserve the original level's GUID shape, while using OS-provided
+/// randomness and RFC4122 v4 variant/version bits for every new placement.
+/// Synthetic parser IDs are not safe identifiers in a CryEngine level.
+fn fresh_authored_level_guid(original: &str) -> Result<String, String> {
+    use rand::RngCore;
+    let raw = original.trim_start_matches('{').trim_end_matches('}');
+    let compact = raw.len() == 32 && raw.bytes().all(|b| b.is_ascii_hexdigit());
+    let dashed = raw.len() == 36
+        && raw.bytes().enumerate().all(|(i, b)| {
+            if [8, 13, 18, 23].contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        });
+    if !compact && !dashed {
+        return Err("Selected object lacks a native GUID; cannot safely create a new placement in this layer.".into());
+    }
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let plain = bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let new_id = if dashed {
+        format!(
+            "{}-{}-{}-{}-{}",
+            &plain[0..8], &plain[8..12], &plain[12..16],
+            &plain[16..20], &plain[20..32]
+        )
+    } else {
+        plain
+    };
+    if original.starts_with('{') && original.ends_with('}') {
+        Ok(format!("{{{new_id}}}"))
+    } else {
+        Ok(new_id)
+    }
 }
 
 fn selected_project_object_source(
@@ -5796,7 +5857,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     !state.level_authoring.spawn_on_round_start;
             }
         }
-        Message::LevelDuplicateSelected
+        Message::LevelAddGeometry
+        | Message::LevelDuplicateSelected
         | Message::LevelDeleteSelected
         | Message::LevelSaveWildlifeSpawn
         | Message::LevelSaveWildlifeShape
@@ -5812,17 +5874,52 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             };
             let edit = match message {
+                Message::LevelAddGeometry => {
+                    if object.kind.eq_ignore_ascii_case("Vegetation") {
+                        state.status = "Choose an XML-layer placement as the insertion point.".into();
+                        return Task::none();
+                    }
+                    let guid = match fresh_authored_level_guid(&object.id) {
+                        Ok(guid) => guid,
+                        Err(reason) => {
+                            state.status = reason;
+                            return Task::none();
+                        }
+                    };
+                    let transform = match level_workspace::parse_transform(
+                        &state.level_edit_position,
+                        &state.level_edit_rotation,
+                        &state.level_edit_scale,
+                    ) {
+                        Ok(transform) => transform,
+                        Err(reason) => {
+                            state.status = reason;
+                            return Task::none();
+                        }
+                    };
+                    ProjectLevelMutation::Xml(
+                        evolve_core::scene_authoring::LayerAuthoringEdit::Insert {
+                            anchor_guid: object.id,
+                            new_guid: guid,
+                            name: state.level_authoring.new_object_name.trim().to_owned(),
+                            model: state.level_authoring.new_object_model.trim().replace('\\', "/"),
+                            transform,
+                        },
+                    )
+                }
                 Message::LevelDuplicateSelected => {
-                    let seed = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos();
-                    let key = format!("{seed:032x}");
+                    let guid = match fresh_authored_level_guid(&object.id) {
+                        Ok(guid) => guid,
+                        Err(reason) => {
+                            state.status = reason;
+                            return Task::none();
+                        }
+                    };
                     let name = format!("{}_copy", object.name);
                     ProjectLevelMutation::Xml(
                         evolve_core::scene_authoring::LayerAuthoringEdit::Duplicate {
                             guid: object.id,
-                            new_guid: key,
+                            new_guid: guid,
                             name,
                         },
                     )
