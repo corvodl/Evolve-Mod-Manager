@@ -1860,8 +1860,7 @@ impl Operation {
                 // imported Asset Library roots are never writable here.
                 let root = std::fs::canonicalize(project.workspace.join("files"))
                     .map_err(|e| e.to_string())?;
-                let metadata = std::fs::symlink_metadata(&source)
-                    .map_err(|e| e.to_string())?;
+                let metadata = std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
                 let source = std::fs::canonicalize(&source).map_err(|e| e.to_string())?;
                 if !metadata.file_type().is_file()
                     || metadata.len() > 192 * 1024 * 1024
@@ -1869,7 +1868,8 @@ impl Operation {
                 {
                     return Err("Source is not a regular managed project member".into());
                 }
-                let relative = source.strip_prefix(&root)
+                let relative = source
+                    .strip_prefix(&root)
                     .map_err(|_| "Level source is outside this Modding project")?;
                 let member = relative.to_string_lossy().replace('\\', "/");
                 let expected = level_source_hash(&source)?;
@@ -1879,7 +1879,9 @@ impl Operation {
                         if !(member.to_ascii_lowercase().ends_with(".lyr")
                             || member.to_ascii_lowercase().ends_with(".xml"))
                         {
-                            return Err("XML placement edit must target its own LYR/XML file".into());
+                            return Err(
+                                "XML placement edit must target its own LYR/XML file".into()
+                            );
                         }
                         evolve_core::scene_authoring::edit_layer_bytes(&original, &change)
                             .map_err(|e| e.to_string())?
@@ -1893,7 +1895,9 @@ impl Operation {
                     }
                     ProjectLevelMutation::Vegetation(change) => {
                         if !member.to_ascii_lowercase().ends_with("vegetationmap.dat") {
-                            return Err("Vegetation edit must target the owning VegetationMap.dat".into());
+                            return Err(
+                                "Vegetation edit must target the owning VegetationMap.dat".into()
+                            );
                         }
                         vegetation_map::edit_instances(&original, change)?
                     }
@@ -1908,7 +1912,10 @@ impl Operation {
                 let modified = scratch.path().join("edited.bin");
                 std::fs::write(&modified, &output).map_err(|e| e.to_string())?;
                 let saved = modding_projects::import_raw_member(
-                    &project, &projects_root, &member, &modified,
+                    &project,
+                    &projects_root,
+                    &member,
+                    &modified,
                 )?;
                 Ok(Completed::ProjectLevelSaved(project, saved))
             }
@@ -3177,46 +3184,74 @@ fn submit_level_project_edit(
     }
     let project = state.level_project.clone().unwrap();
     let projects_root = PathBuf::from(&state.preferences.projects);
-    launch(state, Operation::SaveProjectSource(project, source, change, projects_root))
+    launch(
+        state,
+        Operation::SaveProjectSource(project, source, change, projects_root),
+    )
 }
 
 fn selected_project_object_source(
     state: &State,
 ) -> Result<(evolve_core::PlacedObject, PathBuf), String> {
-    let project = state.level_project.as_ref().ok_or("An editable Modding project is required")?;
-    if state.level_read_only { return Err("Imported maps are read-only".into()); }
-    let object = state.level_selected
+    let project = state
+        .level_project
+        .as_ref()
+        .ok_or("An editable Modding project is required")?;
+    if state.level_read_only {
+        return Err("Imported maps are read-only".into());
+    }
+    let object = state
+        .level_selected
         .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
-        .cloned().ok_or("Select an authored object first")?;
+        .cloned()
+        .ok_or("Select an authored object first")?;
     let root = project.workspace.join("files");
     let relative = if object.kind.eq_ignore_ascii_case("Vegetation") {
-        state.library_map.as_ref()
+        state
+            .library_map
+            .as_ref()
             .and_then(|(_, maps, index)| maps.get(*index))
             .and_then(|map| map.vegetation.clone())
             .ok_or("Selected map has no authored VegetationMap.dat")?
     } else {
         let relative = PathBuf::from(&object.layer);
-        if !relative.extension().is_some_and(|ext|
-            ext.eq_ignore_ascii_case("lyr") || ext.eq_ignore_ascii_case("xml"))
+        if !relative
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("lyr") || ext.eq_ignore_ascii_case("xml"))
         {
             return Err("Selected placement has no editable XML source layer".into());
         }
         relative
     };
-    if relative.is_absolute() || relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
         return Err("Unsafe or absolute source member path".into());
     }
     Ok((object, root.join(relative)))
 }
 
 fn selected_project_terrain_source(state: &State) -> Result<PathBuf, String> {
-    let project = state.level_project.as_ref().ok_or("Open an editable Modding project")?;
-    if state.level_read_only { return Err("Imported maps are read-only".into()); }
-    let relative = state.library_map.as_ref()
+    let project = state
+        .level_project
+        .as_ref()
+        .ok_or("Open an editable Modding project")?;
+    if state.level_read_only {
+        return Err("Imported maps are read-only".into());
+    }
+    let relative = state
+        .library_map
+        .as_ref()
         .and_then(|(_, maps, index)| maps.get(*index))
         .and_then(|map| map.terrain.clone())
         .ok_or("Selected map has no Heightmap.dat")?;
-    if relative.is_absolute() || relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
         return Err("Unsafe terrain source member".into());
     }
     Ok(project.workspace.join("files").join(relative))
@@ -3303,7 +3338,8 @@ fn sync_level_fields(state: &mut State) {
         .level_selected
         .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
         .map(|object| object.local);
-    let selected = state.level_selected
+    let selected = state
+        .level_selected
         .and_then(|index| state.level_scene.as_ref()?.objects.get(index));
     state.level_authoring.sync(selected);
     if let Some(transform) = transform {
@@ -3707,7 +3743,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::LoadLevelWildlife(..) => "Loading source-backed wildlife preview",
         Operation::SaveProjectLevel(..) | Operation::SaveProjectSource(..) => {
             "Saving editable level project"
-        },
+        }
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
         Operation::ExtractSignedPak(..) => "Extracting signed CryPAK",
@@ -5752,10 +5788,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelAuthoringChanged(key, text) => state.level_authoring.change(key, text),
         Message::LevelAuthoringToggleEnabled => {
-            if !state.level_read_only { state.level_authoring.spawn_enabled = !state.level_authoring.spawn_enabled; }
+            if !state.level_read_only {
+                state.level_authoring.spawn_enabled = !state.level_authoring.spawn_enabled;
+            }
         }
         Message::LevelAuthoringToggleRoundStart => {
-            if !state.level_read_only { state.level_authoring.spawn_on_round_start = !state.level_authoring.spawn_on_round_start; }
+            if !state.level_read_only {
+                state.level_authoring.spawn_on_round_start =
+                    !state.level_authoring.spawn_on_round_start;
+            }
         }
         Message::LevelDuplicateSelected
         | Message::LevelDeleteSelected
@@ -5776,49 +5817,78 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Message::LevelDuplicateSelected => {
                     let seed = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default().as_nanos();
+                        .unwrap_or_default()
+                        .as_nanos();
                     let key = format!("{seed:032x}");
                     let name = format!("{}_copy", object.name);
                     ProjectLevelMutation::Xml(
                         evolve_core::scene_authoring::LayerAuthoringEdit::Duplicate {
-                            guid: object.id, new_guid: key, name,
-                        }
+                            guid: object.id,
+                            new_guid: key,
+                            name,
+                        },
                     )
                 }
                 Message::LevelDeleteSelected => ProjectLevelMutation::Xml(
-                    evolve_core::scene_authoring::LayerAuthoringEdit::Delete { guid: object.id }
+                    evolve_core::scene_authoring::LayerAuthoringEdit::Delete { guid: object.id },
                 ),
                 Message::LevelSaveWildlifeSpawn => match state.level_authoring.spawn(object.id) {
                     Ok(edit) => ProjectLevelMutation::Xml(edit),
-                    Err(reason) => { state.status = reason; return Task::none(); }
+                    Err(reason) => {
+                        state.status = reason;
+                        return Task::none();
+                    }
                 },
                 Message::LevelSaveWildlifeShape => match state.level_authoring.shape(object.id) {
                     Ok(edit) => ProjectLevelMutation::Xml(edit),
-                    Err(reason) => { state.status = reason; return Task::none(); }
+                    Err(reason) => {
+                        state.status = reason;
+                        return Task::none();
+                    }
                 },
                 Message::LevelMoveVegetation | Message::LevelScaleVegetation => {
                     if !object.kind.eq_ignore_ascii_case("Vegetation") {
                         state.status = "Select a VegetationMap.dat instance.".into();
                         return Task::none();
                     }
-                    let index = match object.id.strip_prefix("__vegetation_").and_then(|id| id.parse::<usize>().ok()) {
+                    let index = match object
+                        .id
+                        .strip_prefix("__vegetation_")
+                        .and_then(|id| id.parse::<usize>().ok())
+                    {
                         Some(index) => index,
-                        None => { state.status = "Vegetation source record index is unavailable.".into(); return Task::none(); }
+                        None => {
+                            state.status = "Vegetation source record index is unavailable.".into();
+                            return Task::none();
+                        }
                     };
                     let tf = match level_workspace::parse_transform(
-                        &state.level_edit_position, &state.level_edit_rotation, &state.level_edit_scale,
+                        &state.level_edit_position,
+                        &state.level_edit_rotation,
+                        &state.level_edit_scale,
                     ) {
                         Ok(tf) => tf,
-                        Err(reason) => { state.status = reason; return Task::none(); }
+                        Err(reason) => {
+                            state.status = reason;
+                            return Task::none();
+                        }
                     };
                     if matches!(message, Message::LevelMoveVegetation) {
-                        ProjectLevelMutation::Vegetation(vegetation_map::VegetationEdit::Move { index, position: tf.position })
+                        ProjectLevelMutation::Vegetation(vegetation_map::VegetationEdit::Move {
+                            index,
+                            position: tf.position,
+                        })
                     } else {
-                        if (tf.scale[0] - tf.scale[1]).abs() > 1e-4 || (tf.scale[1] - tf.scale[2]).abs() > 1e-4 {
+                        if (tf.scale[0] - tf.scale[1]).abs() > 1e-4
+                            || (tf.scale[1] - tf.scale[2]).abs() > 1e-4
+                        {
                             state.status = "Vegetation uses one uniform source scale.".into();
                             return Task::none();
                         }
-                        ProjectLevelMutation::Vegetation(vegetation_map::VegetationEdit::Scale { index, scale: tf.scale[0] })
+                        ProjectLevelMutation::Vegetation(vegetation_map::VegetationEdit::Scale {
+                            index,
+                            scale: tf.scale[0],
+                        })
                     }
                 }
                 Message::LevelDuplicateVegetation | Message::LevelDeleteVegetation => {
@@ -5826,16 +5896,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.status = "Select a vegetation instance first.".into();
                         return Task::none();
                     }
-                    let index = match object.id.strip_prefix("__vegetation_").and_then(|id| id.parse::<usize>().ok()) {
+                    let index = match object
+                        .id
+                        .strip_prefix("__vegetation_")
+                        .and_then(|id| id.parse::<usize>().ok())
+                    {
                         Some(index) => index,
-                        None => { state.status = "Vegetation source record index is unavailable.".into(); return Task::none(); }
+                        None => {
+                            state.status = "Vegetation source record index is unavailable.".into();
+                            return Task::none();
+                        }
                     };
                     if matches!(message, Message::LevelDuplicateVegetation) {
                         let mut position = object.local.position;
                         position[0] += 2.0;
-                        ProjectLevelMutation::Vegetation(vegetation_map::VegetationEdit::Duplicate { index, position })
+                        ProjectLevelMutation::Vegetation(
+                            vegetation_map::VegetationEdit::Duplicate { index, position },
+                        )
                     } else {
-                        ProjectLevelMutation::Vegetation(vegetation_map::VegetationEdit::Delete { index })
+                        ProjectLevelMutation::Vegetation(vegetation_map::VegetationEdit::Delete {
+                            index,
+                        })
                     }
                 }
                 _ => unreachable!(),
@@ -5845,12 +5926,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LevelSculptTerrain | Message::LevelPaintTerrain => {
             let source = match selected_project_terrain_source(state) {
                 Ok(source) => source,
-                Err(reason) => { state.status = reason; return Task::none(); }
+                Err(reason) => {
+                    state.status = reason;
+                    return Task::none();
+                }
             };
             let paint = matches!(message, Message::LevelPaintTerrain);
             let edit = match state.level_authoring.brush(paint) {
                 Ok(edit) => edit,
-                Err(reason) => { state.status = reason; return Task::none(); }
+                Err(reason) => {
+                    state.status = reason;
+                    return Task::none();
+                }
             };
             return submit_level_project_edit(state, source, ProjectLevelMutation::Terrain(edit));
         }
@@ -8637,7 +8724,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             };
             if object.kind.eq_ignore_ascii_case("Vegetation") {
-                state.status = "Use Save vegetation position/scale for the owning VegetationMap.dat.".into();
+                state.status =
+                    "Use Save vegetation position/scale for the owning VegetationMap.dat.".into();
                 return Task::none();
             }
             let transform = match level_workspace::parse_transform(
