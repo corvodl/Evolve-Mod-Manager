@@ -135,3 +135,112 @@ impl Fields {
         }
     }
 }
+
+fn edit_field<'a>(
+    label: &'static str,
+    value: &'a str,
+    field: TextField,
+) -> iced::Element<'a, super::Message> {
+    crate::design::text_input(label, value)
+        .on_input(move |v| super::Message::LevelAuthoringChanged(field, v))
+        .into()
+}
+
+pub(super) fn placement_editor<'a>(
+    state: &'a super::State,
+    object: &'a PlacedObject,
+) -> iced::Element<'a, super::Message> {
+    use iced::widget::{column, row, text};
+    use super::Message;
+    let forms = &state.level_authoring;
+    if state.level_read_only || state.level_project.is_none() {
+        return text("Editing requires File → Open as Modding Project.")
+            .size(11).style(crate::design::muted).into();
+    }
+    if object.kind.eq_ignore_ascii_case("Vegetation") {
+        return column![
+            text("VegetationMap.dat (project copy)").size(12),
+            crate::design::button("Save vegetation position")
+                .on_press(Message::LevelMoveVegetation),
+            crate::design::button("Save uniform vegetation scale")
+                .on_press(Message::LevelScaleVegetation),
+            row![
+                crate::design::button("Duplicate vegetation").on_press(Message::LevelDuplicateVegetation),
+                crate::design::button("Delete vegetation").on_press(Message::LevelDeleteVegetation),
+            ].spacing(6),
+            text("Uses the original packed record and its selected prototype.")
+                .size(11).style(crate::design::muted),
+        ].spacing(6).into();
+    }
+    let mut column = column![
+        text("Project placement authoring").size(12),
+        row![
+            crate::design::button("Duplicate placement").on_press(Message::LevelDuplicateSelected),
+            crate::design::button("Delete placement").on_press(Message::LevelDeleteSelected),
+        ].spacing(6),
+        text("Each action saves the owning LYR/XML project member with a verified backup.")
+            .size(11).style(crate::design::muted),
+    ].spacing(6);
+    if object.kind.eq_ignore_ascii_case("CreatureSpawn") {
+        column = column
+            .push(text("Wildlife spawn settings").size(12))
+            .push(edit_field("Populations: up to four, comma separated", &forms.populations, TextField::Populations))
+            .push(edit_field("HomeAreaName", &forms.home_area, TextField::HomeArea))
+            .push(edit_field("Spawn weight", &forms.spawn_weight, TextField::SpawnWeight))
+            .push(edit_field("ZooKeeper group", &forms.spawn_group, TextField::SpawnGroup))
+            .push(edit_field("Initial health (0–100)", &forms.spawn_health, TextField::SpawnHealth))
+            .push(row![
+                crate::design::button(if forms.spawn_enabled { "☑ Enabled" } else { "☐ Enabled" })
+                    .on_press(Message::LevelAuthoringToggleEnabled),
+                crate::design::button(if forms.spawn_on_round_start { "☑ Spawn on round start" } else { "☐ Spawn on round start" })
+                    .on_press(Message::LevelAuthoringToggleRoundStart),
+            ].spacing(6))
+            .push(crate::design::button("Save wildlife to LYR")
+                .style(crate::design::primary)
+                .on_press(Message::LevelSaveWildlifeSpawn));
+    } else if object.kind.eq_ignore_ascii_case("ZooKeeperShape") {
+        column = column
+            .push(text("ZooKeeper area vertices (x,y,z; x,y,z; ...)").size(12))
+            .push(edit_field("Polygon vertices", &forms.polygon, TextField::Polygon))
+            .push(crate::design::button("Save area polygon to LYR")
+                .style(crate::design::primary)
+                .on_press(Message::LevelSaveWildlifeShape))
+            .push(text("Preserves the authored vertex count; arbitrary topology changes require verification.")
+                .size(11).style(crate::design::muted));
+    }
+    column.into()
+}
+
+pub(super) fn terrain_editor(state: &super::State) -> iced::Element<'_, super::Message> {
+    use iced::widget::{column, row, text};
+    use super::Message;
+    if state.level_read_only || state.level_project.is_none()
+        || !state.library_map.as_ref()
+            .and_then(|(_, maps, index)| maps.get(*index))
+            .is_some_and(|map| map.terrain.is_some())
+    {
+        return text("Terrain editing requires a Modding project with Heightmap.dat.")
+            .size(11).style(crate::design::muted).into();
+    }
+    let form = &state.level_authoring;
+    column![
+        text("Terrain source brush (project only)").size(13),
+        row![
+            edit_field("Sample X", &form.brush_x, TextField::BrushX),
+            edit_field("Sample Y", &form.brush_y, TextField::BrushY),
+            edit_field("Radius", &form.brush_radius, TextField::BrushRadius),
+        ].spacing(6),
+        row![
+            edit_field("Height delta (world units)", &form.brush_delta_height, TextField::BrushDeltaHeight),
+            crate::design::button("Sculpt Heightmap.dat")
+                .on_press(Message::LevelSculptTerrain),
+        ].spacing(6),
+        row![
+            edit_field("Authored LayerId", &form.brush_layer_id, TextField::BrushLayerId),
+            crate::design::button("Paint LayerId")
+                .on_press(Message::LevelPaintTerrain),
+        ].spacing(6),
+        text("LayerId edits preserve the original baked texture atlas; native material repaint is not yet complete.")
+            .size(11).style(crate::design::muted),
+    ].spacing(7).into()
+}
