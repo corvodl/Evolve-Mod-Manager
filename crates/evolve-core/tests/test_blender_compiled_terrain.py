@@ -45,7 +45,7 @@ class CompiledTerrainSourceTests(unittest.TestCase):
         self.assertEqual(len(raster), 32 * 32)
         self.assertEqual(raster[0], 255)
         self.assertEqual(raster[1], 8)
-        self.assertEqual(raster[32], 3)
+        self.assertEqual(raster[64], 3)
         with self.assertRaises(IndexError):
             vertex.source_surface_type_at(33, 0)
 
