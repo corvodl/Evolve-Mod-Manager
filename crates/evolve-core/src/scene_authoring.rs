@@ -22,6 +22,14 @@ pub struct SpawnPropertiesEdit {
 
 #[derive(Clone, Debug)]
 pub enum LayerAuthoringEdit {
+    /// Insert an authored geometry placement adjacent to a selected object.
+    Insert {
+        anchor_guid: String,
+        new_guid: String,
+        name: String,
+        model: String,
+        transform: Transform,
+    },
     /// Persist one local transform to its actual owning project XML layer.
     Transform { guid: String, transform: Transform },
     /// Duplicate an existing XML placement, including its original authored
@@ -46,6 +54,7 @@ pub enum LayerAuthoringEdit {
 impl LayerAuthoringEdit {
     fn target(&self) -> &str {
         match self {
+            Self::Insert { anchor_guid, .. } => anchor_guid,
             Self::Transform { guid, .. }
             | Self::Duplicate { guid, .. }
             | Self::Delete { guid }
@@ -332,6 +341,62 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
     let mut events = parse_events(&decoded)?;
     let (start, end) = find_object(&events, edit.target())?;
     match edit {
+        LayerAuthoringEdit::Insert {
+            new_guid,
+            name,
+            model,
+            transform,
+            ..
+        } => {
+            if !bounded_name(new_guid)
+                || name.is_empty()
+                || name.len() > 128
+                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b" _-.()".contains(&b))
+                || model.is_empty()
+                || model.len() > 256
+                || model.starts_with('/')
+                || model.contains('\\')
+                || model.contains(':')
+                || model.split('/').any(|component| {
+                    component.is_empty()
+                        || component == "."
+                        || component == ".."
+                        || !component.bytes().all(|b| {
+                            b.is_ascii_alphanumeric() || b"_-.".contains(&b)
+                        })
+                })
+                || ![
+                    ".cgf", ".cgfm", ".cga", ".cgam",
+                    ".cdf", ".chr", ".chrm", ".skin", ".skinm",
+                ]
+                .iter()
+                .any(|extension| model.to_ascii_lowercase().ends_with(extension))
+                || original
+                    .objects
+                    .iter()
+                    .any(|other| other.id.eq_ignore_ascii_case(new_guid))
+            {
+                return Err(SceneError::Limits);
+            }
+            let normalized = transform.normalize()?;
+            let fmt = |parts: &[f32]| {
+                parts.iter().map(f32::to_string).collect::<Vec<_>>().join(",")
+            };
+            let mut element = BytesStart::new("Object");
+            element.push_attribute(("Id", new_guid.as_str()));
+            element.push_attribute(("Name", name.as_str()));
+            element.push_attribute(("Geometry", model.as_str()));
+            if !object.parent.is_empty() {
+                element.push_attribute(("Parent", object.parent.as_str()));
+            }
+            let position = fmt(&normalized.position);
+            let rotation = fmt(&normalized.quaternion);
+            let scale = fmt(&normalized.scale);
+            element.push_attribute(("Pos", position.as_str()));
+            element.push_attribute(("Rotate", rotation.as_str()));
+            element.push_attribute(("Scale", scale.as_str()));
+            events.insert(end + 1, Event::Empty(element.into_owned()));
+        }
         LayerAuthoringEdit::Transform { guid, transform } => {
             let normalized = edit_level_transform(&original, guid, *transform)?
                 .objects
@@ -412,6 +477,24 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
     let output = writer.into_inner();
     let validated = parse_level_scene(&[("modified", &output)])?;
     match edit {
+        LayerAuthoringEdit::Insert {
+            new_guid,
+            name,
+            model,
+            transform,
+            ..
+        } => {
+            let added = validated.objects.iter()
+                .filter(|object| object.id.eq_ignore_ascii_case(new_guid))
+                .collect::<Vec<_>>();
+            if added.len() != 1
+                || added[0].name != *name
+                || added[0].model != *model
+                || added[0].local != transform.normalize()?
+            {
+                return Err(SceneError::Limits);
+            }
+        }
         LayerAuthoringEdit::Transform { guid, transform } => {
             let updated = validated
                 .objects
@@ -488,6 +571,36 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
 mod tests {
     use super::*;
     const XML: &[u8] = br#"<ObjectLayer><LayerObjects><Object Id="first" Name="first" Geometry="objects/rock.cgf" Pos="1,2,3" /><Object Id="spawn" Name="wild" EntityClass="CreatureSpawn" Pos="5,6,7"><Properties HomeAreaName="area" bSpawnOnRoundStart="0" InitialHealthPercent="100"><Populations Population1="Trapjaw" Population2="" Population3="" Population4=""/><ZooKeeper fSpawnWeight="1" bZooKeeperEnabled="1" sZooKeeperGroup="Creatures"/></Properties></Object><Object Id="shape" Name="area" EntityClass="ZooKeeperShape"><Area/><Points><Point Pos="0,0,0"/><Point Pos="5,0,0"/><Point Pos="5,5,0"/></Points></Object></LayerObjects></ObjectLayer>"#;
+
+    #[test]
+    fn insert_model_has_exact_authored_path_and_safe_limits() {
+        let edit = LayerAuthoringEdit::Insert {
+            anchor_guid: "first".into(),
+            new_guid: "550e8400-e29b-41d4-a716-446655440000".into(),
+            name: "New rock".into(),
+            model: "objects/rocks/stone.cgf".into(),
+            transform: Transform {
+                position: [15.0, 20.0, 30.0],
+                ..Transform::default()
+            },
+        };
+        let bytes = edit_layer_bytes(XML, &edit).unwrap();
+        let scene = parse_level_scene(&[("source", &bytes)]).unwrap();
+        assert_eq!(scene.objects.len(), 4);
+        let added = scene.objects.iter()
+            .find(|object| object.id == "550e8400-e29b-41d4-a716-446655440000")
+            .unwrap();
+        assert_eq!(added.model, "objects/rocks/stone.cgf");
+        assert_eq!(added.local.position, [15.0, 20.0, 30.0]);
+        let invalid = LayerAuthoringEdit::Insert {
+            anchor_guid: "first".into(),
+            new_guid: "another-id".into(),
+            name: "Unsafe".into(),
+            model: "../wrong/stone.cgf".into(),
+            transform: Transform::default(),
+        };
+        assert!(edit_layer_bytes(XML, &invalid).is_err());
+    }
 
     #[test]
     fn duplicate_and_delete_preserve_other_source_placements() {
