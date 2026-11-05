@@ -2242,6 +2242,23 @@ mod tests {
         assert!(embedded_mtl_names(&chunk).is_empty());
     }
     #[test]
+    fn tutorial_original_heightmap_source_transitions_opt_in() {
+        let Some(path)=std::env::var_os("EVOLVE_TEST_TUTORIAL_HEIGHTMAP") else {
+            return; // CI has no copyrighted original game archive.
+        };
+        let paint=read_terrain_paint(Path::new(&path)).unwrap()
+            .expect("The selected original Tutorial Heightmap must include source paint");
+        assert_eq!((paint.width,paint.height),(512,512));
+        let ids=paint.ids.iter().copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids.len(),14);
+        let (edges,pairs)=original_paint_boundaries(&paint).unwrap();
+        assert_eq!(edges,35_359);
+        assert_eq!(pairs.len(),49);
+        assert_eq!(pairs.get(&(22,24)),Some(&4_367));
+    }
+
+    #[test]
     fn original_terrain_boundary_count_is_exact_and_uses_layer_ids_not_surface_types() {
         let paint=TerrainPaintMap {
             width:2,height:2,layer_names:Default::default(),layers:vec![],
