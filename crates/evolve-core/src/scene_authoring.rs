@@ -1,7 +1,7 @@
 //! Source-preserving, bounded edits for managed Modding project .lyr/XML files.
 //! The caller must use the verified project import transaction. This writer
 //! never opens game PAKs or imports from the read-only Asset Library.
-use crate::scene::{parse_level_scene, PlacedObject, SceneError};
+use crate::scene::{edit_level_transform, parse_level_scene, PlacedObject, SceneError, Transform};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer};
 use std::collections::HashSet;
@@ -22,6 +22,8 @@ pub struct SpawnPropertiesEdit {
 
 #[derive(Clone, Debug)]
 pub enum LayerAuthoringEdit {
+    /// Persist one local transform to its actual owning project XML layer.
+    Transform { guid: String, transform: Transform },
     /// Duplicate an existing XML placement, including its original authored
     /// nested properties, into the same layer. Never duplicate nested objects.
     Duplicate { guid: String, new_guid: String, name: String },
@@ -37,7 +39,8 @@ pub enum LayerAuthoringEdit {
 impl LayerAuthoringEdit {
     fn target(&self) -> &str {
         match self {
-            Self::Duplicate { guid, .. }
+            Self::Transform { guid, .. }
+            | Self::Duplicate { guid, .. }
             | Self::Delete { guid }
             | Self::Spawn { guid, .. }
             | Self::Shape { guid, .. } => guid,
@@ -279,6 +282,21 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
     let mut events = parse_events(&decoded)?;
     let (start, end) = find_object(&events, edit.target())?;
     match edit {
+        LayerAuthoringEdit::Transform { guid, transform } => {
+            let normalized = edit_level_transform(&original, guid, *transform)?
+                .objects.into_iter()
+                .find(|obj| obj.id.eq_ignore_ascii_case(guid))
+                .ok_or(SceneError::NoMatchingGuid)?
+                .local;
+            let components = |parts: &[f32]| {
+                parts.iter().map(f32::to_string).collect::<Vec<_>>().join(",")
+            };
+            events[start] = replace_start(&events[start], &[
+                ("Pos", components(&normalized.position)),
+                ("Rotate", components(&normalized.quaternion)),
+                ("Scale", components(&normalized.scale)),
+            ])?;
+        }
         LayerAuthoringEdit::Delete { .. } => {
             if original.objects.iter().any(|child| {
                 child.parent.eq_ignore_ascii_case(&object.id)
@@ -317,6 +335,18 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
     let output = writer.into_inner();
     let validated = parse_level_scene(&[("modified", &output)])?;
     match edit {
+        LayerAuthoringEdit::Transform { guid, transform } => {
+            let updated = validated.objects.iter()
+                .find(|o| o.id.eq_ignore_ascii_case(guid))
+                .ok_or(SceneError::NoMatchingGuid)?;
+            let expected = edit_level_transform(&original, guid, *transform)?
+                .objects.into_iter()
+                .find(|o| o.id.eq_ignore_ascii_case(guid))
+                .ok_or(SceneError::NoMatchingGuid)?;
+            if updated.local != expected.local {
+                return Err(SceneError::Limits);
+            }
+        }
         LayerAuthoringEdit::Delete { guid } => {
             if validated.objects.iter().any(|o| o.id.eq_ignore_ascii_case(guid)) {
                 return Err(SceneError::Limits);
