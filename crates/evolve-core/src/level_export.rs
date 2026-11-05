@@ -1558,7 +1558,7 @@ where
                 let has_skin_weights=if matches!(
                     attachment.kind,AttachmentKind::Skin|AttachmentKind::UniqueSkin
                 ) {
-                    if bytes.starts_with(b"CryTek\\0\\0") {
+                    if bytes.starts_with(b"CryTek\0\0") {
                         read_legacy_skin(&bytes,master,part.mesh.positions.len()).is_ok()
                     } else {
                         remap_verified_weights(
