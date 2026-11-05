@@ -74,6 +74,10 @@ pub struct LevelExportReport {
     /// Authored categorical paint LayerIds represented as selectable materials.
     #[serde(default)]
     pub terrain_painted_layer_ids: usize,
+    /// Exact number of adjacent source LayerId transitions; this is not a
+    /// reconstructed native CryEngine blend weight or transition width.
+    #[serde(default)]
+    pub terrain_source_boundary_edges: usize,
     /// Full source sample fidelity; false when the terrain decoder had to stride.
     #[serde(default)]
     pub terrain_source_resolution: bool,
@@ -991,10 +995,16 @@ impl Assembler {
             .as_array_mut()
             .ok_or(LevelExportError::Limits)?
             .push(json!({"source":image,"sampler":sampler}));
+        let (edges,pairs)=original_paint_boundaries(paint)?;
+        let pairs=pairs.into_iter().map(|((a,b),count)|
+            json!({"layer_a":a,"layer_b":b,"source_edges":count})
+        ).collect::<Vec<_>>();
         self.document["extras"]["original_categorical_terrain_paint"] = json!({
             "texture":texture,"width":paint.width,"height":paint.height,
             "encoding":"PNG R = exact original LayerId, row-major pixels",
             "layer_ids_not_surface_type_ids":true,
+            "source_boundary_edges":edges,
+            "source_boundary_pairs":pairs,
             "blending":"native CryEngine transition not applied"
         });
         self.paint_map_texture = Some(texture);
@@ -1422,6 +1432,34 @@ impl Assembler {
         Ok(data)
     }
 }
+/// Count actual neighbor-category changes from the source LayerId bitmap.
+/// This is a validation reference, NOT a guessed shader transition mask.
+fn original_paint_boundaries(
+    paint:&TerrainPaintMap
+)->Result<(usize,BTreeMap<(u8,u8),usize>),LevelExportError> {
+    if paint.width==0||paint.height==0
+        || (paint.width as usize).checked_mul(paint.height as usize)!=Some(paint.ids.len())
+    {return Err(LevelExportError::Limits);}
+    let mut by_pair=BTreeMap::<(u8,u8),usize>::new();
+    let mut edges=0usize;
+    for x in 0..paint.width {
+        for y in 0..paint.height {
+            let id=paint.id_at(x,y).ok_or(LevelExportError::Limits)?;
+            for (nx,ny) in [(x.checked_add(1),Some(y)),(Some(x),y.checked_add(1))] {
+                if let (Some(nx),Some(ny))=(nx,ny)
+                    && let Some(other)=paint.id_at(nx,ny)
+                    && other!=id
+                {
+                    let pair=(id.min(other),id.max(other));
+                    *by_pair.entry(pair).or_default()+=1;
+                    edges=edges.checked_add(1).ok_or(LevelExportError::Limits)?;
+                }
+            }
+        }
+    }
+    Ok((edges,by_pair))
+}
+
 /// A static CDF attachment is a separate real render object, with its
 /// source-authored relative transform and original material binding.
 /// Skeletal sockets are NOT inferred from an attachment name.
@@ -1952,10 +1990,14 @@ where
     let mut geometry_instances = 0usize;
     let mut metadata_only = 0usize;
     let mut terrain_tiles = 0usize;
+    let mut terrain_source_boundary_edges=0usize;
     let mut terrain_source_resolution = true;
     if let Some(source) = terrain {
         let terrain_data = read_terrain(source, MAX_RENDER_GRID)?;
         let paint = read_terrain_paint(source)?;
+        if let Some(ref paint)=paint {
+            terrain_source_boundary_edges=original_paint_boundaries(paint)?.0;
+        }
         terrain_source_resolution = terrain_data.info.stride == 1;
         let color = if let Some(baked) = original_baked_color {
             Some(assembler.add_terrain_color(
@@ -2124,6 +2166,7 @@ where
         exported_lights: lights.len(),
         terrain_tiles,
         terrain_painted_layer_ids,
+        terrain_source_boundary_edges,
         terrain_source_resolution,
         output_bytes: bytes.len(),
         original_geometry_only: authored_material_slots == 0,
@@ -2197,6 +2240,19 @@ mod tests {
         chunk[32..32 + hint.len()].fill(0);
         chunk[32..32 + malicious.len()].copy_from_slice(malicious);
         assert!(embedded_mtl_names(&chunk).is_empty());
+    }
+    #[test]
+    fn original_terrain_boundary_count_is_exact_and_uses_layer_ids_not_surface_types() {
+        let paint=TerrainPaintMap {
+            width:2,height:2,layer_names:Default::default(),layers:vec![],
+            surface_types:vec![],ids:vec![3,3,7,7],
+        };
+        let (edges,pairs)=original_paint_boundaries(&paint).unwrap();
+        assert_eq!(edges,2);
+        assert_eq!(pairs.get(&(3,7)),Some(&2));
+        assert_eq!(pairs.len(),1);
+        let invalid=TerrainPaintMap {ids:vec![3,7,7],..paint};
+        assert!(original_paint_boundaries(&invalid).is_err());
     }
     #[test]
     fn painted_terrain_retains_source_categorical_layer_face_groups() {
