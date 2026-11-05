@@ -1983,7 +1983,7 @@ mod tests {
         };
         let mut result = Assembler::new("terrain");
         let id = result.add_mesh(&mesh).unwrap();
-        result.painted_tile(id, &mesh, &paint, None).unwrap();
+        result.painted_tile(id, &mesh, &paint, None, &mut |_path| Ok(None)).unwrap();
         let primitives = result.document["meshes"][0]["primitives"]
             .as_array()
             .unwrap();
