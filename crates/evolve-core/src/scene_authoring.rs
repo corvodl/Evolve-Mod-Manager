@@ -582,10 +582,52 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
     Ok(output)
 }
 
+/// Produce a native file replacement, preserving the original XML storage
+/// representation. The game may expect CryXmlB even when the editor has
+/// decoded the layer to UTF-8 for surgical entity edits.
+pub fn edit_native_layer_bytes(
+    source: &[u8],
+    edit: &LayerAuthoringEdit,
+) -> Result<Vec<u8>, SceneError> {
+    let plain = edit_layer_bytes(source, edit)?;
+    if !source.starts_with(b"CryXmlB\0") {
+        return Ok(plain);
+    }
+    let native = crate::cryxml::encode_edited_xml(source, &plain, MAX_BYTES)
+        .map_err(|error| SceneError::Xml(error.to_string()))?;
+    let decoded = crate::cryxml::xml_bytes(&native, MAX_BYTES)
+        .map_err(|error| SceneError::Xml(error.to_string()))?;
+    let rebuilt = parse_level_scene(&[("project-round-trip", &decoded)])?;
+    if rebuilt.objects.is_empty() {
+        return Err(SceneError::Limits);
+    }
+    Ok(native)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     const XML: &[u8] = br#"<ObjectLayer><LayerObjects><Object Id="first" Name="first" Geometry="objects/rock.cgf" Pos="1,2,3" /><Object Id="spawn" Name="wild" EntityClass="CreatureSpawn" Pos="5,6,7"><Properties HomeAreaName="area" bSpawnOnRoundStart="0" InitialHealthPercent="100"><Populations Population1="Trapjaw" Population2="" Population3="" Population4=""/><ZooKeeper fSpawnWeight="1" bZooKeeperEnabled="1" sZooKeeperGroup="Creatures"/></Properties></Object><Object Id="shape" Name="area" EntityClass="ZooKeeperShape"><Area/><Points><Point Pos="0,0,0"/><Point Pos="5,0,0"/><Point Pos="5,5,0"/></Points></Object></LayerObjects></ObjectLayer>"#;
+
+    #[test]
+    fn edited_cryxml_source_remains_binary_and_matches_native_reader() {
+        let original = crate::cryxml::encode_xml(XML, MAX_BYTES).unwrap();
+        let mutation = LayerAuthoringEdit::Transform {
+            guid: "first".into(),
+            transform: Transform {
+                position: [20.0, 30.0, 40.0],
+                ..Transform::default()
+            },
+        };
+        let changed = edit_native_layer_bytes(&original, &mutation).unwrap();
+        assert!(changed.starts_with(b"CryXmlB\0"));
+        let scene = parse_level_scene(&[("native", &changed)]).unwrap();
+        assert_eq!(scene.objects[0].local.position, [20.0, 30.0, 40.0]);
+        assert_eq!(scene.objects[1].populations, ["Trapjaw".to_owned()]);
+        let plain = edit_native_layer_bytes(XML, &mutation).unwrap();
+        assert!(!plain.starts_with(b"CryXmlB\0"));
+        assert!(parse_level_scene(&[("plain", &plain)]).is_ok());
+    }
 
     #[test]
     fn insert_model_has_exact_authored_path_and_safe_limits() {
