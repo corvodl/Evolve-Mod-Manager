@@ -355,7 +355,7 @@ fn compiled_companion(binding: &str) -> Option<String> {
     }
 }
 
-fn transform_equipment(
+pub(crate) fn transform_equipment(
     mesh: &mut RenderMesh,
     attachment: &crate::cdf::CdfAttachment,
     skeleton: &CompiledSkeleton,
