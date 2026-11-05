@@ -67,6 +67,8 @@ jobs:
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_level_paint.py'
       - name: Validate recovered Evolve terrain blend scalar and source guards
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_terrain_blend.py'
+      - name: Validate original compiled terrain surface palettes without guessed alpha
+        run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_compiled_terrain.py'
       - name: Validate level FBX geometry and light round-trip audits
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_level_roundtrip.py'
       - name: Validate original Tutorial CDF source references when fixture is supplied
