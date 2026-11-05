@@ -471,6 +471,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     (!state.level_read_only && !object.kind.eq_ignore_ascii_case("Vegetation"))
                         .then_some(Message::LevelApplyTransform)
                 ),
+            crate::level_authoring::placement_editor(state, object),
         ]
         .spacing(6)
         .into()
@@ -672,6 +673,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             ))
             .size(11)
             .style(design::muted),
+            crate::level_authoring::terrain_editor(state),
             text("Rendering details and source warnings are in Diagnostics.")
                 .size(11)
                 .style(design::muted),
