@@ -1285,6 +1285,8 @@ mod tests {
         let result = parse_level_scene_read_only(&[("a.lyr", root), ("b.lyr", repeated)]).unwrap();
         assert_eq!(result.duplicate_declarations, 1);
         assert_eq!(result.conflicting_guids, 0);
+        assert!(result.duplicate_guids.contains("root"));
+        assert!(!result.duplicate_guids.contains("child"));
         assert_eq!(result.scene.objects.len(), 2);
         let child = result
             .scene
@@ -1303,6 +1305,7 @@ mod tests {
         let result = parse_level_scene_read_only(&[("a.lyr", root), ("b.lyr", conflict)]).unwrap();
         assert_eq!(result.conflicting_guids, 1);
         assert_eq!(result.duplicate_declarations, 1);
+        assert!(result.duplicate_guids.contains("root"));
         let child = result
             .scene
             .objects
