@@ -184,6 +184,24 @@ Blender after FBX reimport.
   bone-socket refusal. Full Stage 2 and 2012 rig/socket placements need
   actual same-build map assets and Blender round-trip acceptance.
 
+## Blender source-transition boundary overlay (not native blend weights)
+
+In addition to `<FBX name>_TerrainLayerIDs.png`, a completed FBX export
+now publishes `<FBX name>_TerrainBoundaries.png`. Each pixel contains the
+same source LayerId in blue; red/green mark *exact categorical changes*
+relative to its right/down neighboring source samples, and alpha marks
+pixels on any such original categorical edge. No edge is invented by a
+distance blur or arbitrary smoothstep. The bridge verifies its total source
+edge count against the GLB metadata before publishing either image.
+
+This is a practical pixel-exact layer-transition **locator** for authors
+comparing Blender to the game, and it preserves original boundary topology
+at full paint-map resolution. It is **not** native CryEngine splat blending,
+a surface-height mix, or a faithful feather/width representation. The game
+may blend materials across or within source cells using proprietary equations
+not contained in the raw LayerId bitmap. Those equations require source shader
+inspection and matched visual testing.
+
 ## Verified Tutorial transition baseline (original user-supplied source)
 
 Read-only inspection of the original `Tutorial/leveldata/heightmap.dat` from
