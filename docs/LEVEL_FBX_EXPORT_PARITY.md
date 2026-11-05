@@ -94,10 +94,12 @@ level mesh, terrain material, or texture was exported.
 
 ## Remaining parity gaps (keep this PR in draft)
 
-1. **World geometry:** Verified multi-mesh CGF subnodes now have grouped
-   placement hierarchies, but wildlife spawns without a verified render path
-   remain metadata only. Unsupported geometry, skeletal/compound objects and
-   source mesh part reimport counts need real-map acceptance tests.
+1. **World geometry:** Verified multi-mesh CGF subnodes and static CDF
+   attachments now have grouped placement hierarchies, including original
+   bind-pose sockets when a verified source skeleton exists. Wildlife spawns
+   without a verified render path remain metadata only. Unsupported render
+   formats, full skeletal animation and CDF source-mesh part reimport counts
+   still need real-map acceptance tests.
 2. **Vegetation:** existing original binary vegetation transforms are included
    when opening an imported map, but they still depend on verifiable model
    resolution and require Blender placement-count tests.
@@ -137,6 +139,29 @@ level mesh, terrain material, or texture was exported.
 - Blender reimport acceptance must alter a sample repeated prop's transform,
   verify no other instance moves, and verify all material pieces move together.
   GLB node-count tests alone are insufficient for FBX acceptance.
+
+## Static CDF components and original bone sockets (November 4)
+
+- `.cdf` level placements now resolve their original character definitions and
+  selected skin sets through the same exact-build Asset Library as world
+  geometry. Each verified `.skinm`/`.chrm` render part remains an independent,
+  named child of a separately movable world-placement parent.
+- Original CDF `Position`/`Rotation` child transforms are kept when the mesh
+  has no bone mount. Material source paths and selected skin-set bindings are
+  not replaced with guessed same-basename assets.
+- For `CA_BONE` and authored `BoneName` attachments, the exporter now
+  resolves a verifiable compiled or legacy skeleton and reuses the character
+  assembler's tested rigid bind-pose socket transform. For skinned parts,
+  original weight tables are checked; valid skinned meshes stay in skeleton
+  bind-pose coordinates, while unweighted socket-mounted equipment receives
+  a verified rigid transform, not a root-origin fallback.
+- Missing or ambiguous source skeleton/attachment geometry refuses the export
+  instead of silently omitting CDF parts or claiming complete character
+  placement. This is a STATIC representation: character animation and inverse
+  skin weighting in the FBX are not implied.
+- The synthetic tests cover independent static attachments and a missing
+  bone-socket refusal. Full Stage 2 and 2012 rig/socket placements need
+  actual same-build map assets and Blender round-trip acceptance.
 
 ## Blender reimport and actual map acceptance (November 4)
 
