@@ -3,6 +3,8 @@
 //! one separately editable Blender node per placement and original UV0.
 //! Missing render dependencies fail closed, instead of faking a whole map.
 use crate::archive::safe_member_name;
+use crate::cdf::{AttachmentKind, read_cdf};
+use crate::character_assembly::select_attachments;
 use crate::dds::{DdsFormat, decode_dds_rgba, decode_dds_rgba_with_parts};
 use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::materials::{MaterialDocument, MaterialSlot, read_material};
@@ -1362,6 +1364,128 @@ impl Assembler {
         Ok(data)
     }
 }
+/// A static CDF attachment is a separate real render object, with its
+/// source-authored relative transform and original material binding.
+/// Skeletal sockets are NOT inferred from an attachment name.
+#[derive(Clone)]
+struct CdfRenderPart {
+    name: String,
+    binding: String,
+    mesh: usize,
+    local: crate::scene::Transform,
+}
+
+fn exact_compiled_model(binding: &str) -> Option<String> {
+    let (stem,extension)=binding.rsplit_once('.')?;
+    match extension.to_ascii_lowercase().as_str() {
+        "skin"=>Some(format!("{stem}.skinm")),
+        "chr"=>Some(format!("{stem}.chrm")),
+        "cgf"=>Some(format!("{stem}.cgfm")),
+        "cga"=>Some(format!("{stem}.cgam")),
+        _=>None,
+    }
+}
+
+/// Read the original CDF's *chosen* static skin set and its precisely named
+/// compiled render companions, across manifest-verified same-build PAKs.
+/// CA_BONE and an explicit authored bone socket require a compiled skeleton
+/// bind-pose solver; export refuses those cases rather than leaving equipment
+/// or arms at the character origin.
+fn original_cdf_render_parts<R>(
+    original:&str,
+    material_override:&str,
+    assembler:&mut Assembler,
+    resolve:&mut R,
+)->Result<Vec<CdfRenderPart>,LevelExportError>
+where R:FnMut(&str)->Result<Option<PathBuf>,LevelExportError>
+{
+    let path=resolve(original)?.ok_or_else(||LevelExportError::Missing(
+        format!("CDF source missing: {original}")
+    ))?;
+    let source=read_cdf(&path).map_err(|e|
+        LevelExportError::Material(format!("CDF {original}: {e}"))
+    )?;
+    let (_, selected)=select_attachments(&source).map_err(|e|
+        LevelExportError::Material(format!("CDF {original}: {e}"))
+    )?;
+    let mut output=Vec::new();
+    for attachment in &source.attachments {
+        if !selected.contains(&attachment.name.as_str()){continue;}
+        if matches!(attachment.kind,AttachmentKind::Bone) ||
+           attachment.bone_name.is_some()
+        {
+            return Err(LevelExportError::Missing(format!(
+                "CDF {original} attachment {} needs a verified skeletal bone socket;                  no guessed bind-pose transform was exported",attachment.name
+            )));
+        }
+        let rotation=attachment.rotation.unwrap_or([1.,0.,0.,0.]);
+        let norm=rotation.iter().map(|x|x*x).sum::<f32>();
+        if !norm.is_finite() || (norm-1.).abs()>0.1 {
+            return Err(LevelExportError::Material(format!(
+                "CDF {original} attachment {} has an invalid original quaternion",
+                attachment.name
+            )));
+        }
+        let mut local=crate::scene::Transform::default();
+        local.position=attachment.position.unwrap_or([0.;3]);
+        local.quaternion=rotation.map(|x|x/norm.sqrt());
+        let mut candidates=Vec::new();
+        if let Some(compiled)=exact_compiled_model(&attachment.binding) {
+            candidates.push(compiled);
+        }
+        candidates.push(attachment.binding.clone());
+        let mut source_mesh=None;
+        let mut errors=Vec::new();
+        for virtual_path in candidates {
+            if let Some(file)=resolve(&virtual_path)? {
+                let parts=read_world_model_parts_with_subsets(&file)
+                    .ok().filter(|parts|!parts.is_empty())
+                    .or_else(||read_model(&file).ok().map(|mesh|vec![
+                        WorldModelPart {
+                            mesh,subsets:Vec::new(),has_subset_table:false
+                        }
+                    ]));
+                if let Some(parts)=parts {
+                    source_mesh=Some((file,virtual_path,parts));
+                    break;
+                }
+                errors.push(format!("{}: unsupported render data",virtual_path));
+            }
+        }
+        let (file,virtual_path,meshes)=source_mesh.ok_or_else(||
+            LevelExportError::Missing(format!(
+                "CDF {original} attachment {}: {} ({})",
+                attachment.name,attachment.binding,errors.join("; ")
+            ))
+        )?;
+        let bytes=fs::read(&file)?;
+        let override_mtl=if material_override.is_empty() {
+            attachment.material.as_deref().unwrap_or("")
+        }else{material_override};
+        let authored=source_model_material(
+            &virtual_path,override_mtl,&bytes,resolve
+        )?.and_then(|mtl|read_material(&mtl).ok());
+        for (subnode,part) in meshes.into_iter().enumerate() {
+            let index=assembler.add_textured_mesh_resolved(
+                &part.mesh,&bytes,authored.as_ref(),
+                Some(part.subsets.as_slice()),resolve
+            )?;
+            output.push(CdfRenderPart {
+                name:format!("{} | Render {}",attachment.name,subnode),
+                binding:attachment.binding.clone(),
+                mesh:index,
+                local,
+            });
+        }
+    }
+    if output.is_empty() {
+        return Err(LevelExportError::Missing(format!(
+            "CDF {original} contains no verifiable selected render attachments"
+        )));
+    }
+    Ok(output)
+}
+
 /// Author-declared CrChF MtlName (0x08021014) references only.
 fn embedded_mtl_names(bytes: &[u8]) -> Vec<String> {
     if bytes.len() < 32 || bytes.get(..5) != Some(b"CrChF") {
