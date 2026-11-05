@@ -968,7 +968,16 @@ enum Operation {
         PathBuf,
         PathBuf,
     ),
-    ExportLevelGlb(PathBuf, PathBuf, Option<PathBuf>, PathBuf),
+    ExportLevelGlb(
+        PathBuf,
+        PathBuf,
+        Option<PathBuf>,
+        PathBuf,
+        Option<Arc<LevelScene>>,
+        Option<evolve_core::ImportedPak>,
+        Vec<PathBuf>,
+        Option<Arc<::image::RgbaImage>>,
+    ),
     ExportLevelFbx(
         PathBuf,
         PathBuf,
@@ -1134,6 +1143,88 @@ fn model_preview_lookup(
             .map_err(|error| format!("Cannot index exact-build model dependencies: {error}")),
         // Only a speed-up here: without it, lookups use the unindexed resolver.
         None => Ok(evolve_core::begin_imported_lookup_session_any_build(root).ok()),
+    }
+}
+
+/// Both level formats must export the same opened, original-source-backed scene.
+/// A map selected from the Asset Library is not the generic manual-path export.
+struct OpenedLevelExport<'a> {
+    src: &'a Path,
+    root: &'a Path,
+    terrain: Option<&'a Path>,
+    assembled: Option<&'a LevelScene>,
+    archive: Option<&'a evolve_core::ImportedPak>,
+    source_layers: &'a [PathBuf],
+    original_baked_color: Option<&'a ::image::RgbaImage>,
+}
+
+fn export_opened_level_scene_glb(
+    source: OpenedLevelExport<'_>,
+    destination: &Path,
+) -> Result<evolve_core::LevelExportReport, String> {
+    let OpenedLevelExport {
+        src,
+        root,
+        terrain,
+        assembled,
+        archive,
+        source_layers,
+        original_baked_color,
+    } = source;
+    match (assembled, archive) {
+        (Some(assembled), Some(archive)) => {
+            let inventory = imported_archive_files(archive).map_err(|e| e.to_string())?;
+            let library = Path::new(&archive.directory)
+                .parent()
+                .ok_or("Selected archive has no Asset Library root")?;
+            let (build, _guard) =
+                evolve_core::begin_imported_lookup_session_for_source(library, &archive.source)
+                    .map_err(|e| e.to_string())?;
+            let root_canonical = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+            let mut layers = Vec::new();
+            for path in source_layers {
+                let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+                let canonical = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+                if !metadata.file_type().is_file()
+                    || !canonical.starts_with(&root_canonical)
+                    || metadata.len() > 48 * 1024 * 1024
+                {
+                    return Err(format!(
+                        "Unsafe or oversized level source {}",
+                        path.display()
+                    ));
+                }
+                layers.push((
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Layer")
+                        .to_string(),
+                    std::fs::read(path).map_err(|e| e.to_string())?,
+                ));
+            }
+            let label = src
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or("Evolve Level");
+            export_level_scene_glb_with_scene_color(
+                assembled,
+                &layers,
+                label,
+                root,
+                terrain,
+                original_baked_color,
+                destination,
+                |virtual_path| {
+                    auto_resources::exact(&inventory, virtual_path, Some(library), Some(&build))
+                        .map_err(evolve_core::LevelExportError::Missing)
+                },
+            )
+            .map_err(|e| e.to_string())
+        }
+        (None, None) => {
+            export_level_scene_glb(src, root, terrain, destination).map_err(|e| e.to_string())
+        }
+        _ => Err("Incomplete opened-map export context; reopen this map.".into()),
     }
 }
 
@@ -2213,70 +2304,18 @@ impl Operation {
             ) => {
                 let folder = tempfile::tempdir().map_err(|e| e.to_string())?;
                 let scene_glb = folder.path().join("level-scene.glb");
-                let scene = if let (Some(assembled), Some(archive)) = (assembled, archive) {
-                    // Use the full imported Level Editor scene, which already
-                    // includes all authored layers and decoded VegetationMap.dat
-                    // placements. Resolve geometry/material/DDS by verified
-                    // exact virtual paths from THIS installed Game directory.
-                    let inventory = imported_archive_files(&archive).map_err(|e| e.to_string())?;
-                    let library = Path::new(&archive.directory)
-                        .parent()
-                        .ok_or("Selected archive has no Asset Library root")?;
-                    let (build, _guard) = evolve_core::begin_imported_lookup_session_for_source(
-                        library,
-                        &archive.source,
-                    )
-                    .map_err(|e| e.to_string())?;
-                    let root_canonical = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
-                    let mut layers = Vec::new();
-                    for path in source_layers {
-                        let metadata =
-                            std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-                        let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-                        if !metadata.file_type().is_file()
-                            || !canonical.starts_with(&root_canonical)
-                            || metadata.len() > 48 * 1024 * 1024
-                        {
-                            return Err(format!(
-                                "Unsafe or oversized level source {}",
-                                path.display()
-                            ));
-                        }
-                        layers.push((
-                            path.file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("Layer")
-                                .to_string(),
-                            std::fs::read(path).map_err(|e| e.to_string())?,
-                        ));
-                    }
-                    let label = src
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Evolve Level");
-                    export_level_scene_glb_with_scene_color(
-                        &assembled,
-                        &layers,
-                        label,
-                        &root,
-                        terrain.as_deref(),
-                        original_baked_color.as_deref(),
-                        &scene_glb,
-                        |virtual_path| {
-                            auto_resources::exact(
-                                &inventory,
-                                virtual_path,
-                                Some(library),
-                                Some(&build),
-                            )
-                            .map_err(evolve_core::LevelExportError::Missing)
-                        },
-                    )
-                    .map_err(|e| e.to_string())?
-                } else {
-                    export_level_scene_glb(&src, &root, terrain.as_deref(), &scene_glb)
-                        .map_err(|e| e.to_string())?
-                };
+                let scene = export_opened_level_scene_glb(
+                    OpenedLevelExport {
+                        src: &src,
+                        root: &root,
+                        terrain: terrain.as_deref(),
+                        assembled: assembled.as_deref(),
+                        archive: archive.as_ref(),
+                        source_layers: &source_layers,
+                        original_baked_color: original_baked_color.as_deref(),
+                    },
+                    &scene_glb,
+                )?;
                 convert_glb_to_fbx(&blender, &scene_glb, &dest, AnimationPolicy::default())
                     .map_err(|e| e.to_string())?;
                 Ok(Completed::LevelFbxExported(
@@ -2285,12 +2324,31 @@ impl Operation {
                     dest,
                 ))
             }
-            Self::ExportLevelGlb(src, root, terrain, dest) => {
-                let result = export_level_scene_glb(&src, &root, terrain.as_deref(), &dest)
-                    .map_err(|e| e.to_string())?;
+            Self::ExportLevelGlb(
+                src,
+                root,
+                terrain,
+                dest,
+                assembled,
+                archive,
+                source_layers,
+                original_baked_color,
+            ) => {
+                let scene = export_opened_level_scene_glb(
+                    OpenedLevelExport {
+                        src: &src,
+                        root: &root,
+                        terrain: terrain.as_deref(),
+                        assembled: assembled.as_deref(),
+                        archive: archive.as_ref(),
+                        source_layers: &source_layers,
+                        original_baked_color: original_baked_color.as_deref(),
+                    },
+                    &dest,
+                )?;
                 Ok(Completed::LevelExported(
-                    result.exported_mesh_resources,
-                    result.exported_mesh_instances,
+                    scene.exported_mesh_resources,
+                    scene.exported_mesh_instances,
                     dest,
                 ))
             }
@@ -2820,6 +2878,7 @@ enum Message {
     StartHookPreflight,
     StartLevelGlbExport,
     StartLevelFbxExport,
+    LevelSceneDestinationPicked(bool, Option<PathBuf>),
     StartExtract,
     StartRebuild,
     StartPngExport,
@@ -3229,6 +3288,186 @@ fn native_export_picker(kind: &str) -> Option<PathBuf> {
             return None;
         }
         Some(PathBuf::from(String::from_utf8(output.stdout).ok()?.trim()))
+    }
+}
+
+/// Native Save As dialog for a NEW export file, never the original PAK or a
+/// generic source selector. Run only on a blocking worker, not Iced's UI loop.
+fn native_level_scene_save_picker(fbx: bool) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let output = {
+        let script = if fbx {
+            r#"[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.SaveFileDialog; $d.Title='Export level scene to FBX'; $d.Filter='FBX (*.fbx)|*.fbx'; $d.DefaultExt='fbx'; $d.AddExtension=$true; $d.OverwritePrompt=$false; $d.FileName='LevelScene.fbx'; if ($d.ShowDialog() -eq 'OK') { [Console]::Write($d.FileName) }"#
+        } else {
+            r#"[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.SaveFileDialog; $d.Title='Export level scene to GLB'; $d.Filter='glTF binary (*.glb)|*.glb'; $d.DefaultExt='glb'; $d.AddExtension=$true; $d.OverwritePrompt=$false; $d.FileName='LevelScene.glb'; if ($d.ShowDialog() -eq 'OK') { [Console]::Write($d.FileName) }"#
+        };
+        let mut command = std::process::Command::new("powershell.exe");
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        command
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+            .output()
+            .ok()?
+    };
+    #[cfg(target_os = "macos")]
+    let output = {
+        let script = if fbx {
+            "POSIX path of (choose file name with prompt \"Export level scene to FBX\" default name \"LevelScene.fbx\")"
+        } else {
+            "POSIX path of (choose file name with prompt \"Export level scene to GLB\" default name \"LevelScene.glb\")"
+        };
+        std::process::Command::new("osascript")
+            .args(["-e", script])
+            .output()
+            .ok()?
+    };
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let output = std::process::Command::new("zenity")
+        .args([
+            "--file-selection",
+            "--save",
+            if fbx {
+                "--filename=LevelScene.fbx"
+            } else {
+                "--filename=LevelScene.glb"
+            },
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let selected = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+    (selected.is_absolute() && selected.parent().is_some_and(Path::is_dir)).then_some(selected)
+}
+
+/// Fail closed if the selected export would overwrite anything or write into
+/// protected originals, an extracted Asset Library, or an editable project.
+fn validate_new_level_scene_destination(
+    destination: &Path,
+    fbx: bool,
+    protected_roots: &[PathBuf],
+) -> Result<(), String> {
+    let extension = if fbx { "fbx" } else { "glb" };
+    if !destination.is_absolute()
+        || !destination
+            .extension()
+            .and_then(|part| part.to_str())
+            .is_some_and(|part| part.eq_ignore_ascii_case(extension))
+    {
+        return Err(format!("Choose an absolute new .{extension} destination."));
+    }
+    if std::fs::symlink_metadata(destination).is_ok() {
+        return Err("The export file already exists. Choose a NEW filename.".into());
+    }
+    let parent = destination
+        .parent()
+        .ok_or("The export destination has no parent directory.")?;
+    let parent = std::fs::canonicalize(parent)
+        .map_err(|e| format!("Cannot access selected export folder: {e}"))?;
+    for root in protected_roots {
+        if let Ok(source) = std::fs::canonicalize(root)
+            && parent.starts_with(source)
+        {
+            return Err("Select an export folder outside the original PAKs, Asset Library and Modding projects.".into());
+        }
+    }
+    Ok(())
+}
+
+fn start_open_level_scene_export(
+    state: &mut State,
+    fbx: bool,
+    destination: PathBuf,
+) -> Task<Message> {
+    let Some((archive, maps, index)) = &state.library_map else {
+        state.status =
+            "Open an imported map in the Level Editor before exporting its scene.".into();
+        return Task::none();
+    };
+    let Some(map) = maps.get(*index) else {
+        state.status = "The selected map is no longer available. Reopen the level.".into();
+        return Task::none();
+    };
+    let Some(scene) = state.level_scene.clone() else {
+        state.status = "This map has no parsed scene to export.".into();
+        return Task::none();
+    };
+    // Use the opened map's exact archive and project context. These paths
+    // cannot be replaced by unrelated generic Inputs elsewhere in the manager.
+    let root = state.level_project.as_ref().map_or_else(
+        || PathBuf::from(&archive.directory).join("files"),
+        |project| project.workspace.join("files"),
+    );
+    let terrain = map.terrain.as_ref().map(|relative| root.join(relative));
+    let source_layers = map
+        .layers
+        .iter()
+        .map(|relative| root.join(relative))
+        .collect();
+    let source = PathBuf::from(&map.name); // display label; the original scene is already parsed
+    let archive = archive.clone();
+    let color = state
+        .level_world_source
+        .as_ref()
+        .and_then(|world| world.groups.first())
+        .filter(|group| {
+            group
+                .instances
+                .first()
+                .is_some_and(|item| item.object_index == usize::MAX)
+        })
+        .and_then(|group| group.surfaces.first())
+        .and_then(|surface| surface.diffuse.clone());
+    let mut protected = vec![root.clone(), PathBuf::from(&state.library_root)];
+    if let Some(project) = &state.level_project {
+        protected.push(project.workspace.clone());
+    }
+    if let Some(original) = &state.level_source
+        && let Some(parent) = original.parent()
+    {
+        protected.push(parent.to_path_buf());
+    }
+    if let Err(error) = validate_new_level_scene_destination(&destination, fbx, &protected) {
+        state.status = error;
+        return Task::none();
+    }
+    if fbx {
+        let blender = match resolved_blender(state) {
+            Ok(path) => path,
+            Err(message) => {
+                state.status = format!("FBX requires Blender: {message}");
+                return Task::none();
+            }
+        };
+        launch(
+            state,
+            Operation::ExportLevelFbx(
+                source,
+                root,
+                terrain,
+                blender,
+                destination,
+                Some(scene),
+                Some(archive),
+                source_layers,
+                color,
+            ),
+        )
+    } else {
+        launch(
+            state,
+            Operation::ExportLevelGlb(
+                source,
+                root,
+                terrain,
+                destination,
+                Some(scene),
+                Some(archive),
+                source_layers,
+                color,
+            ),
+        )
     }
 }
 
@@ -12047,115 +12286,35 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
-        Message::StartLevelFbxExport => {
-            let blender = match resolved_blender(state) {
-                Ok(path) => path,
-                Err(message) => {
-                    state.status = message;
-                    return Task::none();
-                }
-            };
-            if [&state.input, &state.assets_root, &state.output]
-                .iter()
-                .any(|x| x.trim().is_empty())
-                || !state.output.to_ascii_lowercase().ends_with(".fbx")
-            {
-                state.status = "Select level XML/LYR, extracted asset root, Blender executable and NEW .fbx output.".into();
+        Message::StartLevelFbxExport | Message::StartLevelGlbExport => {
+            if state.busy {
+                state.status = "Finish the current task before exporting the level.".into();
                 return Task::none();
             }
-            let same_loaded_scene = state
-                .level_source
-                .as_ref()
-                .is_some_and(|loaded| loaded == &PathBuf::from(&state.input))
-                && state.level_scene.is_some();
-            // The opened Level Editor already knows the exact imported
-            // map-owned Heightmap.dat. Export it automatically rather than
-            // dropping terrain when the optional manual field is blank.
-            let terrain = if state.terrain_source.trim().is_empty() {
-                if same_loaded_scene {
-                    state
-                        .library_map
-                        .as_ref()
-                        .and_then(|(_, maps, index)| maps.get(*index))
-                        .and_then(|map| map.terrain.as_ref())
-                        .map(|relative| PathBuf::from(&state.assets_root).join(relative))
-                } else {
-                    None
-                }
+            if state.library_map.is_none() || state.level_scene.is_none() {
+                state.status = "Open an imported map with parsed scene layers in the Level Editor before exporting.".into();
+                return Task::none();
+            }
+            let fbx = matches!(message, Message::StartLevelFbxExport);
+            state.status = if fbx {
+                "Choose a NEW FBX export destination in the Save As dialog.".into()
             } else {
-                Some(PathBuf::from(&state.terrain_source))
+                "Choose a NEW GLB export destination in the Save As dialog.".into()
             };
-            let (assembled, archive, source_layers) = if same_loaded_scene {
-                if let Some((archive, maps, index)) = &state.library_map {
-                    let files = maps
-                        .get(*index)
-                        .map(|map| {
-                            map.layers
-                                .iter()
-                                .map(|relative| PathBuf::from(&state.assets_root).join(relative))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    (state.level_scene.clone(), Some(archive.clone()), files)
-                } else {
-                    (None, None, Vec::new())
-                }
-            } else {
-                (None, None, Vec::new())
-            };
-            let original_baked_color = if same_loaded_scene {
-                state
-                    .level_world_source
-                    .as_ref()
-                    .and_then(|world| world.groups.first())
-                    .filter(|group| {
-                        group
-                            .instances
-                            .first()
-                            .is_some_and(|item| item.object_index == usize::MAX)
-                    })
-                    .and_then(|group| group.surfaces.first())
-                    .and_then(|surface| surface.diffuse.clone())
-            } else {
-                None
-            };
-            return launch(
-                state,
-                Operation::ExportLevelFbx(
-                    PathBuf::from(&state.input),
-                    PathBuf::from(&state.assets_root),
-                    terrain,
-                    blender,
-                    PathBuf::from(&state.output),
-                    assembled,
-                    archive,
-                    source_layers,
-                    original_baked_color,
-                ),
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || native_level_scene_save_picker(fbx))
+                        .await
+                        .unwrap_or(None)
+                },
+                move |destination| Message::LevelSceneDestinationPicked(fbx, destination),
             );
         }
-        Message::StartLevelGlbExport => {
-            if state.input.trim().is_empty()
-                || state.assets_root.trim().is_empty()
-                || state.output.trim().is_empty()
-            {
-                state.status="Select level XML/LYR, exact extracted game assets root, and a NEW .glb output.".into();
-                return Task::none();
-            }
-            let terrain = if state.terrain_source.trim().is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(&state.terrain_source))
-            };
-            return launch(
-                state,
-                Operation::ExportLevelGlb(
-                    PathBuf::from(&state.input),
-                    PathBuf::from(&state.assets_root),
-                    terrain,
-                    PathBuf::from(&state.output),
-                ),
-            );
+        Message::LevelSceneDestinationPicked(fbx, Some(destination)) => {
+            return start_open_level_scene_export(state, fbx, destination);
+        }
+        Message::LevelSceneDestinationPicked(_, None) => {
+            state.status = "Level scene export canceled; no files changed.".into();
         }
         Message::StartExtract => {
             if state.output.trim().is_empty() {
@@ -17103,5 +17262,33 @@ mod animation_playback_tests {
             ..State::default()
         };
         assert_eq!(resource_build(&state).as_deref(), Some("Modded"));
+    }
+}
+
+#[cfg(test)]
+mod level_scene_export_destination_tests {
+    use super::*;
+
+    #[test]
+    fn new_scene_export_stays_outside_originals_and_does_not_overwrite() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("originals");
+        let output = temp.path().join("export");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&output).unwrap();
+        let roots = [source.clone()];
+        let chosen = output.join("Tutorial.fbx");
+        assert!(validate_new_level_scene_destination(&chosen, true, &roots).is_ok());
+        assert!(validate_new_level_scene_destination(&chosen, false, &roots).is_err());
+        assert!(
+            validate_new_level_scene_destination(&source.join("Tutorial.fbx"), true, &roots)
+                .is_err()
+        );
+        std::fs::write(&chosen, b"existing").unwrap();
+        assert!(validate_new_level_scene_destination(&chosen, true, &roots).is_err());
+        assert!(
+            validate_new_level_scene_destination(&output.join("Tutorial.glb"), false, &roots)
+                .is_ok()
+        );
     }
 }

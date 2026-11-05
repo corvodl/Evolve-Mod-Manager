@@ -60,7 +60,7 @@ fn menu_content(state: &State) -> Option<Element<'_, Message>> {
         "LevelBuild" => column![
             command("Export original scene GLB", Message::StartLevelGlbExport),
             command("Export original scene FBX", Message::StartLevelFbxExport),
-            text("Exports operate on an editable project copy.")
+            text("Exports create new external files; original PAKs remain read-only.")
                 .size(11)
                 .style(design::muted),
         ]
