@@ -616,7 +616,13 @@ pub fn edit_terrain_bytes(source: &[u8], edit: TerrainBrushEdit) -> Result<Vec<u
             .ok_or_else(|| TerrainError::Format("Terrain has no authored LayerId bitmap".into()))?;
         // Duplicate material layer declarations are ambiguous: a painted byte
         // cannot select which of several definitions the engine will use.
-        if original.layers.iter().filter(|layer| layer.id == layer_id).count() != 1 {
+        if original
+            .layers
+            .iter()
+            .filter(|layer| layer.id == layer_id)
+            .count()
+            != 1
+        {
             return Err(TerrainError::Format(
                 "Paint ID must refer to exactly one authored terrain layer".into(),
             ));
@@ -758,7 +764,10 @@ mod tests {
         let edited = edit_terrain_bytes(
             &source,
             TerrainBrushEdit::Sculpt {
-                x: 5, y: 6, radius: 1, delta_height: 5.0,
+                x: 5,
+                y: 6,
+                radius: 1,
+                delta_height: 5.0,
             },
         )
         .unwrap();
@@ -768,11 +777,22 @@ mod tests {
         assert!(mesh.vertices[5 * 16 + 6][2] > base.vertices[5 * 16 + 6][2]);
         assert_eq!(base.vertices[0], mesh.vertices[0]);
         assert_eq!(&source[..source.len() - NEXT.len()][..20], &edited[..20]);
-        assert_eq!(&source[source.len() - NEXT.len()..], &edited[edited.len() - NEXT.len()..]);
-        assert!(edit_terrain_bytes(
-            &source,
-            TerrainBrushEdit::Sculpt { x: 16, y: 0, radius: 1, delta_height: 5.0 },
-        ).is_err());
+        assert_eq!(
+            &source[source.len() - NEXT.len()..],
+            &edited[edited.len() - NEXT.len()..]
+        );
+        assert!(
+            edit_terrain_bytes(
+                &source,
+                TerrainBrushEdit::Sculpt {
+                    x: 16,
+                    y: 0,
+                    radius: 1,
+                    delta_height: 5.0
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -790,17 +810,30 @@ mod tests {
         source.extend_from_slice(&[0u8; 256]);
         let edited = edit_terrain_bytes(
             &source,
-            TerrainBrushEdit::Paint { x: 4, y: 3, radius: 1, layer_id: 7 },
+            TerrainBrushEdit::Paint {
+                x: 4,
+                y: 3,
+                radius: 1,
+                layer_id: 7,
+            },
         )
         .unwrap();
         assert_eq!(source.len(), edited.len());
         let map = decode_terrain_paint_bytes(&edited).unwrap().unwrap();
         assert_eq!(map.id_at(4, 3), Some(7));
         assert_eq!(map.id_at(0, 0), Some(0));
-        assert!(edit_terrain_bytes(
-            &source,
-            TerrainBrushEdit::Paint { x: 4, y: 3, radius: 1, layer_id: 42 },
-        ).is_err());
+        assert!(
+            edit_terrain_bytes(
+                &source,
+                TerrainBrushEdit::Paint {
+                    x: 4,
+                    y: 3,
+                    radius: 1,
+                    layer_id: 42
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]
