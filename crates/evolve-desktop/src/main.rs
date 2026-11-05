@@ -489,6 +489,9 @@ struct State {
     level_spawn_distances: Option<evolve_core::zookeeper::SpawnDistances>,
     level_show_wildlife: bool,
     level_project: Option<modding_projects::ProjectRow>,
+    /// Duplicate original GUIDs across LYR layers are previewable, not
+    /// editable. The source owner is ambiguous even inside one Modding project.
+    level_duplicate_guids: HashSet<String>,
     level_open_after_copy: bool,
     level_diagnostics: Vec<String>,
     level_show_overview: bool,
@@ -3281,6 +3284,9 @@ fn selected_project_object_source(
         .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
         .cloned()
         .ok_or("Select an authored object first")?;
+    if state.level_duplicate_guids.contains(&object.id) {
+        return Err("This object GUID occurs in multiple original LYR layers. Editing is disabled until its owning source can be uniquely identified.".into());
+    }
     let root = project.workspace.join("files");
     let relative = if object.kind.eq_ignore_ascii_case("Vegetation") {
         state
@@ -14203,6 +14209,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_map = Some((loaded.archive.clone(), loaded.maps, loaded.index));
                     state.level_read_only = loaded.project.is_none();
                     state.level_project = loaded.project;
+                    state.level_duplicate_guids = loaded.duplicate_guids;
                     state.level_scene = loaded.scene.map(Arc::new);
                     state.level_source = loaded.source;
                     state.level_source_sha = state
@@ -14287,6 +14294,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_world = None;
                     state.level_world_source = None;
                     state.level_project = None;
+                    state.level_duplicate_guids.clear();
                     state.level_surfaces = None;
                     state.level_picks = None;
                     state.level_read_only = false;
