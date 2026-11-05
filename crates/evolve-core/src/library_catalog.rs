@@ -34,6 +34,11 @@ const MAX_IDENTICAL_DBA_BYTES: u64 = 512 * 1024 * 1024;
 // Compare streamed digests under explicit count and per-file size limits.
 const MAX_IDENTICAL_GEOMETRY_COPIES: usize = 8;
 const MAX_IDENTICAL_GEOMETRY_BYTES: u64 = 128 * 1024 * 1024;
+// Exact authored material definitions can be repeated in different PAKs from
+// one installation. Accept only verified byte-identical copies, never a
+// different revision or a similar filename.
+const MAX_IDENTICAL_MATERIAL_COPIES: usize = 8;
+const MAX_IDENTICAL_MATERIAL_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LibraryError {
@@ -798,7 +803,7 @@ fn indexed_reference(
 // contain the same .dds.1/.dds.2 high-mip payload in multiple imported PAKs;
 // their original bytes are safe to share ONLY if their full virtual paths and
 // verified SHA-256 digests agree. Preserve the 20-fragment/alpha limits of
-// decoded_dds_indexed; do not accept arbitrary numbered sidecars or MTL files.
+// decoded_dds_indexed; do not accept arbitrary numbered sidecars.
 fn is_cooked_dds_member(path: &str) -> bool {
     let name = path.to_ascii_lowercase();
     if name.ends_with(".dds") {
@@ -818,7 +823,7 @@ fn is_cooked_dds_member(path: &str) -> bool {
 /// similarly named mesh or a file from another installed game. Identical
 /// original geometry bytes in the selected build are equivalent, just as the
 /// Level Editor viewport already verifies for cross-PAK scenes. This does not
-/// authorize conflicting meshes, source materials, or other formats.
+/// authorize conflicting meshes, material revisions, or other formats.
 /// All checks use streamed SHA-256 with bounded files and duplicate counts.
 fn is_render_geometry_member(path: &str) -> bool {
     let name = path.to_ascii_lowercase();
@@ -828,7 +833,7 @@ fn is_render_geometry_member(path: &str) -> bool {
 }
 
 /// Keep exact selected-build provenance: only byte-identical instances of
-/// supported DDS, DBA, or render-geometry paths may be treated as one asset.
+/// supported DDS, DBA, render geometry, or authored MTL paths may be treated as one asset.
 /// Different builds, conflicting bytes and other asset types stay ambiguous.
 /// The indexed and uncached resolvers share this exact verification.
 fn resolve_verified_duplicate_members(
@@ -851,6 +856,8 @@ fn resolve_verified_duplicate_members(
         Some((MAX_IDENTICAL_DBA_COPIES, MAX_IDENTICAL_DBA_BYTES))
     } else if is_render_geometry_member(&path) {
         Some((MAX_IDENTICAL_GEOMETRY_COPIES, MAX_IDENTICAL_GEOMETRY_BYTES))
+    } else if path.ends_with(".mtl") {
+        Some((MAX_IDENTICAL_MATERIAL_COPIES, MAX_IDENTICAL_MATERIAL_BYTES))
     } else {
         None
     };
@@ -1219,18 +1226,75 @@ mod tests {
             resolve_verified_duplicate_members(copies(), true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
-        // MTL and arbitrary members are not whitelisted even if identical.
+        // Non-whitelisted arbitrary members remain ambiguous even if identical.
         assert!(!is_render_geometry_member(
             "characters/creatures/shared/carcass04.mtl"
         ));
         assert!(matches!(
             resolve_verified_duplicate_members(
                 vec![
-                    hit("a", "objects/rock.mtl", &a),
-                    hit("b", "objects/rock.mtl", &a),
+                    hit("a", "objects/rock.xml", &a),
+                    hit("b", "objects/rock.xml", &a),
                 ],
                 true,
             ),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+    }
+
+    #[test]
+    fn selected_game_identical_materials_are_verified_without_guessing() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("one.mtl");
+        let second = dir.path().join("two.mtl");
+        fs::write(&first, b"<Material Name='carcass02'/>").unwrap();
+        fs::write(&second, b"<Material Name='carcass02'/>").unwrap();
+        let virtual_name = "characters/creatures/shared/carcass02.mtl";
+        let hit = |id: &str, relative: &str, path: &Path| LibraryReference {
+            archive_id: id.to_owned(),
+            archive_name: format!("{id}.pak"),
+            relative_path: relative.to_owned(),
+            absolute_path: path.to_string_lossy().into_owned(),
+        };
+        let candidates = || {
+            vec![
+                hit("b", virtual_name, &second),
+                hit("a", virtual_name, &first),
+            ]
+        };
+        assert!(matches!(
+            resolve_verified_duplicate_members(candidates(), true),
+            LibraryReferenceStatus::Found(found) if found.archive_id == "a"
+        ));
+        assert!(matches!(
+            resolve_verified_duplicate_members(candidates(), false),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        assert!(matches!(
+            resolve_verified_duplicate_members(
+                vec![
+                    hit("a", virtual_name, &first),
+                    hit("b", "characters/creatures/other/carcass02.mtl", &second),
+                ],
+                true,
+            ),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        assert!(matches!(
+            resolve_verified_duplicate_members(
+                vec![hit("a", virtual_name, &first); MAX_IDENTICAL_MATERIAL_COPIES + 1],
+                true,
+            ),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        fs::write(&second, b"<Material Name='different-revision'/>").unwrap();
+        assert!(matches!(
+            resolve_verified_duplicate_members(candidates(), true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        fs::remove_file(&second).unwrap();
+        assert!(matches!(
+            resolve_verified_duplicate_members(candidates(), true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
     }
@@ -1317,8 +1381,8 @@ mod tests {
         assert!(matches!(
             resolve_verified_duplicate_members(
                 vec![
-                    hit("a", "objects/tree.mtl", &a),
-                    hit("b", "objects/tree.mtl", &b)
+                    hit("a", "objects/tree.xml", &a),
+                    hit("b", "objects/tree.xml", &b)
                 ],
                 true
             ),

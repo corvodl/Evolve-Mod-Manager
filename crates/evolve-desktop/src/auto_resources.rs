@@ -122,6 +122,27 @@ pub(crate) fn exact(
                                 hits.len()
                             ))
                         }
+                    } else if virtual_name.to_ascii_lowercase().ends_with(".mtl") {
+                        // The core resolver has already checked exact authored
+                        // path, selected installation, file size and SHA-256
+                        // equality. Do not guess between differing materials.
+                        let archives = hits
+                            .iter()
+                            .take(6)
+                            .map(|hit| hit.archive_name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if build.is_some() {
+                            Err(format!(
+                                "Conflicting or unverified material definitions in the selected Game installation: {virtual_name} ({} PAKs: {archives}). Export stopped rather than substituting a different material.",
+                                hits.len()
+                            ))
+                        } else {
+                            Err(format!(
+                                "Ambiguous material definitions across imported builds: {virtual_name} ({} PAKs: {archives}). Select the source game build before exporting.",
+                                hits.len()
+                            ))
+                        }
                     } else {
                         Err(format!("Ambiguous imported asset: {virtual_name}"))
                     }
