@@ -59,8 +59,8 @@ fn from_display(c:vec3<f32>)->vec3<f32>{
     return select(high,low,c<vec3<f32>(0.04045));
 }
 fn output_color(linear:vec3<f32>)->vec4<f32>{
-    // An sRGB attachment performs this encoding on write. Iced's non-sRGB
-    // web-colors window does not; match the sRGB offscreen capture explicitly.
+    // An sRGB attachment performs this encoding on write. For a non-sRGB
+    // fallback target, encode explicitly to match the sRGB offscreen capture.
     let color=select(linear,to_display(linear),composite.params.w>0.5);
     return vec4<f32>(color,1.0);
 }
