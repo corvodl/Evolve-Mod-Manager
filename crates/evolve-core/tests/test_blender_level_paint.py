@@ -95,7 +95,7 @@ class ExactTerrainLayerTests(unittest.TestCase):
     def test_source_transition_decodes_valid_png_sub_filters(self):
         ihdr=struct.pack(">IIBBBBB",2,1,8,6,0,0,0)
         sub=b"\x01\x03\x00\x00\xff\x04\x00\x00\x00"
-        image=(b"\x89PNG\\r\\n\x1a\\n" +
+        image=(b"\x89PNG\r\n\x1a\n" +
                png_chunk(b"IHDR",ihdr)+png_chunk(b"IDAT",zlib.compress(sub))+
                png_chunk(b"IEND",b""))
         _,count=source_transition_boundaries(image)
