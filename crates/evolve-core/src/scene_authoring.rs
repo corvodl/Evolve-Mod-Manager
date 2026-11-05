@@ -64,6 +64,11 @@ impl LayerAuthoringEdit {
     }
 }
 
+fn bounded_guid(s: &str) -> bool {
+    let raw = s.strip_prefix('{').and_then(|id| id.strip_suffix('}')).unwrap_or(s);
+    bounded_name(raw)
+}
+
 fn bounded_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
@@ -348,7 +353,7 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             transform,
             ..
         } => {
-            if !bounded_name(new_guid)
+            if !bounded_guid(new_guid)
                 || name.is_empty()
                 || name.len() > 128
                 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b" _-.()".contains(&b))
