@@ -9,6 +9,7 @@ from blender_terrain_blend import (
     TerrainBlendInputsMissing,
     get_layer_blending_value,
     bake_terrain_layer_color,
+    terrain_pass_alpha,
 )
 
 
@@ -31,6 +32,20 @@ class EvolveTerrainBlendTests(unittest.TestCase):
                                 height, alpha, factor, falloff,
                                 has_source_height=True, has_source_alpha=True),
                             recovered_formula(height, alpha, factor, falloff))
+
+    def test_original_terrain_pass_alpha_is_saturate_of_interpolator_minus_offset(self):
+        # Source expression found in original Terrain.cfxb's frag_custom_begin.
+        for interp, offset, expected in [
+            (0.0, 0.0, 0.0), (0.75, 0.25, 0.5),
+            (1.0, 0.5, 0.5), (1.0, -0.5, 1.0),
+            (0.1, 0.5, 0.0),
+        ]:
+            self.assertAlmostEqual(terrain_pass_alpha(interp, offset), expected)
+        for value in (math.inf, -math.inf, math.nan):
+            with self.assertRaises(TerrainBlendInputsMissing):
+                terrain_pass_alpha(value, 0.0)
+            with self.assertRaises(TerrainBlendInputsMissing):
+                terrain_pass_alpha(0.2, value)
 
     def test_zero_alpha_cannot_invent_a_layer(self):
         self.assertEqual(get_layer_blending_value(
