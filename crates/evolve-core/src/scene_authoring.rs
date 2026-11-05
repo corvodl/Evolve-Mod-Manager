@@ -67,7 +67,8 @@ impl LayerAuthoringEdit {
 fn authored_display_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b" _-.()#".contains(&b))
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" _-.()#".contains(&b))
 }
 
 fn bounded_guid(s: &str) -> bool {
@@ -194,10 +195,13 @@ fn entity_references(events: &[Event<'static>]) -> Result<HashSet<usize>, SceneE
     for (index, event) in events.iter().enumerate() {
         if let Event::Start(element) | Event::Empty(element) = event {
             if element.name().as_ref().eq_ignore_ascii_case(b"Entity")
-                && parents.last().is_some_and(|name| name.eq_ignore_ascii_case(b"Entities"))
+                && parents
+                    .last()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(b"Entities"))
                 && parents.iter().any(|name| {
                     [b"Object".as_slice(), b"Entity", b"Brush", b"Prefab"]
-                        .iter().any(|tag| name.eq_ignore_ascii_case(tag))
+                        .iter()
+                        .any(|tag| name.eq_ignore_ascii_case(tag))
                 })
             {
                 let mut has_id = false;
@@ -446,9 +450,11 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             if value(source_start, b"Type")?
                 .is_none_or(|value| !value.eq_ignore_ascii_case("Brush"))
                 || value(source_start, b"Prefab")?.is_none()
-                || events.iter().take(end).skip(start + 1).any(|event| {
-                    placement_tag(event) && opening(event)
-                })
+                || events
+                    .iter()
+                    .take(end)
+                    .skip(start + 1)
+                    .any(|event| placement_tag(event) && opening(event))
             {
                 return Err(SceneError::Xml(
                     "Select an authored Brush placement as the source template for geometry insertion".into(),
@@ -456,7 +462,11 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             }
             let normalized = transform.normalize()?;
             let fmt = |parts: &[f32]| {
-                parts.iter().map(f32::to_string).collect::<Vec<_>>().join(",")
+                parts
+                    .iter()
+                    .map(f32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
             };
             let mut cloned = events[start..=end].to_vec();
             // Never carry an unrelated old mesh's explicit material override
@@ -695,13 +705,17 @@ mod tests {
     #[test]
     fn changing_actual_entity_ignores_id_only_nested_references() {
         let source = br#"<ObjectLayer><LayerObjects><Object Type="Entity" Id="actor" Name="Actor" Pos="1,2,3"/><Object Type="ReverbVolume" Id="reverb" Name="Volume"><Entities><Entity Id="actor"/></Entities></Object></LayerObjects></ObjectLayer>"#;
-        let transformed = edit_layer_bytes(source, &LayerAuthoringEdit::Transform {
-            guid: "actor".into(),
-            transform: Transform {
-                position: [5.0, 6.0, 7.0],
-                ..Transform::default()
-            }
-        }).unwrap();
+        let transformed = edit_layer_bytes(
+            source,
+            &LayerAuthoringEdit::Transform {
+                guid: "actor".into(),
+                transform: Transform {
+                    position: [5.0, 6.0, 7.0],
+                    ..Transform::default()
+                },
+            },
+        )
+        .unwrap();
         let scene = parse_level_scene(&[("edited", &transformed)]).unwrap();
         assert_eq!(scene.objects.len(), 2);
         assert_eq!(scene.objects[0].local.position, [5.0, 6.0, 7.0]);
@@ -739,7 +753,13 @@ mod tests {
             name: "New stone copy".into(),
         };
         let doubled = edit_layer_bytes(text.as_bytes(), &duplicate).unwrap();
-        assert_eq!(parse_level_scene(&[("doubled", &doubled)]).unwrap().objects.len(), 3);
+        assert_eq!(
+            parse_level_scene(&[("doubled", &doubled)])
+                .unwrap()
+                .objects
+                .len(),
+            3
+        );
     }
 
     #[test]
@@ -764,8 +784,7 @@ mod tests {
             .unwrap();
         assert_eq!(added.model, "objects/rocks/stone.cgf");
         assert_eq!(added.local.position, [15.0, 20.0, 30.0]);
-        assert!(String::from_utf8_lossy(&bytes)
-            .contains("Prefab=\"objects/rocks/stone.cgf\""));
+        assert!(String::from_utf8_lossy(&bytes).contains("Prefab=\"objects/rocks/stone.cgf\""));
         assert!(String::from_utf8_lossy(&bytes).contains("Type=\"Brush\""));
         let invalid = LayerAuthoringEdit::Insert {
             anchor_guid: "first".into(),
