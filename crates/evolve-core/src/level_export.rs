@@ -1423,7 +1423,7 @@ impl Assembler {
 /// A static CDF attachment is a separate real render object, with its
 /// source-authored relative transform and original material binding.
 /// Skeletal sockets are NOT inferred from an attachment name.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct CdfRenderPart {
     name: String,
     binding: String,
