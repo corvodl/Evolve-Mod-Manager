@@ -25,6 +25,23 @@ def _sat(value):
     return min(max(value, 0.0), 1.0)
 
 
+
+def terrain_pass_alpha(interpolated_source_channel, ambient_opacity):
+    """Recover Terrain.cfxb's pre-blend alpha arithmetic, not its CPU input.
+
+    Terrain.cfxb: pPass.fAlpha = saturate(pPass.IN[0x103][0x1fe]
+                                        - AmbientOpPB[0x200]).
+    0x103/0x1fe designate the packed vertex-to-fragment interpolator
+    component in the parsed shader stream; the original terrain vertex
+    generator and corresponding D3D11 input layout are NOT verified.
+    Values must be extracted from an authenticated matching draw. Do not
+    substitute categorical LayerIds, neighboring coverage, or fake vertex alpha.
+    """
+    raw = _finite(interpolated_source_channel, "terrain interpolator")
+    offset = _finite(ambient_opacity, "AmbientOpPB alpha")
+    return _sat(raw - offset)
+
+
 def get_layer_blending_value(
     height_red, vertex_alpha, blend_factor, blend_falloff, *,
     has_source_height=False, has_source_alpha=False,
