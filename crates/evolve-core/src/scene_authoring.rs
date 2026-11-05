@@ -387,28 +387,45 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             {
                 return Err(SceneError::Limits);
             }
+            // Evolve's authored map geometry is an <Object Type="Brush">
+            // with a Prefab source-mesh reference, not an invented <Object
+            // Geometry="..."/> record. Clone only a real same-layer Brush
+            // template so native Layer and renderer/collision metadata survive.
+            let source_start = match &events[start] {
+                Event::Start(element) | Event::Empty(element) => element,
+                _ => return Err(SceneError::Limits),
+            };
+            if value(source_start, b"Type")?
+                .is_none_or(|value| !value.eq_ignore_ascii_case("Brush"))
+                || value(source_start, b"Prefab")?.is_none()
+                || events.iter().take(end).skip(start + 1).any(|event| {
+                    placement_tag(event) && opening(event)
+                })
+            {
+                return Err(SceneError::Xml(
+                    "Select an authored Brush placement as the source template for geometry insertion".into(),
+                ));
+            }
             let normalized = transform.normalize()?;
             let fmt = |parts: &[f32]| {
-                parts
-                    .iter()
-                    .map(f32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
+                parts.iter().map(f32::to_string).collect::<Vec<_>>().join(",")
             };
-            let mut element = BytesStart::new("Object");
-            element.push_attribute(("Id", new_guid.as_str()));
-            element.push_attribute(("Name", name.as_str()));
-            element.push_attribute(("Geometry", model.as_str()));
-            if !object.parent.is_empty() {
-                element.push_attribute(("Parent", object.parent.as_str()));
-            }
-            let position = fmt(&normalized.position);
-            let rotation = fmt(&normalized.quaternion);
-            let scale = fmt(&normalized.scale);
-            element.push_attribute(("Pos", position.as_str()));
-            element.push_attribute(("Rotate", rotation.as_str()));
-            element.push_attribute(("Scale", scale.as_str()));
-            events.insert(end + 1, Event::Empty(element.into_owned()));
+            let mut cloned = events[start..=end].to_vec();
+            // Never carry an unrelated old mesh's explicit material override
+            // to a new Prefab. The native model's default material remains.
+            cloned[0] = replace_start(
+                &cloned[0],
+                &[
+                    ("Id", new_guid.to_owned()),
+                    ("Name", name.to_owned()),
+                    ("Prefab", model.to_owned()),
+                    ("Material", String::new()),
+                    ("Pos", fmt(&normalized.position)),
+                    ("Rotate", fmt(&normalized.quaternion)),
+                    ("Scale", fmt(&normalized.scale)),
+                ],
+            )?;
+            events.splice(end + 1..end + 1, cloned);
         }
         LayerAuthoringEdit::Transform { guid, transform } => {
             let normalized = edit_level_transform(&original, guid, *transform)?
@@ -604,7 +621,7 @@ pub fn edit_native_layer_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    const XML: &[u8] = br#"<ObjectLayer><LayerObjects><Object Id="first" Name="first" Geometry="objects/rock.cgf" Pos="1,2,3" /><Object Id="spawn" Name="wild" EntityClass="CreatureSpawn" Pos="5,6,7"><Properties HomeAreaName="area" bSpawnOnRoundStart="0" InitialHealthPercent="100"><Populations Population1="Trapjaw" Population2="" Population3="" Population4=""/><ZooKeeper fSpawnWeight="1" bZooKeeperEnabled="1" sZooKeeperGroup="Creatures"/></Properties></Object><Object Id="shape" Name="area" EntityClass="ZooKeeperShape"><Area/><Points><Point Pos="0,0,0"/><Point Pos="5,0,0"/><Point Pos="5,5,0"/></Points></Object></LayerObjects></ObjectLayer>"#;
+    const XML: &[u8] = br#"<ObjectLayer><LayerObjects><Object Type="Brush" Layer="Natural" Id="first" Name="first" Prefab="objects/rock.cgf" Pos="1,2,3" /><Object Id="spawn" Name="wild" EntityClass="CreatureSpawn" Pos="5,6,7"><Properties HomeAreaName="area" bSpawnOnRoundStart="0" InitialHealthPercent="100"><Populations Population1="Trapjaw" Population2="" Population3="" Population4=""/><ZooKeeper fSpawnWeight="1" bZooKeeperEnabled="1" sZooKeeperGroup="Creatures"/></Properties></Object><Object Id="shape" Name="area" EntityClass="ZooKeeperShape"><Area/><Points><Point Pos="0,0,0"/><Point Pos="5,0,0"/><Point Pos="5,5,0"/></Points></Object></LayerObjects></ObjectLayer>"#;
 
     #[test]
     fn edited_cryxml_source_remains_binary_and_matches_native_reader() {
@@ -648,6 +665,9 @@ mod tests {
             .unwrap();
         assert_eq!(added.model, "objects/rocks/stone.cgf");
         assert_eq!(added.local.position, [15.0, 20.0, 30.0]);
+        assert!(String::from_utf8_lossy(&bytes)
+            .contains("Prefab=\"objects/rocks/stone.cgf\""));
+        assert!(String::from_utf8_lossy(&bytes).contains("Type=\"Brush\""));
         let invalid = LayerAuthoringEdit::Insert {
             anchor_guid: "first".into(),
             new_guid: "another-id".into(),
