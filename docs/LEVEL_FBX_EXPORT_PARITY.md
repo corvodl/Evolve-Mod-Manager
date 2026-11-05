@@ -367,3 +367,63 @@ if capture is unavailable), and the corresponding map's
 `TerrainTexture.pak`/RGB24 tile files. Map-specific material and texture PAKs
 must match the same game installation. No proprietary game files or captured
 shaders should be committed to the public repository.
+
+
+## Authenticated Tutorial shader-cache and compiled terrain audit (November 4, 2026)
+
+The owner supplied original signed `shadercache.pak`, `level.pak`,
+and `terraintexture.pak`. They were signature-verified with the owner's
+original **public** Stage 2 RSA key and extracted **read-only**. No archive
+bytes, shader instructions, encryption material, or original level assets
+are included in the public repository.
+
+- `shadercache.pak`: **869 verified members**, including packed
+  `CGPShaders/Terrain@TerrainLayerPS.fxcb`,
+  `CGPShaders/Terrain@TerrainPS.fxcb`, and
+  `CGVShaders/Terrain@TerrainLayerVS.fxcb`.
+  Their `CPCK` bytecode containers contain `DXBC` strings, but candidate
+  headers are **not valid standalone Direct3D shader containers** (the
+  required version field fails inspection). Treat shader variants as
+  *present but not instruction-disassembled*. A D3D11 runtime shader
+  capture or an independently verified container decoder is required
+  before claiming that the compiled instructions match the parsed shader.
+- `level.pak`: **388 verified members**, including original
+  `terrain/terrain.dat` (version 25) and the Tutorial level metadata.
+  This compiled level PAK does **not** itself contain
+  `Heightmap.dat` or the native paint-splat/alpha interpolator.
+- `terraintexture.pak`: four raw **1024×1024 RGB** baked ground-color
+  tiles. Their bytes exactly match the earlier owner-supplied
+  Tutorial `terraintexture.zip` tiles; a match is a texture-provenance
+  check, not native material-blending parity.
+- The separately supplied original Tutorial `Heightmap.dat` has
+  512×512 categorical LayerId paint data and a sized
+  `TerrainCompiledData` tail. The uploaded `level.pak` compiled
+  terrain differs in other portions, but **all 244 recoverable
+  original finest terrain sectors** contain precisely matching
+  33×33 packed source vertices and matching local SurfaceType
+  palettes. The other 12 finest sectors were **not** recovered by
+  this parser; no missing source geometry or alpha values are
+  fabricated. Do not claim that the two entire compiled files are
+  identical.
+- The verified-format v25/v7 read-only sector decoder lives at
+  `crates/evolve-core/src/blender_compiled_terrain.py`. It recovers
+  a **4-bit per-vertex local SurfaceType palette selector** (with
+  reserved/unsupported selectors kept unknown), NOT per-fragment
+  `pPass.fAlpha`. Its `source_surface_types()` is explicitly a
+  categorical diagnostic raster, and its sector-by-sector comparison
+  must be used only on already authenticated original source data.
+  Synthetic fixtures, mutation/revision mismatches, and fail-closed
+  parsing are covered by CI.
+
+**Native blending remains blocked.** Parsed `Terrain.cfxb` derives
+`pPass.fAlpha` from a packed interpolated shader input minus
+`AmbientOpPB` alpha; this is not equivalent to categorical
+`LayerId` or the packed surface-type nibble. Neither archive
+revealed independently verified continuous alpha for every terrain
+pixel. A same-build **D3D11 draw/frame capture with input layout,
+vertex buffers, pixel-shader bytecode and bound terrain resources**
+would let us validate the compiled operation and establish the
+actual per-pixel inputs. Only after such evidence should automatic
+FBX baking mix the complete authored terrain layers. Until then,
+preserve original baked RGB, imported DDS sources and categorical
+LayerId/boundary PNG sidecars without claiming native transitions.
