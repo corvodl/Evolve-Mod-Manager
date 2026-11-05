@@ -140,6 +140,27 @@ level mesh, terrain material, or texture was exported.
   verify no other instance moves, and verify all material pieces move together.
   GLB node-count tests alone are insufficient for FBX acceptance.
 
+## Original Tutorial CDF reference acceptance
+
+The original owner-provided `Tutorial.zip` holds **27 authored .cdf
+references across 7 original layer files**, naming **19 different character,
+creature and dropship CDFs**. The layer ZIP contains references, not the
+actual `.cdf`, `.skinm`, `.chrm` or rig dependencies: those must be resolved
+from the same selected game build's other PAKs.
+
+An opt-in CI-compatible regression can inspect the user's original ZIP
+without including any proprietary input in this repository:
+
+```powershell
+$env:EVOLVE_TEST_TUTORIAL_ZIP = "C:\Path\To\Your\Tutorial.zip"
+python -m unittest discover -s crates/evolve-core/tests -p "test_real_tutorial_cdf_sources.py"
+```
+
+The reference test checks source-path provenance, NOT CDF render completeness
+or game-native arm attachment. Full acceptance still requires every selected
+CDF to be rendered from its exact same-installation source and checked in
+Blender after FBX reimport.
+
 ## Static CDF components and original bone sockets (November 4)
 
 - `.cdf` level placements now resolve their original character definitions and
