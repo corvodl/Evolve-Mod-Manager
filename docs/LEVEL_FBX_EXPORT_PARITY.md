@@ -293,3 +293,38 @@ required to establish native paint transition parity.
   reporting missing assets; never silently substitute textures.
 
 No game files, game PAKs or proprietary SDK binaries should be committed.
+
+
+## Recovered terrain blend scalar (November 4, 2026)
+
+The authenticated owner-supplied `shadersbin.pak` has a parsed
+`D3D11/ShadeLib.cfib` implementation of `GetLayerBlendingValue`.
+`D3D11/Terrain.cfxb` invokes it with the bump/height texture sampler,
+`pPass.fAlpha`, authored `BlendFactor`, `BlendFalloff`, and the
+terrain-specific branch. The recovered scalar performs:
+
+1. `mask = saturate(saturate(alpha * 2 - 1) + bump_height_red)`
+2. `weight = saturate(pow(alpha * mask * (1 + BlendFactor), BlendFalloff))`
+
+The source-backed **scalar** is implemented in
+`crates/evolve-core/src/blender_terrain_blend.py` and tested with
+synthetic inputs. This function deliberately requires both authenticated
+height samples and the shader's genuine `pPass.fAlpha` at the point of
+baking. The Level Editor WGSL now uses the same scalar only when a
+source height map exists; without it the old categorical preview coverage
+remains clearly provisional.
+
+**Do not treat this as completed FBX ground-color baking.**
+The currently exported `_TerrainLayerIDs.png` and
+`_TerrainBoundaries.png` describe categorical IDs and neighbor
+boundaries, not original `pPass.fAlpha` values. Fabricating paint weights
+from those images would defeat exact Evolve parity. No fabricated blended
+colors are written to FBX, and all separate terrain tiles, original
+material paths, and original paint sidecars remain preserved.
+
+Additional acceptance requirements: recover the exact original alpha
+source/splat mask from the shader's producer and terrain data; check
+projection, texture binding and multi-layer color ordering against
+the game; compare compiled D3D11 variant bytecode once
+`shadercache.pak` is available. The same-build original shader PAKs
+are private read-only inspection inputs and are not checked into Git.
