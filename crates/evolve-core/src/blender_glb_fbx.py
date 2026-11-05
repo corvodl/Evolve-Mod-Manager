@@ -17,6 +17,10 @@ from blender_fbx_safety import (prepare_export_materials, validate_blender_meshe
 from blender_static_fbx_basis import original_static_bounds, verify_static_world_bounds
 from blender_level_paint import (extract_original_layer_id_png,
                                  layer_id_sidecar_path, publish_layer_id_sidecar)
+from blender_level_transition_edges import (
+    source_transition_boundaries, transition_sidecar_path,
+    publish_transition_sidecar
+)
 from blender_level_roundtrip import (mesh_snapshot, light_snapshot,
                                      verify_mesh_snapshot, verify_light_snapshot,
                                      verify_independent_movement)
@@ -58,12 +62,19 @@ def run():
         doc = json.loads(glb_file.read(json_len))
     level_scene = doc.get('extras', {}).get('source') == 'CryEngine Stage 2 level'
     original_paint_png = (extract_original_layer_id_png(source) if level_scene else None)
+    source_edge_count = 0
+    transition_png = None
     if original_paint_png is not None:
-        target = layer_id_sidecar_path(destination)
-        if target.exists() and (not target.is_file() or
-                                target.read_bytes() != original_paint_png):
-            raise RuntimeError('Terrain paint sidecar destination already exists: ' +
-                               str(target))
+        transition_png, source_edge_count = source_transition_boundaries(original_paint_png)
+        marker=doc["extras"]["original_categorical_terrain_paint"]
+        if marker.get("source_boundary_edges") != source_edge_count:
+            raise RuntimeError("Original paint boundary count disagrees with source LayerId pixels")
+        for target, payload in (
+                (layer_id_sidecar_path(destination), original_paint_png),
+                (transition_sidecar_path(destination), transition_png)):
+            if target.exists() and (not target.is_file() or
+                                    target.read_bytes() != payload):
+                raise RuntimeError('Original terrain sidecar already exists: ' + str(target))
     if level_scene and combine_meshes:
         raise RuntimeError('Level FBX export must keep source placements separately movable')
     # Multi-part original CGFs already have a parent placement node in glTF.
@@ -246,12 +257,14 @@ def run():
     # losslessly; keep the exact source bitmap as a deterministic sidecar.
     if original_paint_png is not None:
         publish_layer_id_sidecar(destination, original_paint_png)
+        publish_transition_sidecar(destination, transition_png)
     print(json.dumps({
         "fbx_optimization": optimized,
         "meshes": exported_mesh_count,
         "lights": exported_light_count,
         "roundtrip_verified_meshes": audited_geometry_count,
         "independent_movement_checked": audited_movable,
+        "original_paint_boundary_edges": source_edge_count,
         "untextured_geometry_without_uv0": int(uvless),
         "editable_placement_groups": exported_placement_groups,
         "original_multi_mesh_groups": len(exported_source_groups),
