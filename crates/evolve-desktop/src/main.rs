@@ -8626,82 +8626,41 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LevelApplyTransform => {
-            if state.level_read_only {
-                state.status = "Imported levels are read-only. Use File → Open as Modding Project to create an editable copy.".into();
-                return Task::none();
-            }
-            let Some(index) = state.level_selected else {
-                state.status = "Select a placement to edit.".into();
-                return Task::none();
-            };
-            let Some(scene) = state.level_scene.clone() else {
-                state.status = "Inspect the source level first.".into();
-                return Task::none();
-            };
-            let Some(object) = scene.objects.get(index) else {
-                state.status = "Selected level placement is no longer available.".into();
-                return Task::none();
+            // A transform is a committed source edit, not a viewport-only
+            // illusion. The source owner determines which project .lyr to
+            // patch; other layers and read-only source PAKs are untouched.
+            let (object, source) = match selected_project_object_source(state) {
+                Ok(value) => value,
+                Err(reason) => {
+                    state.status = reason;
+                    return Task::none();
+                }
             };
             if object.kind.eq_ignore_ascii_case("Vegetation") {
-                state.status = "Binary vegetation instances are read-only; modify an authored XML layer object instead.".into();
+                state.status = "Use Save vegetation position/scale for the owning VegetationMap.dat.".into();
                 return Task::none();
             }
-            let id = object.id.clone();
-            let previous = object.local;
-            let requested = match level_workspace::parse_transform(
+            let transform = match level_workspace::parse_transform(
                 &state.level_edit_position,
                 &state.level_edit_rotation,
                 &state.level_edit_scale,
             ) {
                 Ok(value) => value,
-                Err(error) => {
-                    state.status = error;
+                Err(reason) => {
+                    state.status = reason;
                     return Task::none();
                 }
             };
-            match evolve_core::edit_level_transform(&scene, &id, requested) {
-                Ok(edited) => {
-                    let applied = edited.objects[index].local;
-                    if applied != previous {
-                        // The authored transform map was frozen at load; never
-                        // replace its originals with an edited/undone value.
-                        if !state.level_original_transforms.contains_key(&id) {
-                            state.status = "Original placement missing; reload source.".into();
-                            return Task::none();
-                        }
-                        if state.level_undo.len() >= 64 {
-                            state.level_undo.pop_front();
-                        }
-                        track_level_dirty(state, &id, previous, applied);
-                        state.level_undo.push_back(LevelTransformDiff {
-                            guid: id,
-                            old_local: previous,
-                            new_local: applied,
-                        });
-                        state.level_redo.clear();
-                        if let (Some(model), Some(picks)) = (&state.model, &state.level_picks)
-                            && let Some(reprojected) = level_scene_renderer::reproject_after_edit(
-                                model, picks, &scene, &edited,
-                            )
-                        {
-                            state
-                                .viewer_gpu_remaining
-                                .store(1, std::sync::atomic::Ordering::Relaxed);
-                            state.model = Some(Arc::new(reprojected));
-                        }
-                        if let Some(world) = &state.level_world_source {
-                            state.level_world_source = Some(Arc::new(world.updated(&edited)));
-                        }
-                        state.level_scene = Some(Arc::new(edited));
-                        refresh_wildlife_visibility(state);
-                        sync_level_fields(state);
-                        state.status =
-                            "Local transform preview updated; export a separate layer to save it."
-                                .into();
-                    }
-                }
-                Err(error) => state.status = format!("Invalid level transform: {error}"),
-            }
+            return submit_level_project_edit(
+                state,
+                source,
+                ProjectLevelMutation::Xml(
+                    evolve_core::scene_authoring::LayerAuthoringEdit::Transform {
+                        guid: object.id,
+                        transform,
+                    },
+                ),
+            );
         }
         Message::LevelExportEdits => {
             if state.level_read_only {
