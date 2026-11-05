@@ -177,10 +177,10 @@ pub use signed_pak::{
 };
 pub use skin_preview::{VerifiedCafAssembly, VerifiedCafSkin};
 pub use terrain::{
-    MAX_RENDER_GRID, TerrainError, TerrainInfo, TerrainLayerDefinition, TerrainMesh,
-    TerrainBrushEdit, TerrainPaintMap, TerrainSurfaceType, TerrainTextureHeader, TerrainTextureLayer,
-    decode_terrain_bytes, decode_terrain_paint_bytes, edit_terrain_bytes, export_terrain_obj, read_terrain,
-    read_terrain_paint, read_terrain_texture_header,
+    MAX_RENDER_GRID, TerrainBrushEdit, TerrainError, TerrainInfo, TerrainLayerDefinition,
+    TerrainMesh, TerrainPaintMap, TerrainSurfaceType, TerrainTextureHeader, TerrainTextureLayer,
+    decode_terrain_bytes, decode_terrain_paint_bytes, edit_terrain_bytes, export_terrain_obj,
+    read_terrain, read_terrain_paint, read_terrain_texture_header,
 };
 pub use terrain_tiles::{
     TerrainTextureAtlas, read_terrain_rgb24_tiles, read_terrain_texture_atlas,
