@@ -271,8 +271,25 @@ fn sample_source_albedo(uv:vec2<f32>)->vec4<f32> {
   return textureSampleLevel(albedo,tex_sampler,uv,safe_lod);
 }
 
-// The game's Terrain.Layer blend: each painted layer adds its signed detail to
-// the display-encoded baked color, weighted by height. Returns display color.
+// The original GetLayerBlendingValue body is recovered from authenticated
+// shadersbin.pak / D3D11/ShadeLib.cfib (FXB0 parsed representation).
+// Terrain.cfxb calls it with bumpHeightMapSampler, pPass.fAlpha,
+// authored BlendFactor/BlendFalloff, and bTerrainLayer=true.
+// The *inputs* still need native shader-cache validation: our vtx_alpha
+// is bilinear coverage reconstructed from categorical LayerId samples.
+// The returned scalar operation itself follows Evolve's recovered source.
+fn evolve_terrain_blend_value(
+  blend_map_red:f32, vtx_alpha:f32, blend_factor:f32, blend_falloff:f32
+)->f32 {
+  let terrain_blend_map=clamp(
+    clamp(vtx_alpha*2.0-1.0,0.0,1.0)+blend_map_red,0.0,1.0);
+  let blend_fac=vtx_alpha*terrain_blend_map*(1.0+blend_factor);
+  return clamp(pow(blend_fac,blend_falloff),0.0,1.0);
+}
+
+// Each painted layer adds signed material detail to the source baked color.
+// Native layer projection, paint-alpha reconstruction and overall shading
+// remain unverified; the recovered scalar is NOT full Terrain.Layer parity.
 fn undo_srgb(c:vec3<f32>)->vec3<f32> {
   let high=pow(max(c,vec3<f32>(0.0)),vec3<f32>(1.0/2.4))*1.055-vec3<f32>(0.055);
   return select(high,c*12.92,c<vec3<f32>(0.003131));
@@ -334,10 +351,15 @@ fn blended_terrain(input:Output,baked:vec3<f32>)->vec3<f32> {
       uv=mix(at,previous,clamp(over/max(over+previous_gap,0.0001),0.0,1.0));
     }
     let detail=textureSampleLevel(source_terrain_layers,source_terrain_repeat,uv,layer,lod).rgb;
-    let height=textureSampleLevel(source_terrain_normals,source_terrain_repeat,uv,layer,lod).b;
-    let boost=clamp(height+clamp(2.0*weight-1.0,0.0,1.0),0.0,1.0);
+    // Original BumpHeight sampler's red channel was packed into the GPU
+    // normal/height array's blue channel by upload_terrain_layers.
+    // Do not interpret the normal's red (tangent X) as height.
+    let height_red=textureSampleLevel(source_terrain_normals,source_terrain_repeat,uv,layer,lod).b;
     let blend=source_terrain.blend[layer];
-    let alpha=min(pow(max(weight*boost*(1.0+blend.x),0.0001),blend.y),1.0);
+    // Missing exact source height maps cannot produce native blend weights.
+    // Use categorical preview coverage rather than a fabricated height sample.
+    let alpha=select(weight,
+      evolve_terrain_blend_value(height_red,weight,blend.x,blend.y),blend.w>0.5);
     let layered=clamp(baked+(detail-vec3<f32>(0.5))*config.w,vec3<f32>(0.0),vec3<f32>(1.0));
     color=mix(color,layered,alpha);
     let normal=textureSampleLevel(source_terrain_normals,source_terrain_repeat,uv,layer,lod).rg*2.0-vec2<f32>(1.0);
