@@ -268,8 +268,16 @@ pub(super) fn placement_editor<'a>(
         ]
         .spacing(6),
         text("Add a geometry instance in this same source layer").size(12),
-        edit_field("New object name", &forms.new_object_name, TextField::NewObjectName),
-        edit_field("Exact model path (.cgf/.cdf/...)", &forms.new_object_model, TextField::NewObjectModel),
+        edit_field(
+            "New object name",
+            &forms.new_object_name,
+            TextField::NewObjectName
+        ),
+        edit_field(
+            "Exact model path (.cgf/.cdf/...)",
+            &forms.new_object_model,
+            TextField::NewObjectModel
+        ),
         crate::design::button("Add geometry to Modding project")
             .on_press(Message::LevelAddGeometry),
         text("Each action saves the owning LYR/XML project member with a verified backup.")
