@@ -590,7 +590,7 @@ impl ViewportHdr {
             label: Some("HDR bloom blend, exposure, bypass unlit, output encoding"),
             contents: bytemuck::cast_slice(&[
                 // sRGB attachments encode linear shader output automatically;
-                // Iced's web-colors surface is non-sRGB and needs explicit encoding.
+                // only a non-sRGB fallback target needs explicit encoding.
                 [BLOOM_SCALE, 1.0, 0.0, needs_display_encoding(format)],
                 [1.0, 1.0, 1.0, 4.0],
                 [0.18, 1.0, 1.0, 0.0],
