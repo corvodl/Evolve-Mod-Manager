@@ -163,6 +163,34 @@ level mesh, terrain material, or texture was exported.
   bone-socket refusal. Full Stage 2 and 2012 rig/socket placements need
   actual same-build map assets and Blender round-trip acceptance.
 
+## Verified Tutorial transition baseline (original user-supplied source)
+
+Read-only inspection of the original `Tutorial/leveldata/heightmap.dat` from
+the privately provided Tutorial ZIP confirms a 512x512 paint bitmap with
+**14 distinct categorical LayerIds**. There are **35,359 orthogonally adjacent
+paint-ID changes** across **49 distinct source LayerId pairs**; the pair
+LayerIds 22 / 24 alone has 4,367 source-border edges.
+
+The exporter now retains this exact categorical boundary inventory in the
+GLB `original_categorical_terrain_paint` metadata, rather than treating
+per-triangle material grouping as full native transition rendering.
+
+An opt-in Rust acceptance test compares those values against an original
+`Heightmap.dat` without including any game data in CI. Example, from the
+user's own extracted map on Windows PowerShell:
+
+```powershell
+$env:EVOLVE_TEST_TUTORIAL_HEIGHTMAP = "C:\Games\ModdedEvolve\EvolveGame\Game\levels\Tutorial\leveldata\heightmap.dat"
+cargo test -p evolve-core tutorial_original_heightmap_source_transitions_opt_in -- --nocapture
+```
+
+Use the exact Tutorial build that produced the owner-supplied reference.
+Other maps or builds may legitimately use different IDs and boundary counts.
+The test verifies SOURCE edges and source bitmap orientation, not Evolve's
+original 3.5.x splat/height/POM/normal-distance transition equations. A
+game-capture comparison at matching coordinates and daylight is still
+required to establish native paint transition parity.
+
 ## Blender reimport and actual map acceptance (November 4)
 
 - Every Level Editor FBX export now performs a **forced Blender FBX
