@@ -1,7 +1,7 @@
 //! Offscreen Level Editor frame capture for visual parity checks. Ignored by
 //! default: it reads a real imported library, which is never distributed, and
 //! writes PNGs only to the folder named by EVOLVE_CAPTURE_OUT.
-use crate::{level_camera, level_library, viewport_hdr, world_instances};
+use crate::{level_camera, level_library, level_scene_renderer, viewport_hdr, world_instances};
 use evolve_core::imported_library;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -41,7 +41,7 @@ fn capture_real_map_views() {
         })
         .cloned()
         .unwrap();
-    let map = level_library::open(archive, 0).unwrap();
+    let map = level_library::open(archive.clone(), 0).unwrap();
     for note in map.diagnostics.iter().filter(|note| {
         note.contains("global probe")
             || note.contains("looping particles")
@@ -62,7 +62,43 @@ fn capture_real_map_views() {
         println!("DIAG {note}");
     }
     let assembled = map.full_scene.as_ref().unwrap();
-    let world = assembled.world.clone();
+    let mut world = assembled.world.clone();
+    if std::env::var_os("EVOLVE_CAPTURE_WILDLIFE").is_some() {
+        let (wildlife, report) =
+            level_scene_renderer::assemble_wildlife(&archive, map.scene.as_ref().unwrap()).unwrap();
+        println!("WILDLIFE {}", report.status());
+        for note in report.unresolved_populations {
+            println!("UNRESOLVED {note}");
+        }
+        let mut merged = (*world).clone();
+        merged.groups.retain(|group| {
+            group.mesh.info.format != "Wildlife spawn location marker (editor only)"
+        });
+        merged.groups.extend(wildlife.groups.iter().cloned());
+        if std::env::var_os("EVOLVE_CAPTURE_WILDLIFE_ONLY").is_some() {
+            // Diagnostic capture only: remove regular world meshes and
+            // vegetation so authored spawn models can be inspected unobscured.
+            let scene = map.scene.as_ref().unwrap();
+            merged.groups.retain(|group| {
+                group.instances.iter().any(|instance| {
+                    instance.object_index == usize::MAX
+                        || scene
+                            .objects
+                            .get(instance.object_index)
+                            .is_some_and(|object| object.is_wildlife_spawn())
+                })
+            });
+        }
+        merged.wildlife_distances = wildlife.wildlife_distances;
+        merged.wildlife_shapes = wildlife.wildlife_shapes.clone();
+        merged.wildlife_links = wildlife.wildlife_links.clone();
+        merged.instance_count = merged
+            .groups
+            .iter()
+            .map(|group| group.instances.len())
+            .sum();
+        world = std::sync::Arc::new(merged);
+    }
     let terrain = map
         .terrain
         .as_ref()
@@ -208,6 +244,7 @@ fn capture_real_map_views() {
             renderer.draw(&mut pass);
             renderer.draw_spotlight_beams(&mut pass);
             renderer.draw_light_points(&mut pass);
+            renderer.draw_wildlife_overlay(&mut pass);
         }
         renderer.draw_water(&mut encoder, hdr.scene(), &depth, None);
         hdr.composite(

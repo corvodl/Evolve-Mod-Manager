@@ -112,6 +112,17 @@ fn rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
     let applied = mult(mult(q, pure), [q[0], -q[1], -q[2], -q[3]]);
     [applied[1], applied[2], applied[3]]
 }
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WildlifeMetadata {
+    pub spawn_weight: Option<f32>,
+    pub enabled: Option<bool>,
+    pub group: String,
+    pub spawn_on_round_start: Option<bool>,
+    pub initial_health_percent: Option<f32>,
+    pub use_terrain_height: Option<bool>,
+    pub restrict_species_to_area: Option<bool>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlacedObject {
     pub id: String,
@@ -133,6 +144,8 @@ pub struct PlacedObject {
     /// Local-space polygon points authored on a ZooKeeperShape.
     #[serde(default)]
     pub shape_points: Vec<[f32; 3]>,
+    #[serde(default)]
+    pub wildlife: WildlifeMetadata,
 }
 impl PlacedObject {
     pub fn is_wildlife_spawn(&self) -> bool {
@@ -288,6 +301,7 @@ fn parse_element(
         populations: Vec::new(),
         home_area: String::new(),
         shape_points: Vec::new(),
+        wildlife: WildlifeMetadata::default(),
     }))
 }
 
@@ -303,10 +317,37 @@ fn scan_wildlife_child(
         return Ok(());
     };
     let object = &mut objects[index];
+    let boolean = |key: &[u8]| -> Result<Option<bool>, SceneError> {
+        Ok(
+            attr(e, key)?.and_then(|value| match value.to_ascii_lowercase().as_str() {
+                "1" | "true" => Some(true),
+                "0" | "false" => Some(false),
+                _ => None,
+            }),
+        )
+    };
+    let finite = |key: &[u8]| -> Result<Option<f32>, SceneError> {
+        Ok(attr(e, key)?
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite()))
+    };
     if object.kind.eq_ignore_ascii_case("CreatureSpawn")
         && e.name().as_ref().eq_ignore_ascii_case(b"Properties")
     {
         object.home_area = attr(e, b"HomeAreaName")?.unwrap_or_default();
+        object.wildlife.spawn_on_round_start = boolean(b"bSpawnOnRoundStart")?;
+        object.wildlife.initial_health_percent = finite(b"InitialHealthPercent")?;
+    } else if object.kind.eq_ignore_ascii_case("CreatureSpawn")
+        && e.name().as_ref().eq_ignore_ascii_case(b"ZooKeeper")
+    {
+        object.wildlife.spawn_weight = finite(b"fSpawnWeight")?;
+        object.wildlife.enabled = boolean(b"bZooKeeperEnabled")?;
+        object.wildlife.group = attr(e, b"sZooKeeperGroup")?.unwrap_or_default();
+    } else if object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+        && e.name().as_ref().eq_ignore_ascii_case(b"Area")
+    {
+        object.wildlife.use_terrain_height = boolean(b"ZooKeeperUseTerrainHeight")?;
+        object.wildlife.restrict_species_to_area = boolean(b"ZooKeeperRestrictAllSpeciesToArea")?;
     } else if object.kind.eq_ignore_ascii_case("CreatureSpawn")
         && e.name().as_ref().eq_ignore_ascii_case(b"Populations")
         && parents
@@ -467,6 +508,7 @@ pub fn parse_level_scene_read_only(
                     || prior.populations != obj.populations
                     || prior.home_area != obj.home_area
                     || prior.shape_points != obj.shape_points
+                    || prior.wildlife != obj.wildlife
                 {
                     ambiguous.insert(obj.id);
                 }
@@ -907,11 +949,13 @@ mod tests {
     fn wildlife_spawn_and_area_keep_authored_population_and_polygon() {
         let xml = br#"<ObjectLayer><LayerObjects>
           <Object Id="creature" Name="CS_Mammoth" EntityClass="CreatureSpawn" Pos="5,6,7">
-            <Properties HomeAreaName="MB_ZooKeeperShape_01">
+            <Properties HomeAreaName="MB_ZooKeeperShape_01" bSpawnOnRoundStart="0" InitialHealthPercent="100">
               <Populations Population1="MammothBird" Population2="" Population3="Marshstrider" Population4=""/>
+              <ZooKeeper fSpawnWeight="1" bZooKeeperEnabled="1" sZooKeeperGroup="CreatureSpawns"/>
             </Properties>
           </Object>
           <Object Id="zone" Type="ZooKeeperShape" EntityClass="ZooKeeperShape" Pos="1,2,3">
+            <Area ZooKeeperUseTerrainHeight="1" ZooKeeperRestrictAllSpeciesToArea="0"/>
             <Points><Point Pos="0,0,0"/><Point Pos="4,0,0"/><Point Pos="4,5,0"/></Points>
           </Object>
           <Object Id="regular" Type="Brush" Geometry="objects/rock.cgf"/>
@@ -926,7 +970,20 @@ mod tests {
         );
         assert_eq!(scene.objects[0].home_area, "MB_ZooKeeperShape_01");
         assert!(scene.objects[0].model.is_empty());
+        assert_eq!(scene.objects[0].wildlife.spawn_weight, Some(1.0));
+        assert_eq!(scene.objects[0].wildlife.enabled, Some(true));
+        assert_eq!(scene.objects[0].wildlife.group, "CreatureSpawns");
+        assert_eq!(scene.objects[0].wildlife.spawn_on_round_start, Some(false));
+        assert_eq!(
+            scene.objects[0].wildlife.initial_health_percent,
+            Some(100.0)
+        );
         assert_eq!(scene.objects[1].kind, "ZooKeeperShape");
+        assert_eq!(scene.objects[1].wildlife.use_terrain_height, Some(true));
+        assert_eq!(
+            scene.objects[1].wildlife.restrict_species_to_area,
+            Some(false)
+        );
         assert_eq!(scene.objects[1].shape_points.len(), 3);
         assert!(!scene.objects[2].is_wildlife_spawn());
     }

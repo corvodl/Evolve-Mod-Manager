@@ -1998,6 +1998,7 @@ impl Pipeline {
         // translucent depth-tested scattering preview ahead of final bloom.
         self.world_renderer.draw_spotlight_beams(&mut pass);
         self.world_renderer.draw_light_points(&mut pass);
+        self.world_renderer.draw_wildlife_overlay(&mut pass);
         drop(pass);
         self.world_renderer
             .draw_water(encoder, self.hdr.scene(), &self.depth, Some(clip));
