@@ -328,3 +328,42 @@ projection, texture binding and multi-layer color ordering against
 the game; compare compiled D3D11 variant bytecode once
 `shadercache.pak` is available. The same-build original shader PAKs
 are private read-only inspection inputs and are not checked into Git.
+
+
+## Terrain pass-alpha producer tracing (2026-11-04)
+
+Read-only decoding of the owner's authenticated `shadersbin.pak` recovered
+another source expression in `D3D11/Terrain.cfxb`. Immediately before
+calling `GetLayerBlendingValue`, the parsed `frag_custom_begin` stream
+contains the equivalent scalar operation:
+
+```
+pPass.fAlpha = saturate(
+    pPass.IN[0x103][0x1fe] - AmbientOpPB[0x200]);
+```
+
+The byte-code-like numeric selectors above are **raw parsed shader tokens**:
+their exact D3D11 semantics and vertex-buffer packing must be checked from
+the same-build compiled shader input signature and a real terrain draw.
+The `TerrainLayerVS` path carries a packed interpolator from
+`streamPos_FromGeneral` and performs layer/normal-related transformations,
+but this does **not** explain how original terrain layer masks were generated
+on the CPU or assembled into the runtime vertex stream.
+
+The source-backed `terrain_pass_alpha` helper and synthetic regressions now
+model only this verified saturating subtraction. They do not infer its input
+from categorical `Heightmap.dat` LayerIds. Automatic FBX paint baking
+remains **blocked by a real interpolator source, shader variants and native
+layer composition/UV validation**; pretending that categorical IDs are
+weights would produce arbitrary transitions. The additive signed-detail
+preview and original paint sidecars remain independently available.
+
+**Required private, read-only evidence:** original same-build
+`shadercache.pak` (not present in accessible file library), a D3D11
+RenderDoc frame capture of an Evolve terrain transition with vertex/input
+buffers and shader resources (or the exact game executable/build for analysis
+if capture is unavailable), and the corresponding map's
+`level.pak`, `Heightmap.dat`, `TerrainTexture.xml`, and any
+`TerrainTexture.pak`/RGB24 tile files. Map-specific material and texture PAKs
+must match the same game installation. No proprietary game files or captured
+shaders should be committed to the public repository.
