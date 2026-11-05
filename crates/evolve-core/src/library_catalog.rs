@@ -1243,6 +1243,63 @@ mod tests {
     }
 
     #[test]
+    fn selected_game_identical_materials_are_verified_without_guessing() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("one.mtl");
+        let second = dir.path().join("two.mtl");
+        fs::write(&first, b"<Material Name='carcass02'/>").unwrap();
+        fs::write(&second, b"<Material Name='carcass02'/>").unwrap();
+        let virtual_name = "characters/creatures/shared/carcass02.mtl";
+        let hit = |id: &str, relative: &str, path: &Path| LibraryReference {
+            archive_id: id.to_owned(),
+            archive_name: format!("{id}.pak"),
+            relative_path: relative.to_owned(),
+            absolute_path: path.to_string_lossy().into_owned(),
+        };
+        let candidates = || {
+            vec![
+                hit("b", virtual_name, &second),
+                hit("a", virtual_name, &first),
+            ]
+        };
+        assert!(matches!(
+            resolve_verified_duplicate_members(candidates(), true),
+            LibraryReferenceStatus::Found(found) if found.archive_id == "a"
+        ));
+        assert!(matches!(
+            resolve_verified_duplicate_members(candidates(), false),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        assert!(matches!(
+            resolve_verified_duplicate_members(
+                vec![
+                    hit("a", virtual_name, &first),
+                    hit("b", "characters/creatures/other/carcass02.mtl", &second),
+                ],
+                true,
+            ),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        assert!(matches!(
+            resolve_verified_duplicate_members(
+                vec![hit("a", virtual_name, &first); MAX_IDENTICAL_MATERIAL_COPIES + 1],
+                true,
+            ),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        fs::write(&second, b"<Material Name='different-revision'/>").unwrap();
+        assert!(matches!(
+            resolve_verified_duplicate_members(candidates(), true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        fs::remove_file(&second).unwrap();
+        assert!(matches!(
+            resolve_verified_duplicate_members(candidates(), true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+    }
+
+    #[test]
     fn identical_high_mip_and_alpha_fragments_are_source_verified() {
         let dir = tempfile::tempdir().unwrap();
         let first = dir.path().join("first.fragment");
