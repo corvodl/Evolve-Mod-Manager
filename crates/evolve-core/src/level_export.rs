@@ -5,15 +5,15 @@
 use crate::archive::safe_member_name;
 use crate::cdf::{AttachmentKind, read_cdf};
 use crate::character_assembly::{select_attachments, transform_equipment};
-use crate::legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
-use crate::rig::{CompiledSkeleton, parse_compiled_skeleton, remap_verified_weights};
 use crate::dds::{DdsFormat, decode_dds_rgba, decode_dds_rgba_with_parts};
 use crate::glb::{GlbError, geometry_glb_bytes};
+use crate::legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
 use crate::materials::{MaterialDocument, MaterialSlot, read_material};
 use crate::model::{
     ModelError, ModelInfo, RenderMesh, WorldModelPart, original_mesh_subsets, read_model,
     read_world_model_parts_with_subsets,
 };
+use crate::rig::{CompiledSkeleton, parse_compiled_skeleton, remap_verified_weights};
 use crate::scene::{LevelScene, SceneError, load_level_scene};
 use crate::terrain::{
     MAX_RENDER_GRID, TerrainError, TerrainMesh, TerrainPaintMap, read_terrain, read_terrain_paint,
@@ -287,14 +287,14 @@ fn authored_lights(
                         && let Some(id) =
                             light_attr(&node, b"Id").or_else(|| light_attr(&node, b"EntityId"))
                     {
-                            let mut light = PendingLight {
-                                id: id.to_ascii_lowercase(),
-                                depth: current_depth,
-                                enabled: true,
-                                ..Default::default()
-                            };
-                            light.read_props(&node);
-                            pending = Some(light);
+                        let mut light = PendingLight {
+                            id: id.to_ascii_lowercase(),
+                            depth: current_depth,
+                            enabled: true,
+                            ..Default::default()
+                        };
+                        light.read_props(&node);
+                        pending = Some(light);
                     }
                 } else if let Some(light) = pending.as_mut()
                     && current_depth > light.depth
@@ -995,10 +995,11 @@ impl Assembler {
             .as_array_mut()
             .ok_or(LevelExportError::Limits)?
             .push(json!({"source":image,"sampler":sampler}));
-        let (edges,pairs)=original_paint_boundaries(paint)?;
-        let pairs=pairs.into_iter().map(|((a,b),count)|
-            json!({"layer_a":a,"layer_b":b,"source_edges":count})
-        ).collect::<Vec<_>>();
+        let (edges, pairs) = original_paint_boundaries(paint)?;
+        let pairs = pairs
+            .into_iter()
+            .map(|((a, b), count)| json!({"layer_a":a,"layer_b":b,"source_edges":count}))
+            .collect::<Vec<_>>();
         self.document["extras"]["original_categorical_terrain_paint"] = json!({
             "texture":texture,"width":paint.width,"height":paint.height,
             "encoding":"PNG R = exact original LayerId, row-major pixels",
@@ -1435,29 +1436,32 @@ impl Assembler {
 /// Count actual neighbor-category changes from the source LayerId bitmap.
 /// This is a validation reference, NOT a guessed shader transition mask.
 fn original_paint_boundaries(
-    paint:&TerrainPaintMap
-)->Result<(usize,BTreeMap<(u8,u8),usize>),LevelExportError> {
-    if paint.width==0||paint.height==0
-        || (paint.width as usize).checked_mul(paint.height as usize)!=Some(paint.ids.len())
-    {return Err(LevelExportError::Limits);}
-    let mut by_pair=BTreeMap::<(u8,u8),usize>::new();
-    let mut edges=0usize;
+    paint: &TerrainPaintMap,
+) -> Result<(usize, BTreeMap<(u8, u8), usize>), LevelExportError> {
+    if paint.width == 0
+        || paint.height == 0
+        || (paint.width as usize).checked_mul(paint.height as usize) != Some(paint.ids.len())
+    {
+        return Err(LevelExportError::Limits);
+    }
+    let mut by_pair = BTreeMap::<(u8, u8), usize>::new();
+    let mut edges = 0usize;
     for x in 0..paint.width {
         for y in 0..paint.height {
-            let id=paint.id_at(x,y).ok_or(LevelExportError::Limits)?;
-            for (nx,ny) in [(x.checked_add(1),Some(y)),(Some(x),y.checked_add(1))] {
-                if let (Some(nx),Some(ny))=(nx,ny)
-                    && let Some(other)=paint.id_at(nx,ny)
-                    && other!=id
+            let id = paint.id_at(x, y).ok_or(LevelExportError::Limits)?;
+            for (nx, ny) in [(x.checked_add(1), Some(y)), (Some(x), y.checked_add(1))] {
+                if let (Some(nx), Some(ny)) = (nx, ny)
+                    && let Some(other) = paint.id_at(nx, ny)
+                    && other != id
                 {
-                    let pair=(id.min(other),id.max(other));
-                    *by_pair.entry(pair).or_default()+=1;
-                    edges=edges.checked_add(1).ok_or(LevelExportError::Limits)?;
+                    let pair = (id.min(other), id.max(other));
+                    *by_pair.entry(pair).or_default() += 1;
+                    edges = edges.checked_add(1).ok_or(LevelExportError::Limits)?;
                 }
             }
         }
     }
-    Ok((edges,by_pair))
+    Ok((edges, by_pair))
 }
 
 /// A static CDF attachment is a separate real render object, with its
@@ -1503,33 +1507,36 @@ where
     let (_, selected) = select_attachments(&source)
         .map_err(|e| LevelExportError::Material(format!("CDF {original}: {e}")))?;
     let mut output = Vec::new();
-    let mut socket_skeleton: Option<(CompiledSkeleton,Vec<u8>)> = None;
+    let mut socket_skeleton: Option<(CompiledSkeleton, Vec<u8>)> = None;
     for attachment in &source.attachments {
         if !selected.contains(&attachment.name.as_str()) {
             continue;
         }
-        let socket_required=matches!(attachment.kind,AttachmentKind::Bone)
-            || attachment.bone_name.is_some();
+        let socket_required =
+            matches!(attachment.kind, AttachmentKind::Bone) || attachment.bone_name.is_some();
         if socket_required && socket_skeleton.is_none() {
-            let mut found=None;
-            let candidates=exact_compiled_model(&source.skeleton)
-                .into_iter().chain(std::iter::once(source.skeleton.clone()));
+            let mut found = None;
+            let candidates = exact_compiled_model(&source.skeleton)
+                .into_iter()
+                .chain(std::iter::once(source.skeleton.clone()));
             for virtual_path in candidates {
-                if let Some(path)=resolve(&virtual_path)? {
-                    let bytes=fs::read(path)?;
-                    if let Ok(skeleton)=parse_compiled_skeleton(&bytes)
-                        .or_else(|_|parse_legacy_skeleton(&bytes))
+                if let Some(path) = resolve(&virtual_path)? {
+                    let bytes = fs::read(path)?;
+                    if let Ok(skeleton) =
+                        parse_compiled_skeleton(&bytes).or_else(|_| parse_legacy_skeleton(&bytes))
                     {
-                        found=Some((skeleton,bytes));
+                        found = Some((skeleton, bytes));
                         break;
                     }
                 }
             }
-            socket_skeleton=Some(found.ok_or_else(||LevelExportError::Missing(
-                format!("CDF {original} attachment {} needs a verified skeletal bone socket; \
+            socket_skeleton = Some(found.ok_or_else(|| {
+                LevelExportError::Missing(format!(
+                    "CDF {original} attachment {} needs a verified skeletal bone socket; \
                          exact original skeleton {} was not decodable",
-                         attachment.name,source.skeleton)
-            ))?);
+                    attachment.name, source.skeleton
+                ))
+            })?);
         }
         let rotation = attachment.rotation.unwrap_or([1., 0., 0., 0.]);
         let norm = rotation.iter().map(|x| x * x).sum::<f32>();
@@ -1589,33 +1596,39 @@ where
         let authored = source_model_material(&virtual_path, override_mtl, &bytes, resolve)?
             .and_then(|mtl| read_material(&mtl).ok());
         for (subnode, mut part) in meshes.into_iter().enumerate() {
-            let mut part_local=local;
+            let mut part_local = local;
             if socket_required {
-                let (skeleton,master)=socket_skeleton.as_ref()
-                    .ok_or(LevelExportError::Limits)?;
-                let has_skin_weights=if matches!(
-                    attachment.kind,AttachmentKind::Skin|AttachmentKind::UniqueSkin
+                let (skeleton, master) =
+                    socket_skeleton.as_ref().ok_or(LevelExportError::Limits)?;
+                let has_skin_weights = if matches!(
+                    attachment.kind,
+                    AttachmentKind::Skin | AttachmentKind::UniqueSkin
                 ) {
                     if bytes.starts_with(b"CryTek\0\0") {
-                        read_legacy_skin(&bytes,master,part.mesh.positions.len()).is_ok()
+                        read_legacy_skin(&bytes, master, part.mesh.positions.len()).is_ok()
                     } else {
                         remap_verified_weights(
-                            &bytes,part.mesh.positions.len(),skeleton.names.len()
-                        ).is_ok()
+                            &bytes,
+                            part.mesh.positions.len(),
+                            skeleton.names.len(),
+                        )
+                        .is_ok()
                     }
-                } else {false};
-                if matches!(attachment.kind,AttachmentKind::Bone)
-                    || !has_skin_weights
-                {
-                    transform_equipment(&mut part.mesh,attachment,skeleton)
-                        .map_err(|error|LevelExportError::Material(format!(
-                            "CDF {original} attachment {}: {error}",attachment.name
-                        )))?;
+                } else {
+                    false
+                };
+                if matches!(attachment.kind, AttachmentKind::Bone) || !has_skin_weights {
+                    transform_equipment(&mut part.mesh, attachment, skeleton).map_err(|error| {
+                        LevelExportError::Material(format!(
+                            "CDF {original} attachment {}: {error}",
+                            attachment.name
+                        ))
+                    })?;
                 }
                 // Bone-space transform was applied to geometry, or weighted
                 // skin already occupies skeleton bind-pose coordinates.
                 // Applying the XML transform again would double-mount it.
-                part_local=crate::scene::Transform::default();
+                part_local = crate::scene::Transform::default();
             }
             let index = assembler.add_textured_mesh_resolved(
                 &part.mesh,
@@ -1628,7 +1641,7 @@ where
                 name: format!("{} | Render {}", attachment.name, subnode),
                 binding: attachment.binding.clone(),
                 mesh: index,
-                local:part_local,
+                local: part_local,
             });
         }
     }
@@ -1990,13 +2003,13 @@ where
     let mut geometry_instances = 0usize;
     let mut metadata_only = 0usize;
     let mut terrain_tiles = 0usize;
-    let mut terrain_source_boundary_edges=0usize;
+    let mut terrain_source_boundary_edges = 0usize;
     let mut terrain_source_resolution = true;
     if let Some(source) = terrain {
         let terrain_data = read_terrain(source, MAX_RENDER_GRID)?;
         let paint = read_terrain_paint(source)?;
-        if let Some(ref paint)=paint {
-            terrain_source_boundary_edges=original_paint_boundaries(paint)?.0;
+        if let Some(ref paint) = paint {
+            terrain_source_boundary_edges = original_paint_boundaries(paint)?.0;
         }
         terrain_source_resolution = terrain_data.info.stride == 1;
         let color = if let Some(baked) = original_baked_color {
@@ -2243,32 +2256,43 @@ mod tests {
     }
     #[test]
     fn tutorial_original_heightmap_source_transitions_opt_in() {
-        let Some(path)=std::env::var_os("EVOLVE_TEST_TUTORIAL_HEIGHTMAP") else {
+        let Some(path) = std::env::var_os("EVOLVE_TEST_TUTORIAL_HEIGHTMAP") else {
             return; // CI has no copyrighted original game archive.
         };
-        let paint=read_terrain_paint(Path::new(&path)).unwrap()
+        let paint = read_terrain_paint(Path::new(&path))
+            .unwrap()
             .expect("The selected original Tutorial Heightmap must include source paint");
-        assert_eq!((paint.width,paint.height),(512,512));
-        let ids=paint.ids.iter().copied()
+        assert_eq!((paint.width, paint.height), (512, 512));
+        let ids = paint
+            .ids
+            .iter()
+            .copied()
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(ids.len(),14);
-        let (edges,pairs)=original_paint_boundaries(&paint).unwrap();
-        assert_eq!(edges,35_359);
-        assert_eq!(pairs.len(),49);
-        assert_eq!(pairs.get(&(22,24)),Some(&4_367));
+        assert_eq!(ids.len(), 14);
+        let (edges, pairs) = original_paint_boundaries(&paint).unwrap();
+        assert_eq!(edges, 35_359);
+        assert_eq!(pairs.len(), 49);
+        assert_eq!(pairs.get(&(22, 24)), Some(&4_367));
     }
 
     #[test]
     fn original_terrain_boundary_count_is_exact_and_uses_layer_ids_not_surface_types() {
-        let paint=TerrainPaintMap {
-            width:2,height:2,layer_names:Default::default(),layers:vec![],
-            surface_types:vec![],ids:vec![3,3,7,7],
+        let paint = TerrainPaintMap {
+            width: 2,
+            height: 2,
+            layer_names: Default::default(),
+            layers: vec![],
+            surface_types: vec![],
+            ids: vec![3, 3, 7, 7],
         };
-        let (edges,pairs)=original_paint_boundaries(&paint).unwrap();
-        assert_eq!(edges,2);
-        assert_eq!(pairs.get(&(3,7)),Some(&2));
-        assert_eq!(pairs.len(),1);
-        let invalid=TerrainPaintMap {ids:vec![3,7,7],..paint};
+        let (edges, pairs) = original_paint_boundaries(&paint).unwrap();
+        assert_eq!(edges, 2);
+        assert_eq!(pairs.get(&(3, 7)), Some(&2));
+        assert_eq!(pairs.len(), 1);
+        let invalid = TerrainPaintMap {
+            ids: vec![3, 7, 7],
+            ..paint
+        };
         assert!(original_paint_boundaries(&invalid).is_err());
     }
     #[test]
