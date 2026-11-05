@@ -375,11 +375,10 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
                             .bytes()
                             .all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b))
                 })
-                || ![
-                    ".cgf", ".cgfm", ".cga", ".cgam", ".cdf", ".chr", ".chrm", ".skin", ".skinm",
-                ]
-                .iter()
-                .any(|extension| model.to_ascii_lowercase().ends_with(extension))
+                // The supplied Tutorial source confirms native Brush Prefab
+                // declarations use .cgf, not a CDF/SKIN actor or guessed
+                // generic geometry entry.
+                || !model.to_ascii_lowercase().ends_with(".cgf")
                 || original
                     .objects
                     .iter()
@@ -412,19 +411,20 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             };
             let mut cloned = events[start..=end].to_vec();
             // Never carry an unrelated old mesh's explicit material override
-            // to a new Prefab. The native model's default material remains.
-            cloned[0] = replace_start(
-                &cloned[0],
-                &[
-                    ("Id", new_guid.to_owned()),
-                    ("Name", name.to_owned()),
-                    ("Prefab", model.to_owned()),
-                    ("Material", String::new()),
-                    ("Pos", fmt(&normalized.position)),
-                    ("Rotate", fmt(&normalized.quaternion)),
-                    ("Scale", fmt(&normalized.scale)),
-                ],
-            )?;
+            // to the new Prefab. Only clear it if the selected Brush had one:
+            // a source with no Material attribute must remain that way.
+            let mut changes = vec![
+                ("Id", new_guid.to_owned()),
+                ("Name", name.to_owned()),
+                ("Prefab", model.to_owned()),
+                ("Pos", fmt(&normalized.position)),
+                ("Rotate", fmt(&normalized.quaternion)),
+                ("Scale", fmt(&normalized.scale)),
+            ];
+            if value(source_start, b"Material")?.is_some() {
+                changes.push(("Material", String::new()));
+            }
+            cloned[0] = replace_start(&cloned[0], &changes)?;
             events.splice(end + 1..end + 1, cloned);
         }
         LayerAuthoringEdit::Transform { guid, transform } => {
