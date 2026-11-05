@@ -99,6 +99,9 @@ fn menu_content(state: &State) -> Option<Element<'_, Message>> {
 }
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
+    if state.level_viewport_fullscreen {
+        return level_workspace::fullscreen_view(state);
+    }
     let menus = container(
         row![
             text("LEVEL EDITOR").size(13),
@@ -153,6 +156,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             design::button("Reset View")
                 .style(design::secondary)
                 .on_press(Message::LevelCameraReset),
+            design::button("Fullscreen Viewport")
+                .style(design::secondary)
+                .on_press(Message::ToggleLevelViewportFullscreen),
             space().width(Fill),
             text(if state.level_read_only {
                 "SOURCE: READ ONLY"

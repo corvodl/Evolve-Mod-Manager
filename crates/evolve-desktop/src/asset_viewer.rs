@@ -2416,6 +2416,24 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
 }
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
+    if state.viewer_viewport_fullscreen {
+        return column![
+            row![
+                text("Model Viewer").size(13),
+                iced::widget::space().width(Fill),
+                design::button("Exit Fullscreen (Esc)")
+                    .style(design::secondary)
+                    .on_press(Message::ToggleViewerViewportFullscreen),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+            viewport(state),
+        ]
+        .spacing(4)
+        .width(Fill)
+        .height(Fill)
+        .into();
+    }
     let readonly = if state.viewer_from_library {
         "Read-only"
     } else {
@@ -2426,6 +2444,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         text(readonly).size(12).style(design::muted),
         text(format!("{} selected", state.file_selection.indices.len())).size(12),
         iced::widget::space().width(Fill),
+        design::button("Fullscreen Viewport")
+            .style(design::secondary)
+            .on_press(Message::ToggleViewerViewportFullscreen),
         text(if state.gfx_active {
             "GFX: controls in right-hand GFX Tools tab"
         } else {

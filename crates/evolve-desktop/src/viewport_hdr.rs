@@ -9,6 +9,10 @@ const BLOOM_DIVISOR: u32 = 4;
 /// Bloom blends in as Bloom amount times this, from the renderer's HDRBloomColor.
 const BLOOM_SCALE: f32 = 0.125;
 
+fn needs_display_encoding(format: wgpu::TextureFormat) -> f32 {
+    if format.is_srgb() { 0.0 } else { 1.0 }
+}
+
 /// One size of the bloom chain: a downscale blurred on each axis.
 struct BloomLevel {
     _down: wgpu::Texture,
@@ -583,9 +587,11 @@ impl ViewportHdr {
             format,
         );
         let composite_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("HDR bloom blend, exposure, bypass unlit"),
+            label: Some("HDR bloom blend, exposure, bypass unlit, output encoding"),
             contents: bytemuck::cast_slice(&[
-                [BLOOM_SCALE, 1.0, 0.0, 0.0],
+                // sRGB attachments encode linear shader output automatically;
+                // Iced's web-colors surface is non-sRGB and needs explicit encoding.
+                [BLOOM_SCALE, 1.0, 0.0, needs_display_encoding(format)],
                 [1.0, 1.0, 1.0, 4.0],
                 [0.18, 1.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 0.0],
@@ -867,6 +873,27 @@ mod tests {
         assert!(bloom.contains("fn fs_blur("));
         assert!(hdr.contains("fn fs_composite("));
         assert!(hdr.contains("film_map"));
+        assert!(hdr.contains("output_color(from_display(graded(lit)))"));
+        assert!(hdr.contains("return output_color(source)"));
+    }
+    #[test]
+    fn compositor_encodes_only_non_srgb_targets() {
+        assert_eq!(
+            super::needs_display_encoding(wgpu::TextureFormat::Bgra8Unorm),
+            1.0
+        );
+        assert_eq!(
+            super::needs_display_encoding(wgpu::TextureFormat::Rgba8Unorm),
+            1.0
+        );
+        assert_eq!(
+            super::needs_display_encoding(wgpu::TextureFormat::Bgra8UnormSrgb),
+            0.0
+        );
+        assert_eq!(
+            super::needs_display_encoding(wgpu::TextureFormat::Rgba8UnormSrgb),
+            0.0
+        );
     }
     #[test]
     fn masked_scene_refraction_shader_parses_without_original_game_shaders() {

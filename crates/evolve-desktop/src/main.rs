@@ -326,6 +326,8 @@ impl ActiveBlendSpace {
 
 #[derive(Default)]
 struct State {
+    level_viewport_fullscreen: bool,
+    viewer_viewport_fullscreen: bool,
     sidebar_hovered: bool,
     sidebar_reveal: f32,
     input: String,
@@ -2306,6 +2308,9 @@ enum Message {
     LevelMapSelect(usize),
     LevelOpenSelectedModProject,
     OpenLevelEditorWindow,
+    ToggleLevelViewportFullscreen,
+    ToggleViewerViewportFullscreen,
+    ViewportEscape(window::Id),
     LevelGizmoMove(usize, f32),
     LevelSaveProjectChanges,
     LevelToggleOverview,
@@ -7515,6 +7520,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LibraryExport
+        | Message::ToggleLevelViewportFullscreen
+        | Message::ToggleViewerViewportFullscreen
+        | Message::ViewportEscape(_)
         | Message::OpenViewer
         | Message::OpenInspectorWindow
         | Message::OpenViewerPreferences
@@ -14916,6 +14924,43 @@ impl Desktop {
             }
             Message::OpenViewer => self.open_viewer(),
             Message::OpenLevelEditorWindow => self.open_level_editor(),
+            Message::ToggleLevelViewportFullscreen => {
+                let Some(id) = self.level_id else {
+                    return Task::none();
+                };
+                self.state.level_viewport_fullscreen = !self.state.level_viewport_fullscreen;
+                window::set_mode(
+                    id,
+                    if self.state.level_viewport_fullscreen {
+                        window::Mode::Fullscreen
+                    } else {
+                        window::Mode::Windowed
+                    },
+                )
+            }
+            Message::ToggleViewerViewportFullscreen => {
+                let Some(id) = self.viewer_id else {
+                    return Task::none();
+                };
+                self.state.viewer_viewport_fullscreen = !self.state.viewer_viewport_fullscreen;
+                window::set_mode(
+                    id,
+                    if self.state.viewer_viewport_fullscreen {
+                        window::Mode::Fullscreen
+                    } else {
+                        window::Mode::Windowed
+                    },
+                )
+            }
+            Message::ViewportEscape(id) => {
+                if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
+                    self.update(Message::ToggleLevelViewportFullscreen)
+                } else if self.viewer_id == Some(id) && self.state.viewer_viewport_fullscreen {
+                    self.update(Message::ToggleViewerViewportFullscreen)
+                } else {
+                    update(&mut self.state, Message::DismissMenus)
+                }
+            }
             Message::LevelCameraKey(id, _, _) if self.level_id != Some(id) => Task::none(),
             Message::LevelCameraWindowFocus(id, _) if self.level_id != Some(id) => Task::none(),
             Message::ExportOpen => {
@@ -14984,11 +15029,13 @@ impl Desktop {
                     }
                     if self.level_id == Some(id) {
                         self.level_id = None;
+                        self.state.level_viewport_fullscreen = false;
                         self.state.level_window_focused = false;
                         self.state.level_keys.clear();
                     }
                     if self.viewer_id == Some(id) {
                         self.viewer_id = None;
+                        self.state.viewer_viewport_fullscreen = false;
                         self.state.viewer_menu = None;
                         clear_viewer_asset(&mut self.state);
                         // The model editor is a separate window; closing it
@@ -15285,7 +15332,7 @@ impl Desktop {
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
-                }) => Some(Message::DismissMenus),
+                }) => Some(Message::ViewportEscape(id)),
                 iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                     Some(Message::ModifiersChanged(modifiers))
                 }

@@ -17,7 +17,7 @@ fn vs_fullscreen(@builtin(vertex_index) idx:u32)->FsOut {
 @group(0) @binding(1) var hdr_bloom:texture_2d<f32>;
 @group(0) @binding(2) var hdr_sampler:sampler;
 struct CompositeParams {
-    params:vec4<f32>,
+    params:vec4<f32>, // bloom, exposure, source RGB, non-sRGB output
     film:vec4<f32>, // authored shoulder, midtones, toe, whitepoint
     adaptation:vec4<f32>, // authored scene key, min exposure, max exposure, enabled
     shafts:vec4<f32>, // strength
@@ -58,6 +58,12 @@ fn from_display(c:vec3<f32>)->vec3<f32>{
     let high=pow((max(c,vec3<f32>(0.0))+vec3<f32>(0.055))/1.055,vec3<f32>(2.4));
     return select(high,low,c<vec3<f32>(0.04045));
 }
+fn output_color(linear:vec3<f32>)->vec4<f32>{
+    // An sRGB attachment performs this encoding on write. Iced's non-sRGB
+    // web-colors window does not; match the sRGB offscreen capture explicitly.
+    let color=select(linear,to_display(linear),composite.params.w>0.5);
+    return vec4<f32>(color,1.0);
+}
 // Original charts are a 256x16 strip of 16 slices, with blue selecting the slice.
 fn graded(display_in:vec3<f32>)->vec3<f32>{
     let display=clamp(display_in,vec3<f32>(0.0),vec3<f32>(1.0));
@@ -82,7 +88,7 @@ fn fs_composite(input:FsOut)->@location(0) vec4<f32> {
     if (composite.params.z > 0.5) {
         // Source RGB (unlit) is an explicit original-map color diagnostic;
         // no HDR film curve or bloom must interfere with source comparison.
-        return vec4<f32>(source,1.0);
+        return output_color(source);
     }
     let bloom=textureSampleLevel(hdr_bloom,hdr_sampler,uv,0.0).rgb;
     let shafts=textureSampleLevel(sun_shafts,hdr_sampler,uv,0.0).rgb;
@@ -91,5 +97,5 @@ fn fs_composite(input:FsOut)->@location(0) vec4<f32> {
     // The game screens shafts over the display-encoded image.
     let display=to_display(film_map(combined));
     let lit=display+min(shafts*composite.shafts.x,vec3<f32>(1.0))*(vec3<f32>(1.0)-display);
-    return vec4<f32>(from_display(graded(lit)),1.0);
+    return output_color(from_display(graded(lit)));
 }
