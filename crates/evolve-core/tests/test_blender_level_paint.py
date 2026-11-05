@@ -82,7 +82,7 @@ class ExactTerrainLayerTests(unittest.TestCase):
         decoded=zlib.decompress(edges[start:start+size])
         # One horizontal 3 -> 7 transition. These bytes represent source
         # CATEGORY adjacency, not native shader blending weights.
-        self.assertEqual(decoded, b"\\x00\\xff\\x00\\x03\\xff\\x00\\x00\\x07\\x00")
+        self.assertEqual(decoded, b"\x00\xff\x00\x03\xff\x00\x00\x07\x00")
         with tempfile.TemporaryDirectory() as tmp:
             fbx=pathlib.Path(tmp)/"original_scene.fbx"
             out=publish_transition_sidecar(fbx, edges)
@@ -94,8 +94,8 @@ class ExactTerrainLayerTests(unittest.TestCase):
 
     def test_source_transition_decodes_valid_png_sub_filters(self):
         ihdr=struct.pack(">IIBBBBB",2,1,8,6,0,0,0)
-        sub=b"\\x01\\x03\\x00\\x00\\xff\\x04\\x00\\x00\\x00"
-        image=(b"\\x89PNG\\r\\n\\x1a\\n" +
+        sub=b"\x01\x03\x00\x00\xff\x04\x00\x00\x00"
+        image=(b"\x89PNG\\r\\n\x1a\\n" +
                png_chunk(b"IHDR",ihdr)+png_chunk(b"IDAT",zlib.compress(sub))+
                png_chunk(b"IEND",b""))
         _,count=source_transition_boundaries(image)
