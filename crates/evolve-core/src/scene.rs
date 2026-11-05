@@ -54,7 +54,7 @@ impl Default for Transform {
     }
 }
 impl Transform {
-    fn normalize(mut self) -> Result<Self, SceneError> {
+    pub(crate) fn normalize(mut self) -> Result<Self, SceneError> {
         if self
             .position
             .iter()
