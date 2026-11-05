@@ -646,6 +646,40 @@ mod tests {
     }
 
     #[test]
+    fn native_brush_template_uses_prefab_and_brace_guid() {
+        // Sanitized CryEngine Sandbox-style authoring structure, not game data.
+        let original = br#"<ObjectLayer><LayerObjects><Object Type="Brush" Layer="Rocks" Id="{550E8400-E29B-41D4-A716-446655440000}" Name="Stone bridge" Pos="1,2,3" Rotate="1,0,0,0" Material="materials/old" Prefab="Objects/old.cgf"><CollisionFiltering/></Object></LayerObjects></ObjectLayer>"#;
+        let fresh = "{A6EEAB04-D776-4C26-9B6D-7FED8DCD4E0C}";
+        let insert = LayerAuthoringEdit::Insert {
+            anchor_guid: "{550E8400-E29B-41D4-A716-446655440000}".into(),
+            new_guid: fresh.into(),
+            name: "New stone".into(),
+            model: "Objects/new.cgf".into(),
+            transform: Transform {
+                position: [5., 6., 7.],
+                ..Transform::default()
+            },
+        };
+        let modified = edit_native_layer_bytes(original, &insert).unwrap();
+        let scene = parse_level_scene(&[("native", &modified)]).unwrap();
+        assert_eq!(scene.objects.len(), 2);
+        assert_eq!(scene.objects[1].model, "Objects/new.cgf");
+        assert_eq!(scene.objects[1].local.position, [5., 6., 7.]);
+        let text = String::from_utf8(modified).unwrap();
+        assert!(text.contains("Prefab=\"Objects/new.cgf\""));
+        assert!(text.contains("Type=\"Brush\""));
+        assert!(text.contains("Material=\"\""));
+        assert!(!text.contains("Geometry="));
+        let duplicate = LayerAuthoringEdit::Duplicate {
+            guid: fresh.into(),
+            new_guid: "{6DA3E510-0081-4321-AD45-111111111111}".into(),
+            name: "New stone copy".into(),
+        };
+        let doubled = edit_layer_bytes(text.as_bytes(), &duplicate).unwrap();
+        assert_eq!(parse_level_scene(&[("doubled", &doubled)]).unwrap().objects.len(), 3);
+    }
+
+    #[test]
     fn insert_model_has_exact_authored_path_and_safe_limits() {
         let edit = LayerAuthoringEdit::Insert {
             anchor_guid: "first".into(),
