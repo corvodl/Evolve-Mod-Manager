@@ -36,6 +36,9 @@ pub(super) struct LoadedMap {
     pub terrain: Option<(RenderMesh, TerrainInfo)>,
     pub full_scene: Option<level_scene_renderer::Assembled>,
     pub project: Option<ProjectRow>,
+    /// Source layer IDs shared by two or more declarations; every such ID is
+    /// read-only even in a managed project. Unique IDs stay editable.
+    pub duplicate_guids: std::collections::HashSet<String>,
     pub diagnostics: Vec<String>,
 }
 
@@ -1024,6 +1027,7 @@ fn open_selected(
     decals.extend(roads);
     let mut source = chosen.layers.first().map(|p| root.join(p));
     let mut scene = None;
+    let mut duplicate_guids = std::collections::HashSet::new();
     if !sources.is_empty() {
         let slices = sources
             .iter()
@@ -1033,19 +1037,19 @@ fn open_selected(
             Ok(parsed) => scene = Some(parsed),
             Err(error) => {
                 diagnostics.push(format!(
-                    "Combined layers could not be assembled: {error}. Trying individual sources."
+                    "Combined layers could not be assembled strictly: {error}. Checking duplicate-aware complete scene recovery."
                 ));
-                // An identical duplicate declaration in separate source layers
-                // should not force every layer to resolve its parents in
-                // isolation. Recover ALL unique placements into one read-only
-                // scene and resolve unambiguous cross-layer parent transforms.
-                // Conflicting IDs remain explicitly unresolved; editing still
-                // uses the strict parser and never silently rewrites GUIDs.
-                if project.is_none() {
+                // Restore the complete source-backed scene in a Modding
+                // project, too. A source map may intentionally repeat a GUID
+                // across two LYR layers. Those individual GUIDs are never
+                // writable from this session, while every unique object keeps
+                // its owning original layer and becomes safely editable.
+                {
                     match parse_level_scene_read_only(&slices) {
                         Ok(recovery) => {
+                            duplicate_guids = recovery.duplicate_guids;
                             diagnostics.push(format!(
-                                "Read-only combined scene recovery: {} unique placements, {} repeated GUID declarations omitted ({} conflicting IDs); unambiguous cross-layer parent transforms resolved.",
+                                "Duplicate-aware combined scene recovery: {} unique placements, {} repeated GUID declarations omitted ({} conflicting IDs); unambiguous cross-layer parent transforms resolved.",
                                 recovery.scene.objects.len(),
                                 recovery.duplicate_declarations,
                                 recovery.conflicting_guids,
@@ -1054,6 +1058,11 @@ fn open_selected(
                             scene = Some(recovery.scene);
                         }
                         Err(recovery_error) => {
+                            if project.is_some() {
+                                return Err(format!(
+                                    "Modding project level has unresolvable source layers: {recovery_error}. Editing is blocked rather than showing an incomplete single-layer scene."
+                                ));
+                            }
                             diagnostics.push(format!(
                                 "Read-only combined recovery could not validate all layers: {recovery_error}; falling back to individually validated layers."
                             ));
@@ -1431,6 +1440,7 @@ fn open_selected(
         terrain,
         full_scene,
         project,
+        duplicate_guids,
         diagnostics,
     })
 }
