@@ -1876,23 +1876,34 @@ impl Operation {
                 let original = std::fs::read(&source).map_err(|e| e.to_string())?;
                 let output = match edit {
                     ProjectLevelMutation::Xml(change) => {
-                        if let evolve_core::scene_authoring::LayerAuthoringEdit::Insert { model, .. } =
-                            &change
+                        if let evolve_core::scene_authoring::LayerAuthoringEdit::Insert {
+                            model,
+                            ..
+                        } = &change
                         {
                             if project.source_build.trim().is_empty() {
-                                return Err("A selected source game build is required to add geometry.".into());
+                                return Err(
+                                    "A selected source game build is required to add geometry."
+                                        .into(),
+                                );
                             }
                             match resolve_imported_reference(
                                 &library_root,
                                 model,
                                 Some(&project.source_build),
-                            ).map_err(|error| error.to_string())? {
+                            )
+                            .map_err(|error| error.to_string())?
+                            {
                                 LibraryReferenceStatus::Found(_) => {}
                                 LibraryReferenceStatus::Missing => {
-                                    return Err(format!("Geometry asset not found in selected installed game build: {model}"));
+                                    return Err(format!(
+                                        "Geometry asset not found in selected installed game build: {model}"
+                                    ));
                                 }
                                 LibraryReferenceStatus::Ambiguous(_) => {
-                                    return Err(format!("Geometry asset has conflicting versions in the selected game build: {model}"));
+                                    return Err(format!(
+                                        "Geometry asset has conflicting versions in the selected game build: {model}"
+                                    ));
                                 }
                             }
                         }
@@ -3232,12 +3243,18 @@ fn fresh_authored_level_guid(original: &str) -> Result<String, String> {
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let plain = bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let plain = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let new_id = if dashed {
         format!(
             "{}-{}-{}-{}-{}",
-            &plain[0..8], &plain[8..12], &plain[12..16],
-            &plain[16..20], &plain[20..32]
+            &plain[0..8],
+            &plain[8..12],
+            &plain[12..16],
+            &plain[16..20],
+            &plain[20..32]
         )
     } else {
         plain
@@ -5876,7 +5893,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let edit = match message {
                 Message::LevelAddGeometry => {
                     if object.kind.eq_ignore_ascii_case("Vegetation") {
-                        state.status = "Choose an XML-layer placement as the insertion point.".into();
+                        state.status =
+                            "Choose an XML-layer placement as the insertion point.".into();
                         return Task::none();
                     }
                     let guid = match fresh_authored_level_guid(&object.id) {
@@ -5902,7 +5920,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             anchor_guid: object.id,
                             new_guid: guid,
                             name: state.level_authoring.new_object_name.trim().to_owned(),
-                            model: state.level_authoring.new_object_model.trim().replace('\\', "/"),
+                            model: state
+                                .level_authoring
+                                .new_object_model
+                                .trim()
+                                .replace('\\', "/"),
                             transform,
                         },
                     )
