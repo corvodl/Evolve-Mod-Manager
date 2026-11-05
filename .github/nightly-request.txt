@@ -1,5 +1,5 @@
 # Explicit manual Nightly build request. Only code already merged into main is packaged.
-request: user-requested-after-merged-pr194-2026-11-05
+request: user-requested-after-merged-pr195-2026-11-05
 requested: 2026-11-05
-base-main-commit: 4808b42de3b61eb80460708bfe7ab74cbe83395b
-description: Build a Windows nightly from main including PR #194 (source-verified duplicate CGF geometry resolution), PR #193 (Level Editor Save As and FBX/GLB scene export), PR #192 (Iced sRGB), and all earlier merged changes. Exclude unmerged branches and preserve existing packaging/signing controls.
+base-main-commit: 609b2f88dbebd8307f2a425bdb6be485c064e535
+description: Build a new Windows nightly from main including PR #195 (byte-identical duplicate MTL resolution), PR #194 (verified cross-PAK CGF duplicates), PR #193 (Level Editor Save As and FBX/GLB scene export), PR #192 (Iced sRGB), and all earlier merged changes. Exclude open/unmerged branches and retain existing packaging/signing workflow.
