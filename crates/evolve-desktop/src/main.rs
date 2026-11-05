@@ -1914,7 +1914,7 @@ impl Operation {
                                 "XML placement edit must target its own LYR/XML file".into()
                             );
                         }
-                        evolve_core::scene_authoring::edit_layer_bytes(&original, &change)
+                        evolve_core::scene_authoring::edit_native_layer_bytes(&original, &change)
                             .map_err(|e| e.to_string())?
                     }
                     ProjectLevelMutation::Terrain(change) => {
