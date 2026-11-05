@@ -1908,14 +1908,12 @@ impl Operation {
                 if level_source_hash(&source)? != expected {
                     return Err("Project source changed before saving; reload and retry".into());
                 }
-                let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
-                let modified = scratch.path().join("edited.bin");
-                std::fs::write(&modified, &output).map_err(|e| e.to_string())?;
-                let saved = modding_projects::import_raw_member(
+                let saved = modding_projects::save_level_member_checked(
                     &project,
                     &projects_root,
                     &member,
-                    &modified,
+                    &original,
+                    &output,
                 )?;
                 Ok(Completed::ProjectLevelSaved(project, saved))
             }
