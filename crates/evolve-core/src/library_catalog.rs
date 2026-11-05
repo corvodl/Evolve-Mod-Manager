@@ -28,6 +28,12 @@ const MAX_IDENTICAL_TEXTURE_BYTES: u64 = 32 * 1024 * 1024;
 // DBAs can be substantially larger than DDS fragments: keep separate bounds.
 const MAX_IDENTICAL_DBA_COPIES: usize = 4;
 const MAX_IDENTICAL_DBA_BYTES: u64 = 512 * 1024 * 1024;
+// Several original PAKs can contain the same authored mesh. A source-backed
+// scene exporter may only reuse identical copies inside its selected Game
+// installation, matching the Level Editor viewport's byte-identity rule.
+// Compare streamed digests under explicit count and per-file size limits.
+const MAX_IDENTICAL_GEOMETRY_COPIES: usize = 8;
+const MAX_IDENTICAL_GEOMETRY_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LibraryError {
@@ -778,7 +784,7 @@ fn indexed_reference(
                 }
             }
             if !hits.is_empty() {
-                return Some(Ok(resolve_verified_duplicate_textures(
+                return Some(Ok(resolve_verified_duplicate_members(
                     hits,
                     session.build.is_some(),
                 )));
@@ -808,13 +814,24 @@ fn is_cooked_dds_member(path: &str) -> bool {
     index <= 19 && digits == index.to_string()
 }
 
+/// Render geometry must be the exact authored virtual member, never a
+/// similarly named mesh or a file from another installed game. Identical
+/// original geometry bytes in the selected build are equivalent, just as the
+/// Level Editor viewport already verifies for cross-PAK scenes. This does not
+/// authorize conflicting meshes, source materials, or other formats.
+/// All checks use streamed SHA-256 with bounded files and duplicate counts.
+fn is_render_geometry_member(path: &str) -> bool {
+    let name = path.to_ascii_lowercase();
+    [".cgf", ".cgfm", ".cga", ".cgam"]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+}
+
 /// Keep exact selected-build provenance: only byte-identical instances of
-/// the same authored cooked DDS or declared .dba source path may be treated as
-/// one asset. Different build versions, conflicting contents and unexpected
-/// asset types remain ambiguous. The indexed and uncached resolvers agree.
-/// DBA verification is streamed with separate size/copy limits, never decoded
-/// into RAM just to compare imports.
-fn resolve_verified_duplicate_textures(
+/// supported DDS, DBA, or render-geometry paths may be treated as one asset.
+/// Different builds, conflicting bytes and other asset types stay ambiguous.
+/// The indexed and uncached resolvers share this exact verification.
+fn resolve_verified_duplicate_members(
     mut hits: Vec<LibraryReference>,
     selected_build: bool,
 ) -> LibraryReferenceStatus {
@@ -832,6 +849,8 @@ fn resolve_verified_duplicate_textures(
         Some((MAX_IDENTICAL_TEXTURE_COPIES, MAX_IDENTICAL_TEXTURE_BYTES))
     } else if path.ends_with(".dba") {
         Some((MAX_IDENTICAL_DBA_COPIES, MAX_IDENTICAL_DBA_BYTES))
+    } else if is_render_geometry_member(&path) {
+        Some((MAX_IDENTICAL_GEOMETRY_COPIES, MAX_IDENTICAL_GEOMETRY_BYTES))
     } else {
         None
     };
@@ -1014,7 +1033,7 @@ fn resolve_imported_reference_scoped(
         .into_iter()
         .find(|group| !group.is_empty())
         .unwrap_or_default();
-    Ok(resolve_verified_duplicate_textures(
+    Ok(resolve_verified_duplicate_members(
         hits,
         build_label.is_some(),
     ))
@@ -1060,7 +1079,7 @@ mod tests {
         };
         let x = make("a", &a);
         let y = make("b", &b);
-        match resolve_verified_duplicate_textures(vec![y.clone(), x.clone()], true) {
+        match resolve_verified_duplicate_members(vec![y.clone(), x.clone()], true) {
             LibraryReferenceStatus::Found(found) => {
                 assert_eq!(found.archive_id, "a");
                 assert_eq!(found.relative_path, virtual_name);
@@ -1069,12 +1088,12 @@ mod tests {
         }
         fs::write(&b, b"another game texture revision").unwrap();
         assert!(matches!(
-            resolve_verified_duplicate_textures(vec![x.clone(), y.clone()], true),
+            resolve_verified_duplicate_members(vec![x.clone(), y.clone()], true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         fs::remove_file(&b).unwrap();
         assert!(matches!(
-            resolve_verified_duplicate_textures(vec![x, y], true),
+            resolve_verified_duplicate_members(vec![x, y], true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
     }
@@ -1095,27 +1114,27 @@ mod tests {
         };
         let hits = || vec![ref_at("b", &b), ref_at("a", &a)];
         assert!(matches!(
-            resolve_verified_duplicate_textures(hits(), true),
+            resolve_verified_duplicate_members(hits(), true),
             LibraryReferenceStatus::Found(source) if source.archive_id == "a"
         ));
         // Without explicit provenance, equal DBAs may belong to different builds.
         assert!(matches!(
-            resolve_verified_duplicate_textures(hits(), false),
+            resolve_verified_duplicate_members(hits(), false),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         fs::write(&b, b"a different version of the database").unwrap();
         assert!(matches!(
-            resolve_verified_duplicate_textures(hits(), true),
+            resolve_verified_duplicate_members(hits(), true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         fs::remove_file(&b).unwrap();
         assert!(matches!(
-            resolve_verified_duplicate_textures(hits(), true),
+            resolve_verified_duplicate_members(hits(), true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         let many = vec![ref_at("a", &a); MAX_IDENTICAL_DBA_COPIES + 1];
         assert!(matches!(
-            resolve_verified_duplicate_textures(many, true),
+            resolve_verified_duplicate_members(many, true),
             LibraryReferenceStatus::Ambiguous(_)
         ));
     }
@@ -1139,7 +1158,78 @@ mod tests {
         })
         .collect();
         assert!(matches!(
-            resolve_verified_duplicate_textures(hits, true),
+            resolve_verified_duplicate_members(hits, true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+    }
+
+
+    #[test]
+    fn identical_cross_pak_geometry_matches_viewport_byte_identity_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("first.cgf");
+        let b = dir.path().join("second.cgf");
+        fs::write(&a, b"verified original CryEngine geometry").unwrap();
+        fs::write(&b, b"verified original CryEngine geometry").unwrap();
+        let hit = |id: &str, authored: &str, file: &Path| LibraryReference {
+            archive_id: id.to_owned(),
+            archive_name: format!("{id}.pak"),
+            relative_path: authored.to_owned(),
+            absolute_path: file.to_string_lossy().into_owned(),
+        };
+        for extension in ["cgf", "cgfm", "cga", "cgam"] {
+            let name = format!("characters/creatures/shared/carcass04.{extension}");
+            assert!(is_render_geometry_member(&name));
+            let copies = || vec![hit("b", &name, &b), hit("a", &name, &a)];
+            // A selected installation accepts only fully hash-identical mesh
+            // contents; stable ID order makes the choice deterministic.
+            assert!(matches!(
+                resolve_verified_duplicate_members(copies(), true),
+                LibraryReferenceStatus::Found(source) if source.archive_id == "a"
+            ));
+            // No selected installation = no authority to combine builds.
+            assert!(matches!(
+                resolve_verified_duplicate_members(copies(), false),
+                LibraryReferenceStatus::Ambiguous(_)
+            ));
+            let mismatched = vec![
+                hit("a", &name, &a),
+                hit("b", "characters/creatures/other/carcass04.cgf", &b),
+            ];
+            assert!(matches!(
+                resolve_verified_duplicate_members(mismatched, true),
+                LibraryReferenceStatus::Ambiguous(_)
+            ));
+            assert!(matches!(
+                resolve_verified_duplicate_members(
+                    vec![hit("a", &name, &a); MAX_IDENTICAL_GEOMETRY_COPIES + 1],
+                    true,
+                ),
+                LibraryReferenceStatus::Ambiguous(_)
+            ));
+        }
+        let name = "characters/creatures/shared/carcass04.cgf";
+        fs::write(&b, b"conflicting revision of carcass04.cgf").unwrap();
+        let copies = || vec![hit("a", name, &a), hit("b", name, &b)];
+        assert!(matches!(
+            resolve_verified_duplicate_members(copies(), true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        fs::remove_file(&b).unwrap();
+        assert!(matches!(
+            resolve_verified_duplicate_members(copies(), true),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        // MTL and arbitrary members are not whitelisted even if identical.
+        assert!(!is_render_geometry_member("characters/creatures/shared/carcass04.mtl"));
+        assert!(matches!(
+            resolve_verified_duplicate_members(
+                vec![
+                    hit("a", "objects/rock.mtl", &a),
+                    hit("b", "objects/rock.mtl", &a),
+                ],
+                true,
+            ),
             LibraryReferenceStatus::Ambiguous(_)
         ));
     }
@@ -1162,21 +1252,21 @@ mod tests {
             assert!(is_cooked_dds_member(&name));
             let hits = vec![hit("b", &name, &second), hit("a", &name, &first)];
             assert!(matches!(
-                resolve_verified_duplicate_textures(hits, true),
+                resolve_verified_duplicate_members(hits, true),
                 LibraryReferenceStatus::Found(found) if found.archive_id == "a"
             ));
         }
         let name = "characters/creatures/shared/textures/carcass_diff.dds.1";
         fs::write(&second, b"different revision").unwrap();
         assert!(matches!(
-            resolve_verified_duplicate_textures(
+            resolve_verified_duplicate_members(
                 vec![hit("a", name, &first), hit("b", name, &second)],
                 true,
             ),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         assert!(matches!(
-            resolve_verified_duplicate_textures(
+            resolve_verified_duplicate_members(
                 vec![hit("a", name, &first), hit("b", name, &first)],
                 false,
             ),
@@ -1195,7 +1285,7 @@ mod tests {
             assert!(!is_cooked_dds_member(invalid), "{invalid}");
         }
         assert!(matches!(
-            resolve_verified_duplicate_textures(
+            resolve_verified_duplicate_members(
                 vec![hit("a", "x.dds.1", &first), hit("b", "y.dds.1", &first),],
                 true,
             ),
@@ -1217,14 +1307,14 @@ mod tests {
             absolute_path: file.to_string_lossy().into_owned(),
         };
         assert!(matches!(
-            resolve_verified_duplicate_textures(
+            resolve_verified_duplicate_members(
                 vec![hit("a", "objects/a.dds", &a), hit("b", "objects/b.dds", &b)],
                 true
             ),
             LibraryReferenceStatus::Ambiguous(_)
         ));
         assert!(matches!(
-            resolve_verified_duplicate_textures(
+            resolve_verified_duplicate_members(
                 vec![
                     hit("a", "objects/tree.mtl", &a),
                     hit("b", "objects/tree.mtl", &b)
@@ -1234,7 +1324,7 @@ mod tests {
             LibraryReferenceStatus::Ambiguous(_)
         ));
         assert!(matches!(
-            resolve_verified_duplicate_textures(
+            resolve_verified_duplicate_members(
                 vec![
                     hit("a", "objects/tree.dds.0", &a),
                     hit("b", "objects/tree.dds.0", &b)
@@ -1245,7 +1335,7 @@ mod tests {
         ));
         let duplicate = hit("a", "objects/tree.dds.0", &a);
         assert!(matches!(
-            resolve_verified_duplicate_textures(
+            resolve_verified_duplicate_members(
                 vec![duplicate; MAX_IDENTICAL_TEXTURE_COPIES + 1],
                 true
             ),
