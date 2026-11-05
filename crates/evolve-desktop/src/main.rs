@@ -1164,11 +1164,9 @@ fn export_opened_level_scene_glb(
             let library = Path::new(&archive.directory)
                 .parent()
                 .ok_or("Selected archive has no Asset Library root")?;
-            let (build, _guard) = evolve_core::begin_imported_lookup_session_for_source(
-                library,
-                &archive.source,
-            )
-            .map_err(|e| e.to_string())?;
+            let (build, _guard) =
+                evolve_core::begin_imported_lookup_session_for_source(library, &archive.source)
+                    .map_err(|e| e.to_string())?;
             let root_canonical = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
             let mut layers = Vec::new();
             for path in source_layers {
@@ -1178,7 +1176,10 @@ fn export_opened_level_scene_glb(
                     || !canonical.starts_with(&root_canonical)
                     || metadata.len() > 48 * 1024 * 1024
                 {
-                    return Err(format!("Unsafe or oversized level source {}", path.display()));
+                    return Err(format!(
+                        "Unsafe or oversized level source {}",
+                        path.display()
+                    ));
                 }
                 layers.push((
                     path.file_name()
@@ -1201,19 +1202,15 @@ fn export_opened_level_scene_glb(
                 original_baked_color,
                 destination,
                 |virtual_path| {
-                    auto_resources::exact(
-                        &inventory,
-                        virtual_path,
-                        Some(library),
-                        Some(&build),
-                    )
-                    .map_err(evolve_core::LevelExportError::Missing)
+                    auto_resources::exact(&inventory, virtual_path, Some(library), Some(&build))
+                        .map_err(evolve_core::LevelExportError::Missing)
                 },
             )
             .map_err(|e| e.to_string())
         }
-        (None, None) => export_level_scene_glb(src, root, terrain, destination)
-            .map_err(|e| e.to_string()),
+        (None, None) => {
+            export_level_scene_glb(src, root, terrain, destination).map_err(|e| e.to_string())
+        }
         _ => Err("Incomplete opened-map export context; reopen this map.".into()),
     }
 }
@@ -3367,7 +3364,8 @@ fn start_open_level_scene_export(
     destination: PathBuf,
 ) -> Task<Message> {
     let Some((archive, maps, index)) = &state.library_map else {
-        state.status = "Open an imported map in the Level Editor before exporting its scene.".into();
+        state.status =
+            "Open an imported map in the Level Editor before exporting its scene.".into();
         return Task::none();
     };
     let Some(map) = maps.get(*index) else {
@@ -3380,15 +3378,16 @@ fn start_open_level_scene_export(
     };
     // Use the opened map's exact archive and project context. These paths
     // cannot be replaced by unrelated generic Inputs elsewhere in the manager.
-    let root = state
-        .level_project
-        .as_ref()
-        .map_or_else(
-            || PathBuf::from(&archive.directory).join("files"),
-            |project| project.workspace.join("files"),
-        );
+    let root = state.level_project.as_ref().map_or_else(
+        || PathBuf::from(&archive.directory).join("files"),
+        |project| project.workspace.join("files"),
+    );
     let terrain = map.terrain.as_ref().map(|relative| root.join(relative));
-    let source_layers = map.layers.iter().map(|relative| root.join(relative)).collect();
+    let source_layers = map
+        .layers
+        .iter()
+        .map(|relative| root.join(relative))
+        .collect();
     let source = PathBuf::from(&map.name); // display label; the original scene is already parsed
     let archive = archive.clone();
     let color = state
@@ -17264,9 +17263,15 @@ mod level_scene_export_destination_tests {
         let chosen = output.join("Tutorial.fbx");
         assert!(validate_new_level_scene_destination(&chosen, true, &roots).is_ok());
         assert!(validate_new_level_scene_destination(&chosen, false, &roots).is_err());
-        assert!(validate_new_level_scene_destination(&source.join("Tutorial.fbx"), true, &roots).is_err());
+        assert!(
+            validate_new_level_scene_destination(&source.join("Tutorial.fbx"), true, &roots)
+                .is_err()
+        );
         std::fs::write(&chosen, b"existing").unwrap();
         assert!(validate_new_level_scene_destination(&chosen, true, &roots).is_err());
-        assert!(validate_new_level_scene_destination(&output.join("Tutorial.glb"), false, &roots).is_ok());
+        assert!(
+            validate_new_level_scene_destination(&output.join("Tutorial.glb"), false, &roots)
+                .is_ok()
+        );
     }
 }
