@@ -218,7 +218,7 @@ pub(crate) fn declared_dba_sources(clips: &[AutoClip]) -> Vec<DbaSource> {
 }
 
 fn file_name(path: &str) -> &str {
-    path.rsplit(|character| character == '/' || character == '\\')
+    path.rsplit(['/', '\\'])
         .next()
         .filter(|name| !name.is_empty())
         .unwrap_or(path)
