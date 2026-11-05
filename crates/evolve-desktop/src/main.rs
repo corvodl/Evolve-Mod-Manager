@@ -973,7 +973,7 @@ enum Operation {
         Option<Arc<LevelScene>>,
         Option<evolve_core::ImportedPak>,
         Vec<PathBuf>,
-        Option<Arc<image::RgbaImage>>,
+        Option<Arc<::image::RgbaImage>>,
     ),
     StageInit(PathBuf),
     StageStatus(PathBuf),
