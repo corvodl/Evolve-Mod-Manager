@@ -1,5 +1,5 @@
 # Explicit manual Nightly build request. Only code already merged into main is packaged.
-request: user-requested-after-merged-pr188-2026-11-04
-requested: 2026-11-04
-base-main-commit: a733f40f9f113efa06b1bbf1051c476495b0f422
-description: Build a new Windows nightly from main including merged PR #188. PR #191 remains unmerged due to conflicts. Use the existing verified runtime and packaging workflow. Do not include unmerged branches.
+request: user-requested-after-merged-pr192-2026-11-05
+requested: 2026-11-05
+base-main-commit: c8703cea54b0e81fdec6033eacfe01fcb204798e
+description: Build a new Windows nightly from main including merged PR #192 (disable Iced web-colors for native sRGB), and all PRs already merged into main. Exclude open/unmerged branches; preserve official runtime and existing packaging workflow.
