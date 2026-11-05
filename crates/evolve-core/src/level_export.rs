@@ -277,10 +277,10 @@ fn authored_lights(
                         class.as_str(),
                         "light" | "lightentity" | "pointlight" | "spotlight"
                     ) || (kind == "light" && class.is_empty());
-                    if is_light {
-                        if let Some(id) =
+                    if is_light
+                        && let Some(id) =
                             light_attr(&node, b"Id").or_else(|| light_attr(&node, b"EntityId"))
-                        {
+                    {
                             let mut light = PendingLight {
                                 id: id.to_ascii_lowercase(),
                                 depth: current_depth,
@@ -289,7 +289,6 @@ fn authored_lights(
                             };
                             light.read_props(&node);
                             pending = Some(light);
-                        }
                     }
                 } else if let Some(light) = pending.as_mut()
                     && current_depth > light.depth
@@ -529,10 +528,10 @@ impl Assembler {
                 let mut external = Vec::new();
                 for n in 1..20 {
                     let candidate = format!("{virtual_path}.{n}");
-                    if let Some(part) = resolve(&candidate)? {
-                        if part.parent() != source.parent() {
-                            external.push(part);
-                        }
+                    if let Some(part) = resolve(&candidate)?
+                        && part.parent() != source.parent()
+                    {
+                        external.push(part);
                     }
                 }
                 if external.is_empty() {
@@ -742,6 +741,7 @@ impl Assembler {
     /// Split source triangles by their verified CryEngine material subset IDs.
     /// In the absence of a verified subset table only single-leaf materials may
     /// be bound; multi-leaf guesses would silently color the wrong polygons.
+    #[cfg(test)]
     fn add_textured_mesh(
         &mut self,
         mesh: &RenderMesh,
@@ -1134,12 +1134,12 @@ impl Assembler {
         if paint.width < 2
             || paint.height < 2
             || uv.len() != mesh.positions.len()
-            || mesh.indices.len() % 3 != 0
+            || !mesh.indices.len().is_multiple_of(3)
         {
             return Err(LevelExportError::Limits);
         }
         let mut groups = BTreeMap::<u8, Vec<u32>>::new();
-        for tri in mesh.indices.chunks_exact(3) {
+        for tri in mesh.indices.as_chunks::<3>().0 {
             let mut center = [0f32; 2];
             for &vertex in tri {
                 let point = uv.get(vertex as usize).ok_or(LevelExportError::Limits)?;
@@ -1481,9 +1481,11 @@ where
                 attachment.name
             )));
         }
-        let mut local = crate::scene::Transform::default();
-        local.position = attachment.position.unwrap_or([0.; 3]);
-        local.quaternion = rotation.map(|x| x / norm.sqrt());
+        let local = crate::scene::Transform {
+            position: attachment.position.unwrap_or([0.; 3]),
+            quaternion: rotation.map(|x| x / norm.sqrt()),
+            ..Default::default()
+        };
         let mut candidates = Vec::new();
         if let Some(compiled) = exact_compiled_model(&attachment.binding) {
             candidates.push(compiled);
@@ -1858,6 +1860,7 @@ where
 /// opened Level Editor displays. This supports same-map RGB24 tile atlases
 /// (which are not a raw TerrainTexture.pak file) without guessing paths or
 /// converting original game archives. No lighting/detail preview is baked in.
+#[allow(clippy::too_many_arguments)]
 pub fn export_level_scene_glb_with_scene_color<R>(
     scene: &LevelScene,
     sources: &[(String, Vec<u8>)],
