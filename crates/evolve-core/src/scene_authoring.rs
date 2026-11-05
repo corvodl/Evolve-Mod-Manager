@@ -81,7 +81,7 @@ fn patched(event: &BytesStart<'_>, values: &[(&str, String)]) -> Result<BytesSta
             used.insert(key.to_ascii_lowercase());
         } else {
             // Preserve the raw, already escaped XML attribute value exactly.
-            out.push_attribute((key.as_str(), attr.value.as_ref()));
+            out.push_attribute((key.as_bytes(), attr.value.as_ref()));
         }
     }
     for (key, replacement) in values {
@@ -102,7 +102,8 @@ fn replace_start(event: &Event<'static>, fields: &[(&str, String)]) -> Result<Ev
 
 fn tag(event: &Event<'_>, expected: &[u8]) -> bool {
     match event {
-        Event::Start(e) | Event::Empty(e) | Event::End(e) => e.name().as_ref().eq_ignore_ascii_case(expected),
+        Event::Start(e) | Event::Empty(e) => e.name().as_ref().eq_ignore_ascii_case(expected),
+        Event::End(e) => e.name().as_ref().eq_ignore_ascii_case(expected),
         _ => false,
     }
 }
@@ -292,7 +293,7 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
         LayerAuthoringEdit::Duplicate { new_guid, name, .. } => {
             if !bounded_name(new_guid) || !bounded_name(name)
                 || original.objects.iter().any(|o| o.id.eq_ignore_ascii_case(new_guid))
-                || events[start + 1..=end].iter().any(|e| placement_tag(e) && opening(e))
+                || events.iter().take(end).skip(start + 1).any(|e| placement_tag(e) && opening(e))
             {
                 return Err(SceneError::Limits);
             }
@@ -381,7 +382,7 @@ mod tests {
             guid: "spawn".into(), settings: props
         }).unwrap();
         let scene = parse_level_scene(&[("edited", &changed)]).unwrap();
-        assert_eq!(scene.objects[1].populations, ["TrapjawElite", "MammothBird"]);
+        assert_eq!(scene.objects[1].populations, ["TrapjawElite".to_owned(), "MammothBird".to_owned()]);
         assert_eq!(scene.objects[1].wildlife.spawn_weight, Some(2.0));
         let polygon = [[0.,0.,0.],[10.,0.,0.],[10.,10.,0.]];
         let updated = edit_layer_bytes(&changed, &LayerAuthoringEdit::Shape {
