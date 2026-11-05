@@ -1163,7 +1163,6 @@ mod tests {
         ));
     }
 
-
     #[test]
     fn identical_cross_pak_geometry_matches_viewport_byte_identity_rule() {
         let dir = tempfile::tempdir().unwrap();
@@ -1221,7 +1220,9 @@ mod tests {
             LibraryReferenceStatus::Ambiguous(_)
         ));
         // MTL and arbitrary members are not whitelisted even if identical.
-        assert!(!is_render_geometry_member("characters/creatures/shared/carcass04.mtl"));
+        assert!(!is_render_geometry_member(
+            "characters/creatures/shared/carcass04.mtl"
+        ));
         assert!(matches!(
             resolve_verified_duplicate_members(
                 vec![
