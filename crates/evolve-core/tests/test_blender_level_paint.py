@@ -12,6 +12,10 @@ from blender_level_paint import (
     TerrainPaintExportError, extract_original_layer_id_png,
     layer_id_sidecar_path, publish_layer_id_sidecar,
 )
+from blender_level_transition_edges import (
+    source_transition_boundaries, transition_sidecar_path,
+    publish_transition_sidecar,
+)
 
 
 def png_chunk(kind, data):
@@ -68,6 +72,34 @@ class ExactTerrainLayerTests(unittest.TestCase):
             self.assertEqual(sidecar, layer_id_sidecar_path(fbx))
             self.assertEqual(sidecar.read_bytes(), paint_png())
             self.assertEqual(publish_layer_id_sidecar(fbx, result), sidecar)
+
+    def test_true_categorical_boundaries_keep_original_neighbor_ids(self):
+        edges, count = source_transition_boundaries(paint_png())
+        self.assertEqual(count, 1)
+        self.assertEqual(struct.unpack_from(">II", edges, 16), (2, 1))
+        start=edges.index(b"IDAT")+4
+        size=struct.unpack_from(">I",edges,start-8)[0]
+        decoded=zlib.decompress(edges[start:start+size])
+        # One horizontal 3 -> 7 transition. These bytes represent source
+        # CATEGORY adjacency, not native shader blending weights.
+        self.assertEqual(decoded, b"\\x00\\xff\\x00\\x03\\xff\\x00\\x00\\x07\\x00")
+        with tempfile.TemporaryDirectory() as tmp:
+            fbx=pathlib.Path(tmp)/"original_scene.fbx"
+            out=publish_transition_sidecar(fbx, edges)
+            self.assertEqual(out,transition_sidecar_path(fbx))
+            self.assertEqual(out.read_bytes(),edges)
+            self.assertEqual(publish_transition_sidecar(fbx, edges),out)
+            with self.assertRaises(TerrainPaintExportError):
+                publish_transition_sidecar(fbx,b"not original source bytes")
+
+    def test_source_transition_decodes_valid_png_sub_filters(self):
+        ihdr=struct.pack(">IIBBBBB",2,1,8,6,0,0,0)
+        sub=b"\\x01\\x03\\x00\\x00\\xff\\x04\\x00\\x00\\x00"
+        image=(b"\\x89PNG\\r\\n\\x1a\\n" +
+               png_chunk(b"IHDR",ihdr)+png_chunk(b"IDAT",zlib.compress(sub))+
+               png_chunk(b"IEND",b""))
+        _,count=source_transition_boundaries(image)
+        self.assertEqual(count,1)
 
     def test_scene_without_original_paint_creates_no_sidecar(self):
         with tempfile.TemporaryDirectory() as tmp:
