@@ -468,9 +468,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             design::button("Save transform to project")
                 .style(design::primary)
                 .on_press_maybe(
-                    (!state.level_read_only && state.level_project.is_some()
+                    (!state.level_read_only
+                        && state.level_project.is_some()
                         && !object.kind.eq_ignore_ascii_case("Vegetation"))
-                        .then_some(Message::LevelApplyTransform)
+                    .then_some(Message::LevelApplyTransform)
                 ),
             crate::level_authoring::placement_editor(state, object),
         ]
