@@ -2238,6 +2238,76 @@ mod tests {
         drop(folder);
     }
     #[test]
+    fn cdf_static_attachments_have_original_names_and_independent_actor_parent() {
+        let dir=tempfile::tempdir().unwrap();
+        let root=dir.path();
+        let definition=root.join("creature.cdf");
+        let body=root.join("body.skinm");
+        let head=root.join("head.skinm");
+        fs::write(&definition,br#"<CharacterDefinition>
+            <Model File="characters/test/skeleton.chr"/>
+            <AttachmentList>
+                <Attachment AName="body" Type="CA_SKIN"
+                    Binding="characters/test/body.skin"/>
+                <Attachment AName="head" Type="CA_SKIN"
+                    Binding="characters/test/head.skin"
+                    Position="1,2,3"/>
+            </AttachmentList>
+        </CharacterDefinition>"#).unwrap();
+        let geometry=crate::model::tests::fixture();
+        fs::write(&body,&geometry).unwrap();
+        fs::write(&head,&geometry).unwrap();
+        let mut export=Assembler::new("CDF test");
+        let parts=original_cdf_render_parts(
+            "characters/test/creature.cdf","",&mut export,&mut |name|{
+                Ok(match name.to_ascii_lowercase().as_str() {
+                    "characters/test/creature.cdf"=>Some(definition.clone()),
+                    "characters/test/body.skinm"=>Some(body.clone()),
+                    "characters/test/head.skinm"=>Some(head.clone()),
+                    _=>None,
+                })
+            }
+        ).unwrap();
+        assert_eq!(parts.len(),2);
+        assert!(parts[0].name.starts_with("body |"));
+        assert!(parts[1].name.starts_with("head |"));
+        let level=crate::scene::parse_level_scene(&[(
+            "fixture",br#"<Objects><Object Id="one" Name="Wildlife"
+            Pos="9,8,7" Scale="1,1,1"/></Objects>"#
+        )]).unwrap();
+        export.add_cdf_placement(
+            &level.objects[0],"characters/test/creature.cdf",&parts
+        ).unwrap();
+        assert_eq!(export.document["nodes"][0]["children"],json!([1]));
+        assert_eq!(export.document["nodes"][1]["translation"],json!([9.,8.,7.]));
+        assert_eq!(export.document["nodes"][1]["children"],json!([2,3]));
+        assert_eq!(export.document["nodes"][3]["translation"],json!([1.,2.,3.]));
+        assert_eq!(export.document["nodes"][2]["extras"]["cdf_binding"],
+            "characters/test/body.skin");
+    }
+
+    #[test]
+    fn cdf_bone_attachment_refuses_to_guess_skeleton_socket_transform() {
+        let dir=tempfile::tempdir().unwrap();
+        let definition=dir.path().join("bone.cdf");
+        fs::write(&definition,br#"<CharacterDefinition>
+            <Model File="characters/test/skeleton.chr"/>
+            <AttachmentList>
+                <Attachment AName="arm" Type="CA_BONE"
+                    BoneName="Bip01 R Hand"
+                    Binding="objects/arm.cgf"/>
+            </AttachmentList>
+        </CharacterDefinition>"#).unwrap();
+        let mut export=Assembler::new("CDF socket");
+        let err=original_cdf_render_parts(
+            "characters/test/bone.cdf","",&mut export,&mut |key|{
+                Ok((key=="characters/test/bone.cdf").then(||definition.clone()))
+            }
+        ).unwrap_err();
+        assert!(err.to_string().contains("verified skeletal bone socket"));
+    }
+
+    #[test]
     fn multi_part_actor_has_one_movable_transform_parent() {
         let xml = br#"<Objects><Object Id="actor-a" Name="Tree"
             Pos="15,25,35" Scale="2,2,2"/></Objects>"#;
