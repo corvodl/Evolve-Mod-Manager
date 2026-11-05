@@ -4,7 +4,9 @@
 //! Missing render dependencies fail closed, instead of faking a whole map.
 use crate::archive::safe_member_name;
 use crate::cdf::{AttachmentKind, read_cdf};
-use crate::character_assembly::select_attachments;
+use crate::character_assembly::{select_attachments, transform_equipment};
+use crate::legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
+use crate::rig::{CompiledSkeleton, parse_compiled_skeleton, remap_verified_weights};
 use crate::dds::{DdsFormat, decode_dds_rgba, decode_dds_rgba_with_parts};
 use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::materials::{MaterialDocument, MaterialSlot, read_material};
@@ -1463,15 +1465,33 @@ where
     let (_, selected) = select_attachments(&source)
         .map_err(|e| LevelExportError::Material(format!("CDF {original}: {e}")))?;
     let mut output = Vec::new();
+    let mut socket_skeleton: Option<(CompiledSkeleton,Vec<u8>)> = None;
     for attachment in &source.attachments {
         if !selected.contains(&attachment.name.as_str()) {
             continue;
         }
-        if matches!(attachment.kind, AttachmentKind::Bone) || attachment.bone_name.is_some() {
-            return Err(LevelExportError::Missing(format!(
-                "CDF {original} attachment {} needs a verified skeletal bone socket;                  no guessed bind-pose transform was exported",
-                attachment.name
-            )));
+        let socket_required=matches!(attachment.kind,AttachmentKind::Bone)
+            || attachment.bone_name.is_some();
+        if socket_required && socket_skeleton.is_none() {
+            let mut found=None;
+            let candidates=exact_compiled_model(&source.skeleton)
+                .into_iter().chain(std::iter::once(source.skeleton.clone()));
+            for virtual_path in candidates {
+                if let Some(path)=resolve(&virtual_path)? {
+                    let bytes=fs::read(path)?;
+                    if let Ok(skeleton)=parse_compiled_skeleton(&bytes)
+                        .or_else(|_|parse_legacy_skeleton(&bytes))
+                    {
+                        found=Some((skeleton,bytes));
+                        break;
+                    }
+                }
+            }
+            socket_skeleton=Some(found.ok_or_else(||LevelExportError::Missing(
+                format!("CDF {original} attachment {} needs a verified skeletal bone socket; \
+                         exact original skeleton {} was not decodable",
+                         attachment.name,source.skeleton)
+            ))?);
         }
         let rotation = attachment.rotation.unwrap_or([1., 0., 0., 0.]);
         let norm = rotation.iter().map(|x| x * x).sum::<f32>();
@@ -1530,7 +1550,35 @@ where
         };
         let authored = source_model_material(&virtual_path, override_mtl, &bytes, resolve)?
             .and_then(|mtl| read_material(&mtl).ok());
-        for (subnode, part) in meshes.into_iter().enumerate() {
+        for (subnode, mut part) in meshes.into_iter().enumerate() {
+            let mut part_local=local;
+            if socket_required {
+                let (skeleton,master)=socket_skeleton.as_ref()
+                    .ok_or(LevelExportError::Limits)?;
+                let has_skin_weights=if matches!(
+                    attachment.kind,AttachmentKind::Skin|AttachmentKind::UniqueSkin
+                ) {
+                    if bytes.starts_with(b"CryTek\\0\\0") {
+                        read_legacy_skin(&bytes,master,part.mesh.positions.len()).is_ok()
+                    } else {
+                        remap_verified_weights(
+                            &bytes,part.mesh.positions.len(),skeleton.names.len()
+                        ).is_ok()
+                    }
+                } else {false};
+                if matches!(attachment.kind,AttachmentKind::Bone)
+                    || !has_skin_weights
+                {
+                    transform_equipment(&mut part.mesh,attachment,skeleton)
+                        .map_err(|error|LevelExportError::Material(format!(
+                            "CDF {original} attachment {}: {error}",attachment.name
+                        )))?;
+                }
+                // Bone-space transform was applied to geometry, or weighted
+                // skin already occupies skeleton bind-pose coordinates.
+                // Applying the XML transform again would double-mount it.
+                part_local=crate::scene::Transform::default();
+            }
             let index = assembler.add_textured_mesh_resolved(
                 &part.mesh,
                 &bytes,
@@ -1542,7 +1590,7 @@ where
                 name: format!("{} | Render {}", attachment.name, subnode),
                 binding: attachment.binding.clone(),
                 mesh: index,
-                local,
+                local:part_local,
             });
         }
     }
