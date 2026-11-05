@@ -1657,9 +1657,7 @@ pub fn save_level_member_checked(
         return Err("Unsafe or oversized level project member edit".into());
     }
     let mut replacement = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
-    replacement
-        .write_all(edited)
-        .map_err(|e| e.to_string())?;
+    replacement.write_all(edited).map_err(|e| e.to_string())?;
     replacement
         .as_file_mut()
         .sync_all()
