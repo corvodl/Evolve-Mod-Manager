@@ -97,6 +97,31 @@ pub(crate) fn exact(
                                  contents cannot be substituted."
                             ))
                         }
+                    } else if [".cgf", ".cgfm", ".cga", ".cgam"]
+                        .iter()
+                        .any(|ext| virtual_name.to_ascii_lowercase().ends_with(ext))
+                    {
+                        // A selected installation can reuse duplicated mesh
+                        // bytes only after the core resolver verifies SHA-256
+                        // equality. A different revision must never be picked
+                        // by archive order or a similar basename.
+                        let archives = hits
+                            .iter()
+                            .take(6)
+                            .map(|hit| hit.archive_name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if build.is_some() {
+                            Err(format!(
+                                "Conflicting or unverified geometry copies in the selected Game installation: {virtual_name} ({} PAKs: {archives}). Export stopped rather than substituting a different mesh.",
+                                hits.len()
+                            ))
+                        } else {
+                            Err(format!(
+                                "Ambiguous geometry across imported builds: {virtual_name} ({} PAKs: {archives}). Select the source game build before exporting.",
+                                hits.len()
+                            ))
+                        }
                     } else {
                         Err(format!("Ambiguous imported asset: {virtual_name}"))
                     }
