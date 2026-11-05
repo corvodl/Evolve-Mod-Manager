@@ -65,7 +65,10 @@ impl LayerAuthoringEdit {
 }
 
 fn bounded_guid(s: &str) -> bool {
-    let raw = s.strip_prefix('{').and_then(|id| id.strip_suffix('}')).unwrap_or(s);
+    let raw = s
+        .strip_prefix('{')
+        .and_then(|id| id.strip_suffix('}'))
+        .unwrap_or(s);
     bounded_name(raw)
 }
 
@@ -356,7 +359,9 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             if !bounded_guid(new_guid)
                 || name.is_empty()
                 || name.len() > 128
-                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b" _-.()".contains(&b))
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b" _-.()".contains(&b))
                 || model.is_empty()
                 || model.len() > 256
                 || model.starts_with('/')
@@ -366,13 +371,12 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
                     component.is_empty()
                         || component == "."
                         || component == ".."
-                        || !component.bytes().all(|b| {
-                            b.is_ascii_alphanumeric() || b"_-.".contains(&b)
-                        })
+                        || !component
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b))
                 })
                 || ![
-                    ".cgf", ".cgfm", ".cga", ".cgam",
-                    ".cdf", ".chr", ".chrm", ".skin", ".skinm",
+                    ".cgf", ".cgfm", ".cga", ".cgam", ".cdf", ".chr", ".chrm", ".skin", ".skinm",
                 ]
                 .iter()
                 .any(|extension| model.to_ascii_lowercase().ends_with(extension))
@@ -385,7 +389,11 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             }
             let normalized = transform.normalize()?;
             let fmt = |parts: &[f32]| {
-                parts.iter().map(f32::to_string).collect::<Vec<_>>().join(",")
+                parts
+                    .iter()
+                    .map(f32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
             };
             let mut element = BytesStart::new("Object");
             element.push_attribute(("Id", new_guid.as_str()));
@@ -489,7 +497,9 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             transform,
             ..
         } => {
-            let added = validated.objects.iter()
+            let added = validated
+                .objects
+                .iter()
                 .filter(|object| object.id.eq_ignore_ascii_case(new_guid))
                 .collect::<Vec<_>>();
             if added.len() != 1
@@ -592,7 +602,9 @@ mod tests {
         let bytes = edit_layer_bytes(XML, &edit).unwrap();
         let scene = parse_level_scene(&[("source", &bytes)]).unwrap();
         assert_eq!(scene.objects.len(), 4);
-        let added = scene.objects.iter()
+        let added = scene
+            .objects
+            .iter()
             .find(|object| object.id == "550e8400-e29b-41d4-a716-446655440000")
             .unwrap();
         assert_eq!(added.model, "objects/rocks/stone.cgf");
