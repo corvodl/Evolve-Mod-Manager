@@ -1,5 +1,5 @@
 # Explicit manual Nightly build request. Only code already merged into main is packaged.
-request: user-requested-after-merged-pr187-2026-11-03
-requested: 2026-11-03
-base-main-commit: ff8cee72b234b39f370b5dca9ea71fa00b565f03
-description: Build a new Windows nightly from main including merged PR #187 (Wildlife Spawns visibility, source wildlife markers and areas, population model alias resolution, elite/albino wildlife matching). Use the existing verified runtime and packaging workflow. Do not include unmerged branches.
+request: user-requested-after-merged-pr188-2026-11-04
+requested: 2026-11-04
+base-main-commit: a733f40f9f113efa06b1bbf1051c476495b0f422
+description: Build a new Windows nightly from main including merged PR #188. PR #191 remains unmerged due to conflicts. Use the existing verified runtime and packaging workflow. Do not include unmerged branches.
