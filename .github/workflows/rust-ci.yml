@@ -63,6 +63,16 @@ jobs:
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_export_hierarchy.py'
       - name: Validate static unrigged FBX world-axis parity
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_static_fbx_basis.py'
+      - name: Validate original terrain LayerId PNG survives FBX handoff
+        run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_level_paint.py'
+      - name: Validate recovered Evolve terrain blend scalar and source guards
+        run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_terrain_blend.py'
+      - name: Validate original compiled terrain surface palettes without guessed alpha
+        run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_compiled_terrain.py'
+      - name: Validate level FBX geometry and light round-trip audits
+        run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_level_roundtrip.py'
+      - name: Validate original Tutorial CDF source references when fixture is supplied
+        run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_real_tutorial_cdf_sources.py'
       - name: Validate original 2012 Rocky 47/48-bone armature compatibility
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_2012_rocky_armatures.py'
       - name: Test sanitized read-only Discord feed

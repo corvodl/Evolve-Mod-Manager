@@ -109,16 +109,17 @@ use evolve_core::{
     apply_library_build_updates, apply_profile_stage, apply_stage_pak, batch_stage_status,
     compare_assets, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
     decode_dds_rgba, discover_equipment, export_dds_png, export_level_scene_glb,
-    export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
-    extract_signed_pak, import_library_plan_with_keys, import_stage_pak, imported_archive_files,
-    imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
-    inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
-    managed_library_builds, material_texture_candidates, plan_mod_profile, prepare_client_hook,
-    read_cdf, read_material, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, remove_managed_library_build, rename_managed_library_build,
-    resign_signed_pak, resolve_cdf, resolve_imported_reference, resolve_materials,
-    restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
-    scan_library_build_updates, scan_library_import_sources, stage_status,
+    export_level_scene_glb_with_scene_color, export_rigged_character_fbx_textured_animated,
+    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
+    import_library_plan_with_keys, import_stage_pak, imported_archive_files, imported_library,
+    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
+    inspect_signed_pak, list_mod_profiles, load_level_scene, managed_library_builds,
+    material_texture_candidates, plan_mod_profile, prepare_client_hook, read_cdf, read_material,
+    read_model, read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
+    remove_managed_library_build, rename_managed_library_build, resign_signed_pak, resolve_cdf,
+    resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
+    scan_directory, scan_directory_with_progress, scan_library_build_updates,
+    scan_library_import_sources, stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, mouse_area, row, scrollable, shader, slider, space, svg, text,
@@ -968,7 +969,17 @@ enum Operation {
         PathBuf,
     ),
     ExportLevelGlb(PathBuf, PathBuf, Option<PathBuf>, PathBuf),
-    ExportLevelFbx(PathBuf, PathBuf, Option<PathBuf>, PathBuf, PathBuf),
+    ExportLevelFbx(
+        PathBuf,
+        PathBuf,
+        Option<PathBuf>,
+        PathBuf,
+        PathBuf,
+        Option<Arc<LevelScene>>,
+        Option<evolve_core::ImportedPak>,
+        Vec<PathBuf>,
+        Option<Arc<::image::RgbaImage>>,
+    ),
     StageInit(PathBuf),
     StageStatus(PathBuf),
     StageImport(PathBuf, PathBuf, String, PathBuf, String),
@@ -1170,17 +1181,23 @@ impl Operation {
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
             Self::ApplyLibraryBuildUpdates(root, plan, stage, cancelled, progress) => {
-                let keys = if plan
+                // Hold the verification key bundle throughout the update. Taking only
+                // .paths drops its TempDir and deletes bundled RSAKeyData.bin
+                // before the changed PAKs can be authenticated.
+                let verification_keys = if plan
                     .changed
                     .iter()
                     .any(|part| part.reuse_archive_id.is_none())
                 {
-                    modding_keys::archive_verification_keys(&stage)?.paths
+                    Some(modding_keys::archive_verification_keys(&stage)?)
                 } else {
-                    Vec::new()
+                    None
                 };
+                let keys: &[PathBuf] = verification_keys
+                    .as_ref()
+                    .map_or(&[], |bundle| bundle.paths.as_slice());
                 let report =
-                    apply_library_build_updates(&root, &plan, &keys, &cancelled, &progress)?;
+                    apply_library_build_updates(&root, &plan, keys, &cancelled, &progress)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedBuildUpdated(report, catalog))
             }
@@ -2183,11 +2200,83 @@ impl Operation {
             Self::StageRestore(root) => restore_stage(&root)
                 .map(Completed::StageRestored)
                 .map_err(|e| e.to_string()),
-            Self::ExportLevelFbx(src, root, terrain, blender, dest) => {
+            Self::ExportLevelFbx(
+                src,
+                root,
+                terrain,
+                blender,
+                dest,
+                assembled,
+                archive,
+                source_layers,
+                original_baked_color,
+            ) => {
                 let folder = tempfile::tempdir().map_err(|e| e.to_string())?;
                 let scene_glb = folder.path().join("level-scene.glb");
-                let scene = export_level_scene_glb(&src, &root, terrain.as_deref(), &scene_glb)
+                let scene = if let (Some(assembled), Some(archive)) = (assembled, archive) {
+                    // Use the full imported Level Editor scene, which already
+                    // includes all authored layers and decoded VegetationMap.dat
+                    // placements. Resolve geometry/material/DDS by verified
+                    // exact virtual paths from THIS installed Game directory.
+                    let inventory = imported_archive_files(&archive).map_err(|e| e.to_string())?;
+                    let library = Path::new(&archive.directory)
+                        .parent()
+                        .ok_or("Selected archive has no Asset Library root")?;
+                    let (build, _guard) = evolve_core::begin_imported_lookup_session_for_source(
+                        library,
+                        &archive.source,
+                    )
                     .map_err(|e| e.to_string())?;
+                    let root_canonical = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
+                    let mut layers = Vec::new();
+                    for path in source_layers {
+                        let metadata =
+                            std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                        let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+                        if !metadata.file_type().is_file()
+                            || !canonical.starts_with(&root_canonical)
+                            || metadata.len() > 48 * 1024 * 1024
+                        {
+                            return Err(format!(
+                                "Unsafe or oversized level source {}",
+                                path.display()
+                            ));
+                        }
+                        layers.push((
+                            path.file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Layer")
+                                .to_string(),
+                            std::fs::read(path).map_err(|e| e.to_string())?,
+                        ));
+                    }
+                    let label = src
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Evolve Level");
+                    export_level_scene_glb_with_scene_color(
+                        &assembled,
+                        &layers,
+                        label,
+                        &root,
+                        terrain.as_deref(),
+                        original_baked_color.as_deref(),
+                        &scene_glb,
+                        |virtual_path| {
+                            auto_resources::exact(
+                                &inventory,
+                                virtual_path,
+                                Some(library),
+                                Some(&build),
+                            )
+                            .map_err(evolve_core::LevelExportError::Missing)
+                        },
+                    )
+                    .map_err(|e| e.to_string())?
+                } else {
+                    export_level_scene_glb(&src, &root, terrain.as_deref(), &scene_glb)
+                        .map_err(|e| e.to_string())?
+                };
                 convert_glb_to_fbx(&blender, &scene_glb, &dest, AnimationPolicy::default())
                     .map_err(|e| e.to_string())?;
                 Ok(Completed::LevelFbxExported(
@@ -11974,10 +12063,61 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select level XML/LYR, extracted asset root, Blender executable and NEW .fbx output.".into();
                 return Task::none();
             }
+            let same_loaded_scene = state
+                .level_source
+                .as_ref()
+                .is_some_and(|loaded| loaded == &PathBuf::from(&state.input))
+                && state.level_scene.is_some();
+            // The opened Level Editor already knows the exact imported
+            // map-owned Heightmap.dat. Export it automatically rather than
+            // dropping terrain when the optional manual field is blank.
             let terrain = if state.terrain_source.trim().is_empty() {
-                None
+                if same_loaded_scene {
+                    state
+                        .library_map
+                        .as_ref()
+                        .and_then(|(_, maps, index)| maps.get(*index))
+                        .and_then(|map| map.terrain.as_ref())
+                        .map(|relative| PathBuf::from(&state.assets_root).join(relative))
+                } else {
+                    None
+                }
             } else {
                 Some(PathBuf::from(&state.terrain_source))
+            };
+            let (assembled, archive, source_layers) = if same_loaded_scene {
+                if let Some((archive, maps, index)) = &state.library_map {
+                    let files = maps
+                        .get(*index)
+                        .map(|map| {
+                            map.layers
+                                .iter()
+                                .map(|relative| PathBuf::from(&state.assets_root).join(relative))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    (state.level_scene.clone(), Some(archive.clone()), files)
+                } else {
+                    (None, None, Vec::new())
+                }
+            } else {
+                (None, None, Vec::new())
+            };
+            let original_baked_color = if same_loaded_scene {
+                state
+                    .level_world_source
+                    .as_ref()
+                    .and_then(|world| world.groups.first())
+                    .filter(|group| {
+                        group
+                            .instances
+                            .first()
+                            .is_some_and(|item| item.object_index == usize::MAX)
+                    })
+                    .and_then(|group| group.surfaces.first())
+                    .and_then(|surface| surface.diffuse.clone())
+            } else {
+                None
             };
             return launch(
                 state,
@@ -11987,6 +12127,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     terrain,
                     blender,
                     PathBuf::from(&state.output),
+                    assembled,
+                    archive,
+                    source_layers,
+                    original_baked_color,
                 ),
             );
         }

@@ -420,7 +420,7 @@ def _repair_zero_tangent_vectors(objects):
     return repaired
 
 
-def _validate_geometry(objects, require_tangent_space=False):
+def _validate_geometry(objects, require_tangent_space=False, allow_uvless=False):
     mesh_count = 0
     for mesh in objects.children_named(b"Geometry"):
         props = _properties(mesh)
@@ -434,7 +434,7 @@ def _validate_geometry(objects, require_tangent_space=False):
         if not vertices or len(vertices) % 3 or not all(map(math.isfinite, vertices)):
             raise FBXValidationError("Malformed FBX mesh vertices")
         layers = mesh.children_named(b"LayerElementUV")
-        if not layers:
+        if not layers and not allow_uvless:
             raise FBXValidationError("FBX mesh missing UV layers")
         if require_tangent_space:
             for element, payload in [
@@ -507,7 +507,8 @@ def _cluster_weights(cluster):
     return len(indices), any(w > 0 for w in weights)
 
 
-def optimize_binary_fbx(path, embed_textures=True, require_tangent_space=False):
+def optimize_binary_fbx(path, embed_textures=True, require_tangent_space=False,
+                        allow_uvless=False):
     """Prune zero-weight clusters and merge only compatible bind poses.
 
     Failure leaves the original staged FBX untouched; caller must publish only
@@ -522,7 +523,8 @@ def optimize_binary_fbx(path, embed_textures=True, require_tangent_space=False):
     if objects is None or connections is None:
         raise FBXValidationError("Missing FBX object/connection tables")
     repaired_vectors = _repair_zero_tangent_vectors(objects) if require_tangent_space else 0
-    meshes = _validate_geometry(objects, require_tangent_space=require_tangent_space)
+    meshes = _validate_geometry(objects, require_tangent_space=require_tangent_space,
+                                allow_uvless=allow_uvless)
     embedded_normals = 0
     if not embed_textures:
         embedded_normals = embed_verified_normal_maps(objects, path)
@@ -596,7 +598,8 @@ def optimize_binary_fbx(path, embed_textures=True, require_tangent_space=False):
     if check_version != version:
         raise FBXValidationError("FBX version changed during optimization")
     check_objects = next(n for n in check_roots if n.name == b"Objects")
-    _validate_geometry(check_objects, require_tangent_space=require_tangent_space)
+    _validate_geometry(check_objects, require_tangent_space=require_tangent_space,
+                       allow_uvless=allow_uvless)
     if not embed_textures:
         verify_embedded_normal_media(check_objects, embedded_normals)
     surviving = [c for c in check_objects.children_named(b"Deformer")
@@ -867,14 +870,27 @@ def normal_image_names(meshes):
     return names
 
 
-def validate_blender_meshes(meshes, *, rigged=False, embed_textures=True):
+def validate_blender_meshes(meshes, *, rigged=False, embed_textures=True,
+                            allow_uvless=False):
     """Pre-export UV, material and skin-weight checks after UV0 repair."""
     if not meshes:
         raise FBXValidationError("No exported meshes")
     for mesh in meshes:
         data = mesh.data
-        if not data.polygons or not data.uv_layers:
-            raise FBXValidationError("Mesh missing faces/UV0: " + mesh.name)
+        if not data.polygons:
+            raise FBXValidationError("Mesh missing faces: " + mesh.name)
+        if not data.uv_layers:
+            if not allow_uvless:
+                raise FBXValidationError("Mesh missing UV0: " + mesh.name)
+            # Original CryEngine helper geometry can be untextured and lack
+            # UV streams. Never invent coordinates for those meshes. A real
+            # image-sampled material still requires original authored UVs.
+            sampled = any(
+                material and material.use_nodes and any(
+                    node.type == "TEX_IMAGE" for node in material.node_tree.nodes)
+                for material in data.materials)
+            if sampled:
+                raise FBXValidationError("Textured source lacks UV0: " + mesh.name)
         for layer in data.uv_layers:
             if len(layer.data) != len(data.loops):
                 raise FBXValidationError("UV loop count mismatch: " + mesh.name)

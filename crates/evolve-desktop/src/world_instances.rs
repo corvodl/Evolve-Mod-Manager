@@ -1162,7 +1162,7 @@ fn upload_terrain_layers(
                 layer.blend_factor,
                 layer.blend_falloff,
                 layer.pom_displacement,
-                0.0,
+                if layer.height.is_some() { 1.0 } else { 0.0 },
             ];
         }
     }
