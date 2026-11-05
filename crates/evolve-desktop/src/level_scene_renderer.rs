@@ -1465,6 +1465,9 @@ pub(super) fn assemble_wildlife(
 /// Update baked mesh vertices for already-loaded source instances without
 /// recompiling textures or re-indexing the entire imported map. The source
 /// object triangle ranges never change and are owned by the scene copy.
+// Retained for uncommitted axis-drag previews; project edits now save through
+// the verified source-member transaction and reload the full scene.
+#[allow(dead_code)]
 pub(super) fn reproject_after_edit(
     original: &RenderMesh,
     ranges: &[PickRange],
