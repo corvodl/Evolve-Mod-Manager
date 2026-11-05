@@ -537,7 +537,150 @@ fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     Some((width, height, rgba))
 }
 
+fn home_launch_card<'a>(
+    label: &'static str,
+    title: &'static str,
+    description: &'static str,
+    buttons: Element<'a, Message>,
+    wallpaper: bool,
+) -> container::Container<'a, Message> {
+    home_surface(
+        column![
+            text(label).size(10).style(design::accent),
+            text(title).size(17),
+            text(description).size(12).style(design::muted),
+            iced::widget::space().height(Fill),
+            buttons,
+        ]
+        .spacing(9),
+        wallpaper,
+    )
+    .padding(16)
+    .width(Fill)
+    .height(Length::Fixed(210.0))
+}
+
 pub(super) fn home(state: &State) -> Element<'_, Message> {
+    if state.preferences.ui_theme == "Evolve Legacy" {
+        return home_legacy(state);
+    }
+    let wallpaper = state.preferences.show_home_background;
+    let hero = home_surface(
+        row![
+            image(image::Handle::from_bytes(include_bytes!("../../../assets/hunt.png").to_vec()))
+                .width(64).height(64),
+            column![
+                text("Evolve Mod Manager").size(24),
+                text("Your workspace for CryPAK mods, original assets, model playback and level editing.")
+                    .size(13).style(design::muted),
+            ].spacing(5).width(Fill),
+            column![
+                text("INSTALLATION").size(10).style(design::muted),
+                text(if state.preferences.game_installation.is_empty() { "Not configured" } else { "Configured" }).size(12),
+            ].spacing(4),
+            column![
+                text("CLIENT").size(10).style(design::muted),
+                text(if state.preferences.client_executable.is_empty() { "Not configured" } else { "Configured" }).size(12),
+            ].spacing(4),
+        ].spacing(18).align_y(iced::Center), wallpaper,
+    ).padding([16, 20]);
+
+    let project = super::home_recent_workspace(state)
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "No project selected".into());
+    let launchpads = row![
+        home_launch_card(
+            "INSTANT PLAY",
+            "Launch Evolve",
+            "Launch with enabled mod projects and staged overrides.",
+            design::button("Play with Mods")
+                .on_press(Message::PlayWithMods)
+                .style(move |theme, status| home_button_style(theme, status, wallpaper, true))
+                .width(Fill)
+                .into(),
+            wallpaper
+        ),
+        home_surface(
+            column![
+                text("ACTIVE PROJECT").size(10).style(design::accent),
+                text(project).size(17),
+                text("Continue with your selected, isolated Modding workspace.")
+                    .size(12)
+                    .style(design::muted),
+                iced::widget::space().height(Fill),
+                row![
+                    design::button("Open Project")
+                        .on_press(Message::HomeContinueEditing)
+                        .width(Fill),
+                    design::button("Package Mod")
+                        .on_press(Message::HomeOpenProject)
+                        .width(Fill),
+                ]
+                .spacing(8),
+            ]
+            .spacing(9),
+            wallpaper
+        )
+        .padding(16)
+        .width(Fill)
+        .height(Length::Fixed(210.0)),
+        home_launch_card(
+            "AUTHORING SUITE",
+            "Create New Mod Project",
+            "Import source assets, edit gameplay data and preview models.",
+            row![
+                design::button("Gameplay Values…")
+                    .on_press(Message::Navigate(Page::Files))
+                    .width(Fill),
+                design::button("Models & Skins…")
+                    .on_press(Message::Navigate(Page::AssetLibrary))
+                    .width(Fill),
+            ]
+            .spacing(8)
+            .into(),
+            wallpaper
+        ),
+    ]
+    .spacing(14);
+    let tools = column![
+        text("QUICK TOOL ACCESS").size(11).style(design::muted),
+        design::button("CryPAK Archive Explorer  →")
+            .on_press(Message::Navigate(Page::Files))
+            .width(Fill),
+        design::button("Open Level Editor window  ↗")
+            .on_press(Message::OpenLevelEditorWindow)
+            .width(Fill),
+        design::button("Open Asset Viewer  ↗")
+            .on_press(Message::OpenViewer)
+            .width(Fill),
+        design::button("Developer Tools  →")
+            .on_press(Message::Navigate(Page::Developer))
+            .width(Fill),
+    ]
+    .spacing(9)
+    .width(Length::FillPortion(1));
+    scrollable(
+        column![
+            hero,
+            launchpads,
+            row![
+                container(latest_announcement(state, wallpaper)).width(Length::FillPortion(2)),
+                tools
+            ]
+            .spacing(16),
+        ]
+        .spacing(18)
+        .padding(24),
+    )
+    .width(Fill)
+    .height(Fill)
+    .into()
+}
+
+fn home_legacy(state: &State) -> Element<'_, Message> {
     let wallpaper = state.preferences.show_home_background;
     let hero = if let Some(workspace) = super::home_recent_workspace(state) {
         let project = state.modding_projects.as_ref().and_then(|projects| {

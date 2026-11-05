@@ -15,6 +15,11 @@ use iced::{
     mouse,
 };
 
+/// Viewer-only socket and DBA provenance panels. The explicit path keeps the
+/// declaration local to this module until `main.rs` can own it.
+#[path = "asset_viewer_sockets.rs"]
+mod asset_viewer_sockets;
+
 fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(child).style(|theme| container::Style {
         background: Some(Background::Color(design::surface(theme))),
@@ -261,6 +266,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                 clips = clips.push(text(format!("{} more authored events", count - 40)).size(11));
             }
         }
+        clips = clips.push(asset_viewer_sockets::dba_source_panel(state));
         clips = clips.push(
             design::text_input("Filter character animations…", &state.auto_clip_filter)
                 .on_input(Message::ViewerAutoClipFilter),
@@ -741,6 +747,9 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             );
         }
         entries = entries.push(choices);
+    }
+    if state.cdf_report.is_some() || state.character.is_some() {
+        entries = entries.push(asset_viewer_sockets::attachment_socket_panel(state));
     }
     panel(container(scrollable(entries).height(Fill)).padding(12))
         .width(Fill)
@@ -2663,6 +2672,13 @@ mod tests {
         assert!(explorer_on_left("Left"));
         assert!(!explorer_on_left("Right"));
         assert!(!explorer_on_left(""));
+    }
+
+    #[test]
+    fn sockets_and_dba_panels_render_without_an_assembled_preview() {
+        let state = State::default();
+        let _ = asset_viewer_sockets::attachment_socket_panel(&state);
+        let _ = asset_viewer_sockets::dba_source_panel(&state);
     }
 
     #[test]

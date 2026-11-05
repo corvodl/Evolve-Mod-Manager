@@ -3,11 +3,178 @@
 //! contextual and collapsed by default. Cryptographic keys are never entered.
 use super::{Message, State};
 use crate::design;
+use crate::modding_projects::ProjectRow;
 use evolve_core::mod_safety::{ModKind, classify};
 use iced::widget::{column, container, row, scrollable, space, svg, text};
-use iced::{Background, Element, Fill, Length};
+use iced::{Alignment, Background, Color, Element, Fill, Length};
+use std::collections::HashMap;
 
 pub(super) const PAGE: usize = 90;
+
+/// A full project manifest can contain up to 60,000 changed members. The
+/// inspector is a live view, so cap the work per frame and say so rather than
+/// presenting a partial scan as complete.
+const MAX_SCAN_MEMBERS: usize = 200_000;
+/// Keep the inspector usable for very large conflict sets.
+const MAX_INSPECTOR_GROUPS: usize = 40;
+
+/// One shared changed-member path across two or more enabled projects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemberCollision {
+    path: String,
+    /// Project indices in the effective Play order.
+    owners: Vec<usize>,
+}
+
+/// Two enabled sources targeting the same PAK. Play with Mods refuses this,
+/// but cached state can still describe an inconsistent set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TargetConflict {
+    target: String,
+    owners: Vec<usize>,
+}
+
+/// Derived, read-only load-order and collision view of the project registry.
+///
+/// The effective order is exactly the project-list order: `discover_projects`
+/// sorts projects, and Play with Mods walks that list and keeps enabled rows.
+/// No manual priority is persisted yet, so this view never invents one.
+#[derive(Debug, Clone, Default)]
+struct LoadOrderScan {
+    /// Enabled project indices in effective Play order.
+    order: Vec<usize>,
+    /// 1-based Play position for each project index (`None` when disabled).
+    positions: Vec<Option<usize>>,
+    /// Number of shared changed-member paths per project index.
+    shared_paths_by_project: Vec<usize>,
+    /// Only groups with more than one owner.
+    member_collisions: Vec<MemberCollision>,
+    target_conflicts: Vec<TargetConflict>,
+    scanned_members: usize,
+    truncated: bool,
+    incomplete_enabled: usize,
+}
+
+impl LoadOrderScan {
+    fn enabled_count(&self) -> usize {
+        self.order.len()
+    }
+
+    fn conflict_count(&self) -> usize {
+        self.member_collisions.len() + self.target_conflicts.len()
+    }
+
+    fn position(&self, index: usize) -> Option<usize> {
+        self.positions.get(index).copied().flatten()
+    }
+
+    fn shared_paths(&self, index: usize) -> usize {
+        self.shared_paths_by_project
+            .get(index)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn has_target_conflict(&self, index: usize) -> bool {
+        self.target_conflicts
+            .iter()
+            .any(|conflict| conflict.owners.contains(&index))
+    }
+}
+
+/// Scan only enabled projects. Disabled projects cannot collide at runtime,
+/// even if their manifests declare the same paths or PAK target.
+fn scan_projects(projects: &[ProjectRow]) -> LoadOrderScan {
+    let mut scan = LoadOrderScan {
+        positions: vec![None; projects.len()],
+        shared_paths_by_project: vec![0; projects.len()],
+        ..LoadOrderScan::default()
+    };
+
+    for (index, project) in projects.iter().enumerate() {
+        if project.enabled {
+            scan.order.push(index);
+            scan.positions[index] = Some(scan.order.len());
+            if !project.changed_known {
+                scan.incomplete_enabled += 1;
+            }
+        }
+    }
+
+    let mut targets: HashMap<String, (String, Vec<usize>)> = HashMap::new();
+    for &index in &scan.order {
+        let project = &projects[index];
+        let key = project.target.replace('\\', "/").to_ascii_lowercase();
+        targets
+            .entry(key)
+            .or_insert_with(|| (project.target.clone(), Vec::new()))
+            .1
+            .push(index);
+    }
+    scan.target_conflicts = targets
+        .into_values()
+        .filter(|(_, owners)| owners.len() > 1)
+        .map(|(target, owners)| TargetConflict { target, owners })
+        .collect();
+    scan.target_conflicts.sort_by(|left, right| {
+        left.owners
+            .first()
+            .cmp(&right.owners.first())
+            .then_with(|| {
+                left.target
+                    .to_ascii_lowercase()
+                    .cmp(&right.target.to_ascii_lowercase())
+            })
+    });
+
+    // Windows PAK/VFS names are case-insensitive; lower-case keys prevent a
+    // cosmetic case difference from hiding a real shared member path.
+    let mut members: HashMap<String, (String, Vec<usize>)> = HashMap::new();
+    'projects: for &index in &scan.order {
+        for path in &projects[index].modified {
+            if scan.scanned_members >= MAX_SCAN_MEMBERS {
+                scan.truncated = true;
+                break 'projects;
+            }
+            if path.is_empty() {
+                continue;
+            }
+            scan.scanned_members += 1;
+            let entry = members
+                .entry(path.to_ascii_lowercase())
+                .or_insert_with(|| (path.clone(), Vec::new()));
+            // Projects are scanned in order, so a repeated path inside one
+            // project never masquerades as another project's ownership.
+            if entry.1.last().copied() != Some(index) {
+                entry.1.push(index);
+            }
+        }
+    }
+    scan.member_collisions = members
+        .into_values()
+        .filter(|(_, owners)| owners.len() > 1)
+        .map(|(path, owners)| MemberCollision { path, owners })
+        .collect();
+    scan.member_collisions.sort_by(|left, right| {
+        left.owners
+            .first()
+            .cmp(&right.owners.first())
+            .then_with(|| {
+                left.path
+                    .to_ascii_lowercase()
+                    .cmp(&right.path.to_ascii_lowercase())
+            })
+    });
+    for collision in &scan.member_collisions {
+        for &index in &collision.owners {
+            if let Some(count) = scan.shared_paths_by_project.get_mut(index) {
+                *count += 1;
+            }
+        }
+    }
+
+    scan
+}
 
 pub(super) fn matching_projects(state: &State) -> Vec<usize> {
     let query = state.modding_filter.to_lowercase();
@@ -159,18 +326,91 @@ fn dropdown_left(name: Option<&str>) -> f32 {
 
 fn project_header(advanced: bool) -> Element<'static, Message> {
     let mut header = row![
-        text("ENABLED").width(Length::FillPortion(2)),
-        text("MOD NAME").width(Length::FillPortion(7)),
-        text("PAK").width(Length::FillPortion(5)),
-        text("STATUS").width(Length::FillPortion(2)),
+        text("ORDER")
+            .size(10)
+            .style(design::muted)
+            .width(Length::Fixed(48.0)),
+        text("ENABLED")
+            .size(10)
+            .style(design::muted)
+            .width(Length::FillPortion(2)),
+        text("MOD NAME / SOURCE")
+            .size(10)
+            .style(design::muted)
+            .width(Length::FillPortion(7)),
+        text("PAK")
+            .size(10)
+            .style(design::muted)
+            .width(Length::FillPortion(5)),
+        text("DECLARED COLLISION")
+            .size(10)
+            .style(design::muted)
+            .width(Length::Fixed(132.0)),
+        text("MANIFEST")
+            .size(10)
+            .style(design::muted)
+            .width(Length::FillPortion(2)),
     ];
     if advanced {
         header = header
-            .push(text("SOURCE BUILD").width(Length::FillPortion(2)))
-            .push(text("MOD TYPE").width(Length::FillPortion(2)))
-            .push(text("DETAILS").width(Length::FillPortion(3)));
+            .push(
+                text("SOURCE BUILD")
+                    .size(10)
+                    .style(design::muted)
+                    .width(Length::FillPortion(2)),
+            )
+            .push(
+                text("MOD TYPE")
+                    .size(10)
+                    .style(design::muted)
+                    .width(Length::FillPortion(2)),
+            )
+            .push(
+                text("DETAILS")
+                    .size(10)
+                    .style(design::muted)
+                    .width(Length::FillPortion(3)),
+            );
     }
-    header.spacing(8).into()
+    header.spacing(8).align_y(Alignment::Center).into()
+}
+
+#[derive(Clone, Copy)]
+enum BadgeTone {
+    Clean,
+    Shared,
+    Target,
+    Disabled,
+}
+
+fn badge_color(tone: BadgeTone, theme: &iced::Theme) -> Color {
+    match tone {
+        BadgeTone::Clean => theme.palette().success,
+        BadgeTone::Shared => theme.palette().warning,
+        BadgeTone::Target => theme.palette().danger,
+        BadgeTone::Disabled => theme.extended_palette().background.strongest.text,
+    }
+}
+
+/// Theme-aware badge: no fixed RGB mock palette, so light and legacy themes
+/// stay readable while the semantic color remains obvious.
+fn badge(label: impl Into<String>, tone: BadgeTone) -> Element<'static, Message> {
+    let label = label.into();
+    container(text(label).size(11).style(move |theme| text::Style {
+        color: Some(badge_color(tone, theme)),
+    }))
+    .padding([2, 7])
+    .style(move |theme| {
+        let color = badge_color(tone, theme);
+        container::Style {
+            background: Some(Background::Color(Color::from_rgba(
+                color.r, color.g, color.b, 0.14,
+            ))),
+            border: iced::border::rounded(5).color(color),
+            ..container::Style::default()
+        }
+    })
+    .into()
 }
 
 /// Lightweight, vector-sharp sliding switch. No images or theme-specific
@@ -196,7 +436,7 @@ fn mod_toggle_switch(position: f32) -> Element<'static, Message> {
         .into()
 }
 
-fn projects(state: &State) -> Element<'_, Message> {
+fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> {
     let mut rows = column![project_header(state.modding_advanced)].spacing(4);
     let projects = state.modding_projects.as_deref().unwrap_or(&[]);
     let matches = matching_projects(state);
@@ -205,15 +445,44 @@ fn projects(state: &State) -> Element<'_, Message> {
     for &index in &matches[range.clone()] {
         let record = &projects[index];
         let selected = state.project_selection.indices.contains(&index);
+        let order = scan
+            .position(index)
+            .map(|position| format!("#{position}"))
+            .unwrap_or_else(|| "—".into());
+        let source = if record.source_build.trim().is_empty() {
+            if record.details.trim().is_empty() {
+                "Local project"
+            } else {
+                record.details.as_str()
+            }
+        } else {
+            record.source_build.as_str()
+        };
+        let shared = scan.shared_paths(index);
+        let collision = if !record.enabled {
+            badge("Disabled", BadgeTone::Disabled)
+        } else if scan.has_target_conflict(index) {
+            badge("PAK target clash", BadgeTone::Target)
+        } else if shared > 0 {
+            badge(format!("{shared} shared file(s)"), BadgeTone::Shared)
+        } else {
+            badge("Clean", BadgeTone::Clean)
+        };
         let mut cells = row![
-            text(record.label.as_str())
-                .size(12)
-                .width(Length::FillPortion(7)),
+            column![
+                text(record.label.as_str()).size(12),
+                text(source).size(11).style(design::muted),
+            ]
+            .width(Length::FillPortion(7)),
             text(record.target.as_str())
                 .size(12)
                 .width(Length::FillPortion(5)),
+            container(collision)
+                .width(Length::Fixed(132.0))
+                .align_x(Alignment::Start),
             text(record.status.as_str())
-                .size(12)
+                .size(11)
+                .style(design::muted)
                 .width(Length::FillPortion(2)),
         ];
         if state.modding_advanced {
@@ -240,7 +509,7 @@ fn projects(state: &State) -> Element<'_, Message> {
                         .width(Length::FillPortion(3)),
                 );
         }
-        let cells = cells.spacing(8).align_y(iced::Center);
+        let cells = cells.spacing(8).align_y(Alignment::Center);
         let position = state
             .mod_toggle_animations
             .iter()
@@ -250,13 +519,17 @@ fn projects(state: &State) -> Element<'_, Message> {
         rows = rows.push(
             container(
                 row![
+                    text(order)
+                        .size(12)
+                        .style(design::muted)
+                        .width(Length::Fixed(48.0)),
                     design::button(
                         row![
                             mod_toggle_switch(position),
                             text(if record.enabled { "On" } else { "Off" }).size(11),
                         ]
                         .spacing(3)
-                        .align_y(iced::Center),
+                        .align_y(Alignment::Center),
                     )
                     .style(design::text_button)
                     .padding([0, 3])
@@ -275,7 +548,8 @@ fn projects(state: &State) -> Element<'_, Message> {
                         .style(design::text_button)
                         .on_press(Message::ModdingSelectProject(index)),
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(Alignment::Center),
             )
             .width(Fill)
             .style(move |theme| container::Style {
@@ -312,7 +586,7 @@ fn projects(state: &State) -> Element<'_, Message> {
         };
     panel(
         column![
-            scrollable(rows).height(Length::Fixed(220.0)),
+            scrollable(rows).height(Length::Fixed(300.0)),
             row![
                 empty,
                 space().width(Fill),
@@ -322,7 +596,7 @@ fn projects(state: &State) -> Element<'_, Message> {
                     .on_press_maybe((range.end < count).then_some(Message::ModdingPage(true))),
             ]
             .spacing(8)
-            .align_y(iced::Center)
+            .align_y(Alignment::Center)
         ]
         .spacing(8),
     )
@@ -745,6 +1019,318 @@ fn profiles(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+fn create_mod_card() -> Element<'static, Message> {
+    panel(
+        column![
+            text("CREATE A MOD").size(10).style(design::muted),
+            text("Author New Project").size(16),
+            text("Create isolated workspace overrides for gameplay values or visual assets.")
+                .size(11)
+                .style(design::muted),
+            space().height(Length::Fixed(6.0)),
+            row![
+                design::button("Gameplay values…")
+                    .style(design::secondary)
+                    .on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(
+                        false
+                    ))),
+                design::button("Models & Skins…")
+                    .style(design::secondary)
+                    .on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(
+                        true
+                    ))),
+            ]
+            .spacing(8),
+        ]
+        .spacing(6),
+    )
+    .into()
+}
+
+fn play_mods_card(state: &State, scan: &LoadOrderScan) -> Element<'static, Message> {
+    let signed = state.signed_ui.as_ref().map_or(0, |ui| ui.selected.len());
+    panel(
+        column![
+            text("PLAY WITH MODS").size(10).style(design::accent),
+            text("Stage 2 Sandbox Launch").size(16),
+            text(format!(
+                "Offline only · {} enabled project(s) and {signed} selected signed PAK(s).",
+                scan.enabled_count()
+            ))
+            .size(11)
+            .style(design::muted),
+            space().height(Length::Fixed(6.0)),
+            row![
+                design::button("Play with Mods")
+                    .style(design::primary)
+                    .on_press(Message::PlayWithMods),
+                design::button("Refresh Mods")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingRefresh),
+            ]
+            .spacing(8),
+        ]
+        .spacing(6),
+    )
+    .into()
+}
+
+fn conflict_hub_card(scan: &LoadOrderScan) -> Element<'static, Message> {
+    let first_conflict = scan
+        .target_conflicts
+        .first()
+        .and_then(|conflict| conflict.owners.first())
+        .or_else(|| {
+            scan.member_collisions
+                .first()
+                .and_then(|collision| collision.owners.first())
+        })
+        .copied();
+    let tone = if scan.conflict_count() == 0 {
+        BadgeTone::Clean
+    } else {
+        BadgeTone::Shared
+    };
+    panel(
+        column![
+            row![
+                text("LOAD ORDER & CONFLICT HUB").size(10).style(design::muted),
+                space().width(Fill),
+                badge(format!("{} group(s)", scan.conflict_count()), tone),
+            ]
+            .align_y(Alignment::Center),
+            text("Asset Collision Guard").size(16),
+            text(format!(
+                "{} enabled · {} shared-member group(s) · {} PAK target clash(es).",
+                scan.enabled_count(),
+                scan.member_collisions.len(),
+                scan.target_conflicts.len()
+            ))
+            .size(11)
+            .style(design::muted),
+            text("Derived from project manifests; this is not a live game VFS read and no winning copy is written.")
+                .size(11)
+                .style(design::muted),
+            space().height(Length::Fixed(6.0)),
+            row![
+                design::button("Review first conflict")
+                    .style(design::secondary)
+                    .on_press_maybe(first_conflict.map(Message::ModdingSelectProject)),
+                design::button("Refresh Mods")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingRefresh),
+            ]
+            .spacing(8),
+        ]
+        .spacing(6),
+    )
+    .into()
+}
+
+fn collision_owner<'a>(projects: &'a [ProjectRow], index: usize) -> Element<'a, Message> {
+    let Some(record) = projects.get(index) else {
+        return text("").into();
+    };
+    container(
+        column![
+            text(record.label.as_str()).size(12),
+            text(record.target.as_str()).size(10).style(design::muted),
+            row![
+                design::button("Open")
+                    .style(design::text_button)
+                    .padding([2, 5])
+                    .on_press(Message::ModdingSelectProject(index)),
+                design::button("Disable")
+                    .style(design::secondary)
+                    .padding([2, 6])
+                    .on_press(Message::ModdingToggleEnabled(index)),
+            ]
+            .spacing(4),
+        ]
+        .spacing(2),
+    )
+    .width(Fill)
+    .padding(8)
+    .style(design::panel)
+    .into()
+}
+
+fn target_conflict_group<'a>(
+    projects: &'a [ProjectRow],
+    target: &str,
+    owners: &[usize],
+) -> Element<'a, Message> {
+    let mut cards = row![].spacing(6);
+    for &index in owners {
+        cards = cards.push(collision_owner(projects, index));
+    }
+    container(
+        column![
+            row![
+                text(target.to_owned()).size(11),
+                space().width(Fill),
+                badge("PAK target clash", BadgeTone::Target),
+            ]
+            .align_y(Alignment::Center),
+            cards,
+            text("Play with Mods refuses two enabled sources with the same target PAK. Disable one source.")
+                .size(10)
+                .style(design::muted),
+        ]
+        .spacing(6),
+    )
+    .padding(10)
+    .style(design::panel)
+    .into()
+}
+
+fn member_collision_group<'a>(
+    projects: &'a [ProjectRow],
+    path: &str,
+    owners: &[usize],
+) -> Element<'a, Message> {
+    let mut cards = row![].spacing(6);
+    for &index in owners {
+        cards = cards.push(collision_owner(projects, index));
+    }
+    container(
+        column![
+            row![
+                text(path.to_owned()).size(11),
+                space().width(Fill),
+                badge(format!("{} sources", owners.len()), BadgeTone::Shared),
+            ]
+            .align_y(Alignment::Center),
+            cards,
+            text("Same declared changed-member path. The manager cannot select or apply a VFS winner yet; disable a source or consolidate the file.")
+                .size(10)
+                .style(design::muted),
+        ]
+        .spacing(6),
+    )
+    .padding(10)
+    .style(design::panel)
+    .into()
+}
+
+fn conflict_inspector<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> {
+    let projects = state.modding_projects.as_deref().unwrap_or(&[]);
+    let mut body = column![].spacing(8);
+    if scan.enabled_count() == 0 {
+        body = body.push(
+            text("No enabled projects. Enable a project to add it to the effective Play order.")
+                .size(12)
+                .style(design::muted),
+        );
+    }
+    if scan.incomplete_enabled > 0 {
+        body = body.push(badge(
+            format!(
+                "{} enabled project(s) have incomplete change scans",
+                scan.incomplete_enabled
+            ),
+            BadgeTone::Target,
+        ));
+    }
+    if scan.truncated {
+        body = body.push(badge(
+            format!("Scan stopped after {MAX_SCAN_MEMBERS} changed-member entries",),
+            BadgeTone::Target,
+        ));
+    }
+    if scan.conflict_count() == 0 && scan.enabled_count() > 0 {
+        body = body.push(
+            text("No declared shared changed-member paths or duplicate PAK targets among enabled projects.")
+                .size(12)
+                .style(design::muted),
+        );
+    }
+    let mut shown = 0usize;
+    for conflict in &scan.target_conflicts {
+        if shown >= MAX_INSPECTOR_GROUPS {
+            break;
+        }
+        body = body.push(target_conflict_group(
+            projects,
+            conflict.target.as_str(),
+            &conflict.owners,
+        ));
+        shown += 1;
+    }
+    for collision in &scan.member_collisions {
+        if shown >= MAX_INSPECTOR_GROUPS {
+            break;
+        }
+        body = body.push(member_collision_group(
+            projects,
+            collision.path.as_str(),
+            &collision.owners,
+        ));
+        shown += 1;
+    }
+    if scan.conflict_count() > shown {
+        body = body.push(
+            text(format!(
+                "{} more collision group(s) are not shown; use the project filter or disable a source to reduce the scan.",
+                scan.conflict_count() - shown
+            ))
+            .size(10)
+            .style(design::muted),
+        );
+    }
+    let tone = if scan.conflict_count() == 0 {
+        BadgeTone::Clean
+    } else {
+        BadgeTone::Shared
+    };
+    panel(
+        column![
+            row![
+                text("COLLISION INSPECTOR").size(13),
+                space().width(Fill),
+                badge(format!("{} group(s)", scan.conflict_count()), tone),
+            ]
+            .align_y(Alignment::Center),
+            text("Effective Play order is this project-list order: Play with Mods walks the registry and keeps enabled projects. Disabled projects are not loaded.")
+                .size(11)
+                .style(design::muted),
+            scrollable(body).height(Length::Fixed(300.0)),
+            text(format!(
+                "Scanned {} declared changed-member entries across enabled projects.",
+                scan.scanned_members
+            ))
+            .size(10)
+            .style(design::muted),
+            text("Shared paths are declared in each project manifest. Manual priority, CryEngine PAK mount order and a winning copy are not controlled or verified here.")
+                .size(10)
+                .style(design::muted),
+            row![
+                design::button("Review Changes")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingReviewChanges),
+                design::button("Refresh Mods")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingRefresh),
+            ]
+            .spacing(8),
+        ]
+        .spacing(7),
+    )
+    .into()
+}
+
+fn mod_kind_count(projects: &[ProjectRow], kind: ModKind) -> usize {
+    projects
+        .iter()
+        .filter(|project| {
+            classify(
+                project.modified.iter().map(String::as_str),
+                project.changed_known,
+            ) == kind
+        })
+        .count()
+}
+
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let chosen = state.modding_selected.and_then(|index| {
         state
@@ -815,64 +1401,91 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .spacing(8),
         );
     }
+    let project_list = state.modding_projects.as_deref().unwrap_or(&[]);
+    let scan = scan_projects(project_list);
+    let all_count = project_list.len();
+    let cosmetic_count = mod_kind_count(project_list, ModKind::CosmeticCandidate);
+    let gameplay_count = mod_kind_count(project_list, ModKind::Gameplay);
+    let review_count = mod_kind_count(project_list, ModKind::NeedsReview);
     let selected_project = panel(selected_content);
+    let top_cards = row![
+        container(create_mod_card()).width(Length::FillPortion(1)),
+        container(play_mods_card(state, &scan)).width(Length::FillPortion(1)),
+        container(conflict_hub_card(&scan)).width(Length::FillPortion(1)),
+    ]
+    .spacing(12);
+    let filter_bar = panel(
+        column![
+            row![
+                text("YOUR PROJECTS").size(15),
+                space().width(Fill),
+                text(format!("{} matching", matching_projects(state).len()))
+                    .size(11)
+                    .style(design::muted),
+                badge(
+                    format!("{} enabled", scan.enabled_count()),
+                    if scan.enabled_count() == 0 {
+                        BadgeTone::Disabled
+                    } else {
+                        BadgeTone::Clean
+                    },
+                ),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            row![
+                design::text_input(
+                    "Find project, target PAK or imported source…",
+                    &state.modding_filter
+                )
+                .on_input(Message::ModdingFilterChanged)
+                .width(Fill),
+                design::button(text(format!("All mods ({all_count})")).size(11))
+                    .style(if state.modding_kind.is_none() {
+                        design::primary
+                    } else {
+                        design::secondary
+                    })
+                    .on_press(Message::ModdingKind(None)),
+                design::button(text(format!("Cosmetic ({cosmetic_count})")).size(11))
+                    .style(if state.modding_kind == Some(ModKind::CosmeticCandidate) {
+                        design::primary
+                    } else {
+                        design::secondary
+                    })
+                    .on_press(Message::ModdingKind(Some(ModKind::CosmeticCandidate))),
+                design::button(text(format!("Gameplay ({gameplay_count})")).size(11))
+                    .style(if state.modding_kind == Some(ModKind::Gameplay) {
+                        design::primary
+                    } else {
+                        design::secondary
+                    })
+                    .on_press(Message::ModdingKind(Some(ModKind::Gameplay))),
+                design::button(text(format!("Needs review ({review_count})")).size(11))
+                    .style(if state.modding_kind == Some(ModKind::NeedsReview) {
+                        design::primary
+                    } else {
+                        design::secondary
+                    })
+                    .on_press(Message::ModdingKind(Some(ModKind::NeedsReview))),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(8),
+    );
+    let order_split = row![
+        container(projects(state, &scan)).width(Length::FillPortion(3)),
+        container(conflict_inspector(state, &scan)).width(Length::FillPortion(2)),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Start);
     let mut main = column![
         text("Modding").size(24),
         menu(state),
-        row![
-            panel(column![
-                text("CREATE A MOD").size(13),
-                row![
-                    design::button("Gameplay values…")
-                        .style(design::secondary)
-                        .on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(false))),
-                    design::button("Models…")
-                        .style(design::secondary)
-                        .on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(true))),
-                ]
-                .spacing(8),
-            ]
-            .spacing(10))
-            .width(Length::FillPortion(1)),
-            panel(column![
-                text("PLAY WITH MODS").size(13),
-                row![
-                    design::button("Play with Mods")
-                        .style(design::primary)
-                        .on_press(Message::PlayWithMods),
-                    design::button("Refresh Mods")
-                        .style(design::secondary)
-                        .on_press(Message::ModdingRefresh),
-                ]
-                .spacing(8),
-                text("Offline only · enabled projects and selected signed PAKs")
-                    .size(11)
-                    .style(design::muted),
-            ]
-            .spacing(10))
-            .width(Length::FillPortion(1)),
-        ]
-        .spacing(12),
-        text("YOUR PROJECTS").size(15),
-        design::text_input("Find project, target PAK or imported source…", &state.modding_filter)
-            .on_input(Message::ModdingFilterChanged)
-            .width(Fill),
-        row![
-            design::button("All mods")
-                .style(if state.modding_kind.is_none() { design::primary } else { design::secondary })
-                .on_press(Message::ModdingKind(None)),
-            design::button("Cosmetic candidates")
-                .style(if state.modding_kind == Some(ModKind::CosmeticCandidate) { design::primary } else { design::secondary })
-                .on_press(Message::ModdingKind(Some(ModKind::CosmeticCandidate))),
-            design::button("Gameplay")
-                .style(if state.modding_kind == Some(ModKind::Gameplay) { design::primary } else { design::secondary })
-                .on_press(Message::ModdingKind(Some(ModKind::Gameplay))),
-            design::button("Needs review")
-                .style(if state.modding_kind == Some(ModKind::NeedsReview) { design::primary } else { design::secondary })
-                .on_press(Message::ModdingKind(Some(ModKind::NeedsReview))),
-        ]
-        .spacing(6),
-        projects(state),
+        top_cards,
+        filter_bar,
+        order_split,
         selected_project,
         modifications(state),
         text("Cosmetic candidates require content verification before online use. Gameplay, mixed and unverified mods stay offline.")
@@ -932,4 +1545,127 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         115.0,
         310.0,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn project(
+        label: &str,
+        target: &str,
+        enabled: bool,
+        changed_known: bool,
+        modified: &[&str],
+    ) -> ProjectRow {
+        ProjectRow {
+            label: label.into(),
+            target: target.into(),
+            source_build: "Test build".into(),
+            status: "Modified".into(),
+            details: String::new(),
+            workspace: PathBuf::from(label),
+            modified: modified.iter().map(|path| (*path).to_owned()).collect(),
+            changed_known,
+            enabled,
+        }
+    }
+
+    #[test]
+    fn load_order_is_the_enabled_project_list_order() {
+        let projects = vec![
+            project("Beta", "b.pak", true, true, &["textures/b.dds"]),
+            project("Alpha", "a.pak", false, true, &[]),
+            project("Gamma", "c.pak", true, true, &[]),
+        ];
+        let scan = scan_projects(&projects);
+        assert_eq!(scan.order, vec![0, 2]);
+        assert_eq!(scan.position(0), Some(1));
+        assert_eq!(scan.position(1), None);
+        assert_eq!(scan.position(2), Some(2));
+        assert_eq!(scan.enabled_count(), 2);
+    }
+
+    #[test]
+    fn shared_members_are_case_insensitive_and_ignore_disabled_projects() {
+        let projects = vec![
+            project(
+                "A",
+                "a.pak",
+                true,
+                true,
+                &["Textures/A.dds", "textures/b.dds"],
+            ),
+            project("B", "b.pak", true, true, &["textures/a.dds"]),
+            project("C", "c.pak", false, true, &["textures/b.dds"]),
+        ];
+        let scan = scan_projects(&projects);
+        assert_eq!(
+            scan.member_collisions,
+            vec![MemberCollision {
+                path: "Textures/A.dds".into(),
+                owners: vec![0, 1],
+            }]
+        );
+        assert_eq!(scan.shared_paths(0), 1);
+        assert_eq!(scan.shared_paths(1), 1);
+        assert_eq!(scan.shared_paths(2), 0);
+    }
+
+    #[test]
+    fn duplicate_paths_inside_one_project_count_one_owner() {
+        let projects = vec![
+            project("A", "a.pak", true, true, &["same.dds", "SAME.dds"]),
+            project("B", "b.pak", true, true, &["same.dds"]),
+        ];
+        let scan = scan_projects(&projects);
+        assert_eq!(
+            scan.member_collisions,
+            vec![MemberCollision {
+                path: "same.dds".into(),
+                owners: vec![0, 1],
+            }]
+        );
+        assert_eq!(scan.shared_paths(0), 1);
+    }
+
+    #[test]
+    fn duplicate_target_paks_are_reported_only_for_enabled_sources() {
+        let projects = vec![
+            project("A", "Textures.pak", true, true, &[]),
+            project("B", "textures.PAK", true, true, &[]),
+            project("C", "TEXTURES.pak", false, true, &[]),
+        ];
+        let scan = scan_projects(&projects);
+        assert_eq!(
+            scan.target_conflicts,
+            vec![TargetConflict {
+                target: "Textures.pak".into(),
+                owners: vec![0, 1],
+            }]
+        );
+        assert!(scan.has_target_conflict(0));
+        assert!(!scan.has_target_conflict(2));
+    }
+
+    #[test]
+    fn incomplete_enabled_scans_are_flagged() {
+        let projects = vec![
+            project("A", "a.pak", true, false, &["objects/a.dds"]),
+            project("B", "b.pak", false, false, &[]),
+        ];
+        let scan = scan_projects(&projects);
+        assert_eq!(scan.incomplete_enabled, 1);
+        assert_eq!(scan.enabled_count(), 1);
+    }
+
+    #[test]
+    fn empty_projects_have_no_conflicts_or_positions() {
+        let scan = scan_projects(&[]);
+        assert!(scan.order.is_empty());
+        assert!(scan.positions.is_empty());
+        assert_eq!(scan.conflict_count(), 0);
+        assert_eq!(scan.position(0), None);
+    }
 }
