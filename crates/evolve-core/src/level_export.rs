@@ -1435,9 +1435,8 @@ impl Assembler {
 }
 /// Count actual neighbor-category changes from the source LayerId bitmap.
 /// This is a validation reference, NOT a guessed shader transition mask.
-fn original_paint_boundaries(
-    paint: &TerrainPaintMap,
-) -> Result<(usize, BTreeMap<(u8, u8), usize>), LevelExportError> {
+type PaintBoundaries = (usize, BTreeMap<(u8, u8), usize>);
+fn original_paint_boundaries(paint: &TerrainPaintMap) -> Result<PaintBoundaries, LevelExportError> {
     if paint.width == 0
         || paint.height == 0
         || (paint.width as usize).checked_mul(paint.height as usize) != Some(paint.ids.len())
