@@ -45,6 +45,7 @@ pub mod policy;
 pub mod profiles;
 pub mod rig;
 pub mod scene;
+pub mod scene_authoring;
 pub mod signed_pak;
 pub mod skin_preview;
 pub mod staging;
