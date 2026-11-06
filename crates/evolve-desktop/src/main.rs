@@ -3246,9 +3246,16 @@ fn fresh_authored_level_guid(original: &str) -> Result<String, String> {
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let uppercase = raw.bytes().any(|b| b.is_ascii_uppercase());
     let plain = bytes
         .iter()
-        .map(|byte| format!("{byte:02x}"))
+        .map(|byte| {
+            if uppercase {
+                format!("{byte:02X}")
+            } else {
+                format!("{byte:02x}")
+            }
+        })
         .collect::<String>();
     let new_id = if dashed {
         format!(
@@ -3267,6 +3274,27 @@ fn fresh_authored_level_guid(original: &str) -> Result<String, String> {
     } else {
         Ok(new_id)
     }
+}
+
+/// Generate a fresh RFC4122 v4 GUID and ensure it does not collide with any
+/// existing object across all layers loaded in the scene.
+fn fresh_unique_authored_level_guid(
+    original: &str,
+    scene: Option<&evolve_core::LevelScene>,
+) -> Result<String, String> {
+    for _ in 0..16 {
+        let candidate = fresh_authored_level_guid(original)?;
+        if let Some(scene) = scene
+            && scene
+                .objects
+                .iter()
+                .any(|obj| obj.id.eq_ignore_ascii_case(&candidate))
+        {
+            continue;
+        }
+        return Ok(candidate);
+    }
+    Err("Failed to generate a unique level GUID".into())
 }
 
 fn selected_project_object_source(
@@ -5903,7 +5931,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             "Choose an XML-layer placement as the insertion point.".into();
                         return Task::none();
                     }
-                    let guid = match fresh_authored_level_guid(&object.id) {
+                    let guid = match fresh_unique_authored_level_guid(
+                        &object.id,
+                        state.level_scene.as_deref(),
+                    ) {
                         Ok(guid) => guid,
                         Err(reason) => {
                             state.status = reason;
@@ -5936,7 +5967,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     )
                 }
                 Message::LevelDuplicateSelected => {
-                    let guid = match fresh_authored_level_guid(&object.id) {
+                    let guid = match fresh_unique_authored_level_guid(
+                        &object.id,
+                        state.level_scene.as_deref(),
+                    ) {
                         Ok(guid) => guid,
                         Err(reason) => {
                             state.status = reason;
@@ -17353,6 +17387,55 @@ mod project_edit_tests {
             [70., 0., 0.]
         );
         assert_eq!(state.level_original_transforms["parent"], baseline);
+    }
+
+    #[test]
+    fn fresh_authored_level_guid_preserves_casing_and_braces() {
+        let upper = "{550E8400-E29B-41D4-A716-446655440000}";
+        let generated_upper = fresh_authored_level_guid(upper).unwrap();
+        assert!(generated_upper.starts_with('{') && generated_upper.ends_with('}'));
+        assert_eq!(generated_upper.len(), 38);
+        assert!(
+            generated_upper
+                .chars()
+                .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase() || "-{}".contains(c))
+        );
+        assert_eq!(generated_upper.as_bytes()[15], b'4');
+        assert!(b"89AB".contains(&generated_upper.as_bytes()[20]));
+
+        let lower = "550e8400-e29b-41d4-a716-446655440000";
+        let generated_lower = fresh_authored_level_guid(lower).unwrap();
+        assert!(!generated_lower.starts_with('{'));
+        assert_eq!(generated_lower.len(), 36);
+        assert!(
+            generated_lower
+                .chars()
+                .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase() || c == '-')
+        );
+        assert_eq!(generated_lower.as_bytes()[14], b'4');
+
+        let compact = "550e8400e29b41d4a716446655440000";
+        let generated_compact = fresh_authored_level_guid(compact).unwrap();
+        assert_eq!(generated_compact.len(), 32);
+        assert!(!generated_compact.contains('-'));
+
+        assert!(fresh_authored_level_guid("Rock_01").is_err());
+        assert!(fresh_authored_level_guid("").is_err());
+    }
+
+    #[test]
+    fn fresh_unique_authored_level_guid_avoids_existing_scene_collisions() {
+        let original = "{550E8400-E29B-41D4-A716-446655440000}";
+        let xml = br#"<Objects><Object Id="{550E8400-E29B-41D4-A716-446655440000}" Pos="1,0,0"/></Objects>"#;
+        let scene = evolve_core::parse_level_scene(&[("test.lyr", xml)]).unwrap();
+        let unique = fresh_unique_authored_level_guid(original, Some(&scene)).unwrap();
+        assert_ne!(unique, original);
+        assert!(
+            !scene
+                .objects
+                .iter()
+                .any(|o| o.id.eq_ignore_ascii_case(&unique))
+        );
     }
 
     #[test]
