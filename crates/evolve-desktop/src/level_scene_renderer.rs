@@ -9,6 +9,8 @@ use crate::{
     textured::Surface,
     world_instances,
 };
+use evolve_core::read_static_cdf_assembly_with_imported;
+use evolve_core::zookeeper::{PopulationKind, ZooKeeper};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, PlacedObject, RenderMesh, SharedImportedLookup,
     Transform, WorldModelPart, begin_imported_lookup_session,
@@ -33,6 +35,9 @@ const MAX_SURFACES: usize = 2_048;
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Report {
+    pub spawn_distances: Option<evolve_core::zookeeper::SpawnDistances>,
+    pub unresolved_populations: Vec<String>,
+    pub resolved_models: Vec<(String, String)>,
     pub placed: usize,
     pub geometries: usize,
     pub textured: usize,
@@ -97,6 +102,7 @@ struct Index {
     build: Option<String>,
     library_root: Option<PathBuf>,
     selected_id: String,
+    matching_build: HashSet<String>,
 }
 
 fn safe_virtual(raw: &str) -> Option<String> {
@@ -152,137 +158,12 @@ fn render_candidates(raw: &str) -> Vec<String> {
     candidates
 }
 
-/// Population IDs select gameplay classes, not filenames. Try the exact
-/// variant first, then only recognized cosmetic/tutorial suffixes. Matching
-/// remains restricted to actual same-installation imported model members.
-fn model_stem_key(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
-}
-
-fn is_elite_population(population: &str) -> bool {
-    let value = population.to_ascii_lowercase();
-    value.contains("elite") || value.contains("albino")
-}
-
-fn append_population_alias(aliases: &mut Vec<String>, value: &str) {
-    let key = model_stem_key(value);
-    if !key.is_empty() && !aliases.contains(&key) {
-        aliases.push(key);
-    }
-}
-
-pub(super) fn population_model_aliases(population: &str) -> Vec<String> {
-    let source = population.trim();
-    if source.is_empty() || source.len() > 128 || !source.is_ascii() {
-        return Vec::new();
-    }
-    let mut aliases = Vec::new();
-    append_population_alias(&mut aliases, source);
-    let mut name = source.to_ascii_lowercase();
-    // Tutorial and pet suffixes are gameplay population variants, not
-    // necessarily separate render models. Elite is different: retain it
-    // as an explicit visual requirement, never drop it to use a normal mesh.
-    for suffix in ["_tutorial", "tutorial", "_pet", "pet"] {
-        if name.ends_with(suffix) && name.len() > suffix.len() {
-            name.truncate(name.len() - suffix.len());
-            name = name.trim_end_matches('_').to_owned();
-            append_population_alias(&mut aliases, &name);
-        }
-    }
-    if is_elite_population(source) {
-        // Evolve's Elite wildlife may be authored as Albino instead of Elite.
-        // Both prefixes and suffixes are recognized; plain species stems are
-        // usable only in a separately labeled elite/albino asset directory.
-        let species = name
-            .replace("elite", "")
-            .replace("albino", "")
-            .trim_matches('_')
-            .to_owned();
-        if !species.is_empty() {
-            append_population_alias(&mut aliases, &format!("{species}_elite"));
-            append_population_alias(&mut aliases, &format!("elite_{species}"));
-            append_population_alias(&mut aliases, &format!("{species}_albino"));
-            append_population_alias(&mut aliases, &format!("albino_{species}"));
-            append_population_alias(&mut aliases, &species);
-        }
-    }
-    aliases
-}
-
-fn wildlife_render_rank(path: &str) -> Option<usize> {
-    let extension = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
-    match extension.as_str() {
-        "skinm" => Some(0),
-        "cgfm" => Some(1),
-        "cgam" => Some(2),
-        "chrm" => Some(3),
-        "cgf" => Some(4),
-        "cga" => Some(5),
-        _ => None,
-    }
-}
-
-/// Do not arbitrarily select the first Trapjaw-looking file. If the best
-/// matching alias has several distinct model locations, show a marker only.
-fn elite_asset_path(path: &str) -> bool {
-    // Character authors may use TyrantElite.skinm, TyrantAlbino.skinm,
-    // Elite/Tyrant.skinm, or Albino/Tyrant.skinm. A bare Tyrant.skinm
-    // has no evidence of an elite appearance.
-    path.replace('\\', "/").split('/').any(|segment| {
-        let segment = segment.to_ascii_lowercase();
-        segment.contains("elite") || segment.contains("albino")
-    })
-}
-
-fn select_wildlife_model<'a>(
-    paths: impl Iterator<Item = &'a String>,
-    aliases: &[String],
-    elite_required: bool,
-) -> Result<Option<String>, String> {
-    let paths = paths.collect::<Vec<_>>();
-    for alias in aliases {
-        let mut matches = paths
-            .iter()
-            .filter_map(|path| {
-                if elite_asset_path(path) != elite_required {
-                    return None;
-                }
-                let stem = Path::new(path.as_str()).file_stem()?.to_str()?;
-                (model_stem_key(stem) == *alias)
-                    .then(|| wildlife_render_rank(path).map(|rank| (rank, (*path).clone())))
-                    .flatten()
-            })
-            .collect::<Vec<_>>();
-        if matches.is_empty() {
-            continue;
-        }
-        let owners = matches
-            .iter()
-            .filter_map(|(_, path)| {
-                Path::new(path)
-                    .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-            })
-            .collect::<HashSet<_>>();
-        if owners.len() != 1 {
-            return Err(format!(
-                "Ambiguous model sources for wildlife alias {alias}"
-            ));
-        }
-        matches.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-        return Ok(matches.first().map(|(_, path)| path.clone()));
-    }
-    Ok(None)
-}
-
 fn relevant_asset(path: &str) -> bool {
-    [".cgf", ".cga", ".cgfm", ".cgam", ".skinm", ".chrm", ".mtl"]
-        .iter()
-        .any(|ext| path.ends_with(ext))
+    [
+        ".cgf", ".cga", ".cgfm", ".cgam", ".skinm", ".chrm", ".mtl", ".cdf", ".xml",
+    ]
+    .iter()
+    .any(|ext| path.ends_with(ext))
 }
 
 /// Load an authored model from an exact virtual path. Many Evolve `.cgf`
@@ -379,7 +260,6 @@ impl Index {
     fn new(
         selected: &ImportedPak,
         wanted: &HashSet<String>,
-        wildlife_stems: &HashSet<String>,
         report: &mut Report,
         project_inventory: Option<&Inventory>,
     ) -> Result<Self, String> {
@@ -393,6 +273,7 @@ impl Index {
             build,
             library_root,
             selected_id: selected.id.clone(),
+            matching_build: HashSet::new(),
         };
         let mut archives = vec![selected.clone()];
         if let Some(root) = &index.library_root {
@@ -433,6 +314,13 @@ impl Index {
         let mut checked = 0usize;
         let mut accepted = 0usize;
         for pak in archives {
+            if pak
+                .builds
+                .iter()
+                .any(|label| selected.builds.contains(label))
+            {
+                index.matching_build.insert(pak.id.clone());
+            }
             let inventory = if pak.id == selected.id {
                 if let Some(project) = project_inventory {
                     project.clone()
@@ -465,12 +353,7 @@ impl Index {
                 let Some(key) = safe_virtual(&asset.relative_path) else {
                     continue;
                 };
-                let wildlife_candidate = wildlife_render_rank(&key).is_some()
-                    && Path::new(&key)
-                        .file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .is_some_and(|stem| wildlife_stems.contains(&model_stem_key(stem)));
-                if (wanted.contains(&key) && relevant_asset(&key)) || wildlife_candidate {
+                if wanted.contains(&key) && relevant_asset(&key) {
                     checked += 1;
                     let path = root.join(&asset.relative_path);
                     // Only requested assets are authorized to be read. Never
@@ -525,6 +408,22 @@ impl Index {
         // duplicates cannot safely be selected by filename or import order.
         if let Some(selected) = found.iter().find(|a| a.archive == self.selected_id) {
             return Ok(Some(selected));
+        }
+        let same_build = found
+            .iter()
+            .filter(|source| self.matching_build.contains(&source.archive))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !same_build.is_empty() {
+            if same_build.len() == 1 || identical_verified_sources(&same_build)? {
+                return Ok(found
+                    .iter()
+                    .find(|source| source.archive == same_build[0].archive));
+            }
+            return Err(format!("Conflicting {raw} in the selected build"));
+        }
+        if self.build.is_some() {
+            return Err(format!("No verified selected-build source for {raw}"));
         }
         if found.len() == 1 || identical_verified_sources(found)? {
             // Multiple identical verified files are equivalent. The selected
@@ -826,6 +725,58 @@ fn decode_scene_pair(
     build: Option<&str>,
     cache: &SharedCache,
 ) -> DecodedPair {
+    if object.model.to_ascii_lowercase().ends_with(".cdf") {
+        let result = (|| -> Result<DecodedPair, String> {
+            let source = sources
+                .lookup(&object.model)?
+                .ok_or_else(|| format!("Missing exact CDF {}", object.model))?
+                .clone();
+            let inventory = sources
+                .inventories
+                .get(&source.archive)
+                .ok_or("CDF PAK inventory missing")?;
+            let (mesh, assembly) = read_static_cdf_assembly_with_imported(
+                &source.path,
+                inventory,
+                library_root,
+                build,
+            )
+            .map_err(|error| error.to_string())?;
+            let (surfaces, warnings) = assembly_materials::load_with_progress(
+                &assembly,
+                inventory,
+                library_root,
+                build,
+                cache,
+                None,
+                evolve_core::KalaTubingState::default(),
+            );
+            Ok(DecodedPair {
+                render: Ok((
+                    source,
+                    vec![WorldModelPart {
+                        mesh,
+                        subsets: assembly
+                            .source_parts
+                            .iter()
+                            .map(|part| (part.first_index, part.index_count, part.material_slot))
+                            .collect(),
+                        has_subset_table: true,
+                    }],
+                    None,
+                )),
+                material: Some(DecodedMaterial {
+                    virtual_source: object.model.clone(),
+                    path: Ok(None),
+                    surfaces: Some(Ok((vec![surfaces], warnings))),
+                }),
+            })
+        })();
+        return result.unwrap_or_else(|error| DecodedPair {
+            render: Err(vec![error]),
+            material: None,
+        });
+    }
     // Source metadata/physics chunks may not contain render streams even though
     // a verified same-stem compiled companion does. Decode candidates in order,
     // retaining exact paths and the selected build rather than guessing objects.
@@ -924,6 +875,7 @@ pub(super) fn assemble(
     scene: Option<&LevelScene>,
     terrain: Option<&RenderMesh>,
     project_inventory: Option<&Inventory>,
+    resolve_wildlife: bool,
 ) -> Result<Option<Assembled>, String> {
     let mut report = Report::default();
     let mut combined = RenderMesh {
@@ -989,72 +941,105 @@ pub(super) fn assemble(
                 }
             }
         }
-        // Gameplay identifiers such as Trapjaw_Tutorial do not name meshes.
-        let wildlife_stems = scene
-            .objects
-            .iter()
-            .filter(|object| {
-                object.kind.eq_ignore_ascii_case("CreatureSpawn")
-                    && object.model.is_empty()
-                    && object
-                        .populations
-                        .iter()
-                        .filter(|p| !p.trim().is_empty())
-                        .count()
-                        == 1
-            })
-            .flat_map(|object| {
-                object
-                    .populations
-                    .iter()
-                    .flat_map(|population| population_model_aliases(population))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<HashSet<_>>();
-        let mut sources = Index::new(
-            archive,
-            &wanted,
-            &wildlife_stems,
-            &mut report,
-            project_inventory,
-        )?;
+        let xml_paths = [
+            "libs/zookeeper/zookeeper.xml",
+            "libs/entityarchetypes/ai.xml",
+            "libs/zookeeper/wildlifespawning.xml",
+        ];
+        if resolve_wildlife {
+            wanted.extend(xml_paths.map(str::to_owned));
+        }
+        let mut sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
         let mut preview_scene = scene.clone();
         let mut wildlife_models = 0usize;
-        let mut ambiguous_wildlife = 0usize;
-        let mut unresolved_elite = 0usize;
+        let zookeeper = resolve_wildlife.then(|| {
+            (|| {
+                let files = xml_paths.map(|name| -> Result<Vec<u8>, String> {
+                    let source = sources
+                        .lookup(name)?
+                        .ok_or_else(|| format!("Missing same-installation {name}"))?;
+                    fs::read(&source.path).map_err(|error| error.to_string())
+                });
+                let [populations, archetypes, spawning] = files;
+                ZooKeeper::from_xml(&populations?, &archetypes?, &spawning?)
+            })()
+        });
+        if let Some(Err(error)) = &zookeeper {
+            report.note(format!(
+                "ZooKeeper source unavailable: {error}; spawns remain markers."
+            ));
+        }
+        report.spawn_distances = zookeeper
+            .as_ref()
+            .and_then(|value| value.as_ref().ok())
+            .and_then(|data| data.distances);
+        let mut missing = HashSet::new();
+        let mut non_creatures = 0;
         for object in &mut preview_scene.objects {
-            if !object.kind.eq_ignore_ascii_case("CreatureSpawn")
-                || !object.model.is_empty()
-                || object
-                    .populations
-                    .iter()
-                    .filter(|p| !p.trim().is_empty())
-                    .count()
-                    != 1
-            {
+            if !object.kind.eq_ignore_ascii_case("CreatureSpawn") || !object.model.is_empty() {
                 continue;
             }
-            let aliases = population_model_aliases(&object.populations[0]);
-            match select_wildlife_model(
-                sources.files.keys(),
-                &aliases,
-                is_elite_population(&object.populations[0]),
-            ) {
-                Ok(Some(model)) => {
-                    object.model = model;
-                    wildlife_models += 1;
+            let populations = object
+                .populations
+                .iter()
+                .map(String::as_str)
+                .filter(|p| !p.trim().is_empty())
+                .collect::<Vec<_>>();
+            // Multiple populations are runtime-weighted candidates: never
+            // silently present the first as the creature that will spawn.
+            if populations.len() != 1 {
+                if populations.len() > 1 {
+                    missing.insert(format!(
+                        "{}: multiple population candidates ({})",
+                        object.name,
+                        populations.join(", ")
+                    ));
                 }
-                Err(_) => ambiguous_wildlife += 1,
-                Ok(None) => {
-                    if is_elite_population(&object.populations[0]) {
-                        unresolved_elite += 1;
+                continue;
+            }
+            if let Some(Ok(data)) = &zookeeper {
+                match data.resolve(populations[0]) {
+                    Ok(resolved) if resolved.kind == PopulationKind::Creature => {
+                        if let Some(model) = resolved.model.and_then(|model| safe_virtual(&model)) {
+                            wanted.insert(model.clone());
+                            report
+                                .resolved_models
+                                .push((populations[0].to_owned(), model.clone()));
+                            object.model = model;
+                            wildlife_models += 1;
+                        } else {
+                            missing
+                                .insert(format!("{}: no authored CDF archetype", populations[0]));
+                        }
+                    }
+                    Ok(resolved) if resolved.kind == PopulationKind::Unknown => {
+                        missing.insert(format!(
+                            "{}: class-only population ({}) without an authored CDF",
+                            populations[0],
+                            resolved.class.as_deref().unwrap_or("no class")
+                        ));
+                    }
+                    Ok(resolved) => {
+                        non_creatures += 1;
+                        missing.insert(format!(
+                            "{}: non-creature population ({:?})",
+                            populations[0], resolved.kind
+                        ));
+                    }
+                    Err(error) => {
+                        missing.insert(error);
                     }
                 }
             }
         }
+        if wildlife_models > 0 {
+            sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
+        }
         report.note(format!(
-            "{wildlife_models} single-population wildlife placements linked to verified model paths; {ambiguous_wildlife} ambiguous matches; {unresolved_elite} elite populations without an elite-specific model remain markers."
+            "{wildlife_models} creature placements linked to authored CDF paths; {non_creatures} non-creature spawns retained as markers."
         ));
+        report.unresolved_populations = missing.into_iter().collect();
+        report.unresolved_populations.sort();
         // Scope material/DDS resolution to the same real installed Game
         // directory as geometry. Historical labels can be duplicated, so a
         // single old build label is not strong enough provenance by itself.
@@ -1100,6 +1085,7 @@ pub(super) fn assemble(
         // vertex/index arrays. GPU draw calls use instanced transforms.
         let mut models = Vec::<world_instances::ModelGroup>::new();
         let mut failures = HashSet::<(String, String)>::new();
+        let mut resolved_spawns = HashSet::new();
         let mut budget_hit = false;
         for (object_index, object) in preview_scene
             .objects
@@ -1223,6 +1209,20 @@ pub(super) fn assemble(
                                 }
                             }
                         }
+                        Ok(None) if source_virtual.to_ascii_lowercase().ends_with(".cdf") => {
+                            if let Some(Ok((parts, warnings))) = outcome.surfaces {
+                                report.textured += usize::from(
+                                    parts
+                                        .iter()
+                                        .flatten()
+                                        .any(|surface| surface.diffuse.is_some()),
+                                );
+                                per_mesh_materials = parts;
+                                for warning in warnings.into_iter().take(2) {
+                                    report.note(format!("{}: {warning}", object.name));
+                                }
+                            }
+                        }
                         Ok(None) => {
                             diffuse_reasons
                                 .push(format!("No verified original MTL for {source_virtual}"));
@@ -1321,6 +1321,9 @@ pub(super) fn assemble(
                     transform: object.world,
                 });
             }
+            if object.is_wildlife_spawn() {
+                resolved_spawns.insert(object_index);
+            }
             report.placed += 1;
         }
         if budget_hit {
@@ -1332,7 +1335,9 @@ pub(super) fn assemble(
             .objects
             .iter()
             .enumerate()
-            .filter(|(_, o)| !o.hidden && o.is_wildlife_spawn())
+            .filter(|(index, o)| {
+                !o.hidden && o.is_wildlife_spawn() && !resolved_spawns.contains(index)
+            })
             .take(20000)
             .map(|(object_index, object)| world_instances::Instance {
                 object_index,
@@ -1354,7 +1359,7 @@ pub(super) fn assemble(
                 instances: markers,
             });
             report.note(format!(
-                "{count} source wildlife spawn/area markers available in the visibility category; creature models require verified population-to-mesh definitions."
+                "{count} unresolved wildlife spawn/area markers available in the visibility category."
             ));
             report.placed += count;
         }
@@ -1391,6 +1396,70 @@ pub(super) fn assemble(
         report,
         world: std::sync::Arc::new(world),
     }))
+}
+
+/// Resolve only the wildlife category on first use. This deliberately does
+/// not re-decode the map, terrain, or ordinary world models.
+pub(super) fn assemble_wildlife(
+    archive: &ImportedPak,
+    scene: &LevelScene,
+) -> Result<(std::sync::Arc<world_instances::World>, Report), String> {
+    let mut wildlife = scene.clone();
+    for object in &mut wildlife.objects {
+        if !object.is_wildlife_spawn() {
+            object.hidden = true;
+        }
+    }
+    let assembled = assemble(archive, Some(&wildlife), None, None, true)?
+        .ok_or("No wildlife placements could be assembled")?;
+    let mut world = (*assembled.world).clone();
+    world.wildlife_distances = assembled.report.spawn_distances;
+    world.wildlife_shapes = std::sync::Arc::new(
+        scene
+            .objects
+            .iter()
+            .filter(|object| {
+                !object.hidden
+                    && object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+                    && object.shape_points.len() >= 2
+            })
+            .take(1024)
+            .map(|object| {
+                (
+                    object.wildlife.use_terrain_height.unwrap_or(false),
+                    object
+                        .shape_points
+                        .iter()
+                        .map(|point| transformed(object.world, *point, false))
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    let areas = scene
+        .objects
+        .iter()
+        .filter(|object| !object.hidden && object.kind.eq_ignore_ascii_case("ZooKeeperShape"))
+        .map(|object| (object.name.to_ascii_lowercase(), object.world.position))
+        .collect::<HashMap<_, _>>();
+    world.wildlife_links = std::sync::Arc::new(
+        scene
+            .objects
+            .iter()
+            .filter(|object| {
+                !object.hidden
+                    && object.kind.eq_ignore_ascii_case("CreatureSpawn")
+                    && !object.home_area.is_empty()
+            })
+            .filter_map(|spawn| {
+                areas
+                    .get(&spawn.home_area.to_ascii_lowercase())
+                    .map(|home| (spawn.world.position, *home))
+            })
+            .take(20000)
+            .collect(),
+    );
+    Ok((std::sync::Arc::new(world), assembled.report))
 }
 
 /// Update baked mesh vertices for already-loaded source instances without
@@ -1453,182 +1522,73 @@ pub(super) fn reproject_after_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn wildlife_population_variant_prefers_exact_then_species_model() {
-        assert_eq!(
-            population_model_aliases("Trapjaw_Tutorial"),
-            vec!["trapjawtutorial", "trapjaw"]
-        );
-        let paths = [
-            "characters/wildlife/trapjaw/trapjaw.skinm".to_owned(),
-            "characters/wildlife/trapjaw/trapjaw.chrm".to_owned(),
-        ];
-        let model = select_wildlife_model(
-            paths.iter(),
-            &population_model_aliases("Trapjaw_Tutorial"),
-            false,
-        )
-        .unwrap();
-        assert_eq!(
-            model.as_deref(),
-            Some("characters/wildlife/trapjaw/trapjaw.skinm")
-        );
-        let variant = [
-            "characters/wildlife/trapjaw/trapjaw.skinm".to_owned(),
-            "characters/wildlife/trapjaw/trapjaw_tutorial.skinm".to_owned(),
-        ];
-        let model = select_wildlife_model(
-            variant.iter(),
-            &population_model_aliases("Trapjaw_Tutorial"),
-            false,
-        )
-        .unwrap();
-        assert_eq!(
-            model.as_deref(),
-            Some("characters/wildlife/trapjaw/trapjaw_tutorial.skinm")
-        );
-    }
 
     #[test]
-    fn elite_wildlife_never_falls_back_to_regular_visuals() {
-        assert_eq!(
-            population_model_aliases("TyrantElite_Tutorial"),
-            vec![
-                "tyrantelitetutorial",
-                "tyrantelite",
-                "elitetyrant",
-                "tyrantalbino",
-                "albinotyrant",
-                "tyrant"
-            ]
-        );
-        assert_eq!(
-            population_model_aliases("EliteTyrant_Tutorial"),
-            vec![
-                "elitetyranttutorial",
-                "elitetyrant",
-                "tyrantelite",
-                "tyrantalbino",
-                "albinotyrant",
-                "tyrant"
-            ]
-        );
-        assert!(is_elite_population("Tyrant_Albino_Tutorial"));
-        assert_eq!(
-            population_model_aliases("Tyrant_Albino_Tutorial"),
-            vec![
-                "tyrantalbinotutorial",
-                "tyrantalbino",
-                "tyrantelite",
-                "elitetyrant",
-                "albinotyrant",
-                "tyrant"
-            ]
-        );
-        // The final species alias is only valid inside a verified elite path.
-        let normal_only = ["characters/wildlife/tyrant/tyrant.skinm".to_owned()];
-        assert!(
-            select_wildlife_model(
-                normal_only.iter(),
-                &population_model_aliases("TyrantElite_Tutorial"),
-                true,
-            )
-            .unwrap()
-            .is_none()
-        );
-
-        let variants = [
-            "characters/wildlife/tyrant/tyrant.skinm".to_owned(),
-            "characters/wildlife/tyrant/tyrantelite.skinm".to_owned(),
-        ];
-        assert_eq!(
-            select_wildlife_model(
-                variants.iter(),
-                &population_model_aliases("TyrantElite_Tutorial"),
-                true,
-            )
-            .unwrap()
-            .as_deref(),
-            Some("characters/wildlife/tyrant/tyrantelite.skinm")
-        );
-        let albino_variant = [
-            "characters/wildlife/tyrant/tyrant.skinm".to_owned(),
-            "characters/wildlife/tyrant/tyrant_albino.skinm".to_owned(),
-        ];
-        assert_eq!(
-            select_wildlife_model(
-                albino_variant.iter(),
-                &population_model_aliases("TyrantElite_Tutorial"),
-                true,
-            )
-            .unwrap()
-            .as_deref(),
-            Some("characters/wildlife/tyrant/tyrant_albino.skinm")
-        );
-        // The regular population must never select the Albino skin.
-        assert!(
-            select_wildlife_model(
-                albino_variant.iter().skip(1),
-                &population_model_aliases("Tyrant_Tutorial"),
-                false,
-            )
-            .unwrap()
-            .is_none()
-        );
-        // Some source archives may put the elite version in its own directory
-        // while keeping the original species filename.
-        let elite_folder = [
-            "characters/wildlife/tyrant/tyrant.skinm".to_owned(),
-            "characters/wildlife/elite/tyrant.skinm".to_owned(),
-        ];
-        assert_eq!(
-            select_wildlife_model(
-                elite_folder.iter(),
-                &population_model_aliases("TyrantElite_Tutorial"),
-                true,
-            )
-            .unwrap()
-            .as_deref(),
-            Some("characters/wildlife/elite/tyrant.skinm")
-        );
-        // Normal Tyrant must not be promoted to the elite variant either.
-        assert_eq!(
-            select_wildlife_model(
-                variants.iter(),
-                &population_model_aliases("Tyrant_Tutorial"),
-                false,
-            )
-            .unwrap()
-            .as_deref(),
-            Some("characters/wildlife/tyrant/tyrant.skinm")
-        );
+    #[ignore = "requires a local Stage 2 Asset Library (EVOLVE_BENCH_LIBRARY)"]
+    fn imported_stage2_tutorial_resolves_real_creature_models() {
+        let root = std::env::var("EVOLVE_BENCH_LIBRARY").unwrap();
+        let library = imported_library(Path::new(&root)).unwrap();
+        let map_name = std::env::var("EVOLVE_BENCH_MAP").unwrap_or_else(|_| "tutorial".into());
+        let archive = library
+            .archives
+            .iter()
+            .find(|archive| {
+                archive
+                    .name
+                    .eq_ignore_ascii_case(&format!("levels_{map_name}.pak"))
+                    && archive.source.to_ascii_lowercase().contains("moddedevolve")
+            })
+            .unwrap();
+        println!("MAP {} builds={:?}", archive.id, archive.builds);
+        for pak in library
+            .archives
+            .iter()
+            .filter(|pak| pak.name.eq_ignore_ascii_case("libs.pak"))
+        {
+            println!("LIBS {} builds={:?}", pak.id, pak.builds);
+        }
+        let map = crate::level_library::open(archive.clone(), 0).unwrap();
+        let scene = map.scene.as_ref().unwrap();
+        let (world, report) = assemble_wildlife(archive, scene).unwrap();
+        for note in &report.unresolved_populations {
+            println!("UNRESOLVED {note}");
+        }
+        for note in &report.notes {
+            println!("WILDLIFE {note}");
+        }
+        for (population, model) in &report.resolved_models {
+            println!("RESOLVED {population} {model}");
+        }
+        for object in &scene.objects {
+            if object.populations.iter().any(|name| {
+                report
+                    .resolved_models
+                    .iter()
+                    .any(|(resolved, _)| resolved == name)
+            }) {
+                println!(
+                    "SPAWN {} {:?} {:?}",
+                    object.name, object.world.position, object.populations
+                );
+            }
+        }
+        assert_eq!(report.spawn_distances.unwrap().minimum, 30.0);
+        assert_eq!(report.spawn_distances.unwrap().maximum, 110.0);
+        assert!(!world.groups.is_empty());
+        if map_name.eq_ignore_ascii_case("tutorial") {
+            assert!(
+                world.groups.iter().any(|group| group.mesh.info.format
+                    != "Wildlife spawn location marker (editor only)")
+            );
+            assert!(
+                report
+                    .resolved_models
+                    .iter()
+                    .any(|(name, model)| name == "TyrantElite_Tutorial"
+                        && model == "characters/creatures/tyrant/tyrant_elite.cdf")
+            );
+        }
     }
-
-    #[test]
-    fn wildlife_population_lookup_refuses_ambiguous_models() {
-        let paths = [
-            "characters/wildlife/trapjaw/trapjaw.skinm".to_owned(),
-            "characters/other/trapjaw.skinm".to_owned(),
-        ];
-        assert!(
-            select_wildlife_model(
-                paths.iter(),
-                &population_model_aliases("Trapjaw_Tutorial"),
-                false,
-            )
-            .is_err()
-        );
-        assert!(
-            select_wildlife_model(
-                paths.iter(),
-                &population_model_aliases("MammothBird"),
-                false,
-            )
-            .unwrap()
-            .is_none()
-        );
-    }
-
     #[test]
     fn multi_material_group_splits_before_exceeding_residency_target() {
         let mb = 1024 * 1024u64;
@@ -1917,6 +1877,7 @@ mod tests {
             build: None,
             library_root: None,
             selected_id: "selected".into(),
+            matching_build: HashSet::new(),
         };
         index.files.insert(
             key.clone(),

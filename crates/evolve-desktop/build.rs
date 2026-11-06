@@ -1,6 +1,12 @@
 fn main() {
     #[cfg(windows)]
     {
+        println!("cargo:rerun-if-env-changed=EVOLVE_TEST_NO_MANIFEST");
+        // Cargo test executables must remain runnable by an ordinary account;
+        // the released GUI still embeds its normal elevation manifest.
+        if std::env::var_os("EVOLVE_TEST_NO_MANIFEST").is_some() {
+            return;
+        }
         let mut resource = winres::WindowsResource::new();
         resource.set_icon("../../assets/hunt.ico");
         // The private Qt manager requires UAC for protected game-file and

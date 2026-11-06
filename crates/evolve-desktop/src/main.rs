@@ -326,6 +326,8 @@ impl ActiveBlendSpace {
 
 #[derive(Default)]
 struct State {
+    level_viewport_fullscreen: bool,
+    viewer_viewport_fullscreen: bool,
     sidebar_hovered: bool,
     sidebar_reveal: f32,
     input: String,
@@ -489,6 +491,8 @@ struct State {
     level_world: Option<Arc<world_instances::World>>,
     /// Immutable assembled scene for regenerating the wildlife visibility filter.
     level_world_source: Option<Arc<world_instances::World>>,
+    level_wildlife_resolved: bool,
+    level_spawn_distances: Option<evolve_core::zookeeper::SpawnDistances>,
     level_show_wildlife: bool,
     level_project: Option<modding_projects::ProjectRow>,
     level_open_after_copy: bool,
@@ -921,6 +925,7 @@ enum Operation {
     OpenImportedMap(evolve_core::ImportedPak, usize),
     DiscoverLevelMaps(evolve_core::ImportedPak),
     DiscoverProjectMaps(modding_projects::ProjectRow),
+    LoadLevelWildlife(evolve_core::ImportedPak, Arc<LevelScene>),
     OpenProjectLevel(modding_projects::ProjectRow, usize, PathBuf),
     SaveProjectLevel(
         modding_projects::ProjectRow,
@@ -1066,6 +1071,11 @@ enum Completed {
     ProjectMaps(
         modding_projects::ProjectRow,
         Vec<level_library::MapCandidate>,
+    ),
+    LevelWildlife(
+        Arc<LevelScene>,
+        Arc<world_instances::World>,
+        level_scene_renderer::Report,
     ),
     ProjectLevelSaved(modding_projects::ProjectRow, bool),
     EditedLevelExported(PathBuf, usize),
@@ -1710,6 +1720,10 @@ impl Operation {
             }
             Self::DiscoverProjectMaps(project) => level_library::list_project_maps(&project)
                 .map(|maps| Completed::ProjectMaps(project, maps)),
+            Self::LoadLevelWildlife(archive, scene) => {
+                level_scene_renderer::assemble_wildlife(&archive, &scene)
+                    .map(|(world, report)| Completed::LevelWildlife(scene, world, report))
+            }
             Self::OpenProjectLevel(project, index, library_root) => {
                 level_library::open_project(project, index, &library_root)
                     .map(|map| Completed::ImportedMap(Box::new(map)))
@@ -2334,6 +2348,9 @@ enum Message {
     LevelToggleOutlinerGroup(String),
     LevelOpenSelectedModProject,
     OpenLevelEditorWindow,
+    ToggleLevelViewportFullscreen,
+    ToggleViewerViewportFullscreen,
+    ViewportEscape(window::Id),
     LevelGizmoMove(usize, f32),
     LevelSaveProjectChanges,
     LevelToggleOverview,
@@ -2996,6 +3013,9 @@ fn refresh_wildlife_visibility(state: &mut State) {
         return;
     }
     let mut filtered = (**source).clone();
+    filtered.wildlife_distances = None;
+    filtered.wildlife_shapes = Arc::new(Vec::new());
+    filtered.wildlife_links = Arc::new(Vec::new());
     if let Some(scene) = &state.level_scene {
         for group in &mut filtered.groups {
             group.instances.retain(|instance| {
@@ -3240,6 +3260,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::OpenImportedMap(..) | Operation::OpenProjectLevel(..) => {
             "Assembling level scene"
         }
+        Operation::LoadLevelWildlife(..) => "Loading source-backed wildlife preview",
         Operation::SaveProjectLevel(..) => "Saving editable level project",
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
@@ -7631,6 +7652,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LibraryExport
+        | Message::ToggleLevelViewportFullscreen
+        | Message::ToggleViewerViewportFullscreen
+        | Message::ViewportEscape(_)
         | Message::OpenViewer
         | Message::OpenInspectorWindow
         | Message::OpenViewerPreferences
@@ -8094,6 +8118,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LevelToggleWildlife => {
             state.level_show_wildlife = !state.level_show_wildlife;
             refresh_wildlife_visibility(state);
+            if state.level_show_wildlife
+                && !state.level_wildlife_resolved
+                && !state.busy
+                && let (Some((archive, _, _)), Some(scene)) =
+                    (&state.library_map, &state.level_scene)
+            {
+                return launch(
+                    state,
+                    Operation::LoadLevelWildlife(archive.clone(), scene.clone()),
+                );
+            }
         }
         Message::LevelSidebarTabSelected(tab) => state.level_sidebar_tab = tab,
         Message::LevelZoomChanged(value) => state.level_zoom = value.clamp(0.3, 3.0),
@@ -13504,11 +13539,49 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_map_choices = None;
                     state.level_map_prompt = true;
                 }
+                Ok(Completed::LevelWildlife(scene, wildlife, report)) => {
+                    if state
+                        .level_scene
+                        .as_ref()
+                        .is_some_and(|current| Arc::ptr_eq(current, &scene))
+                        && let Some(original) = &state.level_world_source
+                    {
+                        let mut merged = (**original).clone();
+                        merged.groups.retain(|group| {
+                            group.mesh.info.format != "Wildlife spawn location marker (editor only)"
+                        });
+                        merged.groups.extend(wildlife.groups.iter().cloned());
+                        merged.wildlife_distances = wildlife.wildlife_distances;
+                        merged.wildlife_shapes = wildlife.wildlife_shapes.clone();
+                        merged.wildlife_links = wildlife.wildlife_links.clone();
+                        merged.instance_count = merged
+                            .groups
+                            .iter()
+                            .map(|group| group.instances.len())
+                            .sum();
+                        state.level_world_source = Some(Arc::new(merged));
+                        state.level_wildlife_resolved = true;
+                        state.level_spawn_distances = report.spawn_distances;
+                        state
+                            .level_diagnostics
+                            .push(format!("Wildlife preview: {}", report.status()));
+                        state.level_diagnostics.extend(report.notes);
+                        state.level_diagnostics.extend(
+                            report
+                                .unresolved_populations
+                                .into_iter()
+                                .map(|reason| format!("Wildlife unresolved: {reason}")),
+                        );
+                        refresh_wildlife_visibility(state);
+                    }
+                }
                 Ok(Completed::ImportedMap(loaded)) => {
                     state.level_map_prompt = false;
                     state.level_map_choices = None;
                     state.level_project_choices = None;
                     let loaded = *loaded;
+                    state.level_wildlife_resolved = false;
+                    state.level_spawn_distances = None;
                     state.level_diagnostics = loaded.diagnostics.clone();
                     state.level_show_overview = false;
                     state.level_show_wildlife = false;
@@ -15075,12 +15148,51 @@ impl Desktop {
             Message::Navigate(Page::Levels) => {
                 self.state.level_map_prompt = true;
                 self.state.level_map_choices = None;
+                self.state.level_project_choices = None;
                 self.open_level_editor()
             }
             Message::OpenLevelEditorWindow => {
                 self.state.level_map_prompt = true;
                 self.state.level_map_choices = None;
+                self.state.level_project_choices = None;
                 self.open_level_editor()
+            }
+            Message::ToggleLevelViewportFullscreen => {
+                let Some(id) = self.level_id else {
+                    return Task::none();
+                };
+                self.state.level_viewport_fullscreen = !self.state.level_viewport_fullscreen;
+                window::set_mode(
+                    id,
+                    if self.state.level_viewport_fullscreen {
+                        window::Mode::Fullscreen
+                    } else {
+                        window::Mode::Windowed
+                    },
+                )
+            }
+            Message::ToggleViewerViewportFullscreen => {
+                let Some(id) = self.viewer_id else {
+                    return Task::none();
+                };
+                self.state.viewer_viewport_fullscreen = !self.state.viewer_viewport_fullscreen;
+                window::set_mode(
+                    id,
+                    if self.state.viewer_viewport_fullscreen {
+                        window::Mode::Fullscreen
+                    } else {
+                        window::Mode::Windowed
+                    },
+                )
+            }
+            Message::ViewportEscape(id) => {
+                if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
+                    self.update(Message::ToggleLevelViewportFullscreen)
+                } else if self.viewer_id == Some(id) && self.state.viewer_viewport_fullscreen {
+                    self.update(Message::ToggleViewerViewportFullscreen)
+                } else {
+                    update(&mut self.state, Message::DismissMenus)
+                }
             }
             Message::LevelCameraKey(id, _, _) if self.level_id != Some(id) => Task::none(),
             Message::LevelCameraWindowFocus(id, _) if self.level_id != Some(id) => Task::none(),
@@ -15150,11 +15262,13 @@ impl Desktop {
                     }
                     if self.level_id == Some(id) {
                         self.level_id = None;
+                        self.state.level_viewport_fullscreen = false;
                         self.state.level_window_focused = false;
                         self.state.level_keys.clear();
                     }
                     if self.viewer_id == Some(id) {
                         self.viewer_id = None;
+                        self.state.viewer_viewport_fullscreen = false;
                         self.state.viewer_menu = None;
                         clear_viewer_asset(&mut self.state);
                         // The model editor is a separate window; closing it
@@ -15453,7 +15567,7 @@ impl Desktop {
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
-                }) => Some(Message::DismissMenus),
+                }) => Some(Message::ViewportEscape(id)),
                 iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                     Some(Message::ModifiersChanged(modifiers))
                 }

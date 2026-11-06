@@ -357,6 +357,7 @@ pub(super) fn decode(bytes: &[u8], scene: &mut LevelScene) -> Result<VegetationI
             populations: Vec::new(),
             home_area: String::new(),
             shape_points: Vec::new(),
+            wildlife: evolve_core::scene::WildlifeMetadata::default(),
         });
     }
     let instances = new_objects.len();

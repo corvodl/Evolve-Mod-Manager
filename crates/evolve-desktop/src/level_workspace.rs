@@ -63,6 +63,8 @@ struct SceneOverview {
     selected_indices: std::collections::HashSet<usize>,
     zoom: f32,
     show_wildlife: bool,
+    camera: Option<[f32; 3]>,
+    spawn_distances: Option<evolve_core::zookeeper::SpawnDistances>,
 }
 impl SceneOverview {
     fn extents(&self) -> ([f32; 2], f32) {
@@ -195,11 +197,43 @@ impl canvas::Program<Message> for SceneOverview {
                 if selected {
                     Color::from_rgb(0.96, 0.24, 0.33)
                 } else if obj.is_wildlife_spawn() {
-                    Color::from_rgb(0.95, 0.70, 0.16)
+                    if let (Some(camera), Some(distances)) = (self.camera, self.spawn_distances) {
+                        let dx = obj.world.position[0] - camera[0];
+                        let dy = obj.world.position[1] - camera[1];
+                        let range = (dx * dx + dy * dy).sqrt();
+                        if range < distances.minimum {
+                            Color::from_rgb(0.90, 0.35, 0.27)
+                        } else if range <= distances.maximum {
+                            Color::from_rgb(0.30, 0.88, 0.48)
+                        } else {
+                            Color::from_rgb(0.95, 0.70, 0.16)
+                        }
+                    } else {
+                        Color::from_rgb(0.95, 0.70, 0.16)
+                    }
                 } else {
                     Color::from_rgb(0.68, 0.75, 0.83)
                 },
             );
+        }
+        if self.show_wildlife
+            && let (Some(camera), Some(distances)) = (self.camera, self.spawn_distances)
+        {
+            let origin = self.point(camera, bounds, center, extent);
+            let scale = bounds.width.min(bounds.height) * 0.80 * self.zoom.clamp(0.3, 3.0) / extent;
+            for (radius, color) in [
+                (distances.minimum, Color::from_rgb(0.90, 0.35, 0.27)),
+                (distances.maximum, Color::from_rgb(0.30, 0.88, 0.48)),
+                (distances.despawn, Color::from_rgb(0.91, 0.73, 0.26)),
+            ] {
+                if radius > 0.0 && radius * scale < 10000.0 {
+                    frame.stroke(
+                        &Path::circle(origin, radius * scale),
+                        Stroke::default().with_width(1.3).with_color(color),
+                    );
+                }
+            }
+            frame.fill(&Path::circle(origin, 3.0), Color::WHITE);
         }
         vec![frame.into_geometry()]
     }
@@ -295,6 +329,25 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
     }
 }
 
+pub(super) fn fullscreen_view(state: &State) -> Element<'_, Message> {
+    column![
+        row![
+            text("Level Editor  /  Perspective").size(13),
+            space().width(Fill),
+            design::button("Exit Fullscreen (Esc)")
+                .style(design::secondary)
+                .on_press(Message::ToggleLevelViewportFullscreen),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
+        world_viewport(state),
+    ]
+    .spacing(4)
+    .width(Fill)
+    .height(Fill)
+    .into()
+}
+
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let Some(scene) = &state.level_scene else {
         return container(
@@ -366,7 +419,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 button(
                     text(if obj.kind.eq_ignore_ascii_case("CreatureSpawn") {
                         format!(
-                            "Wildlife · {} / {} [{}]",
+                            "CreatureSpawn · {} / {} [{}]",
                             obj.layer,
                             obj.name,
                             if obj.populations.is_empty() {
@@ -522,6 +575,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                             selected_indices: state.level_selection.indices.clone(),
                             zoom: state.level_zoom.max(0.3),
                             show_wildlife: state.level_show_wildlife,
+                            camera: state.level_camera.map(|camera| camera.position),
+                            spawn_distances: state.level_spawn_distances,
                         })
                         .width(Fill)
                         .height(Length::Fixed(175.0)),
@@ -533,7 +588,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                                 Message::LevelZoomChanged
                             )
                             .width(Length::Fixed(170.0)),
-                            text("Click a point to inspect its placement")
+                            text(if state.level_show_wildlife && state.level_spawn_distances.is_some() {
+                                "Camera rings: red min · green max · amber despawn (authored, not simulated)"
+                            } else { "Click a point to inspect its placement" })
                                 .size(12)
                                 .color(MUTED),
                         ]

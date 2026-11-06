@@ -50,6 +50,7 @@ pub mod skin_preview;
 pub mod staging;
 pub mod terrain;
 mod terrain_tiles;
+pub mod zookeeper;
 
 pub use animation::{
     AnimatedGlb, AnimationError, AnimationReference, CafInspection, MotionClip, PoseSample,
