@@ -54,7 +54,7 @@ impl Default for Transform {
     }
 }
 impl Transform {
-    fn normalize(mut self) -> Result<Self, SceneError> {
+    pub(crate) fn normalize(mut self) -> Result<Self, SceneError> {
         if self
             .position
             .iter()
@@ -479,6 +479,10 @@ pub struct ReadOnlySceneRecovery {
     pub scene: LevelScene,
     pub duplicate_declarations: usize,
     pub conflicting_guids: usize,
+    /// Original IDs declared in multiple distinct source layers. Safe
+    /// previews retain the first declaration, but project editing of these
+    /// IDs must be refused until the duplicate owners are resolved.
+    pub duplicate_guids: HashSet<String>,
 }
 
 pub fn parse_level_scene_read_only(
@@ -490,6 +494,7 @@ pub fn parse_level_scene_read_only(
     let mut objects = Vec::<PlacedObject>::new();
     let mut seen = HashMap::<String, usize>::new();
     let mut ambiguous = HashSet::<String>::new();
+    let mut duplicate_guids = HashSet::<String>::new();
     let mut duplicates = 0usize;
     for (layer, data) in layers {
         let decoded = crate::cryxml::xml_bytes(data, MAX_LAYER_BYTES)
@@ -497,6 +502,7 @@ pub fn parse_level_scene_read_only(
         for obj in scan_placements(&decoded, layer)? {
             if let Some(previous) = seen.get(&obj.id).copied() {
                 duplicates += 1;
+                duplicate_guids.insert(obj.id.clone());
                 let prior = &objects[previous];
                 if prior.parent != obj.parent
                     || prior.name != obj.name
@@ -522,6 +528,11 @@ pub fn parse_level_scene_read_only(
         }
     }
     let mut scene = resolve_placements(objects, &ambiguous)?;
+    for object in &mut scene.objects {
+        if duplicate_guids.contains(&object.id) {
+            object.status = "Duplicate authored GUID across layers: read-only until source owners are reconciled".into();
+        }
+    }
     if duplicates > 0 {
         scene.diagnostics.push(format!(
             "Read-only recovery skipped {duplicates} duplicate GUID declarations ({} conflicting IDs).              Cross-layer parent transforms were recovered for uniquely identified parents;              ambiguous parents remain unresolved. Original layer XML was not modified.",
@@ -532,6 +543,7 @@ pub fn parse_level_scene_read_only(
         scene,
         duplicate_declarations: duplicates,
         conflicting_guids: ambiguous.len(),
+        duplicate_guids,
     })
 }
 
@@ -1273,6 +1285,8 @@ mod tests {
         let result = parse_level_scene_read_only(&[("a.lyr", root), ("b.lyr", repeated)]).unwrap();
         assert_eq!(result.duplicate_declarations, 1);
         assert_eq!(result.conflicting_guids, 0);
+        assert!(result.duplicate_guids.contains("root"));
+        assert!(!result.duplicate_guids.contains("child"));
         assert_eq!(result.scene.objects.len(), 2);
         let child = result
             .scene
@@ -1291,6 +1305,7 @@ mod tests {
         let result = parse_level_scene_read_only(&[("a.lyr", root), ("b.lyr", conflict)]).unwrap();
         assert_eq!(result.conflicting_guids, 1);
         assert_eq!(result.duplicate_declarations, 1);
+        assert!(result.duplicate_guids.contains("root"));
         let child = result
             .scene
             .objects

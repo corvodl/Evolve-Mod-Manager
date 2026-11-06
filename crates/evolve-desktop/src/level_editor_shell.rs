@@ -36,9 +36,13 @@ fn menu_content(state: &State) -> Option<Element<'_, Message>> {
         .spacing(2)
         .into(),
         "LevelEdit" => column![
-            command("Undo transform", Message::LevelUndoTransform),
-            command("Redo transform", Message::LevelRedoTransform),
-            command("Apply transform to preview", Message::LevelApplyTransform),
+            command(
+                "Save selected transform to project",
+                Message::LevelApplyTransform
+            ),
+            text("Committed source changes have verified editor backups.")
+                .size(11)
+                .style(design::muted),
         ]
         .spacing(2)
         .into(),

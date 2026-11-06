@@ -385,6 +385,175 @@ pub(super) fn inspect_file(path: &Path, scene: &mut LevelScene) -> Result<Vegeta
     decode(&bytes, scene)
 }
 
+/// Project-only mutation of the original packed instance array. The full
+/// VegetationMap.dat envelope, prototype table, and unrelated named data
+/// blocks are preserved. Import the resulting bytes through the verified
+/// managed Modding project transaction, never directly into game/Asset Library.
+#[derive(Clone, Debug)]
+pub(super) enum VegetationEdit {
+    Move { index: usize, position: [f32; 3] },
+    Scale { index: usize, scale: f32 },
+    Duplicate { index: usize, position: [f32; 3] },
+    Delete { index: usize },
+}
+
+pub(super) fn edit_instances(bytes: &[u8], edit: VegetationEdit) -> Result<Vec<u8>, String> {
+    use flate2::{Compression, write::ZlibEncoder};
+    use std::io::Write;
+    if bytes.len() > MAX_FILE {
+        return Err("VegetationMap.dat exceeds maximum source size".into());
+    }
+    let mut cursor = Cursor::new(bytes);
+    let xml = cursor.string(MAX_XML)?;
+    let (version, source_models) = prototypes(xml.as_bytes())?;
+    let stride = match version {
+        1 => 19,
+        2 => 30,
+        3 => 33,
+        _ => return Err("Unsupported vegetation record version".into()),
+    };
+    let count = cursor.u32()? as usize;
+    if count == 0 || count > MAX_NAMED {
+        return Err("Unsupported number of vegetation data blocks".into());
+    }
+    let mut match_block = None;
+    for _ in 0..count {
+        let name = cursor.string(512)?;
+        let flags_at = cursor.pos;
+        let flags = cursor.u32()?;
+        let packed_len = (flags & 0x7fff_ffff) as usize;
+        let original_len = cursor.u32()? as usize;
+        let _extra = cursor.u32()?;
+        if packed_len > MAX_BINARY || original_len > MAX_BINARY {
+            return Err("Vegetation named data size exceeds limits".into());
+        }
+        let data_at = cursor.pos;
+        let original = cursor.take(packed_len)?;
+        if name != "VegetationInstancesArray" {
+            continue;
+        }
+        if match_block.is_some() {
+            return Err("Duplicate vegetation instance data blocks".into());
+        }
+        let compressed = flags & 0x8000_0000 != 0;
+        let mut records = if compressed {
+            let mut decoded = Vec::new();
+            ZlibDecoder::new(original)
+                .take(original_len as u64 + 1)
+                .read_to_end(&mut decoded)
+                .map_err(|e| format!("Cannot decompress vegetation: {e}"))?;
+            if decoded.len() != original_len {
+                return Err("Incorrect decompressed vegetation size".into());
+            }
+            decoded
+        } else {
+            if packed_len != original_len {
+                return Err("Original vegetation size mismatch".into());
+            }
+            original.to_vec()
+        };
+        if records.len() % stride != 0 || records.len() / stride > MAX_INSTANCES {
+            return Err("Invalid vegetation record count or stride".into());
+        }
+        let count = records.len() / stride;
+        let index = match &edit {
+            VegetationEdit::Move { index, .. }
+            | VegetationEdit::Scale { index, .. }
+            | VegetationEdit::Duplicate { index, .. }
+            | VegetationEdit::Delete { index } => *index,
+        };
+        if index >= count {
+            return Err("Selected vegetation record not found".into());
+        }
+        let start = index * stride;
+        let (prototype, scale) = if version < 3 {
+            (
+                records[start + 16] as usize,
+                f32::from_le_bytes(records[start + 12..start + 16].try_into().unwrap()),
+            )
+        } else {
+            (
+                u32::from_le_bytes(records[start + 16..start + 20].try_into().unwrap()) as usize,
+                f32::from_le_bytes(records[start + 12..start + 16].try_into().unwrap()),
+            )
+        };
+        if prototype >= source_models.len()
+            || !scale.is_finite()
+            || !(0.00001..=10000.0).contains(&scale)
+        {
+            return Err("Vegetation prototype or scale is invalid".into());
+        }
+        match &edit {
+            VegetationEdit::Move { position, .. } => {
+                if !position.iter().all(|p| p.is_finite() && p.abs() <= 1e8) {
+                    return Err("Invalid vegetation position".into());
+                }
+                for (axis, value) in position.iter().enumerate() {
+                    records[start + axis * 4..start + axis * 4 + 4]
+                        .copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            VegetationEdit::Scale { scale, .. } => {
+                if !scale.is_finite() || !(0.00001..=10000.0).contains(scale) {
+                    return Err("Invalid vegetation scale".into());
+                }
+                records[start + 12..start + 16].copy_from_slice(&scale.to_le_bytes());
+            }
+            VegetationEdit::Duplicate { position, .. } => {
+                if count >= MAX_INSTANCES
+                    || !position.iter().all(|p| p.is_finite() && p.abs() <= 1e8)
+                {
+                    return Err("Unsafe vegetation copy count or position".into());
+                }
+                let mut duplicate = records[start..start + stride].to_vec();
+                for (axis, value) in position.iter().enumerate() {
+                    duplicate[axis * 4..axis * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                }
+                records.extend_from_slice(&duplicate);
+            }
+            VegetationEdit::Delete { .. } => {
+                records.drain(start..start + stride);
+            }
+        }
+        if records.len() > MAX_BINARY {
+            return Err("Edited vegetation data exceeds size limit".into());
+        }
+        let packed = if compressed {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(&records).map_err(|e| e.to_string())?;
+            encoder.finish().map_err(|e| e.to_string())?
+        } else {
+            records.clone()
+        };
+        if packed.len() > MAX_BINARY || packed.len() > 0x7fff_ffff {
+            return Err("Edited packed vegetation data exceeds size limit".into());
+        }
+        let new_flags = (if compressed { 0x8000_0000 } else { 0 }) | (packed.len() as u32);
+        let mut output = Vec::with_capacity(bytes.len().saturating_add(stride));
+        output.extend_from_slice(&bytes[..flags_at]);
+        output.extend_from_slice(&new_flags.to_le_bytes());
+        output.extend_from_slice(&(records.len() as u32).to_le_bytes());
+        output.extend_from_slice(&bytes[flags_at + 8..data_at]); // Preserve source 'extra' word.
+        output.extend_from_slice(&packed);
+        output.extend_from_slice(&bytes[data_at + packed_len..]);
+        if output.len() > MAX_FILE {
+            return Err("Edited VegetationMap.dat exceeds file maximum".into());
+        }
+        match_block = Some(output);
+    }
+    if cursor.pos != bytes.len() {
+        return Err("Extra bytes after VegetationMap.dat blocks".into());
+    }
+    let output = match_block.ok_or("Missing original VegetationInstancesArray")?;
+    let mut parsed = LevelScene {
+        schema: 1,
+        objects: Vec::new(),
+        diagnostics: Vec::new(),
+    };
+    let _ = decode(&output, &mut parsed)?;
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,6 +578,46 @@ mod tests {
             diagnostics: Vec::new(),
         }
     }
+    #[test]
+    fn project_vegetation_record_mutation_round_trips_and_preserves_prototypes() {
+        let xml = r#"<VegetationMap Version="3"><Objects><Object FileName="Objects/trees/tree.cgf" Category="Forest"/></Objects></VegetationMap>"#;
+        let mut record = Vec::new();
+        for value in [10.0f32, 20.0, 30.0, 1.25] {
+            record.extend_from_slice(&value.to_le_bytes());
+        }
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.push(255);
+        for angle in [0.5f32, 0.0, 0.0] {
+            record.extend_from_slice(&angle.to_le_bytes());
+        }
+        let source = archive(xml, &record);
+        let moved = edit_instances(
+            &source,
+            VegetationEdit::Move {
+                index: 0,
+                position: [50.0, 20.0, 30.0],
+            },
+        )
+        .unwrap();
+        let mut scene = blank();
+        assert_eq!(decode(&moved, &mut scene).unwrap().instances, 1);
+        assert_eq!(scene.objects[0].world.position, [50.0, 20.0, 30.0]);
+        let copied = edit_instances(
+            &moved,
+            VegetationEdit::Duplicate {
+                index: 0,
+                position: [60.0, 20.0, 30.0],
+            },
+        )
+        .unwrap();
+        assert_eq!(decode(&copied, &mut blank()).unwrap().instances, 2);
+        let removed = edit_instances(&copied, VegetationEdit::Delete { index: 0 }).unwrap();
+        let mut scene = blank();
+        assert_eq!(decode(&removed, &mut scene).unwrap().instances, 1);
+        assert_eq!(scene.objects[0].world.position, [60.0, 20.0, 30.0]);
+        assert!(edit_instances(&source, VegetationEdit::Delete { index: 2 }).is_err());
+    }
+
     #[test]
     fn version_three_decodes_exact_packed_fields() {
         let xml = r#"<VegetationMap Version="3"><Objects><Object FileName="Objects/trees/tree.cgf" Category="Forest"/></Objects></VegetationMap>"#;
