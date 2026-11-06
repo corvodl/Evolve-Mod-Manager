@@ -5931,6 +5931,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             "Choose an XML-layer placement as the insertion point.".into();
                         return Task::none();
                     }
+                    if state.level_authoring.new_object_name.trim().is_empty() {
+                        state.status = "Enter a name for the new geometry placement.".into();
+                        return Task::none();
+                    }
+                    let model_trimmed = state.level_authoring.new_object_model.trim();
+                    if model_trimmed.is_empty() {
+                        state.status =
+                            "Enter an exact .cgf model path for the new placement.".into();
+                        return Task::none();
+                    }
+                    if !model_trimmed.to_ascii_lowercase().ends_with(".cgf") {
+                        state.status =
+                            "Geometry placements require a native .cgf model path.".into();
+                        return Task::none();
+                    }
                     let guid = match fresh_unique_authored_level_guid(
                         &object.id,
                         state.level_scene.as_deref(),

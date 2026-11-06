@@ -554,6 +554,71 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             )?;
             events.splice(end + 1..end + 1, cloned);
         }
+        LayerAuthoringEdit::Shape { points, .. } => {
+            if !object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+                || !(3..=8192).contains(&points.len())
+                || points
+                    .iter()
+                    .flatten()
+                    .any(|x| !x.is_finite() || x.abs() > 1e8)
+            {
+                return Err(SceneError::Limits);
+            }
+            if points.len() == object.shape_points.len() {
+                transform_target(&mut events[start..=end], edit, object)?;
+            } else {
+                let mut points_start = None;
+                let mut points_end = None;
+                for (offset, event) in events[start..=end].iter().enumerate() {
+                    let idx = start + offset;
+                    if tag(event, b"Points") {
+                        match event {
+                            Event::Start(_) => points_start = Some(idx),
+                            Event::End(_) => {
+                                points_end = Some(idx);
+                                break;
+                            }
+                            Event::Empty(_) => {
+                                points_start = Some(idx);
+                                points_end = Some(idx);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let new_point_events: Vec<Event<'static>> = points
+                    .iter()
+                    .map(|p| {
+                        let pos = format!("{},{},{}", p[0], p[1], p[2]);
+                        let mut elem = quick_xml::events::BytesStart::new("Point");
+                        elem.push_attribute(("Pos", pos.as_str()));
+                        Event::Empty(elem)
+                    })
+                    .collect();
+                match (points_start, points_end) {
+                    (Some(ps), Some(pe)) if ps < pe => {
+                        events.splice(ps + 1..pe, new_point_events);
+                    }
+                    (Some(ps), Some(pe)) if ps == pe => {
+                        let mut replacement = Vec::with_capacity(points.len() + 2);
+                        replacement
+                            .push(Event::Start(quick_xml::events::BytesStart::new("Points")));
+                        replacement.extend(new_point_events);
+                        replacement.push(Event::End(quick_xml::events::BytesEnd::new("Points")));
+                        events.splice(ps..=ps, replacement);
+                    }
+                    _ => {
+                        let mut replacement = Vec::with_capacity(points.len() + 2);
+                        replacement
+                            .push(Event::Start(quick_xml::events::BytesStart::new("Points")));
+                        replacement.extend(new_point_events);
+                        replacement.push(Event::End(quick_xml::events::BytesEnd::new("Points")));
+                        events.splice(end..end, replacement);
+                    }
+                }
+            }
+        }
         _ => transform_target(&mut events[start..=end], edit, object)?,
     }
     let mut writer = Writer::new(Vec::new());
@@ -868,6 +933,69 @@ mod tests {
         assert_eq!(
             parse_level_scene(&[("new", &updated)]).unwrap().objects[2].shape_points,
             polygon
+        );
+
+        // Verify arbitrary polygon topology (adding and removing vertices)
+        let expanded = [[0., 0., 0.], [10., 0., 0.], [10., 10., 0.], [0., 10., 0.]];
+        let with_extra_vertex = edit_layer_bytes(
+            &updated,
+            &LayerAuthoringEdit::Shape {
+                guid: "shape".into(),
+                points: expanded.to_vec(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            parse_level_scene(&[("expanded", &with_extra_vertex)])
+                .unwrap()
+                .objects[2]
+                .shape_points,
+            expanded
+        );
+
+        let native_shape = edit_native_layer_bytes(
+            &crate::cryxml::encode_xml(&updated, MAX_BYTES).unwrap(),
+            &LayerAuthoringEdit::Shape {
+                guid: "shape".into(),
+                points: expanded.to_vec(),
+            },
+        )
+        .unwrap();
+        assert!(native_shape.starts_with(b"CryXmlB\0"));
+        assert_eq!(
+            parse_level_scene(&[("native_shape", &native_shape)])
+                .unwrap()
+                .objects[2]
+                .shape_points,
+            expanded
+        );
+
+        let reduced = [[1., 1., 0.], [5., 1., 0.], [3., 5., 0.]];
+        let with_fewer_vertices = edit_layer_bytes(
+            &with_extra_vertex,
+            &LayerAuthoringEdit::Shape {
+                guid: "shape".into(),
+                points: reduced.to_vec(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            parse_level_scene(&[("reduced", &with_fewer_vertices)])
+                .unwrap()
+                .objects[2]
+                .shape_points,
+            reduced
+        );
+
+        assert!(
+            edit_layer_bytes(
+                &with_extra_vertex,
+                &LayerAuthoringEdit::Shape {
+                    guid: "shape".into(),
+                    points: vec![[0., 0., 0.], [1., 1., 1.]],
+                },
+            )
+            .is_err()
         );
     }
 

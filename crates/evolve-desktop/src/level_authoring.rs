@@ -170,6 +170,9 @@ impl Fields {
                 .map_err(|_| "Each polygon vertex requires x,y,z")?;
             points.push(arr);
         }
+        if points.len() < 3 {
+            return Err("Wildlife polygon requires at least 3 vertices (x,y,z; ...)".into());
+        }
         Ok(LayerAuthoringEdit::Shape { guid, points })
     }
 
@@ -274,7 +277,7 @@ pub(super) fn placement_editor<'a>(
             TextField::NewObjectName
         ),
         edit_field(
-            "Exact model path (.cgf/.cdf/...)",
+            "Exact CGF model path (.cgf)",
             &forms.new_object_model,
             TextField::NewObjectModel
         ),
@@ -342,7 +345,7 @@ pub(super) fn placement_editor<'a>(
             .push(crate::design::button("Save area polygon to LYR")
                 .style(crate::design::primary)
                 .on_press(Message::LevelSaveWildlifeShape))
-            .push(text("Preserves the authored vertex count; arbitrary topology changes require verification.")
+            .push(text("Authored polygon vertices (minimum 3); verified against owning LYR/XML structure.")
                 .size(11).style(crate::design::muted));
     }
     column.into()
