@@ -4,7 +4,9 @@ CI has no interactive Explorer session; live Win32 token behavior must be
 verified manually on the user's normal desktop.
 """
 import importlib.util
+import hashlib
 from pathlib import Path
+import struct
 import tempfile
 import unittest
 from unittest import mock
@@ -17,6 +19,38 @@ spec.loader.exec_module(broker)
 
 
 class LaunchBrokerTests(unittest.TestCase):
+    def test_native_probe_requires_pinned_x64_pe_and_is_off_by_default(self):
+        with tempfile.TemporaryDirectory() as folder:
+            dll = Path(folder, "LegacyKitCompositor.dll")
+            image = bytearray(1024)
+            image[:2] = b"MZ"
+            struct.pack_into("<I", image, 0x3c, 0x80)
+            image[0x80:0x86] = b"PE\0\0\x64\x86"
+            struct.pack_into("<H", image, 0x80 + 22, 0x2000)
+            struct.pack_into("<H", image, 0x80 + 24, 0x20b)
+            dll.write_bytes(image)
+            digest = hashlib.sha256(image).hexdigest()
+            self.assertEqual(broker.validate_kit_compositor(dll, digest), dll.resolve())
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                broker.validate_kit_compositor(dll, "0" * 64)
+            with self.assertRaisesRegex(ValueError, "explicit SHA-256"):
+                broker.validate_kit_compositor(dll, None)
+            with mock.patch.object(broker, "_win", side_effect=AssertionError("must not start")):
+                with self.assertRaisesRegex(ValueError, "offline Evolve"):
+                    broker.launch_standard_user(dll, compositor_dll=dll, compositor_sha256=digest)
+                with self.assertRaisesRegex(ValueError, "requires an offline Evolve"):
+                    broker.launch_standard_user(dll, game=True, compositor_dll=dll,
+                                                compositor_sha256=digest)
+            image[0x84:0x86] = b"\x4c\x01"
+            dll.write_bytes(image)
+            with self.assertRaisesRegex(ValueError, "x64"):
+                broker.validate_kit_compositor(dll, hashlib.sha256(image).hexdigest())
+            image[0x84:0x86] = b"\x64\x86"
+            image[0x80 + 22:0x80 + 24] = b"\0\0"
+            dll.write_bytes(image)
+            with self.assertRaisesRegex(ValueError, "must be a DLL"):
+                broker.validate_kit_compositor(dll, hashlib.sha256(image).hexdigest())
+
     def test_wrong_executable_never_spawns(self):
         with tempfile.TemporaryDirectory() as folder:
             executable = Path(folder, "Evolve.exe")

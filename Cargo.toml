@@ -5,6 +5,7 @@ members = [
     "crates/evolve-desktop",
     "crates/evolve-privileged-worker",
     "crates/evolve-teleport-overlay",
+    "crates/evolve-kit-compositor",
 ]
 
 [workspace.package]

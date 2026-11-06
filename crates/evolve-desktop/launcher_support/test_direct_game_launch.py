@@ -2,6 +2,8 @@
 import sys
 import tempfile
 import json
+import hashlib
+import struct
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +17,57 @@ import managed_service_adapter as managed_adapter
 
 
 class DirectGameTests(unittest.TestCase):
+    def test_opt_in_passes_pinned_probe_only_after_services_and_swap(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            (root/"bin64_SteamRetail").mkdir()
+            (root/"bin64_SteamRetail"/"Evolve.exe").write_bytes(b"test")
+            probe=root/"native"/"LegacyKitCompositor.dll"
+            probe.parent.mkdir()
+            image=bytearray(1024)
+            image[:2]=b"MZ"
+            struct.pack_into("<I",image,0x3c,0x80)
+            image[0x80:0x86]=b"PE\0\0\x64\x86"
+            struct.pack_into("<H",image,0x80+22,0x2000)
+            struct.pack_into("<H",image,0x80+24,0x20b)
+            probe.write_bytes(image)
+            digest=hashlib.sha256(image).hexdigest()
+            session=root/"session"
+            session.mkdir()
+            events=[]
+            class Game:
+                pid=12345
+                def close(self): pass
+            def spawn(*args,**kwargs):
+                self.assertEqual(kwargs["compositor_dll"],probe)
+                self.assertEqual(kwargs["compositor_sha256"],digest)
+                events.append("inject")
+                return Game()
+            state={"trace":"Stage2Trace.dll","steam_compat":"compat.dll","modes":"X","catalog":"catalog"}
+            with mock.patch.object(direct,"validate_prepared",return_value={"phase":"prepared","files":[]}), \
+                 mock.patch.object(direct,"start_runtime_supervisor",side_effect=lambda *args:(events.append("services"),(session,state))[1]), \
+                 mock.patch.object(direct,"environment_for_session",return_value={"MODDED_EVOLVE_STAGE2_LOG":str(root/"trace.log")}), \
+                 mock.patch.object(direct,"rename_prepared_into_game",side_effect=lambda *args:events.append("swap")), \
+                 mock.patch.object(direct,"start_restore_watchdog",return_value=42), \
+                 mock.patch.object(direct,"wait_for_visible_game_window"), \
+                 mock.patch.object(direct.contract,"wait_for_hook_startup"), \
+                 mock.patch.object(direct.standard_user_launch,"launch_standard_user",side_effect=spawn):
+                self.assertEqual(direct.launch_direct(root,root,"client",root,False,digest),0)
+            self.assertEqual(events,["services","swap","inject"])
+
+    def test_native_probe_fails_before_services_for_clean_or_unpinned_module(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            (root/"bin64_SteamRetail").mkdir()
+            (root/"bin64_SteamRetail"/"Evolve.exe").write_bytes(b"test")
+            with mock.patch.object(direct,"start_runtime_supervisor") as services, \
+                 mock.patch.object(direct,"validate_prepared",return_value={"phase":"prepared"}):
+                with self.assertRaisesRegex(RuntimeError,"restricted to prepared offline"):
+                    direct.launch_direct(root,root,"client",root,True,"0"*64)
+                with self.assertRaisesRegex(RuntimeError,"regular DLL"):
+                    direct.launch_direct(root,root,"client",root,False,"0"*64)
+            services.assert_not_called()
+
     def test_no_game_file_never_starts_services_or_swaps(self):
         with mock.patch.object(direct,"_regular",return_value=False), \
              mock.patch.object(direct,"start_runtime_supervisor") as start, \

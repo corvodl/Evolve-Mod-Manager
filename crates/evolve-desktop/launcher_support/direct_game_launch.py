@@ -238,7 +238,8 @@ def wait_for_visible_game_window(process, timeout=45, stable_seconds=5):
         f"game window within {timeout} seconds. Check the game's crash logs.")
 
 
-def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, clean=False):
+def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, clean=False,
+                  compositor_sha256=None):
     game=_ordinary(game_root)
     exe=game/"bin64_SteamRetail"/"Evolve.exe"
     if not _regular(exe):
@@ -254,6 +255,15 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
     # our own Stage2 profile service host becomes active. Validation doesn't
     # change game files. The actual swap still happens after services are ready.
     prepared = validate_prepared(game,stage_root) if not clean else None
+    compositor_dll = None
+    if compositor_sha256 is not None:
+        if clean or stage_root is None:
+            raise RuntimeError("Native kit probe is restricted to prepared offline modded Direct Launch")
+        stage = _ordinary(stage_root)
+        compositor_dll = stage / "native" / "LegacyKitCompositor.dll"
+        if not _regular(compositor_dll) or compositor_dll.resolve(strict=True) != compositor_dll:
+            raise RuntimeError("Native kit probe must be a regular DLL under the verified signing stage")
+        standard_user_launch.validate_kit_compositor(compositor_dll, compositor_sha256)
     try:
         # Run services/identity/profile bootstrap while originals are installed.
         # Only a successful services host may proceed to the PAK swap.
@@ -273,9 +283,11 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
             swapped=True
             watchdog=start_restore_watchdog()
         try:
+            probe = ({"compositor_dll": compositor_dll,
+                      "compositor_sha256": compositor_sha256} if compositor_dll is not None else {})
             process=standard_user_launch.launch_standard_user(
                 exe,game=True,trace_dll=state["trace"],
-                runtime_env=runtime_env)
+                runtime_env=runtime_env, **probe)
             try:
                 # Notify the detached supervisor immediately after the child
                 # is created, before waiting for hooks/window readiness.
@@ -326,11 +338,13 @@ def main(argv=None):
     parser.add_argument("--client-exe",required=True)
     parser.add_argument("--swap-dir",required=True)
     parser.add_argument("--clean",action="store_true")
+    parser.add_argument("--compositor-sha256", help="Opt-in offline native probe from signing-stage/native/LegacyKitCompositor.dll")
     args=parser.parse_args(argv)
     try:
         if not args.clean and not args.stage_dir:
             raise RuntimeError("A verified signing stage is required for modded direct play")
-        return launch_direct(args.game_root,args.stage_dir,args.client_exe,args.swap_dir,args.clean)
+        return launch_direct(args.game_root,args.stage_dir,args.client_exe,args.swap_dir,args.clean,
+                             args.compositor_sha256)
     except BaseException as error:
         print(f"DIRECT_LAUNCH_FAILED: {error}",file=sys.stderr,flush=True)
         return 1

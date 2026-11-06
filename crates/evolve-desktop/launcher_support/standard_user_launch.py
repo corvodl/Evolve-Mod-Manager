@@ -11,8 +11,12 @@ from __future__ import annotations
 import argparse
 import ctypes
 from ctypes import wintypes
+import hashlib
 import os
 from pathlib import Path
+import re
+import stat
+import struct
 import subprocess
 import sys
 
@@ -224,11 +228,48 @@ def _windows_environment_block(entries):
     return ctypes.create_unicode_buffer("\0".join(entries) + "\0")
 
 
-def _inject_stage2_trace(api, process_info, dll_path):
-    """Load Stage2Trace.dll into suspended Evolve; never resume after failure."""
+def validate_kit_compositor(dll_path, expected_sha256):
+    """Approve one x64, explicitly pinned offline probe; never trust a filename alone."""
+    if not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256):
+        raise ValueError("Kit compositor requires an explicit SHA-256 digest")
+    source = Path(dll_path)
+    if source.name.casefold() != "legacykitcompositor.dll" or source.is_symlink():
+        raise ValueError("Only a regular LegacyKitCompositor.dll probe is permitted")
+    dll = source.resolve(strict=True)
+    metadata = dll.stat()
+    if (not stat.S_ISREG(metadata.st_mode) or dll.is_symlink()
+            or getattr(metadata, "st_file_attributes", 0) & 0x400
+            or not 1024 <= metadata.st_size <= 32 * 1024 * 1024):
+        raise ValueError("Kit compositor must be a regular 1 KiB–32 MiB DLL")
+    digest = hashlib.sha256()
+    with dll.open("rb") as stream:
+        header = stream.read(4096)
+        if header[:2] != b"MZ" or len(header) < 0x40:
+            raise ValueError("Kit compositor is not a PE image")
+        pe_offset = struct.unpack_from("<I", header, 0x3c)[0]
+        if pe_offset > metadata.st_size - 26:
+            raise ValueError("Kit compositor has an invalid PE header")
+        stream.seek(pe_offset)
+        if stream.read(4) != b"PE\0\0" or stream.read(2) != b"\x64\x86":
+            raise ValueError("Kit compositor must be an x64 PE image")
+        stream.seek(pe_offset + 22)
+        if not struct.unpack("<H", stream.read(2))[0] & 0x2000:
+            raise ValueError("Kit compositor PE image must be a DLL")
+        if struct.unpack("<H", stream.read(2))[0] != 0x20b:
+            raise ValueError("Kit compositor must be a PE32+ DLL")
+        stream.seek(0)
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest().lower() != expected_sha256.lower():
+        raise ValueError("Kit compositor SHA-256 does not match the explicit pin")
+    return dll
+
+
+def _inject_verified_module(api, process_info, dll_path, name):
+    """Load an allowed DLL into suspended Evolve; never resume after failure."""
     dll = Path(dll_path).resolve(strict=True)
-    if dll.name.casefold() != "stage2trace.dll" or not dll.is_file():
-        raise ValueError("Game integration module must be Stage2Trace.dll")
+    if dll.name.casefold() != name or not dll.is_file():
+        raise ValueError(f"Game integration module must be {name}")
     data = ctypes.create_unicode_buffer(str(dll))
     size = ctypes.sizeof(data)
     remote = api["VirtualAllocEx"](process_info.hProcess, None, size, 0x3000, 0x04)
@@ -249,19 +290,28 @@ def _inject_stage2_trace(api, process_info, dll_path):
             raise _error("CreateRemoteThread")
         try:
             if api["WaitForSingleObject"](thread, 15000) != 0:
-                raise RuntimeError("Stage2Trace.dll load timed out or failed")
+                raise RuntimeError(f"{name} load timed out or failed")
             outcome = wintypes.DWORD()
             if not api["GetExitCodeThread"](thread, ctypes.byref(outcome)) or not outcome.value:
-                raise RuntimeError("Stage2Trace.dll did not load into Evolve.exe")
+                raise RuntimeError(f"{name} did not load into Evolve.exe")
         finally:
             api["CloseHandle"](thread)
     finally:
         api["VirtualFreeEx"](process_info.hProcess, remote, 0, 0x8000)
 
 
-def launch_standard_user(executable, *, game=False, test_client=False, args=(), trace_dll=None, runtime_env=None, log_path=None):
+def _inject_stage2_trace(api, process_info, dll_path):
+    _inject_verified_module(api, process_info, dll_path, "stage2trace.dll")
+
+
+def launch_standard_user(executable, *, game=False, test_client=False, args=(), trace_dll=None,
+                         compositor_dll=None, compositor_sha256=None, runtime_env=None, log_path=None):
     if trace_dll and not game:
         raise ValueError("Stage2Trace injection is restricted to Evolve.exe")
+    if compositor_dll is not None or compositor_sha256 is not None:
+        if not game or not trace_dll or compositor_dll is None:
+            raise ValueError("Kit compositor requires an offline Evolve launch with Stage2Trace")
+        compositor_dll = validate_kit_compositor(compositor_dll, compositor_sha256)
     if not game and args and (list(args)[0] != "--stage2-smoke"
                              or "--no-launch" not in args):
         raise ValueError("Only client services-only smoke arguments are allowed")
@@ -397,6 +447,11 @@ def launch_standard_user(executable, *, game=False, test_client=False, args=(), 
             raise RuntimeError("Process started in the wrong interactive session")
         if trace_dll:
             _inject_stage2_trace(api, info, trace_dll)
+            if compositor_dll is not None:
+                # The game thread is still suspended. A failed second load
+                # terminates the child instead of leaving half a probe active.
+                validate_kit_compositor(compositor_dll, compositor_sha256)
+                _inject_verified_module(api, info, compositor_dll, "legacykitcompositor.dll")
             if api["ResumeThread"](info.hThread) == 0xffffffff:
                 raise _error("ResumeThread")
     except Exception:
