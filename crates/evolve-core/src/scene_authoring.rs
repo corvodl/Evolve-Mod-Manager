@@ -193,32 +193,31 @@ fn entity_references(events: &[Event<'static>]) -> Result<HashSet<usize>, SceneE
     let mut parents: Vec<Vec<u8>> = Vec::new();
     let mut links = HashSet::new();
     for (index, event) in events.iter().enumerate() {
-        if let Event::Start(element) | Event::Empty(element) = event {
-            if element.name().as_ref().eq_ignore_ascii_case(b"Entity")
-                && parents
-                    .last()
-                    .is_some_and(|name| name.eq_ignore_ascii_case(b"Entities"))
-                && parents.iter().any(|name| {
-                    [b"Object".as_slice(), b"Entity", b"Brush", b"Prefab"]
-                        .iter()
-                        .any(|tag| name.eq_ignore_ascii_case(tag))
-                })
-            {
-                let mut has_id = false;
-                let mut id_only = true;
-                for attr in element.attributes() {
-                    let attr = attr.map_err(|e| SceneError::Xml(e.to_string()))?;
-                    if attr.key.as_ref().eq_ignore_ascii_case(b"Id")
-                        || attr.key.as_ref().eq_ignore_ascii_case(b"EntityId")
-                    {
-                        has_id = true;
-                    } else {
-                        id_only = false;
-                    }
+        if let Event::Start(element) | Event::Empty(element) = event
+            && element.name().as_ref().eq_ignore_ascii_case(b"Entity")
+            && parents
+                .last()
+                .is_some_and(|name| name.eq_ignore_ascii_case(b"Entities"))
+            && parents.iter().any(|name| {
+                [b"Object".as_slice(), b"Entity", b"Brush", b"Prefab"]
+                    .iter()
+                    .any(|tag| name.eq_ignore_ascii_case(tag))
+            })
+        {
+            let mut has_id = false;
+            let mut id_only = true;
+            for attr in element.attributes() {
+                let attr = attr.map_err(|e| SceneError::Xml(e.to_string()))?;
+                if attr.key.as_ref().eq_ignore_ascii_case(b"Id")
+                    || attr.key.as_ref().eq_ignore_ascii_case(b"EntityId")
+                {
+                    has_id = true;
+                } else {
+                    id_only = false;
                 }
-                if has_id && id_only {
-                    links.insert(index);
-                }
+            }
+            if has_id && id_only {
+                links.insert(index);
             }
         }
         match event {
