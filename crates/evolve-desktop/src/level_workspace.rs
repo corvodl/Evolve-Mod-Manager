@@ -369,6 +369,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let mut outliner = column![].spacing(2);
     let query = state.level_filter.to_ascii_lowercase();
     let mut visible = 0usize;
+    let mut groups = std::collections::BTreeMap::<String, Vec<(usize, &_)>>::new();
     let wildlife_count = scene
         .objects
         .iter()
@@ -382,7 +383,38 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         {
             continue;
         }
-        if visible < 180 {
+        let group = if obj.is_wildlife_spawn() || obj.kind.eq_ignore_ascii_case("ZooKeeperShape") {
+            "Wildlife Spawns (Source-Backed)".to_owned()
+        } else {
+            obj.layer.clone()
+        };
+        groups.entry(group).or_default().push((index, obj));
+        visible += 1;
+    }
+    let mut shown = 0;
+    for (group, objects) in groups {
+        let collapsed = state.level_collapsed_groups.contains(&group);
+        outliner = outliner.push(
+            design::button(
+                text(format!(
+                    "{} {} ({})",
+                    if collapsed { "▸" } else { "▾" },
+                    group,
+                    objects.len()
+                ))
+                .size(12),
+            )
+            .width(Fill)
+            .style(design::secondary)
+            .on_press(Message::LevelToggleOutlinerGroup(group)),
+        );
+        if collapsed {
+            continue;
+        }
+        for (index, obj) in objects {
+            if shown >= 180 {
+                break;
+            }
             outliner = outliner.push(
                 button(
                     text(if obj.kind.eq_ignore_ascii_case("CreatureSpawn") {
@@ -412,8 +444,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 })
                 .on_press(Message::LevelSelect(index)),
             );
+            shown += 1;
         }
-        visible += 1;
     }
     let details: Element<'_, Message> = if let Some(object) = state
         .level_selected
@@ -576,39 +608,57 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .width(Length::FillPortion(4))
     .height(Fill)
     .style(design::panel);
-    let outliner_panel = container(
-        column![
-            text("Scene Outliner").size(15),
-            row![
-                design::button(if state.level_show_wildlife {
-                    "☑ Wildlife Spawns"
-                } else {
-                    "☐ Wildlife Spawns"
-                })
-                .style(design::secondary)
-                .on_press(Message::LevelToggleWildlife),
-                text(format!("{wildlife_count} markers / areas"))
-                    .size(11)
-                    .style(design::muted),
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
-            design::text_input("Search scene objects", &state.level_filter)
-                .on_input(Message::LevelFilterChanged),
-            scrollable(outliner).height(Fill),
-            text(format!(
-                "{visible} objects · {} selected · Shift/Ctrl to multi-select",
-                state.level_selection.indices.len()
-            ))
-            .size(11)
-            .style(design::muted),
-        ]
-        .spacing(8),
-    )
-    .padding(12)
-    .width(Fill)
-    .height(Length::FillPortion(3))
-    .style(design::panel);
+    let mut outliner_content = column![
+        design::button(if state.level_outliner_collapsed {
+            "▸ Scene Outliner"
+        } else {
+            "▾ Scene Outliner"
+        })
+        .style(design::text_button)
+        .on_press(Message::LevelToggleOutliner),
+    ]
+    .spacing(8);
+    if !state.level_outliner_collapsed {
+        outliner_content = outliner_content
+            .push(
+                row![
+                    design::button(if state.level_show_wildlife {
+                        "☑ Wildlife Spawns"
+                    } else {
+                        "☐ Wildlife Spawns"
+                    })
+                    .style(design::secondary)
+                    .on_press(Message::LevelToggleWildlife),
+                    text(format!("{wildlife_count} markers / areas"))
+                        .size(11)
+                        .style(design::muted),
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            )
+            .push(
+                design::text_input("Search scene objects", &state.level_filter)
+                    .on_input(Message::LevelFilterChanged),
+            )
+            .push(scrollable(outliner).height(Fill))
+            .push(
+                text(format!(
+                    "{visible} objects · {} selected · Shift/Ctrl to multi-select",
+                    state.level_selection.indices.len()
+                ))
+                .size(11)
+                .style(design::muted),
+            );
+    }
+    let outliner_panel = container(outliner_content)
+        .padding(12)
+        .width(Fill)
+        .height(if state.level_outliner_collapsed {
+            Length::Shrink
+        } else {
+            Length::FillPortion(3)
+        })
+        .style(design::panel);
     let details_panel =
         container(column![text("Details").size(15), scrollable(details).height(Fill),].spacing(8))
             .padding(12)

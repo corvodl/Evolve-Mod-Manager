@@ -180,7 +180,7 @@ impl Page {
             Self::Credits => include_bytes!("../../../assets/nav/credits.svg"),
             Self::Developer => include_bytes!("../../../assets/nav/developer.svg"),
             Self::Models => include_bytes!("../../../assets/nav/box.svg"),
-            Self::Levels => include_bytes!("../../../assets/nav/map.svg"),
+            Self::Levels => include_bytes!("../../../assets/nav/level-editor.svg"),
             Self::Settings => include_bytes!("../../../assets/nav/settings.svg"),
         };
         svg::Handle::from_memory(data.to_vec())
@@ -474,6 +474,14 @@ struct State {
         Vec<level_library::MapCandidate>,
         usize,
     )>,
+    level_map_prompt: bool,
+    level_map_choices: Option<(evolve_core::ImportedPak, Vec<level_library::MapCandidate>)>,
+    level_project_choices: Option<(
+        modding_projects::ProjectRow,
+        Vec<level_library::MapCandidate>,
+    )>,
+    level_outliner_collapsed: bool,
+    level_collapsed_groups: HashSet<String>,
     level_read_only: bool,
     level_camera: Option<level_camera::Camera>,
     level_keys: HashSet<char>,
@@ -916,6 +924,8 @@ enum Operation {
     ),
     InspectLevel(PathBuf),
     OpenImportedMap(evolve_core::ImportedPak, usize),
+    DiscoverLevelMaps(evolve_core::ImportedPak),
+    DiscoverProjectMaps(modding_projects::ProjectRow),
     LoadLevelWildlife(evolve_core::ImportedPak, Arc<LevelScene>),
     OpenProjectLevel(modding_projects::ProjectRow, usize, PathBuf),
     SaveProjectLevel(
@@ -1077,6 +1087,11 @@ enum Completed {
     BlendSpace(usize, String, ActiveBlendSpace),
     Level(LevelScene, PathBuf, String),
     ImportedMap(Box<level_library::LoadedMap>),
+    LevelMaps(evolve_core::ImportedPak, Vec<level_library::MapCandidate>),
+    ProjectMaps(
+        modding_projects::ProjectRow,
+        Vec<level_library::MapCandidate>,
+    ),
     LevelWildlife(
         Arc<LevelScene>,
         Arc<world_instances::World>,
@@ -1808,6 +1823,11 @@ impl Operation {
             Self::OpenImportedMap(archive, index) => {
                 level_library::open(archive, index).map(|map| Completed::ImportedMap(Box::new(map)))
             }
+            Self::DiscoverLevelMaps(archive) => {
+                level_library::list_maps(&archive).map(|maps| Completed::LevelMaps(archive, maps))
+            }
+            Self::DiscoverProjectMaps(project) => level_library::list_project_maps(&project)
+                .map(|maps| Completed::ProjectMaps(project, maps)),
             Self::LoadLevelWildlife(archive, scene) => {
                 level_scene_renderer::assemble_wildlife(&archive, &scene)
                     .map(|(world, report)| Completed::LevelWildlife(scene, world, report))
@@ -2465,6 +2485,14 @@ enum Message {
     LibrarySelect(usize),
     LibraryOpenMap(usize),
     LevelMapSelect(usize),
+    LevelChooseArchive(usize),
+    LevelChooseMap(usize),
+    LevelChooseProject(usize),
+    LevelChooseProjectMap(usize),
+    LevelShowMapChooser,
+    LevelDismissMapChooser,
+    LevelToggleOutliner,
+    LevelToggleOutlinerGroup(String),
     LevelOpenSelectedModProject,
     OpenLevelEditorWindow,
     ToggleLevelViewportFullscreen,
@@ -3554,6 +3582,9 @@ fn operation_label(operation: &Operation) -> &'static str {
         | Operation::LoadDeclaredCafLayer(..)
         | Operation::LoadDeclaredDba(..) => "Loading original animation clip",
         Operation::InspectLevel(..) | Operation::InspectTerrain(..) => "Inspecting level resources",
+        Operation::DiscoverLevelMaps(..) | Operation::DiscoverProjectMaps(..) => {
+            "Discovering available maps"
+        }
         Operation::OpenImportedMap(..) | Operation::OpenProjectLevel(..) => {
             "Assembling level scene"
         }
@@ -5564,9 +5595,88 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Finish the current operation before opening a map.".into();
                 return Task::none();
             }
-            return launch(state, Operation::OpenImportedMap(archive, 0));
+            state.level_map_prompt = true;
+            state.level_map_choices = None;
+            return launch(state, Operation::DiscoverLevelMaps(archive));
         }
         Message::OpenLevelEditorWindow => return Task::none(),
+        Message::LevelShowMapChooser => {
+            state.level_map_prompt = true;
+            state.level_map_choices = None;
+            state.level_project_choices = None;
+        }
+        Message::LevelDismissMapChooser => {
+            if state.library_map.is_some() || state.level_scene.is_some() {
+                state.level_map_prompt = false;
+                state.level_map_choices = None;
+                state.level_project_choices = None;
+            }
+        }
+        Message::LevelToggleOutliner => {
+            state.level_outliner_collapsed = !state.level_outliner_collapsed
+        }
+        Message::LevelToggleOutlinerGroup(group) => {
+            if !state.level_collapsed_groups.insert(group.clone()) {
+                state.level_collapsed_groups.remove(&group);
+            }
+        }
+        Message::LevelChooseArchive(index) => {
+            let Some(archive) = state
+                .library_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.archives.get(index))
+                .cloned()
+            else {
+                return Task::none();
+            };
+            if state.busy {
+                return Task::none();
+            }
+            state.level_map_prompt = true;
+            state.level_map_choices = None;
+            state.level_project_choices = None;
+            return launch(state, Operation::DiscoverLevelMaps(archive));
+        }
+        Message::LevelChooseProject(index) => {
+            let Some(project) = state
+                .modding_projects
+                .as_ref()
+                .and_then(|projects| projects.get(index))
+                .cloned()
+            else {
+                return Task::none();
+            };
+            if state.busy {
+                return Task::none();
+            }
+            state.level_map_prompt = true;
+            state.level_map_choices = None;
+            state.level_project_choices = None;
+            return launch(state, Operation::DiscoverProjectMaps(project));
+        }
+        Message::LevelChooseProjectMap(index) => {
+            let Some((project, maps)) = &state.level_project_choices else {
+                return Task::none();
+            };
+            if state.busy || index >= maps.len() {
+                return Task::none();
+            }
+            let project = project.clone();
+            return launch(
+                state,
+                Operation::OpenProjectLevel(project, index, PathBuf::from(&state.library_root)),
+            );
+        }
+        Message::LevelChooseMap(index) => {
+            let Some((archive, maps)) = &state.level_map_choices else {
+                return Task::none();
+            };
+            if state.busy || index >= maps.len() {
+                return Task::none();
+            }
+            let archive = archive.clone();
+            return launch(state, Operation::OpenImportedMap(archive, index));
+        }
         Message::LevelToggleOverview => state.level_show_overview = !state.level_show_overview,
         Message::LevelGizmoMove(axis, distance) => {
             if state.level_project.is_none()
@@ -5655,8 +5765,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.busy {
                 return Task::none();
             }
-            let root = PathBuf::from(&state.library_root);
-            return launch(state, Operation::OpenProjectLevel(project, 0, root));
+            state.level_map_prompt = true;
+            state.level_map_choices = None;
+            state.level_project_choices = None;
+            return launch(state, Operation::DiscoverProjectMaps(project));
         }
         Message::LevelMapSelect(index) => {
             let Some((archive, maps, _)) = &state.library_map else {
@@ -5667,6 +5779,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let project = state.level_project.clone();
             let archive = archive.clone();
+            state.level_map_prompt = false;
             return if let Some(project) = project {
                 let root = PathBuf::from(&state.library_root);
                 launch(state, Operation::OpenProjectLevel(project, index, root))
@@ -5700,7 +5813,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     && level_library::likely_level_pak(&archive)
                     && !state.busy
                 {
-                    return launch(state, Operation::OpenImportedMap(archive, 0));
+                    state.level_map_prompt = true;
+                    state.level_map_choices = None;
+                    state.level_project_choices = None;
+                    return launch(state, Operation::DiscoverLevelMaps(archive));
                 }
             }
         }
@@ -13697,7 +13813,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.model = Some(Arc::new(mesh));
                     state.skin_preview = None;
                     state.playing = false;
-                    state.page = Some(Page::Levels);
+                    // The Level Editor is a separate native window. Keep the
+                    // manager on its originating workspace.
                     state.zoom = 1.0;
                     state.level_keys.clear();
                     state.level_camera = state
@@ -13714,6 +13831,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
                     let root = PathBuf::from(&state.library_root);
                     return launch(state, Operation::OpenProjectLevel(project, index, root));
+                }
+                Ok(Completed::LevelMaps(archive, maps)) => {
+                    state.level_map_choices = Some((archive, maps));
+                    state.level_project_choices = None;
+                    state.level_map_prompt = true;
+                }
+                Ok(Completed::ProjectMaps(project, maps)) => {
+                    state.level_project_choices = Some((project, maps));
+                    state.level_map_choices = None;
+                    state.level_map_prompt = true;
                 }
                 Ok(Completed::LevelWildlife(scene, wildlife, report)) => {
                     if state
@@ -13752,6 +13879,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::ImportedMap(loaded)) => {
+                    state.level_map_prompt = false;
+                    state.level_map_choices = None;
+                    state.level_project_choices = None;
                     let loaded = *loaded;
                     state.level_wildlife_resolved = false;
                     state.level_spawn_distances = None;
@@ -13852,7 +13982,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         },
                         state.level_diagnostics.len(),
                     );
-                    state.page = Some(Page::Levels);
+                    // Keep the manager on its originating workspace.
                     state.level_zoom = 1.0;
                     state.yaw = -30.0;
                     state.pitch = 32.0;
@@ -13897,14 +14027,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_redo.clear();
                     sync_level_fields(state);
                     state.level_zoom = 1.0;
-                    state.page = Some(Page::Levels);
+                    // Keep the manager on its originating workspace.
                 }
                 Ok(Completed::EditedLevelExported(destination, count)) => {
                     state.status = format!(
                         "Exported {count} edited placement(s) to {}. Original level unchanged.",
                         destination.display()
                     );
-                    state.page = Some(Page::Levels);
+                    // Keep the manager on its originating workspace.
                 }
                 Ok(Completed::ResignedSignedPak(report, destination)) => {
                     state.status = format!(
@@ -14250,14 +14380,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Exported Blender FBX scene: {meshes} mesh resources, {placements} placements: {} (materials not yet complete).",
                         dest.display()
                     );
-                    state.page = Some(Page::Levels);
                 }
                 Ok(Completed::LevelExported(meshes, placements, dest)) => {
                     state.status = format!(
                         "Exported Blender scene GLB: {meshes} verified models, {placements} placements: {}",
                         dest.display()
                     );
-                    state.page = Some(Page::Levels);
                 }
                 Ok(Completed::ExtractedSigned(count, dir)) => {
                     state.status = format!(
@@ -14409,6 +14537,35 @@ fn view(state: &State) -> Element<'_, Message> {
             items.push(nav)
         },
     );
+    // Asset Viewer and Level Editor are independent native windows, not manager pages.
+    // Keep their launchers alongside the other tools; the bottom rail stays
+    // reserved for play actions and Settings.
+    let mut navigation = navigation;
+    for (label, icon, message) in [
+        ("Asset Viewer", Page::Models.icon(), Message::OpenViewer),
+        (
+            "Level Editor",
+            Page::Levels.icon(),
+            Message::OpenLevelEditorWindow,
+        ),
+    ] {
+        let mut contents = row![].spacing(12).align_y(iced::Center);
+        if !legacy_nav {
+            contents = contents.push(space().width(3).height(20));
+        }
+        contents = contents.push(svg(icon).style(design::icon).width(20).height(20));
+        if labels_visible {
+            contents = contents.push(text(label).size(if legacy_nav { 13 } else { 14 }));
+        }
+        navigation = navigation.push(
+            design::button(contents)
+                .width(Fill)
+                .height(if legacy_nav { 40 } else { 36 })
+                .padding(if legacy_nav { [8, 11] } else { [8, 12] })
+                .style(|theme, status| design::rail(theme, status, false))
+                .on_press(message),
+        );
+    }
     let play_mods_icon = svg(svg::Handle::from_memory(
         include_bytes!("../../../assets/nav/play-mods.svg").to_vec(),
     ))
@@ -15291,7 +15448,18 @@ impl Desktop {
                 self.update(*inner)
             }
             Message::OpenViewer => self.open_viewer(),
-            Message::OpenLevelEditorWindow => self.open_level_editor(),
+            Message::Navigate(Page::Levels) => {
+                self.state.level_map_prompt = true;
+                self.state.level_map_choices = None;
+                self.state.level_project_choices = None;
+                self.open_level_editor()
+            }
+            Message::OpenLevelEditorWindow => {
+                self.state.level_map_prompt = true;
+                self.state.level_map_choices = None;
+                self.state.level_project_choices = None;
+                self.open_level_editor()
+            }
             Message::ToggleLevelViewportFullscreen => {
                 let Some(id) = self.level_id else {
                     return Task::none();
@@ -15439,7 +15607,9 @@ impl Desktop {
                 let finished = matches!(&message, Message::Finished(_));
                 let opens_level = matches!(
                     &message,
-                    Message::Finished(Ok(Completed::ImportedMap(_)
+                    Message::Finished(Ok(Completed::LevelMaps(_, _)
+                        | Completed::ProjectMaps(_, _)
+                        | Completed::ImportedMap(_)
                         | Completed::Terrain(_, _)
                         | Completed::Level(_, _, _)))
                 );
@@ -15477,7 +15647,7 @@ impl Desktop {
                     Task::none()
                 };
                 let notice = self.open_play_notice();
-                if opens_level && self.state.page == Some(Page::Levels) && self.level_id.is_none() {
+                if opens_level && self.level_id.is_none() {
                     let open = self.open_level_editor();
                     Task::batch([command, open, activity, notice])
                 } else if opens_model && self.viewer_id.is_none() {

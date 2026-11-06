@@ -2,7 +2,7 @@
 //! 3D authoring applications. The actual world view remains the existing
 //! Iced/wgpu widget; this only supplies task-specific menus and panels.
 use crate::{Message, State, design, level_workspace, menu_popup};
-use iced::widget::{button, column, container, row, space, text};
+use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{Background, Border, Element, Fill, Length};
 
 fn menu_button(name: &'static str, id: &'static str) -> iced::widget::Button<'static, Message> {
@@ -17,6 +17,102 @@ fn command<'a>(caption: &'static str, msg: Message) -> iced::widget::Button<'a, 
         .padding([6, 12])
         .width(Fill)
         .on_press(Message::MenuCommand(Box::new(msg)))
+}
+
+fn map_chooser(state: &State) -> Element<'_, Message> {
+    let mut choices = column![
+        text("Choose a map to open").size(24),
+        text("Select an imported map archive, then a verified map inside it. Original PAKs remain unchanged.")
+            .size(12).style(design::muted),
+    ].spacing(12);
+
+    if state.busy {
+        choices = choices.push(text("Discovering or loading maps…").size(13));
+    }
+    if let Some((project, maps)) = &state.level_project_choices {
+        choices =
+            choices.push(text(format!("Maps in editable project {}", project.label)).size(17));
+        for (index, map) in maps.iter().enumerate() {
+            choices = choices.push(
+                design::button(text(&map.name).size(13))
+                    .on_press_maybe((!state.busy).then_some(Message::LevelChooseProjectMap(index)))
+                    .width(Fill),
+            );
+        }
+        choices = choices.push(
+            design::button("Choose a different source").on_press(Message::LevelShowMapChooser),
+        );
+    } else if let Some((archive, maps)) = &state.level_map_choices {
+        choices = choices.push(text(format!("Maps in {}", archive.name)).size(17));
+        for (index, map) in maps.iter().enumerate() {
+            choices = choices.push(
+                design::button(text(&map.name).size(13))
+                    .on_press_maybe((!state.busy).then_some(Message::LevelChooseMap(index)))
+                    .width(Fill),
+            );
+        }
+        choices = choices.push(
+            design::button("Choose a different archive").on_press(Message::LevelShowMapChooser),
+        );
+    } else {
+        if let Some((_, maps, current)) = &state.library_map {
+            choices = choices.push(text("Current source / project maps").size(17));
+            for (index, map) in maps.iter().enumerate() {
+                choices = choices.push(
+                    design::button(text(format!(
+                        "{}{}",
+                        if index == *current { "✓ " } else { "" },
+                        map.name
+                    )))
+                    .on_press_maybe((!state.busy).then_some(Message::LevelMapSelect(index)))
+                    .width(Fill),
+                );
+            }
+        }
+        choices = choices.push(text("Imported map archives").size(17));
+        if let Some(projects) = &state.modding_projects {
+            choices = choices.push(text("Editable Modding projects").size(17));
+            for (index, project) in projects.iter().enumerate() {
+                choices = choices.push(
+                    design::button(text(&project.label).size(13))
+                        .on_press_maybe((!state.busy).then_some(Message::LevelChooseProject(index)))
+                        .width(Fill),
+                );
+            }
+        }
+        let mut found = false;
+        if let Some(catalog) = &state.library_catalog {
+            for (index, archive) in catalog.archives.iter().enumerate() {
+                if !crate::level_library::likely_level_pak(archive) {
+                    continue;
+                }
+                found = true;
+                choices = choices.push(
+                    design::button(text(&archive.name).size(13))
+                        .on_press_maybe((!state.busy).then_some(Message::LevelChooseArchive(index)))
+                        .width(Fill),
+                );
+            }
+        }
+        if !found {
+            choices = choices.push(
+                text("No imported map archives found. Import a level PAK in Asset Library first.")
+                    .size(12)
+                    .style(design::muted),
+            );
+        }
+    }
+    if state.level_scene.is_some() || state.library_map.is_some() {
+        choices = choices
+            .push(design::button("Return to open scene").on_press(Message::LevelDismissMapChooser));
+    }
+    choices = choices.push(text(&state.status).size(11).style(design::muted));
+    container(scrollable(choices).width(Length::Fixed(600.0)).height(Fill))
+        .center_x(Fill)
+        .padding(32)
+        .width(Fill)
+        .height(Fill)
+        .into()
 }
 fn menu_content(state: &State) -> Option<Element<'_, Message>> {
     let content: Element<'_, Message> = match state.library_menu? {
@@ -99,6 +195,9 @@ fn menu_content(state: &State) -> Option<Element<'_, Message>> {
 }
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
+    if state.level_map_prompt {
+        return map_chooser(state);
+    }
     if state.level_viewport_fullscreen {
         return level_workspace::fullscreen_view(state);
     }
@@ -114,6 +213,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             menu_button("Select", "LevelSelectMenu"),
             menu_button("Actor", "LevelActor"),
             menu_button("Help", "LevelHelp"),
+            design::button("Choose Map…").on_press(Message::LevelShowMapChooser),
         ]
         .spacing(2)
         .align_y(iced::Alignment::Center),

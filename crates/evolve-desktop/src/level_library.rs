@@ -621,6 +621,17 @@ fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), Strin
     discover_inventory_with_owner(&inventory, source_map_owner(archive).as_ref())
 }
 
+/// Enumerate verified maps without loading scene geometry. The editor's
+/// chooser uses the same validated inventory and grouping as `open`.
+pub(super) fn list_maps(archive: &ImportedPak) -> Result<Vec<MapCandidate>, String> {
+    discover(archive).map(|(_, maps)| maps)
+}
+
+pub(super) fn list_project_maps(project: &ProjectRow) -> Result<Vec<MapCandidate>, String> {
+    let inventory = scan_directory(&project.workspace.join("files")).map_err(|e| e.to_string())?;
+    discover_inventory(&inventory).map(|(_, maps)| maps)
+}
+
 fn discover_inventory(inventory: &Inventory) -> Result<(PathBuf, Vec<MapCandidate>), String> {
     discover_inventory_with_owner(inventory, None)
 }
