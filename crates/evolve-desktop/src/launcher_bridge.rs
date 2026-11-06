@@ -18,6 +18,42 @@ const KEY_START: usize = 0x870;
 const KEY_BYTES: usize = 140;
 const HOOK_BYTES: usize = 4096;
 
+/// An explicit stage-local pin enables the optional native probe for Direct
+/// Launch only. Ordinary launches have neither file and remain unchanged.
+#[cfg(windows)]
+fn staged_kit_probe(stage: &Path) -> Result<Option<String>, String> {
+    let native = stage.join("native");
+    match fs::symlink_metadata(&native) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Native kit probe directory: {error}")),
+        Ok(_) => {}
+    }
+    let native = directory(&native)?;
+    let marker = native.join("LegacyKitCompositor.sha256");
+    let dll = native.join("LegacyKitCompositor.dll");
+    let marker_present = fs::symlink_metadata(&marker).is_ok();
+    let dll_present = fs::symlink_metadata(&dll).is_ok();
+    if !marker_present && !dll_present {
+        return Ok(None);
+    }
+    if !marker_present || !dll_present {
+        return Err(
+            "Native kit probe requires both LegacyKitCompositor.dll and its .sha256 pin".into(),
+        );
+    }
+    let marker = plain(&marker, 66)?;
+    let dll = plain(&dll, 32 * 1024 * 1024)?;
+    let expected = fs::read_to_string(marker).map_err(|e| format!("Native kit probe pin: {e}"))?;
+    let expected = expected.trim();
+    if expected.len() != 64 || !expected.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err("Native kit probe pin must be exactly one SHA-256 hex digest".into());
+    }
+    if !sha(&dll)?.eq_ignore_ascii_case(expected) {
+        return Err("Native kit probe DLL does not match its explicit SHA-256 pin".into());
+    }
+    Ok(Some(expected.to_owned()))
+}
+
 #[derive(Clone, Debug)]
 pub struct LaunchReady {
     pub stage: PathBuf,
@@ -1558,8 +1594,10 @@ pub fn launch_direct_offline_game(
     if !verified.prepared || verified.game != plan.game {
         return Err("Direct launch has no matching verified prepared swap journal.".into());
     }
+    let kit_probe = staged_kit_probe(&verified.stage)?;
     progress.store(95, std::sync::atomic::Ordering::Relaxed);
-    let output = Command::new("py")
+    let mut command = Command::new("py");
+    command
         .args(["-3.11", "-u"])
         .arg(helper)
         .arg("--stage-dir")
@@ -1572,7 +1610,11 @@ pub fn launch_direct_offline_game(
         .arg(swap)
         .current_dir(swap)
         .stdin(Stdio::null())
-        .creation_flags(0x08000000)
+        .creation_flags(0x08000000);
+    if let Some(pin) = kit_probe {
+        command.arg("--compositor-sha256").arg(pin);
+    }
+    let output = command
         .output()
         .map_err(|e| format!("Direct game launch helper unavailable: {e}"))?;
     let log_path = swap.join("rust-direct-launch.log");
@@ -1861,6 +1903,26 @@ pub fn launch_existing_offline_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn native_kit_probe_requires_both_stage_files_and_matching_pin() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path();
+        assert_eq!(staged_kit_probe(stage).unwrap(), None);
+        let native = stage.join("native");
+        fs::create_dir(&native).unwrap();
+        let dll = native.join("LegacyKitCompositor.dll");
+        let pin = native.join("LegacyKitCompositor.sha256");
+        assert_eq!(staged_kit_probe(stage).unwrap(), None);
+        fs::write(&dll, b"probe test").unwrap();
+        assert!(staged_kit_probe(stage).is_err());
+        fs::write(&pin, format!("{}\n", sha(&dll).unwrap())).unwrap();
+        assert_eq!(staged_kit_probe(stage).unwrap(), Some(sha(&dll).unwrap()));
+        fs::write(&dll, b"changed probe").unwrap();
+        assert!(staged_kit_probe(stage).is_err());
+        fs::remove_file(&dll).unwrap();
+        assert!(staged_kit_probe(stage).is_err());
+    }
     #[test]
     fn live_pak_audit_reports_every_failure_without_changing_originals() {
         let temp = tempfile::tempdir().unwrap();

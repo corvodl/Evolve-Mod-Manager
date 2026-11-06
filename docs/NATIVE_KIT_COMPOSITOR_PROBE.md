@@ -18,6 +18,29 @@ compute its digest, then opt in via the Direct Launch worker argument. Merely
 loading that DLL does **not** exercise the exported marker or prove a surface
 exists. Do not load the present prototype expecting any visual change.
 
+## Enable the standalone discovery probe through the manager
+
+With the updated manager from this branch (not the currently installed manager),
+the opt-in is a **pair of files** in the already configured offline signing
+stage. While `Evolve.exe` is closed:
+
+1. Create `<signing stage>/native/` (beside `rekey_plan.json`).
+2. Copy `LegacyKitGraphicsProbe.dll` from the separate standalone diagnostic
+   package as `<signing stage>/native/LegacyKitCompositor.dll`. The rename is
+   intentional: the loader permits only that exact filename.
+3. Write its **actual** SHA-256 hex digest to
+   `<signing stage>/native/LegacyKitCompositor.sha256` (one line). On Windows:
+   ` (Get-FileHash '<signing stage>\native\LegacyKitCompositor.dll' -Algorithm SHA256).Hash | Set-Content '<signing stage>\native\LegacyKitCompositor.sha256' -Encoding ascii `.
+4. Select **modded Direct Launch** in the updated manager. It verifies the pin
+   before the worker starts services, and the broker verifies the x64 PE/DLL
+   and digest before injection. It then loads `Stage2Trace.dll`, the probe,
+   and only then resumes `Evolve.exe`. A failed load terminates that child.
+
+After a test, remove both stage-local files to disable the probe. No DLL is
+copied into the installed game directory. **Clean Direct Launch and the
+ordinary client launch never load it.** The standalone probe logs to
+`%TEMP%\LegacyKitGraphicsProbe-<PID>.log`; it still does not draw or blend.
+
 ## Graphics discovery gate before a real compositor
 
 1. Record the game's actual graphics API and swap-chain format from an
