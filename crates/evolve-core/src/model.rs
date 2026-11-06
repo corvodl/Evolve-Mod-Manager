@@ -21,6 +21,8 @@ pub enum ModelError {
     Format(String),
     #[error("Untrusted chunk sizes or geometry exceeds safe limits")]
     Limits,
+    #[error("Model contains no renderable mesh; only collision/helper geometry remains")]
+    NoRenderableMesh,
     #[error("Refusing to overwrite an existing model export")]
     OutputExists,
     #[error("File error: {0}")]
@@ -650,8 +652,12 @@ pub fn parse_world_model_parts_with_subsets(
             return Err(ModelError::Format("duplicate chunk identifiers".into()));
         }
     }
-    let mut render_refs = std::collections::HashSet::new();
+    let mut render_refs = HashSet::new();
+    let mut nonhelper_mesh_refs = HashSet::new();
+    let mut helper_mesh_refs = HashSet::new();
     let mut has_nodes = false;
+    let mut has_nonhelper_nodes = false;
+    let mut unresolved_node_target = false;
     for (kind, at, size, _) in &chunks {
         if *kind != NODE {
             continue;
@@ -676,9 +682,26 @@ pub fn parse_world_model_parts_with_subsets(
         if collision {
             continue;
         }
+        // Helper attachment nodes are positive non-renderable evidence only
+        // when their own mesh has no valid position/index streams. A normal
+        // render node with the same defect is corrupt visible geometry.
+        let helper = label.starts_with("helper_");
+        if !helper {
+            has_nonhelper_nodes = true;
+        }
         let target = u32at(data, *at + 64)?;
-        if let Some((MESH, mesh_offset, _)) = directory.get(&target) {
-            render_refs.insert(*mesh_offset);
+        match directory.get(&target) {
+            Some((MESH, mesh_offset, _)) => {
+                render_refs.insert(*mesh_offset);
+                if helper {
+                    helper_mesh_refs.insert(*mesh_offset);
+                } else {
+                    nonhelper_mesh_refs.insert(*mesh_offset);
+                }
+            }
+            Some(_) if !helper => unresolved_node_target = true,
+            None if !helper => unresolved_node_target = true,
+            _ => {}
         }
     }
     let mesh_chunks = if has_nodes {
@@ -691,12 +714,20 @@ pub fn parse_world_model_parts_with_subsets(
         all_mesh_chunks
     };
     if mesh_chunks.is_empty() {
-        return Err(ModelError::Format(
-            "No renderable mesh nodes; physics/proxy geometry is excluded".into(),
-        ));
+        // A normal render node pointing at a missing or non-mesh object is an
+        // incomplete render dependency, not proof that the source is helper
+        // art. Only unambiguously collision/helper-only nodes may reach the
+        // typed non-renderable classification.
+        if has_nonhelper_nodes && unresolved_node_target {
+            return Err(ModelError::Format(
+                "render node references a missing or non-mesh object chunk".into(),
+            ));
+        }
+        return Err(ModelError::NoRenderableMesh);
     }
     let mut parts = Vec::with_capacity(mesh_chunks.len());
     for (_, at, size, _) in mesh_chunks {
+        let helper_only_mesh = helper_mesh_refs.contains(at) && !nonhelper_mesh_refs.contains(at);
         if *size < 92 {
             return Err(ModelError::Format(
                 "truncated original mesh stream references".into(),
@@ -715,15 +746,21 @@ pub fn parse_world_model_parts_with_subsets(
         if expected_vertices > MAX_VERTICES as u32 || expected_indices > MAX_INDICES as u32 {
             return Err(ModelError::Limits);
         }
-        // Some source CGFs contain visible render nodes alongside helper
-        // MeshChunks with no indexed triangles or position stream. Those
-        // helpers must not hide valid sibling render meshes; do not invent
-        // geometry for them. Compiled companions can still supply a fully
-        // renderable alternative when none of this file's meshes qualifies.
+        // Collision/helper sources can contain MeshChunks with no indexed
+        // triangles or position stream. A helper-named NODE whose only mesh
+        // has no valid render stream is positive non-renderable evidence and
+        // may be skipped without inventing geometry. Any other streamless
+        // mesh is corrupt visible geometry and must stay a format failure,
+        // including meshes with no NODE table at all (never provably helper).
         let missing_position = matches!(vertices, 0 | u32::MAX) && matches!(packed, 0 | u32::MAX);
         let missing_indices = matches!(indices, 0 | u32::MAX);
         if expected_vertices < 3 || expected_indices < 3 || missing_position || missing_indices {
-            continue;
+            if helper_only_mesh {
+                continue;
+            }
+            return Err(ModelError::Format(
+                "render mesh lacks valid position or index streams".into(),
+            ));
         }
         // All nonzero optional source references must point at an original
         // stream of the exact declared semantic type.
@@ -836,10 +873,17 @@ pub fn parse_world_model_parts_with_subsets(
             has_subset_table,
         });
     }
+    // Every candidate was removed by the render-stream filter above. That is
+    // the only path that can prove a file contains helper/collision geometry
+    // but no render mesh; malformed visible meshes have already returned a
+    // concrete Format error while decoding their referenced streams.
     if parts.is_empty() {
-        return Err(ModelError::Format(
-            "mesh lacks referenced vertex/index streams; no renderable mesh nodes".into(),
-        ));
+        if has_nonhelper_nodes && unresolved_node_target {
+            return Err(ModelError::Format(
+                "render node references a missing or non-mesh object chunk".into(),
+            ));
+        }
+        return Err(ModelError::NoRenderableMesh);
     }
     Ok(parts)
 }
@@ -1296,8 +1340,7 @@ pub(crate) mod tests {
         assert!(parse_world_model_parts_with_subsets(&bad_slot).is_err());
     }
 
-    #[test]
-    fn original_node_ownership_excludes_physics_proxy_meshes() {
+    pub(crate) fn world_node_fixture() -> Vec<u8> {
         let source = fixture();
         let mut data = vec![0u8; 16 + 9 * 16];
         data[..8].copy_from_slice(b"CrChF\x07\0\0");
@@ -1349,16 +1392,148 @@ pub(crate) mod tests {
         helper[..16].copy_from_slice(b"helper_attach_01");
         helper[64..68].copy_from_slice(&12u32.to_le_bytes());
         add(8, 0x0800100B, 22, &helper);
+        data
+    }
+
+    pub(crate) fn helper_only_fixture() -> Vec<u8> {
+        let mut data = world_node_fixture();
+        let render_node_offset = u32at(&data, 16 + 5 * 16 + 12).unwrap() as usize;
+        // Positive helper naming is required: a normal render node pointing at
+        // a streamless mesh is corrupt visible geometry, not proven helper art.
+        data[render_node_offset..render_node_offset + 64].fill(0);
+        data[render_node_offset..render_node_offset + 16].copy_from_slice(b"helper_attach_02");
+        data[render_node_offset + 64..render_node_offset + 68]
+            .copy_from_slice(&12u32.to_le_bytes());
+        data
+    }
+
+    pub(crate) fn visible_missing_stream_fixture() -> Vec<u8> {
+        let mut data = world_node_fixture();
+        // Point the normal render node at the streamless helper mesh. Naming
+        // alone must not launder corrupt visible geometry into metadata-only.
+        let render_node_offset = u32at(&data, 16 + 5 * 16 + 12).unwrap() as usize;
+        data[render_node_offset + 64..render_node_offset + 68]
+            .copy_from_slice(&12u32.to_le_bytes());
+        data
+    }
+
+    pub(crate) fn streamless_without_nodes_fixture() -> Vec<u8> {
+        let source = fixture();
+        let mut data = vec![0u8; 16 + 4 * 16];
+        data[..8].copy_from_slice(b"CrChF\x07\0\0");
+        data[8..12].copy_from_slice(&4u32.to_le_bytes());
+        data[12..16].copy_from_slice(&16u32.to_le_bytes());
+        let mut add = |index: usize, kind: u32, id: u32, payload: &[u8]| {
+            let table = 16 + index * 16;
+            let offset = data.len();
+            data[table..table + 4].copy_from_slice(&kind.to_le_bytes());
+            data[table + 4..table + 8].copy_from_slice(&id.to_le_bytes());
+            data[table + 8..table + 12].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            data[table + 12..table + 16].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(payload);
+        };
+        for i in 0..3 {
+            let at = 16 + i * 16;
+            let offset = u32at(&source, at + 12).unwrap() as usize;
+            let size = u32at(&source, at + 8).unwrap() as usize;
+            add(
+                i,
+                CRCHF_STREAM,
+                (i + 1) as u32,
+                &source[offset..offset + size],
+            );
+        }
+        // Without a NODE table there is no ownership evidence, so a streamless
+        // MeshChunk can never be proven collision/helper-only.
+        let mut incomplete = vec![0u8; 104];
+        incomplete[8..12].copy_from_slice(&3u32.to_le_bytes());
+        incomplete[12..16].copy_from_slice(&3u32.to_le_bytes());
+        add(3, 0x08001000, 10, &incomplete);
+        data
+    }
+
+    pub(crate) fn collision_only_fixture() -> Vec<u8> {
+        let mut data = world_node_fixture();
+        for row in [5usize, 8] {
+            let node = u32at(&data, 16 + row * 16 + 12).unwrap() as usize;
+            data[node..node + 64].fill(0);
+            data[node..node + 10].copy_from_slice(b"$physics_1");
+        }
+        data
+    }
+
+    pub(crate) fn malformed_visible_fixture() -> Vec<u8> {
+        let mut data = world_node_fixture();
+        // The visible mesh still has readable flat streams, but its authored
+        // position reference points at a chunk that does not exist.
+        let mesh = u32at(&data, 16 + 3 * 16 + 12).unwrap() as usize;
+        data[mesh + 28..mesh + 32].copy_from_slice(&99u32.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn original_node_ownership_excludes_physics_proxy_meshes() {
+        let data = world_node_fixture();
         let parts = parse_world_model_parts(&data).unwrap();
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].indices, vec![0, 1, 2]);
         // A CGF containing no valid render mesh must still fail explicitly.
         // It must never turn a helper/proxy mesh into visible geometry.
-        let mut only_helpers = data.clone();
-        let render_node_offset = u32at(&data, 16 + 5 * 16 + 12).unwrap() as usize;
-        only_helpers[render_node_offset + 64..render_node_offset + 68]
-            .copy_from_slice(&12u32.to_le_bytes());
-        assert!(parse_world_model_parts(&only_helpers).is_err());
+        assert!(matches!(
+            parse_world_model_parts(&helper_only_fixture()),
+            Err(ModelError::NoRenderableMesh)
+        ));
+    }
+
+    #[test]
+    fn helper_and_collision_only_sources_are_typed_non_renderable() {
+        for bytes in [helper_only_fixture(), collision_only_fixture()] {
+            assert!(matches!(
+                parse_world_model_parts_with_subsets(&bytes),
+                Err(ModelError::NoRenderableMesh)
+            ));
+            // The flat stream parser can still decode unreferenced streams;
+            // callers must rely on the typed world classification instead.
+            assert!(parse_model_bytes(&bytes).is_ok());
+        }
+    }
+
+    #[test]
+    fn visible_streamless_mesh_remains_a_format_error() {
+        for bytes in [
+            visible_missing_stream_fixture(),
+            streamless_without_nodes_fixture(),
+        ] {
+            assert!(matches!(
+                parse_world_model_parts_with_subsets(&bytes),
+                Err(ModelError::Format(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn malformed_visible_mesh_remains_a_format_error() {
+        let bytes = malformed_visible_fixture();
+        assert!(matches!(
+            parse_world_model_parts_with_subsets(&bytes),
+            Err(ModelError::Format(_))
+        ));
+        // The flat parser can still see the streams, which is exactly why a
+        // render-node ownership failure must never fall back to it.
+        assert!(parse_model_bytes(&bytes).is_ok());
+    }
+
+    #[test]
+    fn missing_render_node_target_is_not_classified_non_renderable() {
+        let mut bytes = collision_only_fixture();
+        let node = u32at(&bytes, 16 + 5 * 16 + 12).unwrap() as usize;
+        bytes[node..node + 64].fill(0);
+        bytes[node..node + 12].copy_from_slice(b"rock_visible");
+        bytes[node + 64..node + 68].copy_from_slice(&99u32.to_le_bytes());
+        assert!(matches!(
+            parse_world_model_parts_with_subsets(&bytes),
+            Err(ModelError::Format(_))
+        ));
     }
 
     // The pre-Stage-2 2012 client uses CryTek 0x745 and legacy 16-byte
