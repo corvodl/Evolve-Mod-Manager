@@ -12,8 +12,10 @@ use evolve_core::{
     read_terrain_rgb24_tiles, read_terrain_texture_atlas, read_terrain_texture_header,
     scan_directory,
 };
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -727,6 +729,113 @@ pub(super) fn open(archive: ImportedPak, index: usize) -> Result<LoadedMap, Stri
     open_selected(archive, root, maps, index, None, None)
 }
 
+/// A project workspace is not an installed Game directory. Resolve its exact
+/// original signed PAK to one imported source before allowing the renderer to
+/// look up model companions in other archives from that installation. A build
+/// label or a matching filename alone is never sufficient provenance.
+fn project_asset_source(project: &ProjectRow, library_root: &Path) -> Option<PathBuf> {
+    if project.source_build.trim().is_empty() || !library_root.is_dir() {
+        return None;
+    }
+    let manifest_path = project.workspace.join(".evolve-pak-workspace.json");
+    let metadata = fs::symlink_metadata(&manifest_path).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > 8 * 1024 * 1024 {
+        return None;
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest_path).ok()?).ok()?;
+    let expected = manifest.get("source_sha256")?.as_str()?;
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let library = imported_library(library_root).ok()?;
+    project_asset_source_from_archives(project, expected, &library.archives)
+}
+
+fn project_asset_source_from_archives(
+    project: &ProjectRow,
+    expected: &str,
+    archives: &[ImportedPak],
+) -> Option<PathBuf> {
+    let target = Path::new(&project.target).file_name()?.to_str()?;
+    let mut matches = Vec::new();
+    for pak in archives {
+        if !pak.name.eq_ignore_ascii_case(target)
+            || !pak
+                .builds
+                .iter()
+                .any(|build| build == &project.source_build)
+        {
+            continue;
+        }
+        let source = PathBuf::from(&pak.source);
+        let Some(game) = source.ancestors().find(|parent| {
+            parent
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Game"))
+        }) else {
+            continue;
+        };
+        let Ok(meta) = fs::symlink_metadata(&source) else {
+            continue;
+        };
+        if !meta.file_type().is_file() || meta.len() > 2 * 1024 * 1024 * 1024 {
+            continue;
+        }
+        let Ok(canonical) = fs::canonicalize(&source) else {
+            continue;
+        };
+        if !canonical.starts_with(fs::canonicalize(game).ok()?) {
+            continue;
+        }
+        let manifest_path = Path::new(&pak.directory).join("asset-library.json");
+        let Ok(import_meta) = fs::symlink_metadata(&manifest_path) else {
+            continue;
+        };
+        if !import_meta.file_type().is_file() || import_meta.len() > 8 * 1024 * 1024 {
+            continue;
+        }
+        let Ok(import_bytes) = fs::read(manifest_path) else {
+            continue;
+        };
+        let Ok(import) = serde_json::from_slice::<serde_json::Value>(&import_bytes) else {
+            continue;
+        };
+        if !import["source_sha256"]
+            .as_str()
+            .is_some_and(|sha| sha.eq_ignore_ascii_case(expected))
+            || import["source_size"].as_u64() != Some(meta.len())
+        {
+            continue;
+        }
+        let Ok(mut file) = fs::File::open(&source) else {
+            continue;
+        };
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        let mut complete = true;
+        loop {
+            match file.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => hasher.update(&buffer[..count]),
+                Err(_) => {
+                    complete = false;
+                    break;
+                }
+            }
+        }
+        if !complete || !format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(expected) {
+            continue;
+        }
+        // Canonical paths are used only for containment and identity checks;
+        // downstream consumers must retain ordinary Windows paths.
+        matches.push((canonical, source));
+    }
+    matches.sort_by(|a, b| a.0.cmp(&b.0));
+    matches.dedup_by(|a, b| a.0 == b.0);
+    (matches.len() == 1).then(|| matches.remove(0).1)
+}
+
 /// Open a verified copy owned by the Modding project. The caller supplies the
 /// manager-indexed ProjectRow; this function never treats an arbitrary folder
 /// as an editable project or creates new files.
@@ -742,10 +851,15 @@ pub(super) fn open_project(
     } else {
         Vec::new()
     };
+    let verified_source = project_asset_source(&project, library_root);
     let archive = ImportedPak {
         id: "editable-level-project".into(),
         name: project.target.clone(),
-        source: project.workspace.display().to_string(),
+        source: verified_source
+            .as_deref()
+            .unwrap_or(&project.workspace)
+            .display()
+            .to_string(),
         directory: library_root
             .join("editable-level-project")
             .display()
@@ -1589,6 +1703,82 @@ fn terrain_pixel_report(img: &image::RgbaImage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_cross_pak_lookup_requires_exact_original_and_selected_build() {
+        let root = tempfile::tempdir().unwrap();
+        let game = root.path().join("install/Game");
+        fs::create_dir_all(&game).unwrap();
+        let original = game.join("levels_desert_canyon.pak");
+        fs::write(&original, b"original signed archive identity").unwrap();
+        let sha = format!("{:x}", Sha256::digest(fs::read(&original).unwrap()));
+        let extraction = root.path().join("AssetLibrary/map");
+        fs::create_dir_all(&extraction).unwrap();
+        fs::write(
+            extraction.join("asset-library.json"),
+            serde_json::json!({"source_sha256":sha,"source_size":fs::metadata(&original).unwrap().len()}).to_string(),
+        ).unwrap();
+        let workspace = root.path().join("Project");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            workspace.join(".evolve-pak-workspace.json"),
+            serde_json::json!({"source_sha256":sha}).to_string(),
+        )
+        .unwrap();
+        let project = ProjectRow {
+            label: "Map".into(),
+            target: "levels_desert_canyon.pak".into(),
+            source_build: "Stage 2".into(),
+            status: String::new(),
+            details: String::new(),
+            workspace,
+            modified: vec![],
+            changed_known: false,
+            enabled: false,
+        };
+        let archive = ImportedPak {
+            id: "map".into(),
+            name: project.target.clone(),
+            source: original.display().to_string(),
+            directory: extraction.display().to_string(),
+            group: "Levels".into(),
+            description: String::new(),
+            entries: 0,
+            extracted_bytes: 0,
+            warnings: 0,
+            builds: vec!["Stage 2".into()],
+        };
+        assert_eq!(
+            project_asset_source_from_archives(&project, &sha, std::slice::from_ref(&archive)),
+            Some(original.clone())
+        );
+        assert!(
+            project_asset_source_from_archives(
+                &project,
+                &"0".repeat(64),
+                std::slice::from_ref(&archive)
+            )
+            .is_none()
+        );
+        let mut other_build = archive.clone();
+        other_build.builds = vec!["Legacy".into()];
+        assert!(project_asset_source_from_archives(&project, &sha, &[other_build]).is_none());
+        let mut other_name = archive.clone();
+        other_name.name = "levels_desert_mountains.pak".into();
+        assert!(project_asset_source_from_archives(&project, &sha, &[other_name]).is_none());
+        let second_game = root.path().join("other-install/Game");
+        fs::create_dir_all(&second_game).unwrap();
+        let second_source = second_game.join("levels_desert_canyon.pak");
+        fs::copy(&original, &second_source).unwrap();
+        let mut duplicate = archive.clone();
+        duplicate.source = second_source.display().to_string();
+        assert!(
+            project_asset_source_from_archives(&project, &sha, &[archive.clone(), duplicate])
+                .is_none()
+        );
+        fs::write(&original, b"changed signed archive identity").unwrap();
+        assert!(project_asset_source_from_archives(&project, &sha, &[archive]).is_none());
+    }
 
     #[test]
     fn surface_type_ids_are_never_assumed_equal_to_layer_bitmap_ids() {
