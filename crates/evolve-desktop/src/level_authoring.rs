@@ -1,8 +1,8 @@
 //! Project-only Level Editor form values and validated source-file commands.
 //! Read-only map previews never pass these edits to worker operations.
-use evolve_core::PlacedObject;
 use evolve_core::TerrainBrushEdit;
 use evolve_core::scene_authoring::{LayerAuthoringEdit, SpawnPropertiesEdit};
+use evolve_core::{LevelScene, PlacedObject};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum TextField {
@@ -220,6 +220,35 @@ impl Fields {
     }
 }
 
+/// The per-layer writer cannot see references in other project members.
+/// Require the combined loaded scene to be free of references before sending
+/// a deletion to the source-file transaction.
+pub(super) fn validate_deletion(scene: &LevelScene, guid: &str) -> Result<(), String> {
+    let mut found = scene
+        .objects
+        .iter()
+        .filter(|object| object.id.eq_ignore_ascii_case(guid));
+    let object = found
+        .next()
+        .ok_or("Selected placement is no longer in the loaded level")?;
+    if found.next().is_some() {
+        return Err("Cannot delete an object with a repeated GUID across layers".into());
+    }
+    if scene.objects.iter().any(|other| {
+        other.id != object.id
+            && (other.parent.eq_ignore_ascii_case(guid)
+                || (object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+                    && !object.name.is_empty()
+                    && other.home_area.eq_ignore_ascii_case(&object.name)))
+    }) {
+        return Err(
+            "Cannot delete a placement referenced by a child or wildlife home area in another layer"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn edit_field<'a>(
     label: &'static str,
     value: &'a str,
@@ -388,4 +417,123 @@ pub(super) fn terrain_editor(state: &super::State) -> iced::Element<'_, super::M
         text("LayerId edits preserve the original baked texture atlas; native material repaint is not yet complete.")
             .size(11).style(crate::design::muted),
     ].spacing(7).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deletion_checks_parent_and_home_area_across_layers() {
+        let area = br#"<ObjectLayer><LayerObjects><Object Id="area" Name="den" EntityClass="ZooKeeperShape"><Area/><Points><Point Pos="0,0,0"/><Point Pos="1,0,0"/><Point Pos="1,1,0"/></Points></Object><Object Id="parent" Name="parent" Type="Brush" Prefab="objects/rock.cgf"/></LayerObjects></ObjectLayer>"#;
+        let children = br#"<ObjectLayer><LayerObjects><Object Id="spawn" Name="spawn" EntityClass="CreatureSpawn" Parent="parent"><Properties HomeAreaName="den"/></Object><Object Id="free" Name="free" Type="Brush" Prefab="objects/rock.cgf"/></LayerObjects></ObjectLayer>"#;
+        let scene =
+            evolve_core::parse_level_scene(&[("area.lyr", area), ("children.lyr", children)])
+                .unwrap();
+        assert!(validate_deletion(&scene, "area").is_err());
+        assert!(validate_deletion(&scene, "parent").is_err());
+        assert!(validate_deletion(&scene, "free").is_ok());
+        assert!(validate_deletion(&scene, "missing").is_err());
+    }
+
+    #[test]
+    #[ignore = "requires local read-only Tutorial imports (EVOLVE_BENCH_LIBRARY)"]
+    fn imported_tutorial_placement_round_trips_across_all_layers() {
+        use std::{fs, path::Path};
+        let library = std::env::var("EVOLVE_BENCH_LIBRARY").unwrap();
+        let imports = evolve_core::imported_library(Path::new(&library)).unwrap();
+        let archive = imports
+            .archives
+            .iter()
+            .find(|pak| {
+                pak.name.eq_ignore_ascii_case("levels_tutorial.pak")
+                    && pak.source.to_ascii_lowercase().contains("moddedevolve")
+            })
+            .unwrap();
+        let inventory = evolve_core::imported_archive_files(archive).unwrap();
+        let mut layer_paths = inventory
+            .entries
+            .iter()
+            .filter(|entry| entry.relative_path.to_ascii_lowercase().ends_with(".lyr"))
+            .map(|entry| entry.relative_path.clone())
+            .collect::<Vec<_>>();
+        layer_paths.sort();
+        assert_eq!(
+            layer_paths.len(),
+            39,
+            "expected the complete Tutorial layer set"
+        );
+        let layers = layer_paths
+            .iter()
+            .map(|name| fs::read(Path::new(&inventory.root).join(name)).unwrap())
+            .collect::<Vec<_>>();
+        let before = layer_paths
+            .iter()
+            .zip(&layers)
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        let combined = evolve_core::parse_level_scene_read_only(&before).unwrap();
+        let object = combined
+            .scene
+            .objects
+            .iter()
+            .find(|obj| {
+                obj.model.to_ascii_lowercase().ends_with(".cgf")
+                    && !combined.duplicate_guids.contains(&obj.id)
+                    && obj.id.starts_with('{')
+                    && obj.id.ends_with('}')
+            })
+            .expect("unique authored Tutorial Brush");
+        let index = layer_paths
+            .iter()
+            .position(|name| *name == object.layer)
+            .unwrap();
+        let mut position = object.local;
+        position.position[0] += 1.0;
+        let updated = evolve_core::scene_authoring::edit_native_layer_bytes(
+            &layers[index],
+            &LayerAuthoringEdit::Transform {
+                guid: object.id.clone(),
+                transform: position,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            updated.starts_with(b"CryXmlB\0"),
+            layers[index].starts_with(b"CryXmlB\0")
+        );
+        let mut changed = layers.clone();
+        changed[index] = updated;
+        let after = layer_paths
+            .iter()
+            .zip(&changed)
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        let reparsed = evolve_core::parse_level_scene_read_only(&after).unwrap();
+        assert_eq!(reparsed.scene.objects.len(), combined.scene.objects.len());
+        assert_eq!(reparsed.duplicate_guids, combined.duplicate_guids);
+        for (previous, current) in combined.scene.objects.iter().zip(&reparsed.scene.objects) {
+            assert_eq!(previous.id, current.id);
+            if previous.id != object.id {
+                assert_eq!(previous.local, current.local);
+            }
+        }
+        assert_eq!(
+            reparsed
+                .scene
+                .objects
+                .iter()
+                .find(|obj| obj.id == object.id)
+                .unwrap()
+                .local
+                .position,
+            position.position
+        );
+        for (name, bytes) in layer_paths.iter().zip(&layers) {
+            assert_eq!(
+                fs::read(Path::new(&inventory.root).join(name)).unwrap(),
+                *bytes
+            );
+        }
+    }
 }

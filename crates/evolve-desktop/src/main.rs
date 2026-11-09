@@ -6001,9 +6001,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         },
                     )
                 }
-                Message::LevelDeleteSelected => ProjectLevelMutation::Xml(
-                    evolve_core::scene_authoring::LayerAuthoringEdit::Delete { guid: object.id },
-                ),
+                Message::LevelDeleteSelected => {
+                    let Some(scene) = state.level_scene.as_deref() else {
+                        state.status =
+                            "Reload the combined level before deleting a placement.".into();
+                        return Task::none();
+                    };
+                    if let Err(reason) = level_authoring::validate_deletion(scene, &object.id) {
+                        state.status = reason;
+                        return Task::none();
+                    }
+                    ProjectLevelMutation::Xml(
+                        evolve_core::scene_authoring::LayerAuthoringEdit::Delete {
+                            guid: object.id,
+                        },
+                    )
+                }
                 Message::LevelSaveWildlifeSpawn => match state.level_authoring.spawn(object.id) {
                     Ok(edit) => ProjectLevelMutation::Xml(edit),
                     Err(reason) => {
