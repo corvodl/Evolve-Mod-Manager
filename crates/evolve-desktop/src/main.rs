@@ -1877,6 +1877,17 @@ impl Operation {
                 let member = relative.to_string_lossy().replace('\\', "/");
                 let expected = level_source_hash(&source)?;
                 let original = std::fs::read(&source).map_err(|e| e.to_string())?;
+                let map_snapshot = if let ProjectLevelMutation::Xml(
+                    evolve_core::scene_authoring::LayerAuthoringEdit::Delete { guid },
+                ) = &edit
+                {
+                    Some((
+                        guid.clone(),
+                        level_authoring::validate_project_deletion(&root, &source, guid)?,
+                    ))
+                } else {
+                    None
+                };
                 let output = match edit {
                     ProjectLevelMutation::Xml(change) => {
                         if let evolve_core::scene_authoring::LayerAuthoringEdit::Insert {
@@ -1941,6 +1952,17 @@ impl Operation {
                 }
                 if level_source_hash(&source)? != expected {
                     return Err("Project source changed before saving; reload and retry".into());
+                }
+                if let Some((guid, snapshot)) = map_snapshot {
+                    snapshot.verify()?;
+                    if level_authoring::validate_project_deletion(&root, &source, &guid)?
+                        != snapshot
+                    {
+                        return Err(
+                            "Project map layer set changed during deletion; reload before retrying"
+                                .into(),
+                        );
+                    }
                 }
                 let saved = modding_projects::save_level_member_checked(
                     &project,
