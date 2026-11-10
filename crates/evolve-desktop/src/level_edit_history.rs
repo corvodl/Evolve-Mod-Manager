@@ -53,7 +53,9 @@ impl CommittedRevision {
             || member.len() > 1024
             || member.contains('\\')
             || member.contains(':')
-            || member.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+            || member
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
             || original == modified
         {
             return Err("Unsafe or empty committed level revision".into());
@@ -155,19 +157,27 @@ mod tests {
                     "format": "raw",
                     "sha256": format!("{:x}", Sha256::digest(before))
                 }]
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let project = ProjectRow {
-            label: "Example".into(), target: "levels_tutorial.pak".into(),
-            source_build: String::new(), status: "Draft".into(),
-            details: String::new(), workspace, modified: vec![],
-            changed_known: true, enabled: false,
+            label: "Example".into(),
+            target: "levels_tutorial.pak".into(),
+            source_build: String::new(),
+            status: "Draft".into(),
+            details: String::new(),
+            workspace,
+            modified: vec![],
+            changed_known: true,
+            enabled: false,
         };
         let revision = CommittedRevision::capture(&project, member, before, after).unwrap();
         assert!(revision.disk_bytes() > 0);
-        assert!(modding_projects::save_level_member_checked(
-            &project, &root, member, before, after
-        ).unwrap());
+        assert!(
+            modding_projects::save_level_member_checked(&project, &root, member, before, after)
+                .unwrap()
+        );
         revision.apply(&project, &root, true).unwrap();
         assert_eq!(fs::read(&path).unwrap(), before);
         revision.apply(&project, &root, false).unwrap();
@@ -176,17 +186,27 @@ mod tests {
         fs::write(&path, b"external mutation").unwrap();
         assert!(revision.apply(&project, &root, true).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"external mutation");
-        assert!(fs::read_dir(project.workspace.join("EditorBackups")).unwrap().count() >= 3);
+        assert!(
+            fs::read_dir(project.workspace.join("EditorBackups"))
+                .unwrap()
+                .count()
+                >= 3
+        );
     }
 
     #[test]
     fn committed_history_rejects_cross_project_and_unsafe_targets() {
         let temp = tempfile::tempdir().unwrap();
         let project = ProjectRow {
-            label: "Example".into(), target: "levels_tutorial.pak".into(),
-            source_build: String::new(), status: "Draft".into(),
-            details: String::new(), workspace: temp.path().to_path_buf(),
-            modified: vec![], changed_known: true, enabled: false,
+            label: "Example".into(),
+            target: "levels_tutorial.pak".into(),
+            source_build: String::new(),
+            status: "Draft".into(),
+            details: String::new(),
+            workspace: temp.path().to_path_buf(),
+            modified: vec![],
+            changed_known: true,
+            enabled: false,
         };
         assert!(CommittedRevision::capture(&project, "../game.pak", b"a", b"b").is_err());
         let revision = CommittedRevision::capture(&project, "levels/a.lyr", b"a", b"b").unwrap();
