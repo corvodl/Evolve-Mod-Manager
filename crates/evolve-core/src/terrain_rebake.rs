@@ -35,10 +35,7 @@ fn verify_tile(source: &[u8]) -> Result<usize, TerrainError> {
     let width = u32::from_le_bytes(source[0..4].try_into().map_err(|_| TerrainError::Limits)?);
     let height = u32::from_le_bytes(source[4..8].try_into().map_err(|_| TerrainError::Limits)?);
     let dimension = width as usize;
-    if width != height
-        || !(4..=MAX_TILE_DIM).contains(&dimension)
-        || !width.is_power_of_two()
-    {
+    if width != height || !(4..=MAX_TILE_DIM).contains(&dimension) || !width.is_power_of_two() {
         return Err(bad("unsupported original RGB24 terrain tile dimensions"));
     }
     let payload = dimension
@@ -65,7 +62,9 @@ pub fn encode_original_rgb24_rebake(
     baked: &RgbaImage,
 ) -> Result<NativeRgb24Rebake, TerrainError> {
     if side == 0 || side > MAX_GRID_SIDE || side.checked_mul(side) != Some(originals.len()) {
-        return Err(bad("missing, mismatched or unverified RGB24 terrain tile grid"));
+        return Err(bad(
+            "missing, mismatched or unverified RGB24 terrain tile grid",
+        ));
     }
     let dimension = verify_tile(originals[0])?;
     let atlas_dimension = dimension.checked_mul(side).ok_or(TerrainError::Limits)?;
@@ -73,12 +72,16 @@ pub fn encode_original_rgb24_rebake(
         || baked.width() as usize != atlas_dimension
         || baked.height() as usize != atlas_dimension
     {
-        return Err(bad("baked RGB output does not match native tile resolution"));
+        return Err(bad(
+            "baked RGB output does not match native tile resolution",
+        ));
     }
     // Do not silently strip nonopaque alpha or convert from a shader texture
     // which carries transparency/other channels in the alpha component.
     if baked.pixels().any(|pixel| pixel.0[3] != 255) {
-        return Err(bad("native RGB24 terrain output requires opaque source pixels"));
+        return Err(bad(
+            "native RGB24 terrain output requires opaque source pixels",
+        ));
     }
     let rgba = baked.as_raw();
     let mut changed_tiles = Vec::with_capacity(originals.len());
@@ -138,7 +141,12 @@ pub fn decode_original_rgb24_grid(
                 let atlas_x = tile_y * dimension + row;
                 let atlas_y = tile_x * dimension + col;
                 let to = (atlas_y * atlas_dim + atlas_x) * 4;
-                pixels[to..to + 4].copy_from_slice(&[tile[from + 2], tile[from + 1], tile[from], 255]);
+                pixels[to..to + 4].copy_from_slice(&[
+                    tile[from + 2],
+                    tile[from + 1],
+                    tile[from],
+                    255,
+                ]);
             }
         }
     }
@@ -195,7 +203,12 @@ mod tests {
 
     #[test]
     fn reject_missing_tiles_mixed_dimensions_invalid_output_and_nonopaque_alpha() {
-        let originals = [original_tile(4, 0), original_tile(4, 1), original_tile(4, 2), original_tile(4, 3)];
+        let originals = [
+            original_tile(4, 0),
+            original_tile(4, 1),
+            original_tile(4, 2),
+            original_tile(4, 3),
+        ];
         let refs: Vec<_> = originals.iter().map(Vec::as_slice).collect();
         let atlas = decode_original_rgb24_grid(&refs, 2).unwrap();
         assert!(encode_original_rgb24_rebake(&refs[..3], 2, &atlas).is_err());
