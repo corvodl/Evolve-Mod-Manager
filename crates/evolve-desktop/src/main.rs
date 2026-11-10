@@ -37,9 +37,11 @@ mod guided_modding;
 mod initial_setup;
 mod launcher_bridge;
 mod level_atmosphere;
+mod level_authoring;
 mod level_camera;
 #[cfg(test)]
 mod level_capture;
+mod level_edit_history;
 mod level_editor_shell;
 mod level_effect_sources;
 mod level_environment;
@@ -81,6 +83,7 @@ mod standard_user_launch;
 mod storage_usage;
 mod system_health;
 mod terrain_material_probe;
+// Native RGB24 source-backed output stage; UI activation awaits verified\n// per-pixel Evolve paint alpha and original multi-layer shader ordering.\n#[allow(dead_code)]\nmod terrain_rebake_project;
 mod text_asset_editor;
 mod textured;
 mod updater;
@@ -496,6 +499,9 @@ struct State {
     level_spawn_distances: Option<evolve_core::zookeeper::SpawnDistances>,
     level_show_wildlife: bool,
     level_project: Option<modding_projects::ProjectRow>,
+    /// Duplicate original GUIDs across LYR layers are previewable, not
+    /// editable. The source owner is ambiguous even inside one Modding project.
+    level_duplicate_guids: HashSet<String>,
     level_open_after_copy: bool,
     level_diagnostics: Vec<String>,
     level_show_overview: bool,
@@ -697,10 +703,13 @@ struct State {
     level_dirty_count: usize,
     level_undo: VecDeque<LevelTransformDiff>,
     level_redo: VecDeque<LevelTransformDiff>,
+    level_committed_undo: VecDeque<Arc<level_edit_history::CommittedRevision>>,
+    level_committed_redo: VecDeque<Arc<level_edit_history::CommittedRevision>>,
     level_edit_position: String,
     level_edit_rotation: String,
     level_edit_scale: String,
     level_edit_output: String,
+    level_authoring: level_authoring::Fields,
     scan_cancel: Option<Arc<AtomicBool>>,
     scan_indexed: Option<Arc<AtomicUsize>>,
     preview_cache: SharedCache,
@@ -785,6 +794,13 @@ enum ViewerTab {
     Uv,
     Dependencies,
     Compare,
+}
+
+#[derive(Debug, Clone)]
+enum ProjectLevelMutation {
+    Xml(evolve_core::scene_authoring::LayerAuthoringEdit),
+    Terrain(evolve_core::TerrainBrushEdit),
+    Vegetation(vegetation_map::VegetationEdit),
 }
 
 #[derive(Debug, Clone)]
@@ -933,6 +949,13 @@ enum Operation {
         PathBuf,
         String,
         Vec<(String, evolve_core::Transform)>,
+        PathBuf,
+    ),
+    SaveProjectSource(ProjectRow, PathBuf, ProjectLevelMutation, PathBuf, PathBuf),
+    RestoreCommittedLevel(
+        ProjectRow,
+        Arc<level_edit_history::CommittedRevision>,
+        bool,
         PathBuf,
     ),
     ExportEditedLevel(
@@ -1097,7 +1120,12 @@ enum Completed {
         Arc<world_instances::World>,
         level_scene_renderer::Report,
     ),
-    ProjectLevelSaved(modding_projects::ProjectRow, bool),
+    ProjectLevelSaved(
+        modding_projects::ProjectRow,
+        bool,
+        Option<Arc<level_edit_history::CommittedRevision>>,
+    ),
+    ProjectLevelHistoryApplied(ProjectRow, Arc<level_edit_history::CommittedRevision>, bool),
     EditedLevelExported(PathBuf, usize),
     Terrain(RenderMesh, TerrainInfo),
     SignedPak(SignedPakInfo),
@@ -1862,7 +1890,136 @@ impl Operation {
                     &member,
                     &target,
                 )?;
-                Ok(Completed::ProjectLevelSaved(project, saved))
+                Ok(Completed::ProjectLevelSaved(project, saved, None))
+            }
+            Self::SaveProjectSource(project, source, edit, projects_root, library_root) => {
+                // Only an original member in the selected managed project's
+                // extracted files tree may be edited. Original game PAKs and
+                // imported Asset Library roots are never writable here.
+                let root = std::fs::canonicalize(project.workspace.join("files"))
+                    .map_err(|e| e.to_string())?;
+                let metadata = std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
+                let source = std::fs::canonicalize(&source).map_err(|e| e.to_string())?;
+                if !metadata.file_type().is_file()
+                    || metadata.len() > 192 * 1024 * 1024
+                    || !source.starts_with(&root)
+                {
+                    return Err("Source is not a regular managed project member".into());
+                }
+                let relative = source
+                    .strip_prefix(&root)
+                    .map_err(|_| "Level source is outside this Modding project")?;
+                let member = relative.to_string_lossy().replace('\\', "/");
+                let expected = level_source_hash(&source)?;
+                let original = std::fs::read(&source).map_err(|e| e.to_string())?;
+                let map_snapshot = if let ProjectLevelMutation::Xml(
+                    evolve_core::scene_authoring::LayerAuthoringEdit::Delete { guid },
+                ) = &edit
+                {
+                    Some((
+                        guid.clone(),
+                        level_authoring::validate_project_deletion(&root, &source, guid)?,
+                    ))
+                } else {
+                    None
+                };
+                let output = match edit {
+                    ProjectLevelMutation::Xml(change) => {
+                        if let evolve_core::scene_authoring::LayerAuthoringEdit::Insert {
+                            model,
+                            ..
+                        } = &change
+                        {
+                            if project.source_build.trim().is_empty() {
+                                return Err(
+                                    "A selected source game build is required to add geometry."
+                                        .into(),
+                                );
+                            }
+                            match resolve_imported_reference(
+                                &library_root,
+                                model,
+                                Some(&project.source_build),
+                            )
+                            .map_err(|error| error.to_string())?
+                            {
+                                LibraryReferenceStatus::Found(_) => {}
+                                LibraryReferenceStatus::Missing => {
+                                    return Err(format!(
+                                        "Geometry asset not found in selected installed game build: {model}"
+                                    ));
+                                }
+                                LibraryReferenceStatus::Ambiguous(_) => {
+                                    return Err(format!(
+                                        "Geometry asset has conflicting versions in the selected game build: {model}"
+                                    ));
+                                }
+                            }
+                        }
+                        if !(member.to_ascii_lowercase().ends_with(".lyr")
+                            || member.to_ascii_lowercase().ends_with(".xml"))
+                        {
+                            return Err(
+                                "XML placement edit must target its own LYR/XML file".into()
+                            );
+                        }
+                        evolve_core::scene_authoring::edit_native_layer_bytes(&original, &change)
+                            .map_err(|e| e.to_string())?
+                    }
+                    ProjectLevelMutation::Terrain(change) => {
+                        if !member.to_ascii_lowercase().ends_with("heightmap.dat") {
+                            return Err("Terrain brush must target the owning Heightmap.dat".into());
+                        }
+                        evolve_core::edit_terrain_bytes(&original, change)
+                            .map_err(|e| e.to_string())?
+                    }
+                    ProjectLevelMutation::Vegetation(change) => {
+                        if !member.to_ascii_lowercase().ends_with("vegetationmap.dat") {
+                            return Err(
+                                "Vegetation edit must target the owning VegetationMap.dat".into()
+                            );
+                        }
+                        vegetation_map::edit_instances(&original, change)?
+                    }
+                };
+                if output == original {
+                    return Err("Source writer produced no changes".into());
+                }
+                if level_source_hash(&source)? != expected {
+                    return Err("Project source changed before saving; reload and retry".into());
+                }
+                if let Some((guid, snapshot)) = map_snapshot {
+                    snapshot.verify()?;
+                    if level_authoring::validate_project_deletion(&root, &source, &guid)?
+                        != snapshot
+                    {
+                        return Err(
+                            "Project map layer set changed during deletion; reload before retrying"
+                                .into(),
+                        );
+                    }
+                }
+                let revision = Arc::new(level_edit_history::CommittedRevision::capture(
+                    &project, &member, &original, &output,
+                )?);
+                let saved = modding_projects::save_level_member_checked(
+                    &project,
+                    &projects_root,
+                    &member,
+                    &original,
+                    &output,
+                )?;
+                Ok(Completed::ProjectLevelSaved(
+                    project,
+                    saved,
+                    saved.then_some(revision),
+                ))
+            }
+            Self::RestoreCommittedLevel(project, revision, undo, root) => {
+                revision.apply(&project, &root, undo)?;
+                Ok(Completed::ProjectLevelHistoryApplied(
+                    project, revision, undo,
+                ))
             }
             Self::InspectLevel(source) => {
                 let checksum = level_source_hash(&source)?;
@@ -2500,6 +2657,22 @@ enum Message {
     ViewportEscape(window::Id),
     LevelGizmoMove(usize, f32),
     LevelSaveProjectChanges,
+    LevelUndoCommitted,
+    LevelRedoCommitted,
+    LevelAuthoringChanged(level_authoring::TextField, String),
+    LevelAuthoringToggleEnabled,
+    LevelAuthoringToggleRoundStart,
+    LevelAddGeometry,
+    LevelDuplicateSelected,
+    LevelDeleteSelected,
+    LevelSaveWildlifeSpawn,
+    LevelSaveWildlifeShape,
+    LevelSculptTerrain,
+    LevelPaintTerrain,
+    LevelMoveVegetation,
+    LevelScaleVegetation,
+    LevelDuplicateVegetation,
+    LevelDeleteVegetation,
     LevelToggleOverview,
     LibraryPreview,
     LibraryMakeModProject,
@@ -3106,6 +3279,174 @@ fn level_pending_edits(state: &State) -> Vec<(String, evolve_core::Transform)> {
         .collect()
 }
 
+/// The editor is a preview unless a managed project is active. Every
+/// authoring command submits only a verified project source member to the
+/// existing backup/import transaction, never an imported PAK or library file.
+fn submit_level_project_edit(
+    state: &mut State,
+    source: PathBuf,
+    change: ProjectLevelMutation,
+) -> Task<Message> {
+    if state.level_read_only || state.level_project.is_none() {
+        state.status = "Open this map as a managed Modding project before making edits.".into();
+        return Task::none();
+    }
+    if state.busy || state.level_dirty_count != 0 {
+        state.status = "Save any pending transform changes before another source edit.".into();
+        return Task::none();
+    }
+    let project = state.level_project.clone().unwrap();
+    let projects_root = PathBuf::from(&state.preferences.projects);
+    let library_root = PathBuf::from(&state.library_root);
+    launch(
+        state,
+        Operation::SaveProjectSource(project, source, change, projects_root, library_root),
+    )
+}
+
+/// Preserve the original level's GUID shape, while using OS-provided
+/// randomness and RFC4122 v4 variant/version bits for every new placement.
+/// Synthetic parser IDs are not safe identifiers in a CryEngine level.
+fn fresh_authored_level_guid(original: &str) -> Result<String, String> {
+    use rand::RngCore;
+    let raw = original.trim_start_matches('{').trim_end_matches('}');
+    let compact = raw.len() == 32 && raw.bytes().all(|b| b.is_ascii_hexdigit());
+    let dashed = raw.len() == 36
+        && raw.bytes().enumerate().all(|(i, b)| {
+            if [8, 13, 18, 23].contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        });
+    if !compact && !dashed {
+        return Err("Selected object lacks a native GUID; cannot safely create a new placement in this layer.".into());
+    }
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let uppercase = raw.bytes().any(|b| b.is_ascii_uppercase());
+    let plain = bytes
+        .iter()
+        .map(|byte| {
+            if uppercase {
+                format!("{byte:02X}")
+            } else {
+                format!("{byte:02x}")
+            }
+        })
+        .collect::<String>();
+    let new_id = if dashed {
+        format!(
+            "{}-{}-{}-{}-{}",
+            &plain[0..8],
+            &plain[8..12],
+            &plain[12..16],
+            &plain[16..20],
+            &plain[20..32]
+        )
+    } else {
+        plain
+    };
+    if original.starts_with('{') && original.ends_with('}') {
+        Ok(format!("{{{new_id}}}"))
+    } else {
+        Ok(new_id)
+    }
+}
+
+/// Generate a fresh RFC4122 v4 GUID and ensure it does not collide with any
+/// existing object across all layers loaded in the scene.
+fn fresh_unique_authored_level_guid(
+    original: &str,
+    scene: Option<&evolve_core::LevelScene>,
+) -> Result<String, String> {
+    for _ in 0..16 {
+        let candidate = fresh_authored_level_guid(original)?;
+        if let Some(scene) = scene
+            && scene
+                .objects
+                .iter()
+                .any(|obj| obj.id.eq_ignore_ascii_case(&candidate))
+        {
+            continue;
+        }
+        return Ok(candidate);
+    }
+    Err("Failed to generate a unique level GUID".into())
+}
+
+fn selected_project_object_source(
+    state: &State,
+) -> Result<(evolve_core::PlacedObject, PathBuf), String> {
+    let project = state
+        .level_project
+        .as_ref()
+        .ok_or("An editable Modding project is required")?;
+    if state.level_read_only {
+        return Err("Imported maps are read-only".into());
+    }
+    let object = state
+        .level_selected
+        .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
+        .cloned()
+        .ok_or("Select an authored object first")?;
+    if state.level_duplicate_guids.contains(&object.id) {
+        return Err("This object GUID occurs in multiple original LYR layers. Editing is disabled until its owning source can be uniquely identified.".into());
+    }
+    let root = project.workspace.join("files");
+    let relative = if object.kind.eq_ignore_ascii_case("Vegetation") {
+        state
+            .library_map
+            .as_ref()
+            .and_then(|(_, maps, index)| maps.get(*index))
+            .and_then(|map| map.vegetation.clone())
+            .ok_or("Selected map has no authored VegetationMap.dat")?
+    } else {
+        let relative = PathBuf::from(&object.layer);
+        if !relative
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("lyr") || ext.eq_ignore_ascii_case("xml"))
+        {
+            return Err("Selected placement has no editable XML source layer".into());
+        }
+        relative
+    };
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err("Unsafe or absolute source member path".into());
+    }
+    Ok((object, root.join(relative)))
+}
+
+fn selected_project_terrain_source(state: &State) -> Result<PathBuf, String> {
+    let project = state
+        .level_project
+        .as_ref()
+        .ok_or("Open an editable Modding project")?;
+    if state.level_read_only {
+        return Err("Imported maps are read-only".into());
+    }
+    let relative = state
+        .library_map
+        .as_ref()
+        .and_then(|(_, maps, index)| maps.get(*index))
+        .and_then(|map| map.terrain.clone())
+        .ok_or("Selected map has no Heightmap.dat")?;
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err("Unsafe terrain source member".into());
+    }
+    Ok(project.workspace.join("files").join(relative))
+}
+
 fn track_level_dirty(
     state: &mut State,
     id: &str,
@@ -3187,6 +3528,10 @@ fn sync_level_fields(state: &mut State) {
         .level_selected
         .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
         .map(|object| object.local);
+    let selected = state
+        .level_selected
+        .and_then(|index| state.level_scene.as_ref()?.objects.get(index));
+    state.level_authoring.sync(selected);
     if let Some(transform) = transform {
         (
             state.level_edit_position,
@@ -3589,7 +3934,10 @@ fn operation_label(operation: &Operation) -> &'static str {
             "Assembling level scene"
         }
         Operation::LoadLevelWildlife(..) => "Loading source-backed wildlife preview",
-        Operation::SaveProjectLevel(..) => "Saving editable level project",
+        Operation::SaveProjectLevel(..) | Operation::SaveProjectSource(..) => {
+            "Saving editable level project"
+        }
+        Operation::RestoreCommittedLevel(..) => "Restoring verified project revision",
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
         Operation::ExtractSignedPak(..) => "Extracting signed CryPAK",
@@ -5710,6 +6058,263 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .collect::<Vec<_>>()
                     .join(", ");
             }
+        }
+        Message::LevelAuthoringChanged(key, text) => state.level_authoring.change(key, text),
+        Message::LevelAuthoringToggleEnabled => {
+            if !state.level_read_only {
+                state.level_authoring.spawn_enabled = !state.level_authoring.spawn_enabled;
+            }
+        }
+        Message::LevelAuthoringToggleRoundStart => {
+            if !state.level_read_only {
+                state.level_authoring.spawn_on_round_start =
+                    !state.level_authoring.spawn_on_round_start;
+            }
+        }
+        Message::LevelAddGeometry
+        | Message::LevelDuplicateSelected
+        | Message::LevelDeleteSelected
+        | Message::LevelSaveWildlifeSpawn
+        | Message::LevelSaveWildlifeShape
+        | Message::LevelMoveVegetation
+        | Message::LevelScaleVegetation
+        | Message::LevelDuplicateVegetation
+        | Message::LevelDeleteVegetation => {
+            let (object, source) = match selected_project_object_source(state) {
+                Ok(found) => found,
+                Err(reason) => {
+                    state.status = reason;
+                    return Task::none();
+                }
+            };
+            let edit = match message {
+                Message::LevelAddGeometry => {
+                    if object.kind.eq_ignore_ascii_case("Vegetation") {
+                        state.status =
+                            "Choose an XML-layer placement as the insertion point.".into();
+                        return Task::none();
+                    }
+                    if state.level_authoring.new_object_name.trim().is_empty() {
+                        state.status = "Enter a name for the new geometry placement.".into();
+                        return Task::none();
+                    }
+                    let model_trimmed = state.level_authoring.new_object_model.trim();
+                    if model_trimmed.is_empty() {
+                        state.status =
+                            "Enter an exact .cgf model path for the new placement.".into();
+                        return Task::none();
+                    }
+                    if !model_trimmed.to_ascii_lowercase().ends_with(".cgf") {
+                        state.status =
+                            "Geometry placements require a native .cgf model path.".into();
+                        return Task::none();
+                    }
+                    let guid = match fresh_unique_authored_level_guid(
+                        &object.id,
+                        state.level_scene.as_deref(),
+                    ) {
+                        Ok(guid) => guid,
+                        Err(reason) => {
+                            state.status = reason;
+                            return Task::none();
+                        }
+                    };
+                    let transform = match level_workspace::parse_transform(
+                        &state.level_edit_position,
+                        &state.level_edit_rotation,
+                        &state.level_edit_scale,
+                    ) {
+                        Ok(transform) => transform,
+                        Err(reason) => {
+                            state.status = reason;
+                            return Task::none();
+                        }
+                    };
+                    ProjectLevelMutation::Xml(
+                        evolve_core::scene_authoring::LayerAuthoringEdit::Insert {
+                            anchor_guid: object.id,
+                            new_guid: guid,
+                            name: state.level_authoring.new_object_name.trim().to_owned(),
+                            model: state
+                                .level_authoring
+                                .new_object_model
+                                .trim()
+                                .replace('\\', "/"),
+                            transform,
+                        },
+                    )
+                }
+                Message::LevelDuplicateSelected => {
+                    let guid = match fresh_unique_authored_level_guid(
+                        &object.id,
+                        state.level_scene.as_deref(),
+                    ) {
+                        Ok(guid) => guid,
+                        Err(reason) => {
+                            state.status = reason;
+                            return Task::none();
+                        }
+                    };
+                    let name = format!("{}_copy", object.name);
+                    ProjectLevelMutation::Xml(
+                        evolve_core::scene_authoring::LayerAuthoringEdit::Duplicate {
+                            guid: object.id,
+                            new_guid: guid,
+                            name,
+                        },
+                    )
+                }
+                Message::LevelDeleteSelected => {
+                    let Some(scene) = state.level_scene.as_deref() else {
+                        state.status =
+                            "Reload the combined level before deleting a placement.".into();
+                        return Task::none();
+                    };
+                    if let Err(reason) = level_authoring::validate_deletion(scene, &object.id) {
+                        state.status = reason;
+                        return Task::none();
+                    }
+                    ProjectLevelMutation::Xml(
+                        evolve_core::scene_authoring::LayerAuthoringEdit::Delete {
+                            guid: object.id,
+                        },
+                    )
+                }
+                Message::LevelSaveWildlifeSpawn => match state.level_authoring.spawn(object.id) {
+                    Ok(edit) => ProjectLevelMutation::Xml(edit),
+                    Err(reason) => {
+                        state.status = reason;
+                        return Task::none();
+                    }
+                },
+                Message::LevelSaveWildlifeShape => match state.level_authoring.shape(object.id) {
+                    Ok(edit) => ProjectLevelMutation::Xml(edit),
+                    Err(reason) => {
+                        state.status = reason;
+                        return Task::none();
+                    }
+                },
+                Message::LevelMoveVegetation | Message::LevelScaleVegetation => {
+                    if !object.kind.eq_ignore_ascii_case("Vegetation") {
+                        state.status = "Select a VegetationMap.dat instance.".into();
+                        return Task::none();
+                    }
+                    let index = match object
+                        .id
+                        .strip_prefix("__vegetation_")
+                        .and_then(|id| id.parse::<usize>().ok())
+                    {
+                        Some(index) => index,
+                        None => {
+                            state.status = "Vegetation source record index is unavailable.".into();
+                            return Task::none();
+                        }
+                    };
+                    let tf = match level_workspace::parse_transform(
+                        &state.level_edit_position,
+                        &state.level_edit_rotation,
+                        &state.level_edit_scale,
+                    ) {
+                        Ok(tf) => tf,
+                        Err(reason) => {
+                            state.status = reason;
+                            return Task::none();
+                        }
+                    };
+                    if matches!(message, Message::LevelMoveVegetation) {
+                        ProjectLevelMutation::Vegetation(vegetation_map::VegetationEdit::Move {
+                            index,
+                            position: tf.position,
+                        })
+                    } else {
+                        if (tf.scale[0] - tf.scale[1]).abs() > 1e-4
+                            || (tf.scale[1] - tf.scale[2]).abs() > 1e-4
+                        {
+                            state.status = "Vegetation uses one uniform source scale.".into();
+                            return Task::none();
+                        }
+                        ProjectLevelMutation::Vegetation(vegetation_map::VegetationEdit::Scale {
+                            index,
+                            scale: tf.scale[0],
+                        })
+                    }
+                }
+                Message::LevelDuplicateVegetation | Message::LevelDeleteVegetation => {
+                    if !object.kind.eq_ignore_ascii_case("Vegetation") {
+                        state.status = "Select a vegetation instance first.".into();
+                        return Task::none();
+                    }
+                    let index = match object
+                        .id
+                        .strip_prefix("__vegetation_")
+                        .and_then(|id| id.parse::<usize>().ok())
+                    {
+                        Some(index) => index,
+                        None => {
+                            state.status = "Vegetation source record index is unavailable.".into();
+                            return Task::none();
+                        }
+                    };
+                    if matches!(message, Message::LevelDuplicateVegetation) {
+                        let mut position = object.local.position;
+                        position[0] += 2.0;
+                        ProjectLevelMutation::Vegetation(
+                            vegetation_map::VegetationEdit::Duplicate { index, position },
+                        )
+                    } else {
+                        ProjectLevelMutation::Vegetation(vegetation_map::VegetationEdit::Delete {
+                            index,
+                        })
+                    }
+                }
+                _ => unreachable!(),
+            };
+            return submit_level_project_edit(state, source, edit);
+        }
+        Message::LevelSculptTerrain | Message::LevelPaintTerrain => {
+            let source = match selected_project_terrain_source(state) {
+                Ok(source) => source,
+                Err(reason) => {
+                    state.status = reason;
+                    return Task::none();
+                }
+            };
+            let paint = matches!(message, Message::LevelPaintTerrain);
+            let edit = match state.level_authoring.brush(paint) {
+                Ok(edit) => edit,
+                Err(reason) => {
+                    state.status = reason;
+                    return Task::none();
+                }
+            };
+            return submit_level_project_edit(state, source, ProjectLevelMutation::Terrain(edit));
+        }
+        Message::LevelUndoCommitted | Message::LevelRedoCommitted => {
+            if state.busy || state.level_read_only || state.level_dirty_count != 0 {
+                state.status =
+                    "Finish pending preview edits before restoring a committed revision.".into();
+                return Task::none();
+            }
+            let Some(project) = state.level_project.clone() else {
+                state.status =
+                    "Open a managed Modding project to restore a committed revision.".into();
+                return Task::none();
+            };
+            let undo = matches!(message, Message::LevelUndoCommitted);
+            let revision = if undo {
+                state.level_committed_undo.back()
+            } else {
+                state.level_committed_redo.back()
+            };
+            let Some(revision) = revision.cloned() else {
+                state.status = "No committed revision available in this editing session.".into();
+                return Task::none();
+            };
+            let root = PathBuf::from(&state.preferences.projects);
+            return launch(
+                state,
+                Operation::RestoreCommittedLevel(project, revision, undo, root),
+            );
         }
         Message::LevelSaveProjectChanges => {
             let Some(project) = state.level_project.clone() else {
@@ -8489,6 +9094,44 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LevelApplyTransform => {
+            // In an active Modding project, a transform is committed directly
+            // to the owning source .lyr member with verified backups.
+            if state.level_project.is_some() {
+                let (object, source) = match selected_project_object_source(state) {
+                    Ok(value) => value,
+                    Err(reason) => {
+                        state.status = reason;
+                        return Task::none();
+                    }
+                };
+                if object.kind.eq_ignore_ascii_case("Vegetation") {
+                    state.status =
+                        "Use Save vegetation position/scale for the owning VegetationMap.dat."
+                            .into();
+                    return Task::none();
+                }
+                let transform = match level_workspace::parse_transform(
+                    &state.level_edit_position,
+                    &state.level_edit_rotation,
+                    &state.level_edit_scale,
+                ) {
+                    Ok(value) => value,
+                    Err(reason) => {
+                        state.status = reason;
+                        return Task::none();
+                    }
+                };
+                return submit_level_project_edit(
+                    state,
+                    source,
+                    ProjectLevelMutation::Xml(
+                        evolve_core::scene_authoring::LayerAuthoringEdit::Transform {
+                            guid: object.id,
+                            transform,
+                        },
+                    ),
+                );
+            }
             if state.level_read_only {
                 state.status = "Imported levels are read-only. Use File → Open as Modding Project to create an editable copy.".into();
                 return Task::none();
@@ -8565,6 +9208,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Err(error) => state.status = format!("Invalid level transform: {error}"),
             }
+            return Task::none();
         }
         Message::LevelExportEdits => {
             if state.level_read_only {
@@ -13822,12 +14466,63 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .as_ref()
                         .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
-                Ok(Completed::ProjectLevelSaved(project, saved)) => {
+                Ok(Completed::ProjectLevelSaved(project, saved, revision)) => {
+                    if let Some(revision) = revision {
+                        state.level_committed_redo.clear();
+                        state.level_committed_undo.push_back(revision);
+                        while state.level_committed_undo.len()
+                            > level_edit_history::MAX_HISTORY_STEPS
+                            || state
+                                .level_committed_undo
+                                .iter()
+                                .map(|item| item.disk_bytes())
+                                .sum::<u64>()
+                                > level_edit_history::MAX_HISTORY_DISK_BYTES
+                        {
+                            state.level_committed_undo.pop_front();
+                        }
+                    }
                     state.status = if saved {
                         "Edited level saved through the verified Modding project backup/import process.".into()
                     } else {
                         "Project level matches its original bytes.".into()
                     };
+                    let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
+                    let root = PathBuf::from(&state.library_root);
+                    return launch(state, Operation::OpenProjectLevel(project, index, root));
+                }
+                Ok(Completed::ProjectLevelHistoryApplied(project, revision, undo)) => {
+                    if undo {
+                        if !state
+                            .level_committed_undo
+                            .back()
+                            .is_some_and(|item| Arc::ptr_eq(item, &revision))
+                        {
+                            state.status =
+                                "Revision changed during undo; reload the project.".into();
+                            return Task::none();
+                        }
+                        state.level_committed_undo.pop_back();
+                        state.level_committed_redo.push_back(revision);
+                    } else {
+                        if !state
+                            .level_committed_redo
+                            .back()
+                            .is_some_and(|item| Arc::ptr_eq(item, &revision))
+                        {
+                            state.status =
+                                "Revision changed during redo; reload the project.".into();
+                            return Task::none();
+                        }
+                        state.level_committed_redo.pop_back();
+                        state.level_committed_undo.push_back(revision);
+                    }
+                    state.status = if undo {
+                        "Committed project edit undone; original bytes restored."
+                    } else {
+                        "Committed project edit reapplied."
+                    }
+                    .into();
                     let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
                     let root = PathBuf::from(&state.library_root);
                     return launch(state, Operation::OpenProjectLevel(project, index, root));
@@ -13883,6 +14578,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_map_choices = None;
                     state.level_project_choices = None;
                     let loaded = *loaded;
+                    let same_project_and_map = state
+                        .level_project
+                        .as_ref()
+                        .zip(loaded.project.as_ref())
+                        .is_some_and(|(before, after)| {
+                            before.workspace == after.workspace
+                                && state
+                                    .library_map
+                                    .as_ref()
+                                    .and_then(|(_, maps, index)| maps.get(*index))
+                                    .is_some_and(|old_map| {
+                                        old_map.name == loaded.maps[loaded.index].name
+                                    })
+                        });
+                    if !same_project_and_map {
+                        state.level_committed_undo.clear();
+                        state.level_committed_redo.clear();
+                    }
                     state.level_wildlife_resolved = false;
                     state.level_spawn_distances = None;
                     state.level_diagnostics = loaded.diagnostics.clone();
@@ -13916,6 +14629,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_map = Some((loaded.archive.clone(), loaded.maps, loaded.index));
                     state.level_read_only = loaded.project.is_none();
                     state.level_project = loaded.project;
+                    state.level_duplicate_guids = loaded.duplicate_guids;
                     state.level_scene = loaded.scene.map(Arc::new);
                     state.level_source = loaded.source;
                     state.level_source_sha = state
@@ -14000,6 +14714,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_world = None;
                     state.level_world_source = None;
                     state.level_project = None;
+                    state.level_duplicate_guids.clear();
                     state.level_surfaces = None;
                     state.level_picks = None;
                     state.level_read_only = false;
@@ -14025,6 +14740,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_selection.clear();
                     state.level_undo.clear();
                     state.level_redo.clear();
+                    state.level_committed_undo.clear();
+                    state.level_committed_redo.clear();
                     sync_level_fields(state);
                     state.level_zoom = 1.0;
                     // Keep the manager on its originating workspace.
@@ -17019,6 +17736,55 @@ mod project_edit_tests {
             [70., 0., 0.]
         );
         assert_eq!(state.level_original_transforms["parent"], baseline);
+    }
+
+    #[test]
+    fn fresh_authored_level_guid_preserves_casing_and_braces() {
+        let upper = "{550E8400-E29B-41D4-A716-446655440000}";
+        let generated_upper = fresh_authored_level_guid(upper).unwrap();
+        assert!(generated_upper.starts_with('{') && generated_upper.ends_with('}'));
+        assert_eq!(generated_upper.len(), 38);
+        assert!(
+            generated_upper
+                .chars()
+                .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase() || "-{}".contains(c))
+        );
+        assert_eq!(generated_upper.as_bytes()[15], b'4');
+        assert!(b"89AB".contains(&generated_upper.as_bytes()[20]));
+
+        let lower = "550e8400-e29b-41d4-a716-446655440000";
+        let generated_lower = fresh_authored_level_guid(lower).unwrap();
+        assert!(!generated_lower.starts_with('{'));
+        assert_eq!(generated_lower.len(), 36);
+        assert!(
+            generated_lower
+                .chars()
+                .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase() || c == '-')
+        );
+        assert_eq!(generated_lower.as_bytes()[14], b'4');
+
+        let compact = "550e8400e29b41d4a716446655440000";
+        let generated_compact = fresh_authored_level_guid(compact).unwrap();
+        assert_eq!(generated_compact.len(), 32);
+        assert!(!generated_compact.contains('-'));
+
+        assert!(fresh_authored_level_guid("Rock_01").is_err());
+        assert!(fresh_authored_level_guid("").is_err());
+    }
+
+    #[test]
+    fn fresh_unique_authored_level_guid_avoids_existing_scene_collisions() {
+        let original = "{550E8400-E29B-41D4-A716-446655440000}";
+        let xml = br#"<Objects><Object Id="{550E8400-E29B-41D4-A716-446655440000}" Pos="1,0,0"/></Objects>"#;
+        let scene = evolve_core::parse_level_scene(&[("test.lyr", xml)]).unwrap();
+        let unique = fresh_unique_authored_level_guid(original, Some(&scene)).unwrap();
+        assert_ne!(unique, original);
+        assert!(
+            !scene
+                .objects
+                .iter()
+                .any(|o| o.id.eq_ignore_ascii_case(&unique))
+        );
     }
 
     #[test]

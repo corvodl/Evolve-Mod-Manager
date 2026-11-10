@@ -1637,6 +1637,40 @@ pub fn save_text_member(
     )
 }
 
+/// Persist an independently generated Level Editor replacement only if
+/// the manifest-listed project member still matches the exact bytes read by
+/// the worker. This reuses the project's atomic import and immutable-backup
+/// transaction, unlike an unguarded replacement which could lose concurrent
+/// edits made between scene parsing and the final file publish.
+pub fn save_level_member_checked(
+    project: &ProjectRow,
+    projects_root: &Path,
+    member: &str,
+    expected_current: &[u8],
+    edited: &[u8],
+) -> Result<bool, String> {
+    const MAX_PROJECT_EDIT_BYTES: usize = 192 * 1024 * 1024;
+    if !safe_member(member)
+        || expected_current.len() > MAX_PROJECT_EDIT_BYTES
+        || edited.len() > MAX_PROJECT_EDIT_BYTES
+    {
+        return Err("Unsafe or oversized level project member edit".into());
+    }
+    let mut replacement = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+    replacement.write_all(edited).map_err(|e| e.to_string())?;
+    replacement
+        .as_file_mut()
+        .sync_all()
+        .map_err(|e| e.to_string())?;
+    import_raw_member_checked(
+        project,
+        projects_root,
+        member,
+        replacement.path(),
+        Some(expected_current),
+    )
+}
+
 /// Import explicitly selected bytes/XML over ONE manifest-listed editable
 /// member. Never writes source PAKs or imported library originals. Keeps a
 /// verified, immutable editor backup for manual or in-app recovery.

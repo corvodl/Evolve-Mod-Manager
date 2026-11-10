@@ -577,6 +577,114 @@ pub fn read_terrain(path: &Path, render_grid: u32) -> Result<TerrainMesh, Terrai
     decode_terrain_bytes(&fs::read(path)?, render_grid)
 }
 
+/// Source-layout-faithful terrain brush edit for an editable Modding project.
+///
+/// This modifies only the verified uncompressed original height or LayerId
+/// sample bytes. XML metadata, unknown sections, and the terrain texture atlas
+/// are retained byte-for-byte. The caller is responsible for the verified
+/// project backup/import transaction; no original PAK is ever edited here.
+#[derive(Clone, Copy, Debug)]
+pub enum TerrainBrushEdit {
+    Sculpt {
+        x: u32,
+        y: u32,
+        radius: u32,
+        delta_height: f32,
+    },
+    Paint {
+        x: u32,
+        y: u32,
+        radius: u32,
+        layer_id: u8,
+    },
+}
+
+pub fn edit_terrain_bytes(source: &[u8], edit: TerrainBrushEdit) -> Result<Vec<u8>, TerrainError> {
+    let (info, _samples) = parse_raw(source)?;
+    let (cx, cy, radius) = match edit {
+        TerrainBrushEdit::Sculpt { x, y, radius, .. }
+        | TerrainBrushEdit::Paint { x, y, radius, .. } => (x, y, radius),
+    };
+    if cx >= info.width || cy >= info.height || radius > 128 {
+        return Err(TerrainError::Limits);
+    }
+    let xml_size = usize::from(u16::from_le_bytes([source[1], source[2]]));
+    let height_offset = 3 + xml_size + 4 + SECTION.len() + 12;
+    let mut output = source.to_vec();
+    let paint = if let TerrainBrushEdit::Paint { layer_id, .. } = edit {
+        let original = decode_terrain_paint_bytes(source)?
+            .ok_or_else(|| TerrainError::Format("Terrain has no authored LayerId bitmap".into()))?;
+        // Duplicate material layer declarations are ambiguous: a painted byte
+        // cannot select which of several definitions the engine will use.
+        if original
+            .layers
+            .iter()
+            .filter(|layer| layer.id == layer_id)
+            .count()
+            != 1
+        {
+            return Err(TerrainError::Format(
+                "Paint ID must refer to exactly one authored terrain layer".into(),
+            ));
+        }
+        let bytes = info.width as usize * info.height as usize * 2;
+        Some(height_offset + bytes + NEXT.len() + 12)
+    } else {
+        None
+    };
+    let mut changed = 0usize;
+    for x in cx.saturating_sub(radius)..=(cx + radius).min(info.width - 1) {
+        for y in cy.saturating_sub(radius)..=(cy + radius).min(info.height - 1) {
+            let dx = x as i64 - cx as i64;
+            let dy = y as i64 - cy as i64;
+            if dx * dx + dy * dy > i64::from(radius) * i64::from(radius) {
+                continue;
+            }
+            let index = x as usize * info.height as usize + y as usize;
+            match edit {
+                TerrainBrushEdit::Sculpt { delta_height, .. } => {
+                    if !delta_height.is_finite() || delta_height.abs() > info.max_height {
+                        return Err(TerrainError::Limits);
+                    }
+                    let at = height_offset + index * 2;
+                    let old = u16::from_le_bytes([output[at], output[at + 1]]);
+                    let old_height = f32::from(old) * info.max_height / 65535.0;
+                    let new_height = (old_height + delta_height).clamp(0.0, info.max_height);
+                    let quantized = (new_height * 65535.0 / info.max_height).round() as u16;
+                    if old != quantized {
+                        output[at..at + 2].copy_from_slice(&quantized.to_le_bytes());
+                        changed += 1;
+                    }
+                }
+                TerrainBrushEdit::Paint { layer_id, .. } => {
+                    let at = paint.ok_or(TerrainError::Limits)? + index;
+                    if output[at] != layer_id {
+                        output[at] = layer_id;
+                        changed += 1;
+                    }
+                }
+            }
+        }
+    }
+    if changed == 0 {
+        return Err(TerrainError::Format("Brush made no changes".into()));
+    }
+    // Full original layout must still parse; reject malformed files before
+    // passing the output to the project's checked import/backup transaction.
+    let (after, _) = parse_raw(&output)?;
+    if after.width != info.width || after.height != info.height {
+        return Err(TerrainError::Limits);
+    }
+    if paint.is_some() {
+        let painted = decode_terrain_paint_bytes(&output)?
+            .ok_or_else(|| TerrainError::Format("Paint bitmap disappeared".into()))?;
+        if painted.width != info.width || painted.height != info.height {
+            return Err(TerrainError::Limits);
+        }
+    }
+    Ok(output)
+}
+
 /// Blender-compatible Wavefront OBJ with original XY, Z-up, UVs and normals.
 /// A full map scene still requires CryEngine object geometry and materials.
 pub fn export_terrain_obj(mesh: &TerrainMesh, destination: &Path) -> Result<(), TerrainError> {
@@ -648,6 +756,84 @@ mod tests {
         }
         data.extend_from_slice(NEXT);
         data
+    }
+
+    #[test]
+    fn project_brush_sculpt_preserves_opaque_sections_and_round_trips() {
+        let source = sample_data();
+        let edited = edit_terrain_bytes(
+            &source,
+            TerrainBrushEdit::Sculpt {
+                x: 5,
+                y: 6,
+                radius: 1,
+                delta_height: 5.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(source.len(), edited.len());
+        let base = decode_terrain_bytes(&source, 16).unwrap();
+        let mesh = decode_terrain_bytes(&edited, 16).unwrap();
+        assert!(mesh.vertices[5 * 16 + 6][2] > base.vertices[5 * 16 + 6][2]);
+        assert_eq!(base.vertices[0], mesh.vertices[0]);
+        assert_eq!(&source[..source.len() - NEXT.len()][..20], &edited[..20]);
+        assert_eq!(
+            &source[source.len() - NEXT.len()..],
+            &edited[edited.len() - NEXT.len()..]
+        );
+        assert!(
+            edit_terrain_bytes(
+                &source,
+                TerrainBrushEdit::Sculpt {
+                    x: 16,
+                    y: 0,
+                    radius: 1,
+                    delta_height: 5.0
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn project_brush_paint_requires_one_declared_authored_layer() {
+        let sample = sample_data();
+        let xml_size = usize::from(u16::from_le_bytes([sample[1], sample[2]]));
+        let xml = br#"<Heightmap Width="16" Height="16" UnitSize="2" MaxHeight="100"><Layers><Layer Name="Test" LayerId="7" SurfaceType="materials/test"/></Layers></Heightmap>"#;
+        let mut source = vec![0xff];
+        source.extend_from_slice(&(xml.len() as u16).to_le_bytes());
+        source.extend_from_slice(xml);
+        source.extend_from_slice(&sample[3 + xml_size..]);
+        source.extend_from_slice(&256u32.to_le_bytes());
+        source.extend_from_slice(&256u32.to_le_bytes());
+        source.extend_from_slice(&0u32.to_le_bytes());
+        source.extend_from_slice(&[0u8; 256]);
+        let edited = edit_terrain_bytes(
+            &source,
+            TerrainBrushEdit::Paint {
+                x: 4,
+                y: 3,
+                radius: 1,
+                layer_id: 7,
+            },
+        )
+        .unwrap();
+        assert_eq!(source.len(), edited.len());
+        let map = decode_terrain_paint_bytes(&edited).unwrap().unwrap();
+        assert_eq!(map.id_at(4, 3), Some(7));
+        assert_eq!(map.id_at(0, 0), Some(0));
+        assert!(
+            edit_terrain_bytes(
+                &source,
+                TerrainBrushEdit::Paint {
+                    x: 4,
+                    y: 3,
+                    radius: 1,
+                    layer_id: 42
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]

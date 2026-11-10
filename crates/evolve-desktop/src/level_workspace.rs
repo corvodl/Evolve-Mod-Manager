@@ -497,12 +497,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .on_input(Message::LevelEditRotationChanged),
             design::text_input("Scale: x, y, z", &state.level_edit_scale)
                 .on_input(Message::LevelEditScaleChanged),
-            design::button("Apply to Preview")
+            design::button("Save transform to project")
                 .style(design::primary)
                 .on_press_maybe(
-                    (!state.level_read_only && !object.kind.eq_ignore_ascii_case("Vegetation"))
-                        .then_some(Message::LevelApplyTransform)
+                    (!state.level_read_only
+                        && state.level_project.is_some()
+                        && !object.kind.eq_ignore_ascii_case("Vegetation"))
+                    .then_some(Message::LevelApplyTransform)
                 ),
+            crate::level_authoring::placement_editor(state, object),
         ]
         .spacing(6)
         .into()
@@ -722,6 +725,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             ))
             .size(11)
             .style(design::muted),
+            crate::level_authoring::terrain_editor(state),
             text("Rendering details and source warnings are in Diagnostics.")
                 .size(11)
                 .style(design::muted),
@@ -859,11 +863,34 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     (!state.level_read_only && !state.level_redo.is_empty())
                         .then_some(Message::LevelRedoTransform)
                 ),
-                text(format!("{} undo steps", state.level_undo.len()))
+                text(format!("{} preview undo steps", state.level_undo.len()))
                     .size(12)
                     .color(MUTED),
             ]
             .spacing(8),
+            row![
+                design::button("Undo saved edit").on_press_maybe(
+                    (!state.level_read_only
+                        && !state.busy
+                        && state.level_dirty_count == 0
+                        && !state.level_committed_undo.is_empty())
+                    .then_some(Message::LevelUndoCommitted)
+                ),
+                design::button("Redo saved edit").on_press_maybe(
+                    (!state.level_read_only
+                        && !state.busy
+                        && state.level_dirty_count == 0
+                        && !state.level_committed_redo.is_empty())
+                    .then_some(Message::LevelRedoCommitted)
+                ),
+            ]
+            .spacing(8),
+            text(format!(
+                "{} saved edit(s) available to undo (session only)",
+                state.level_committed_undo.len()
+            ))
+            .size(12)
+            .color(MUTED),
             text(format!("{} unsaved placements", state.level_dirty_count)).size(12),
             design::text_input(
                 "New absolute .lyr or .xml output path",
