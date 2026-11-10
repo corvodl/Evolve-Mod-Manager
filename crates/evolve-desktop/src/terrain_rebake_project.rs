@@ -8,7 +8,7 @@ use evolve_core::terrain_rebake::{decode_original_rgb24_grid, encode_original_rg
 use image::RgbaImage;
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const MAX_TILE_BYTES: u64 = 48 * 1024 * 1024;
 const MAX_GRID_SIDE: usize = 8;
