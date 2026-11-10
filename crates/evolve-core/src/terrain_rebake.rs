@@ -281,8 +281,7 @@ mod tests {
         let refs = sources.iter().map(Vec::as_slice).collect::<Vec<_>>();
         let atlas = decode_original_rgb24_grid(&refs, 2).unwrap();
         assert_eq!(atlas.dimensions(), (2048, 2048));
-        let independently_read = crate::terrain_tiles::read_terrain_rgb24_tiles(&paths, 2)
-            .unwrap();
+        let independently_read = crate::terrain_tiles::read_terrain_rgb24_tiles(&paths, 2).unwrap();
         assert_eq!(independently_read.image, atlas);
         let encoded = encode_original_rgb24_rebake(&refs, 2, &atlas).unwrap();
         assert!(encoded.changed_tiles.iter().all(Option::is_none));
@@ -294,7 +293,11 @@ mod tests {
         edited.get_pixel_mut(3, 1029).0 = [before[0] ^ 1, before[1], before[2], 255];
         let result = encode_original_rgb24_rebake(&refs, 2, &edited).unwrap();
         assert_eq!(
-            result.changed_tiles.iter().filter(|tile| tile.is_some()).count(),
+            result
+                .changed_tiles
+                .iter()
+                .filter(|tile| tile.is_some())
+                .count(),
             1
         );
         assert!(result.changed_tiles[1].is_some());
@@ -309,5 +312,4 @@ mod tests {
             assert_eq!(&std::fs::read(path).unwrap(), original);
         }
     }
-
 }
