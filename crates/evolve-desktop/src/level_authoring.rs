@@ -857,6 +857,91 @@ mod tests {
                 .position,
             position.position
         );
+        // Stage all 39 original Tutorial layers in an isolated managed project.
+        // Exercise the same backup/CAS transaction as editor commits and verify
+        // the native result across the complete map, never writing to imports.
+        let temp = tempfile::tempdir().unwrap();
+        let projects_root = temp.path().join("Projects");
+        let workspace = projects_root.join("Tutorial");
+        for (name, bytes) in layer_paths.iter().zip(&layers) {
+            let destination = workspace.join("files").join(name);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::write(destination, bytes).unwrap();
+        }
+        let member = object.layer.as_str();
+        fs::write(
+            workspace.join(".evolve-pak-workspace.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "entries": [{
+                    "path": member,
+                    "format": "raw",
+                    "sha256": format!("{:x}", Sha256::digest(&layers[index]))
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let project = crate::modding_projects::ProjectRow {
+            label: "Tutorial".into(),
+            target: "levels_tutorial.pak".into(),
+            source_build: String::new(),
+            status: "Draft".into(),
+            details: String::new(),
+            workspace: workspace.clone(),
+            modified: vec![],
+            changed_known: true,
+            enabled: false,
+        };
+        assert!(
+            crate::modding_projects::save_level_member_checked(
+                &project,
+                &projects_root,
+                member,
+                &layers[index],
+                &updated
+            )
+            .unwrap()
+        );
+        let reread = layer_paths
+            .iter()
+            .map(|name| fs::read(workspace.join("files").join(name)).unwrap())
+            .collect::<Vec<_>>();
+        let references = layer_paths
+            .iter()
+            .zip(&reread)
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        let reopened = evolve_core::parse_level_scene_read_only(&references).unwrap();
+        assert_eq!(reopened.scene.objects.len(), combined.scene.objects.len());
+        assert_eq!(reopened.duplicate_guids, combined.duplicate_guids);
+        assert_eq!(
+            reopened
+                .scene
+                .objects
+                .iter()
+                .find(|candidate| candidate.id == object.id)
+                .unwrap()
+                .local
+                .position,
+            position.position
+        );
+        assert_eq!(
+            fs::read_dir(workspace.join("EditorBackups")).unwrap().count(),
+            1
+        );
+        assert!(
+            crate::modding_projects::restore_original_raw_member(
+                &project,
+                &projects_root,
+                member
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            fs::read(workspace.join("files").join(member)).unwrap(),
+            layers[index]
+        );
         for (name, bytes) in layer_paths.iter().zip(&layers) {
             assert_eq!(
                 fs::read(Path::new(&inventory.root).join(name)).unwrap(),
