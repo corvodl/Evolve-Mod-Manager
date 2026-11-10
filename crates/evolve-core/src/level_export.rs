@@ -931,6 +931,23 @@ impl Assembler {
         Ok(())
     }
 
+    /// Keep the source placement and transform without inventing geometry for
+    /// a model that was positively classified as collision/helper-only.
+    fn add_non_renderable_placement(
+        &mut self,
+        object: &crate::scene::PlacedObject,
+        model: &str,
+    ) -> Result<(), LevelExportError> {
+        self.add_placement(object, &[])?;
+        let nodes = self.document["nodes"]
+            .as_array_mut()
+            .ok_or(LevelExportError::Limits)?;
+        let node = nodes.last_mut().ok_or(LevelExportError::Limits)?;
+        node["extras"]["non_renderable"] = json!(true);
+        node["extras"]["non_renderable_source"] = json!(model);
+        Ok(())
+    }
+
     /// Embed the *complete* authored LayerId bitmap as a nearest-neighbor
     /// PNG, with each original category byte in R. The original X-major
     /// CryEngine bitmap is transposed into ordinary PNG row-major coordinates
@@ -2061,6 +2078,7 @@ where
             geometry_instances += 1;
             continue;
         }
+        let mut non_renderable_model = None;
         let mesh_ids = if object.model.is_empty() {
             Vec::new()
         } else {
@@ -2088,62 +2106,90 @@ where
                 }
                 let mut loaded = None;
                 let mut errors = Vec::new();
-                for candidate in candidates {
-                    if let Some(path) = resolve(&candidate)? {
-                        if let Ok(parts) = read_world_model_parts_with_subsets(&path)
-                            && !parts.is_empty()
-                        {
+                let mut exact_non_renderable = None;
+                let mut unsafe_geometry = false;
+                for (index, candidate) in candidates.into_iter().enumerate() {
+                    let Some(path) = resolve(&candidate)? else {
+                        errors.push(format!("{candidate}: source dependency is missing"));
+                        continue;
+                    };
+                    match read_world_model_parts_with_subsets(&path) {
+                        Ok(parts) if !parts.is_empty() => {
                             loaded = Some((parts, path, candidate));
                             break;
                         }
-                        match read_model(&path) {
-                            Ok(mesh) => {
-                                loaded = Some((
-                                    vec![WorldModelPart {
-                                        mesh,
-                                        subsets: Vec::new(),
-                                        has_subset_table: false,
-                                    }],
-                                    path,
-                                    candidate,
-                                ));
-                                break;
+                        Ok(_) => {}
+                        Err(ModelError::NoRenderableMesh) => {
+                            // Never fall through to read_model here: that
+                            // parser ignores NODE ownership and would turn
+                            // unreferenced collision/helper streams into
+                            // visible geometry.
+                            if index == 0 {
+                                exact_non_renderable = Some(candidate.clone());
                             }
-                            Err(error) => errors.push(format!("{candidate}: {error}")),
+                            errors.push(format!(
+                                "{candidate}: collision/helper-only source geometry"
+                            ));
+                        }
+                        Err(error) => {
+                            // A structured world asset that failed its own
+                            // validated decoder is malformed or unsafe. Never
+                            // reinterpret its raw streams as an unrelated flat
+                            // mesh; that would discard NODE ownership and
+                            // subset provenance.
+                            unsafe_geometry = true;
+                            errors.push(format!("{candidate}: {error}"));
                         }
                     }
                 }
-                let (parts, path, virtual_source) = loaded.ok_or_else(|| {
-                    LevelExportError::Missing(format!("{}: {}", object.model, errors.join("; ")))
-                })?;
-                let bytes = fs::read(&path)?;
-                let authored =
-                    source_model_material(&virtual_source, &object.material, &bytes, &mut resolve)?
-                        .and_then(|material| read_material(&material).ok());
-                let mut ids = Vec::new();
-                for part in parts {
-                    // An explicit empty ranges slice means the source part
-                    // has no table; do not borrow another mesh's subset IDs.
-                    let known = Some(part.subsets.as_slice());
-                    let index = assembler.add_textured_mesh_resolved(
-                        &part.mesh,
+                if let Some((parts, path, virtual_source)) = loaded {
+                    let bytes = fs::read(&path)?;
+                    let authored = source_model_material(
+                        &virtual_source,
+                        &object.material,
                         &bytes,
-                        authored.as_ref(),
-                        known,
                         &mut resolve,
-                    )?;
-                    ids.push(index);
+                    )?
+                    .and_then(|material| read_material(&material).ok());
+                    let mut ids = Vec::new();
+                    for part in parts {
+                        // An explicit empty ranges slice means the source part
+                        // has no table; do not borrow another mesh's subset IDs.
+                        let known = Some(part.subsets.as_slice());
+                        let index = assembler.add_textured_mesh_resolved(
+                            &part.mesh,
+                            &bytes,
+                            authored.as_ref(),
+                            known,
+                            &mut resolve,
+                        )?;
+                        ids.push(index);
+                    }
+                    resources.insert(key, ids.clone());
+                    ids
+                } else if !unsafe_geometry && let Some(model) = exact_non_renderable {
+                    non_renderable_model = Some(model);
+                    Vec::new()
+                } else {
+                    return Err(LevelExportError::Missing(format!(
+                        "{}: {}",
+                        object.model,
+                        errors.join("; ")
+                    )));
                 }
-                resources.insert(key, ids.clone());
-                ids
             }
         };
-        if mesh_ids.is_empty() {
+        if let Some(model) = non_renderable_model {
             metadata_only += 1;
+            assembler.add_non_renderable_placement(object, &model)?;
         } else {
-            geometry_instances += 1;
+            if mesh_ids.is_empty() {
+                metadata_only += 1;
+            } else {
+                geometry_instances += 1;
+            }
+            assembler.add_placement(object, &mesh_ids)?;
         }
-        assembler.add_placement(object, &mesh_ids)?;
     }
     for light in &lights {
         assembler.add_light(light)?;
@@ -2752,6 +2798,74 @@ mod tests {
         fs::write(
             &source,
             br#"<Objects><Object Id="A" Geometry="models/not-here.cgf"/></Objects>"#,
+        )
+        .unwrap();
+        let output = root.path().join("scene.glb");
+        let failure = export_level_scene_glb(&source, root.path(), None, &output);
+        assert!(matches!(failure, Err(LevelExportError::Missing(_))));
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn helper_only_source_keeps_placement_as_metadata_only() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("mission.xml");
+        fs::write(
+            &source,
+            br#"<Objects>
+                <Object Id="A" Name="Helper" Geometry="models/helper.cgf" Pos="1,2,3"/>
+                <Object Id="B" Name="Visible" Geometry="models/visible.cgf" Pos="4,5,6"/>
+            </Objects>"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("models")).unwrap();
+        fs::write(
+            root.path().join("models/helper.cgf"),
+            crate::model::tests::helper_only_fixture(),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("models/visible.cgf"),
+            crate::model::tests::fixture(),
+        )
+        .unwrap();
+        let output = root.path().join("scene.glb");
+        let report = export_level_scene_glb(&source, root.path(), None, &output).unwrap();
+        assert_eq!(report.source_objects, 2);
+        assert_eq!(report.metadata_only_objects, 1);
+        assert_eq!(report.exported_mesh_instances, 1);
+        assert_eq!(report.exported_mesh_resources, 1);
+        let bytes = fs::read(&output).unwrap();
+        let json_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let document: Value = serde_json::from_slice(&bytes[20..20 + json_size]).unwrap();
+        let placement = document["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["extras"]["source_id"] == json!("a"))
+            .unwrap();
+        assert!(placement.get("mesh").is_none());
+        assert_eq!(placement["translation"], json!([1., 2., 3.]));
+        assert_eq!(placement["extras"]["non_renderable"], json!(true));
+        assert_eq!(
+            placement["extras"]["non_renderable_source"],
+            json!("models/helper.cgf")
+        );
+    }
+
+    #[test]
+    fn malformed_visible_source_remains_hard_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("mission.xml");
+        fs::write(
+            &source,
+            br#"<Objects><Object Id="A" Geometry="models/broken.cgf"/></Objects>"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("models")).unwrap();
+        fs::write(
+            root.path().join("models/broken.cgf"),
+            crate::model::tests::malformed_visible_fixture(),
         )
         .unwrap();
         let output = root.path().join("scene.glb");
