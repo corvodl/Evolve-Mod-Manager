@@ -4,9 +4,7 @@
 //! A matching, authenticated full-resolution baked atlas must already exist.
 //! The original game PAK and imported Asset Library remain strictly read-only.
 use crate::modding_projects::{self, ProjectRow};
-use evolve_core::terrain_rebake::{
-    decode_original_rgb24_grid, encode_original_rgb24_rebake,
-};
+use evolve_core::terrain_rebake::{decode_original_rgb24_grid, encode_original_rgb24_rebake};
 use image::RgbaImage;
 use serde_json::Value;
 use std::fs;
@@ -20,15 +18,20 @@ fn validate_member(member: &str, index: usize, side: usize, parent: &Path) -> Re
         || member.contains('\\')
         || member.contains(':')
         || member.starts_with('/')
-        || member.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || member
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
     {
         return Err("Unsafe source terrain tile member path".into());
     }
     let path = Path::new(member);
     if path.parent() != Some(parent)
         || !path.file_name().is_some_and(|name| {
-            name.to_string_lossy()
-                .eq_ignore_ascii_case(&format!("tile{}_{}.raw", index % side, index / side))
+            name.to_string_lossy().eq_ignore_ascii_case(&format!(
+                "tile{}_{}.raw",
+                index % side,
+                index / side
+            ))
         })
     {
         return Err("Source tile names must match an exact complete native RGB24 grid".into());
@@ -53,8 +56,14 @@ pub(super) fn save_rebaked_rgb24_grid_checked(
     side: usize,
     baked: &RgbaImage,
 ) -> Result<usize, String> {
-    if !project.target.to_ascii_lowercase().ends_with("terraintexture.pak") {
-        return Err("Native RGB24 rebake must target the terraintexture.pak Modding project".into());
+    if !project
+        .target
+        .to_ascii_lowercase()
+        .ends_with("terraintexture.pak")
+    {
+        return Err(
+            "Native RGB24 rebake must target the terraintexture.pak Modding project".into(),
+        );
     }
     if side == 0 || side > MAX_GRID_SIDE || side.checked_mul(side) != Some(members.len()) {
         return Err("Native RGB24 tile grid is incomplete".into());
@@ -70,10 +79,10 @@ pub(super) fn save_rebaked_rgb24_grid_checked(
     if !meta.file_type().is_file() || meta.len() > 8 * 1024 * 1024 {
         return Err("Missing or unsafe native rebake project manifest".into());
     }
-    let manifest: Value = serde_json::from_slice(&fs::read(manifest_path).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("Invalid terrain project manifest: {e}"))?;
-    if manifest["version"].as_u64() != Some(1)
-        || manifest["reference_only"].as_bool() == Some(true)
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(manifest_path).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("Invalid terrain project manifest: {e}"))?;
+    if manifest["version"].as_u64() != Some(1) || manifest["reference_only"].as_bool() == Some(true)
     {
         return Err("Terrain project manifest is not editable".into());
     }
@@ -86,11 +95,16 @@ pub(super) fn save_rebaked_rgb24_grid_checked(
         validate_member(member, index, side, parent)?;
         if entries
             .iter()
-            .filter(|entry| entry["path"].as_str() == Some(member.as_str())
-                && entry["format"].as_str() == Some("raw"))
-            .count() != 1
+            .filter(|entry| {
+                entry["path"].as_str() == Some(member.as_str())
+                    && entry["format"].as_str() == Some("raw")
+            })
+            .count()
+            != 1
         {
-            return Err("Terrain tile is missing or duplicated in editable project manifest".into());
+            return Err(
+                "Terrain tile is missing or duplicated in editable project manifest".into(),
+            );
         }
         let target = workspace.join("files").join(member);
         let metadata = fs::symlink_metadata(&target).map_err(|e| e.to_string())?;
@@ -118,7 +132,11 @@ pub(super) fn save_rebaked_rgb24_grid_checked(
     for (index, output) in encoded.changed_tiles.iter().enumerate() {
         let Some(output) = output else { continue };
         let result = modding_projects::save_level_member_checked(
-            project, projects_root, &members[index], &originals[index], output,
+            project,
+            projects_root,
+            &members[index],
+            &originals[index],
+            output,
         );
         match result {
             Ok(true) => committed.push(index),
@@ -132,8 +150,11 @@ pub(super) fn save_rebaked_rgb24_grid_checked(
                 for &prior in committed.iter().rev() {
                     if let Some(previous_output) = &encoded.changed_tiles[prior] {
                         if let Err(error) = modding_projects::save_level_member_checked(
-                            project, projects_root, &members[prior],
-                            previous_output, &originals[prior],
+                            project,
+                            projects_root,
+                            &members[prior],
+                            previous_output,
+                            &originals[prior],
                         ) {
                             rollback_errors.push(format!("{}: {error}", members[prior]));
                         }
@@ -214,7 +235,11 @@ mod tests {
         let mut image = decode_original_rgb24_grid(&refs, 2).unwrap();
         image.get_pixel_mut(1, 6).0 = [23, 65, 220, 255];
         let count = save_rebaked_rgb24_grid_checked(
-            &project, &folder.path().join("Projects"), &members, 2, &image,
+            &project,
+            &folder.path().join("Projects"),
+            &members,
+            2,
+            &image,
         )
         .unwrap();
         assert_eq!(count, 1);
@@ -233,13 +258,19 @@ mod tests {
         let saved_refs: Vec<_> = saved.iter().map(Vec::as_slice).collect();
         assert_eq!(decode_original_rgb24_grid(&saved_refs, 2).unwrap(), image);
         assert_eq!(
-            fs::read_dir(project.workspace.join("EditorBackups")).unwrap().count(),
+            fs::read_dir(project.workspace.join("EditorBackups"))
+                .unwrap()
+                .count(),
             1
         );
-        assert!(modding_projects::restore_original_raw_member(
-            &project, &folder.path().join("Projects"), &members[1],
-        )
-        .unwrap());
+        assert!(
+            modding_projects::restore_original_raw_member(
+                &project,
+                &folder.path().join("Projects"),
+                &members[1],
+            )
+            .unwrap()
+        );
         assert_eq!(
             fs::read(project.workspace.join("files").join(&members[1])).unwrap(),
             originals[1]
@@ -253,12 +284,23 @@ mod tests {
         let mut image = decode_original_rgb24_grid(&refs, 2).unwrap();
         image.get_pixel_mut(1, 6).0 = [23, 65, 220, 255];
         members[3] = "missing.raw".into();
-        assert!(save_rebaked_rgb24_grid_checked(
-            &project, &folder.path().join("Projects"), &members, 2, &image,
-        ).is_err());
-        for (index, member) in ["tile0_0.raw", "tile1_0.raw", "tile0_1.raw", "tile1_1.raw"].iter().enumerate() {
+        assert!(
+            save_rebaked_rgb24_grid_checked(
+                &project,
+                &folder.path().join("Projects"),
+                &members,
+                2,
+                &image,
+            )
+            .is_err()
+        );
+        for (index, member) in ["tile0_0.raw", "tile1_0.raw", "tile0_1.raw", "tile1_1.raw"]
+            .iter()
+            .enumerate()
+        {
             assert_eq!(
-                fs::read(project.workspace.join("files").join(member)).unwrap(), originals[index]
+                fs::read(project.workspace.join("files").join(member)).unwrap(),
+                originals[index]
             );
         }
         assert!(!project.workspace.join("EditorBackups").exists());
