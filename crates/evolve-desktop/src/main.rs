@@ -38,10 +38,10 @@ mod initial_setup;
 mod launcher_bridge;
 mod level_atmosphere;
 mod level_authoring;
-mod level_edit_history;
 mod level_camera;
 #[cfg(test)]
 mod level_capture;
+mod level_edit_history;
 mod level_editor_shell;
 mod level_effect_sources;
 mod level_environment;
@@ -941,7 +941,12 @@ enum Operation {
         PathBuf,
     ),
     SaveProjectSource(ProjectRow, PathBuf, ProjectLevelMutation, PathBuf, PathBuf),
-    RestoreCommittedLevel(ProjectRow, Arc<level_edit_history::CommittedRevision>, bool, PathBuf),
+    RestoreCommittedLevel(
+        ProjectRow,
+        Arc<level_edit_history::CommittedRevision>,
+        bool,
+        PathBuf,
+    ),
     ExportEditedLevel(
         PathBuf,
         PathBuf,
@@ -1099,7 +1104,11 @@ enum Completed {
         Arc<world_instances::World>,
         level_scene_renderer::Report,
     ),
-    ProjectLevelSaved(modding_projects::ProjectRow, bool, Option<Arc<level_edit_history::CommittedRevision>>),
+    ProjectLevelSaved(
+        modding_projects::ProjectRow,
+        bool,
+        Option<Arc<level_edit_history::CommittedRevision>>,
+    ),
     ProjectLevelHistoryApplied(ProjectRow, Arc<level_edit_history::CommittedRevision>, bool),
     EditedLevelExported(PathBuf, usize),
     Terrain(RenderMesh, TerrainInfo),
@@ -1979,11 +1988,17 @@ impl Operation {
                     &original,
                     &output,
                 )?;
-                Ok(Completed::ProjectLevelSaved(project, saved, saved.then_some(revision)))
+                Ok(Completed::ProjectLevelSaved(
+                    project,
+                    saved,
+                    saved.then_some(revision),
+                ))
             }
             Self::RestoreCommittedLevel(project, revision, undo, root) => {
                 revision.apply(&project, &root, undo)?;
-                Ok(Completed::ProjectLevelHistoryApplied(project, revision, undo))
+                Ok(Completed::ProjectLevelHistoryApplied(
+                    project, revision, undo,
+                ))
             }
             Self::InspectLevel(source) => {
                 let checksum = level_source_hash(&source)?;
@@ -6165,11 +6180,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelUndoCommitted | Message::LevelRedoCommitted => {
             if state.busy || state.level_read_only || state.level_dirty_count != 0 {
-                state.status = "Finish pending preview edits before restoring a committed revision.".into();
+                state.status =
+                    "Finish pending preview edits before restoring a committed revision.".into();
                 return Task::none();
             }
             let Some(project) = state.level_project.clone() else {
-                state.status = "Open a managed Modding project to restore a committed revision.".into();
+                state.status =
+                    "Open a managed Modding project to restore a committed revision.".into();
                 return Task::none();
             };
             let undo = matches!(message, Message::LevelUndoCommitted);
@@ -6183,7 +6200,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let root = PathBuf::from(&state.preferences.projects);
-            return launch(state, Operation::RestoreCommittedLevel(project, revision, undo, root));
+            return launch(
+                state,
+                Operation::RestoreCommittedLevel(project, revision, undo, root),
+            );
         }
         Message::LevelSaveProjectChanges => {
             let Some(project) = state.level_project.clone() else {
@@ -14332,8 +14352,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if let Some(revision) = revision {
                         state.level_committed_redo.clear();
                         state.level_committed_undo.push_back(revision);
-                        while state.level_committed_undo.len() > level_edit_history::MAX_HISTORY_STEPS
-                            || state.level_committed_undo.iter().map(|item| item.disk_bytes()).sum::<u64>()
+                        while state.level_committed_undo.len()
+                            > level_edit_history::MAX_HISTORY_STEPS
+                            || state
+                                .level_committed_undo
+                                .iter()
+                                .map(|item| item.disk_bytes())
+                                .sum::<u64>()
                                 > level_edit_history::MAX_HISTORY_DISK_BYTES
                         {
                             state.level_committed_undo.pop_front();
@@ -14350,23 +14375,36 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ProjectLevelHistoryApplied(project, revision, undo)) => {
                     if undo {
-                        if !state.level_committed_undo.back().is_some_and(|item| Arc::ptr_eq(item, &revision)) {
-                            state.status = "Revision changed during undo; reload the project.".into();
+                        if !state
+                            .level_committed_undo
+                            .back()
+                            .is_some_and(|item| Arc::ptr_eq(item, &revision))
+                        {
+                            state.status =
+                                "Revision changed during undo; reload the project.".into();
                             return Task::none();
                         }
                         state.level_committed_undo.pop_back();
                         state.level_committed_redo.push_back(revision);
                     } else {
-                        if !state.level_committed_redo.back().is_some_and(|item| Arc::ptr_eq(item, &revision)) {
-                            state.status = "Revision changed during redo; reload the project.".into();
+                        if !state
+                            .level_committed_redo
+                            .back()
+                            .is_some_and(|item| Arc::ptr_eq(item, &revision))
+                        {
+                            state.status =
+                                "Revision changed during redo; reload the project.".into();
                             return Task::none();
                         }
                         state.level_committed_redo.pop_back();
                         state.level_committed_undo.push_back(revision);
                     }
-                    state.status = if undo { "Committed project edit undone; original bytes restored." } else {
+                    state.status = if undo {
+                        "Committed project edit undone; original bytes restored."
+                    } else {
                         "Committed project edit reapplied."
-                    }.into();
+                    }
+                    .into();
                     let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
                     let root = PathBuf::from(&state.library_root);
                     return launch(state, Operation::OpenProjectLevel(project, index, root));
@@ -14409,11 +14447,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ImportedMap(loaded)) => {
                     let loaded = *loaded;
-                    let same_project_and_map = state.level_project.as_ref().zip(loaded.project.as_ref())
-                        .is_some_and(|(before, after)| before.workspace == after.workspace
-                            && state.library_map.as_ref()
-                                .and_then(|(_, maps, index)| maps.get(*index))
-                                .is_some_and(|old_map| old_map.name == loaded.maps[loaded.index].name));
+                    let same_project_and_map = state
+                        .level_project
+                        .as_ref()
+                        .zip(loaded.project.as_ref())
+                        .is_some_and(|(before, after)| {
+                            before.workspace == after.workspace
+                                && state
+                                    .library_map
+                                    .as_ref()
+                                    .and_then(|(_, maps, index)| maps.get(*index))
+                                    .is_some_and(|old_map| {
+                                        old_map.name == loaded.maps[loaded.index].name
+                                    })
+                        });
                     if !same_project_and_map {
                         state.level_committed_undo.clear();
                         state.level_committed_redo.clear();
