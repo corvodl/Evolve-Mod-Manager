@@ -83,7 +83,7 @@ mod standard_user_launch;
 mod storage_usage;
 mod system_health;
 mod terrain_material_probe;
-mod terrain_rebake_project;
+// Native RGB24 source-backed output stage; UI activation awaits verified\n// per-pixel Evolve paint alpha and original multi-layer shader ordering.\n#[allow(dead_code)]\nmod terrain_rebake_project;
 mod text_asset_editor;
 mod textured;
 mod updater;
