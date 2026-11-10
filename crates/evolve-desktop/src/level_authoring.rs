@@ -927,16 +927,14 @@ mod tests {
             position.position
         );
         assert_eq!(
-            fs::read_dir(workspace.join("EditorBackups")).unwrap().count(),
+            fs::read_dir(workspace.join("EditorBackups"))
+                .unwrap()
+                .count(),
             1
         );
         assert!(
-            crate::modding_projects::restore_original_raw_member(
-                &project,
-                &projects_root,
-                member
-            )
-            .unwrap()
+            crate::modding_projects::restore_original_raw_member(&project, &projects_root, member)
+                .unwrap()
         );
         assert_eq!(
             fs::read(workspace.join("files").join(member)).unwrap(),
