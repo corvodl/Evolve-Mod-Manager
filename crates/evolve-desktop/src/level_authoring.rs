@@ -831,7 +831,7 @@ mod tests {
             layers[index].starts_with(b"CryXmlB\0")
         );
         let mut changed = layers.clone();
-        changed[index] = updated;
+        changed[index] = updated.clone();
         let after = layer_paths
             .iter()
             .zip(&changed)
