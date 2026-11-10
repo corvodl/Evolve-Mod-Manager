@@ -1,5 +1,5 @@
 # Explicit manual Nightly build request. Only code already merged into main is packaged.
-request: user-requested-after-merged-pr195-2026-11-05
-requested: 2026-11-05
-base-main-commit: 609b2f88dbebd8307f2a425bdb6be485c064e535
-description: Build a new Windows nightly from main including PR #195 (byte-identical duplicate MTL resolution), PR #194 (verified cross-PAK CGF duplicates), PR #193 (Level Editor Save As and FBX/GLB scene export), PR #192 (Iced sRGB), and all earlier merged changes. Exclude open/unmerged branches and retain existing packaging/signing workflow.
+request: user-requested-after-pr196-pr199-pr200-2026-11-10
+requested: 2026-11-10
+base-main-commit: f18e373366a146e832b0b1cee2fb1441b5a462ef
+description: Build a Windows nightly from the merged main branch including PR #199 collision-only level placements, PR #200 selected-build level previews / committed-edit history / RGB24 terrain rebake output infrastructure, and PR #196 Modding-project-only Level Editor authoring. Full automatic native terrain material rebaking is still not complete; preserve experimental status and existing packaging/signing safeguards.
