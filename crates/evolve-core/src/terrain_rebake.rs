@@ -103,7 +103,7 @@ pub fn encode_original_rgb24_rebake(
                 output[tile_at + 2] = rgba[source_at];
             }
         }
-        changed_tiles.push((output != *source).then_some(output));
+        changed_tiles.push((output.as_slice() != *source).then_some(output));
     }
     Ok(NativeRgb24Rebake {
         tile_dimension: dimension,
