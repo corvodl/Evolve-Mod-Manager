@@ -241,4 +241,73 @@ mod tests {
         let original_reader = crate::terrain_tiles::read_terrain_rgb24_tiles(&paths, 2).unwrap();
         assert_eq!(native, original_reader.image);
     }
+
+    /// Owner-supplied original Tutorial map RGB24 source fixture. Never
+    /// committed to this public repository or modified by this test.
+    /// Run with:
+    /// EVOLVE_BENCH_TUTORIAL_RGB24=<extracted tile directory>
+    /// cargo test -p evolve-core -- --ignored tutorial_original_rgb24
+    #[test]
+    #[ignore = "requires original user-owned Tutorial RGB24 tile fixtures"]
+    fn tutorial_original_rgb24_tiles_reencode_byte_identically() {
+        use sha2::{Digest, Sha256};
+        let directory = std::path::PathBuf::from(
+            std::env::var("EVOLVE_BENCH_TUTORIAL_RGB24")
+                .expect("set EVOLVE_BENCH_TUTORIAL_RGB24 to verified original tiles"),
+        );
+        let digests = [
+            "25105ac48d0da2abfddcf49bb9a2194a43b093dabc406f2a0356e3e7986efb3a",
+            "a5d317d98f395f8752df04200529e7e79cab83751908aea9137b962ab18d1499",
+            "1b398603ce8fcf22b6baabd14b9567ae3ed1c9c3f89b3146d84a7273dd852f63",
+            "0d2faa40cd9a14235fd2d10bd732c1f2f4c41ee35bf4ea12ad05d998d8187aeb",
+        ];
+        let mut paths = Vec::new();
+        let mut sources = Vec::new();
+        for y in 0..2 {
+            for x in 0..2 {
+                let index = y * 2 + x;
+                let path = directory.join(format!("tile{x}_{y}.raw"));
+                let bytes = std::fs::read(&path).unwrap();
+                assert_eq!(
+                    format!("{:x}", Sha256::digest(&bytes)),
+                    digests[index],
+                    "wrong original Tutorial source tile at {}",
+                    path.display()
+                );
+                paths.push(path);
+                sources.push(bytes);
+            }
+        }
+        let refs = sources.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let atlas = decode_original_rgb24_grid(&refs, 2).unwrap();
+        assert_eq!(atlas.dimensions(), (2048, 2048));
+        let independently_read = crate::terrain_tiles::read_terrain_rgb24_tiles(&paths, 2)
+            .unwrap();
+        assert_eq!(independently_read.image, atlas);
+        let encoded = encode_original_rgb24_rebake(&refs, 2, &atlas).unwrap();
+        assert!(encoded.changed_tiles.iter().all(Option::is_none));
+
+        // Change a single source pixel, regenerate the original-format grid,
+        // and verify exactly one 1024x1024 tile changes.
+        let mut edited = atlas.clone();
+        let before = edited.get_pixel(3, 1029).0;
+        edited.get_pixel_mut(3, 1029).0 = [before[0] ^ 1, before[1], before[2], 255];
+        let result = encode_original_rgb24_rebake(&refs, 2, &edited).unwrap();
+        assert_eq!(
+            result.changed_tiles.iter().filter(|tile| tile.is_some()).count(),
+            1
+        );
+        assert!(result.changed_tiles[1].is_some());
+        let patched = sources
+            .iter()
+            .zip(&result.changed_tiles)
+            .map(|(original, changed)| changed.as_deref().unwrap_or(original))
+            .collect::<Vec<_>>();
+        assert_eq!(decode_original_rgb24_grid(&patched, 2).unwrap(), edited);
+        // The fixture is immutable.
+        for (path, original) in paths.iter().zip(sources.iter()) {
+            assert_eq!(&std::fs::read(path).unwrap(), original);
+        }
+    }
+
 }
