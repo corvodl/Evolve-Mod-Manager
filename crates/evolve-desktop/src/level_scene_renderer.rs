@@ -219,6 +219,18 @@ fn source_game_directory(pak: &ImportedPak) -> Option<PathBuf> {
         .and_then(|path| fs::canonicalize(path).ok())
 }
 
+fn same_verified_build(
+    selected: &ImportedPak,
+    pak: &ImportedPak,
+    selected_game: Option<&PathBuf>,
+) -> bool {
+    selected_game.is_some_and(|game| source_game_directory(pak).as_ref() == Some(game))
+        || pak
+            .builds
+            .iter()
+            .any(|label| selected.builds.contains(label))
+}
+
 // An exact virtual asset in several PAKs is only unambiguous when the
 // decoded *source files* themselves have identical bytes. Avoid selecting the
 // first matching basename or assuming Stage 2 and Legacy PAKs interoperate.
@@ -276,15 +288,16 @@ impl Index {
             matching_build: HashSet::new(),
         };
         let mut archives = vec![selected.clone()];
+        let selected_game = source_game_directory(selected);
         if let Some(root) = &index.library_root {
-            if let Some(source_game) = source_game_directory(selected) {
+            if let Some(source_game) = &selected_game {
                 let library = imported_library(root).map_err(|e| e.to_string())?;
                 for pak in library
                     .archives
                     .into_iter()
                     .filter(|pak| {
                         pak.id != selected.id
-                            && source_game_directory(pak).as_ref() == Some(&source_game)
+                            && source_game_directory(pak).as_ref() == Some(source_game)
                     })
                     .take(MAX_ARCHIVES - 1)
                 {
@@ -314,11 +327,12 @@ impl Index {
         let mut checked = 0usize;
         let mut accepted = 0usize;
         for pak in archives {
-            if pak
-                .builds
-                .iter()
-                .any(|label| selected.builds.contains(label))
-            {
+            // The exact installed Game directory is stronger provenance than
+            // an old, mutable build label. This is also the identity used by
+            // the scoped material/CDF dependency lookup below. In particular,
+            // an unlabeled import must not become unavailable just because
+            // that lookup installs a source-game token in `sources.build`.
+            if same_verified_build(selected, &pak, selected_game.as_ref()) {
                 index.matching_build.insert(pak.id.clone());
             }
             let inventory = if pak.id == selected.id {
@@ -1525,6 +1539,42 @@ pub(super) fn reproject_after_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unlabeled_imports_from_the_same_installation_match_without_crossing_games() {
+        let root = tempfile::tempdir().unwrap();
+        let game = root.path().join("first/Game");
+        let other = root.path().join("second/Game");
+        fs::create_dir_all(&game).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let archive = |id: &str, source: &Path| ImportedPak {
+            id: id.into(),
+            name: "data.pak".into(),
+            source: source.display().to_string(),
+            directory: String::new(),
+            group: String::new(),
+            description: String::new(),
+            entries: 0,
+            extracted_bytes: 0,
+            warnings: 0,
+            builds: vec![],
+        };
+        let selected = archive("map", &game.join("levels_tutorial.pak"));
+        let companion = archive("creatures", &game.join("characters_creatures.pak"));
+        let unrelated = archive("other", &other.join("characters_creatures.pak"));
+        let verified_game = source_game_directory(&selected).unwrap();
+        assert!(same_verified_build(
+            &selected,
+            &companion,
+            Some(&verified_game)
+        ));
+        assert!(!same_verified_build(
+            &selected,
+            &unrelated,
+            Some(&verified_game)
+        ));
+        assert!(!same_verified_build(&selected, &companion, None));
+    }
 
     #[test]
     #[ignore = "requires a local Stage 2 Asset Library (EVOLVE_BENCH_LIBRARY)"]

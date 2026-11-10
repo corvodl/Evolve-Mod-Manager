@@ -50,6 +50,7 @@ pub mod signed_pak;
 pub mod skin_preview;
 pub mod staging;
 pub mod terrain;
+pub mod terrain_rebake;
 mod terrain_tiles;
 pub mod zookeeper;
 

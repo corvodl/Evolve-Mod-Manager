@@ -557,6 +557,59 @@ pub(super) fn edit_instances(bytes: &[u8], edit: VegetationEdit) -> Result<Vec<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a local read-only Tutorial Asset Library (EVOLVE_BENCH_LIBRARY)"]
+    fn imported_tutorial_vegetation_edit_round_trips_without_touching_source() {
+        let library = std::env::var("EVOLVE_BENCH_LIBRARY").unwrap();
+        let imports = evolve_core::imported_library(Path::new(&library)).unwrap();
+        let archive = imports
+            .archives
+            .iter()
+            .find(|pak| {
+                pak.name.eq_ignore_ascii_case("levels_tutorial.pak")
+                    && pak.source.to_ascii_lowercase().contains("moddedevolve")
+            })
+            .unwrap();
+        let inventory = evolve_core::imported_archive_files(archive).unwrap();
+        let entry = inventory
+            .entries
+            .iter()
+            .find(|item| {
+                item.relative_path
+                    .eq_ignore_ascii_case("levels/Tutorial/leveldata/VegetationMap.dat")
+            })
+            .unwrap();
+        let path = Path::new(&inventory.root).join(&entry.relative_path);
+        let source = fs::read(&path).unwrap();
+        let mut scene = LevelScene {
+            schema: 1,
+            objects: vec![],
+            diagnostics: vec![],
+        };
+        let info = decode(&source, &mut scene).unwrap();
+        let selected = scene.objects.first().expect("Tutorial vegetation instance");
+        let index = selected
+            .id
+            .strip_prefix("__vegetation_")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut position = selected.local.position;
+        position[0] += 1.0;
+        let updated = edit_instances(&source, VegetationEdit::Move { index, position }).unwrap();
+        let mut reloaded = LevelScene {
+            schema: 1,
+            objects: vec![],
+            diagnostics: vec![],
+        };
+        let next = decode(&updated, &mut reloaded).unwrap();
+        assert_eq!(next.version, info.version);
+        assert_eq!(next.prototypes, info.prototypes);
+        assert_eq!(next.instances, info.instances);
+        assert_eq!(reloaded.objects.first().unwrap().local.position, position);
+        assert_eq!(fs::read(&path).unwrap(), source);
+    }
     fn archive(xml: &str, instances: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(xml.len() as u8);

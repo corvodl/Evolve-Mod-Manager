@@ -813,11 +813,34 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     (!state.level_read_only && !state.level_redo.is_empty())
                         .then_some(Message::LevelRedoTransform)
                 ),
-                text(format!("{} undo steps", state.level_undo.len()))
+                text(format!("{} preview undo steps", state.level_undo.len()))
                     .size(12)
                     .color(MUTED),
             ]
             .spacing(8),
+            row![
+                design::button("Undo saved edit").on_press_maybe(
+                    (!state.level_read_only
+                        && !state.busy
+                        && state.level_dirty_count == 0
+                        && !state.level_committed_undo.is_empty())
+                    .then_some(Message::LevelUndoCommitted)
+                ),
+                design::button("Redo saved edit").on_press_maybe(
+                    (!state.level_read_only
+                        && !state.busy
+                        && state.level_dirty_count == 0
+                        && !state.level_committed_redo.is_empty())
+                    .then_some(Message::LevelRedoCommitted)
+                ),
+            ]
+            .spacing(8),
+            text(format!(
+                "{} saved edit(s) available to undo (session only)",
+                state.level_committed_undo.len()
+            ))
+            .size(12)
+            .color(MUTED),
             text(format!("{} unsaved placements", state.level_dirty_count)).size(12),
             design::text_input(
                 "New absolute .lyr or .xml output path",

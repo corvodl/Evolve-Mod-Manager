@@ -41,6 +41,7 @@ mod level_authoring;
 mod level_camera;
 #[cfg(test)]
 mod level_capture;
+mod level_edit_history;
 mod level_editor_shell;
 mod level_effect_sources;
 mod level_environment;
@@ -82,6 +83,7 @@ mod standard_user_launch;
 mod storage_usage;
 mod system_health;
 mod terrain_material_probe;
+// Native RGB24 source-backed output stage; UI activation awaits verified\n// per-pixel Evolve paint alpha and original multi-layer shader ordering.\n#[allow(dead_code)]\nmod terrain_rebake_project;
 mod text_asset_editor;
 mod textured;
 mod updater;
@@ -693,6 +695,8 @@ struct State {
     level_dirty_count: usize,
     level_undo: VecDeque<LevelTransformDiff>,
     level_redo: VecDeque<LevelTransformDiff>,
+    level_committed_undo: VecDeque<Arc<level_edit_history::CommittedRevision>>,
+    level_committed_redo: VecDeque<Arc<level_edit_history::CommittedRevision>>,
     level_edit_position: String,
     level_edit_rotation: String,
     level_edit_scale: String,
@@ -938,6 +942,12 @@ enum Operation {
         PathBuf,
     ),
     SaveProjectSource(ProjectRow, PathBuf, ProjectLevelMutation, PathBuf, PathBuf),
+    RestoreCommittedLevel(
+        ProjectRow,
+        Arc<level_edit_history::CommittedRevision>,
+        bool,
+        PathBuf,
+    ),
     ExportEditedLevel(
         PathBuf,
         PathBuf,
@@ -1095,7 +1105,12 @@ enum Completed {
         Arc<world_instances::World>,
         level_scene_renderer::Report,
     ),
-    ProjectLevelSaved(modding_projects::ProjectRow, bool),
+    ProjectLevelSaved(
+        modding_projects::ProjectRow,
+        bool,
+        Option<Arc<level_edit_history::CommittedRevision>>,
+    ),
+    ProjectLevelHistoryApplied(ProjectRow, Arc<level_edit_history::CommittedRevision>, bool),
     EditedLevelExported(PathBuf, usize),
     Terrain(RenderMesh, TerrainInfo),
     SignedPak(SignedPakInfo),
@@ -1855,7 +1870,7 @@ impl Operation {
                     &member,
                     &target,
                 )?;
-                Ok(Completed::ProjectLevelSaved(project, saved))
+                Ok(Completed::ProjectLevelSaved(project, saved, None))
             }
             Self::SaveProjectSource(project, source, edit, projects_root, library_root) => {
                 // Only an original member in the selected managed project's
@@ -1877,6 +1892,17 @@ impl Operation {
                 let member = relative.to_string_lossy().replace('\\', "/");
                 let expected = level_source_hash(&source)?;
                 let original = std::fs::read(&source).map_err(|e| e.to_string())?;
+                let map_snapshot = if let ProjectLevelMutation::Xml(
+                    evolve_core::scene_authoring::LayerAuthoringEdit::Delete { guid },
+                ) = &edit
+                {
+                    Some((
+                        guid.clone(),
+                        level_authoring::validate_project_deletion(&root, &source, guid)?,
+                    ))
+                } else {
+                    None
+                };
                 let output = match edit {
                     ProjectLevelMutation::Xml(change) => {
                         if let evolve_core::scene_authoring::LayerAuthoringEdit::Insert {
@@ -1942,6 +1968,20 @@ impl Operation {
                 if level_source_hash(&source)? != expected {
                     return Err("Project source changed before saving; reload and retry".into());
                 }
+                if let Some((guid, snapshot)) = map_snapshot {
+                    snapshot.verify()?;
+                    if level_authoring::validate_project_deletion(&root, &source, &guid)?
+                        != snapshot
+                    {
+                        return Err(
+                            "Project map layer set changed during deletion; reload before retrying"
+                                .into(),
+                        );
+                    }
+                }
+                let revision = Arc::new(level_edit_history::CommittedRevision::capture(
+                    &project, &member, &original, &output,
+                )?);
                 let saved = modding_projects::save_level_member_checked(
                     &project,
                     &projects_root,
@@ -1949,7 +1989,17 @@ impl Operation {
                     &original,
                     &output,
                 )?;
-                Ok(Completed::ProjectLevelSaved(project, saved))
+                Ok(Completed::ProjectLevelSaved(
+                    project,
+                    saved,
+                    saved.then_some(revision),
+                ))
+            }
+            Self::RestoreCommittedLevel(project, revision, undo, root) => {
+                revision.apply(&project, &root, undo)?;
+                Ok(Completed::ProjectLevelHistoryApplied(
+                    project, revision, undo,
+                ))
             }
             Self::InspectLevel(source) => {
                 let checksum = level_source_hash(&source)?;
@@ -2579,6 +2629,8 @@ enum Message {
     ViewportEscape(window::Id),
     LevelGizmoMove(usize, f32),
     LevelSaveProjectChanges,
+    LevelUndoCommitted,
+    LevelRedoCommitted,
     LevelAuthoringChanged(level_authoring::TextField, String),
     LevelAuthoringToggleEnabled,
     LevelAuthoringToggleRoundStart,
@@ -3854,6 +3906,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::SaveProjectLevel(..) | Operation::SaveProjectSource(..) => {
             "Saving editable level project"
         }
+        Operation::RestoreCommittedLevel(..) => "Restoring verified project revision",
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
         Operation::ExtractSignedPak(..) => "Extracting signed CryPAK",
@@ -6001,9 +6054,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         },
                     )
                 }
-                Message::LevelDeleteSelected => ProjectLevelMutation::Xml(
-                    evolve_core::scene_authoring::LayerAuthoringEdit::Delete { guid: object.id },
-                ),
+                Message::LevelDeleteSelected => {
+                    let Some(scene) = state.level_scene.as_deref() else {
+                        state.status =
+                            "Reload the combined level before deleting a placement.".into();
+                        return Task::none();
+                    };
+                    if let Err(reason) = level_authoring::validate_deletion(scene, &object.id) {
+                        state.status = reason;
+                        return Task::none();
+                    }
+                    ProjectLevelMutation::Xml(
+                        evolve_core::scene_authoring::LayerAuthoringEdit::Delete {
+                            guid: object.id,
+                        },
+                    )
+                }
                 Message::LevelSaveWildlifeSpawn => match state.level_authoring.spawn(object.id) {
                     Ok(edit) => ProjectLevelMutation::Xml(edit),
                     Err(reason) => {
@@ -6112,6 +6178,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             };
             return submit_level_project_edit(state, source, ProjectLevelMutation::Terrain(edit));
+        }
+        Message::LevelUndoCommitted | Message::LevelRedoCommitted => {
+            if state.busy || state.level_read_only || state.level_dirty_count != 0 {
+                state.status =
+                    "Finish pending preview edits before restoring a committed revision.".into();
+                return Task::none();
+            }
+            let Some(project) = state.level_project.clone() else {
+                state.status =
+                    "Open a managed Modding project to restore a committed revision.".into();
+                return Task::none();
+            };
+            let undo = matches!(message, Message::LevelUndoCommitted);
+            let revision = if undo {
+                state.level_committed_undo.back()
+            } else {
+                state.level_committed_redo.back()
+            };
+            let Some(revision) = revision.cloned() else {
+                state.status = "No committed revision available in this editing session.".into();
+                return Task::none();
+            };
+            let root = PathBuf::from(&state.preferences.projects);
+            return launch(
+                state,
+                Operation::RestoreCommittedLevel(project, revision, undo, root),
+            );
         }
         Message::LevelSaveProjectChanges => {
             let Some(project) = state.level_project.clone() else {
@@ -14256,12 +14349,63 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .as_ref()
                         .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
-                Ok(Completed::ProjectLevelSaved(project, saved)) => {
+                Ok(Completed::ProjectLevelSaved(project, saved, revision)) => {
+                    if let Some(revision) = revision {
+                        state.level_committed_redo.clear();
+                        state.level_committed_undo.push_back(revision);
+                        while state.level_committed_undo.len()
+                            > level_edit_history::MAX_HISTORY_STEPS
+                            || state
+                                .level_committed_undo
+                                .iter()
+                                .map(|item| item.disk_bytes())
+                                .sum::<u64>()
+                                > level_edit_history::MAX_HISTORY_DISK_BYTES
+                        {
+                            state.level_committed_undo.pop_front();
+                        }
+                    }
                     state.status = if saved {
                         "Edited level saved through the verified Modding project backup/import process.".into()
                     } else {
                         "Project level matches its original bytes.".into()
                     };
+                    let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
+                    let root = PathBuf::from(&state.library_root);
+                    return launch(state, Operation::OpenProjectLevel(project, index, root));
+                }
+                Ok(Completed::ProjectLevelHistoryApplied(project, revision, undo)) => {
+                    if undo {
+                        if !state
+                            .level_committed_undo
+                            .back()
+                            .is_some_and(|item| Arc::ptr_eq(item, &revision))
+                        {
+                            state.status =
+                                "Revision changed during undo; reload the project.".into();
+                            return Task::none();
+                        }
+                        state.level_committed_undo.pop_back();
+                        state.level_committed_redo.push_back(revision);
+                    } else {
+                        if !state
+                            .level_committed_redo
+                            .back()
+                            .is_some_and(|item| Arc::ptr_eq(item, &revision))
+                        {
+                            state.status =
+                                "Revision changed during redo; reload the project.".into();
+                            return Task::none();
+                        }
+                        state.level_committed_redo.pop_back();
+                        state.level_committed_undo.push_back(revision);
+                    }
+                    state.status = if undo {
+                        "Committed project edit undone; original bytes restored."
+                    } else {
+                        "Committed project edit reapplied."
+                    }
+                    .into();
                     let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
                     let root = PathBuf::from(&state.library_root);
                     return launch(state, Operation::OpenProjectLevel(project, index, root));
@@ -14304,6 +14448,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ImportedMap(loaded)) => {
                     let loaded = *loaded;
+                    let same_project_and_map = state
+                        .level_project
+                        .as_ref()
+                        .zip(loaded.project.as_ref())
+                        .is_some_and(|(before, after)| {
+                            before.workspace == after.workspace
+                                && state
+                                    .library_map
+                                    .as_ref()
+                                    .and_then(|(_, maps, index)| maps.get(*index))
+                                    .is_some_and(|old_map| {
+                                        old_map.name == loaded.maps[loaded.index].name
+                                    })
+                        });
+                    if !same_project_and_map {
+                        state.level_committed_undo.clear();
+                        state.level_committed_redo.clear();
+                    }
                     state.level_wildlife_resolved = false;
                     state.level_spawn_distances = None;
                     state.level_diagnostics = loaded.diagnostics.clone();
@@ -14448,6 +14610,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_selection.clear();
                     state.level_undo.clear();
                     state.level_redo.clear();
+                    state.level_committed_undo.clear();
+                    state.level_committed_redo.clear();
                     sync_level_fields(state);
                     state.level_zoom = 1.0;
                     state.page = Some(Page::Levels);
