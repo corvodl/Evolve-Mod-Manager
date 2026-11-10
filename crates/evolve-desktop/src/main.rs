@@ -83,6 +83,7 @@ mod standard_user_launch;
 mod storage_usage;
 mod system_health;
 mod terrain_material_probe;
+mod terrain_rebake_project;
 mod text_asset_editor;
 mod textured;
 mod updater;
