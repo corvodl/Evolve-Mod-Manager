@@ -24,6 +24,8 @@ pub(super) struct LevelViewport {
     /// A G/R/S transform in progress, and its axis: the mouse drives it,
     /// LMB applies and RMB cancels.
     pub transforming: Option<(Mode, Option<usize>)>,
+    /// The selected area's polygon vertices (world), each a draggable handle.
+    pub area_vertices: Option<Arc<Vec<[f32; 3]>>>,
 }
 
 #[derive(Default)]
@@ -31,6 +33,8 @@ pub(super) struct ViewState {
     navigation: super::view_navigation::Navigation,
     /// A gizmo handle is being dragged: releasing LMB applies it.
     gizmo_drag: bool,
+    /// The polygon vertex being dragged.
+    vertex_drag: Option<usize>,
     /// The mouse button of a brush stroke in progress.
     brushing: Option<mouse::Button>,
 }
@@ -335,6 +339,45 @@ impl shader::Program<Message> for LevelViewport {
                 })
                 .map(|message| shader::Action::publish(message).and_capture());
         }
+        // Dragging an area's polygon vertex across the ground.
+        if let Some(vertex) = state.vertex_drag {
+            match event {
+                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    let ray = location.and_then(|position| self.ray(bounds, position));
+                    return Some(
+                        shader::Action::publish(Message::LevelVertexDrag(vertex, ray))
+                            .and_capture(),
+                    );
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    state.vertex_drag = None;
+                    return Some(
+                        shader::Action::publish(Message::LevelVertexRelease).and_capture(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if self.editable
+            && matches!(
+                event,
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            )
+            && let Some(position) = location
+            && let Some(vertices) = &self.area_vertices
+            && let Some(screen) = self.screen(bounds)
+            && let Some(vertex) =
+                level_gizmo::hit_vertex(vertices, &screen, [position.x, position.y])
+        {
+            state.vertex_drag = Some(vertex);
+            return Some(
+                shader::Action::publish(Message::LevelVertexDrag(
+                    vertex,
+                    self.ray(bounds, position),
+                ))
+                .and_capture(),
+            );
+        }
         if matches!(
             event,
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
@@ -457,6 +500,22 @@ impl shader::Program<Message> for LevelViewport {
             for pair in ring.windows(2) {
                 primitive.add_level_axis(ndc(pair[0]), ndc(pair[1]), [1.0, 0.78, 0.25, 1.0]);
             }
+        }
+        if let Some(vertices) = &self.area_vertices
+            && let Some(screen) = self.screen(bounds)
+        {
+            let focus = state.vertex_drag.or_else(|| {
+                let position = cursor.position_in(bounds)?;
+                level_gizmo::hit_vertex(vertices, &screen, [position.x, position.y])
+            });
+            level_gizmo::draw_vertices(
+                &mut primitive,
+                vertices,
+                &screen,
+                bounds.width.max(1.0),
+                bounds.height.max(1.0),
+                focus,
+            );
         }
         if let Some((mode, pivot)) = self.gizmo
             && let Some(size) = self.gizmo_size(pivot, bounds)

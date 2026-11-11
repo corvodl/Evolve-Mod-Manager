@@ -287,6 +287,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 .clone()
                 .unwrap_or_else(|| Arc::new(Vec::new())),
             gizmo: selection_gizmo(state),
+            area_vertices: area_vertices(state),
             transforming: state
                 .level_transform
                 .as_ref()
@@ -1014,6 +1015,36 @@ fn selection_gizmo(state: &State) -> Option<(crate::level_transform::Mode, [f32;
             .collect(),
     )?;
     Some((state.level_gizmo, pivot))
+}
+
+/// The selected area's polygon vertices in the world, as edited so far, for
+/// dragging in the viewport. Not while a move/rotate/scale is in progress.
+fn area_vertices(state: &State) -> Option<Arc<Vec<[f32; 3]>>> {
+    if state.level_project.is_none()
+        || state.level_read_only
+        || state.level_transform.is_some()
+        || state.level_tool != super::terrain_brush::LevelTool::Select
+    {
+        return None;
+    }
+    let object = state
+        .level_selected
+        .and_then(|index| state.level_scene.as_ref()?.objects.get(index))?;
+    if !(object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+        || object.kind.eq_ignore_ascii_case("AreaShape"))
+    {
+        return None;
+    }
+    let points = state
+        .level_authoring
+        .points()
+        .unwrap_or_else(|_| object.shape_points.clone());
+    Some(Arc::new(
+        points
+            .iter()
+            .map(|point| crate::world_instances::place(object.world, *point))
+            .collect(),
+    ))
 }
 
 /// Enter in a transform field saves it, for an editable placement.

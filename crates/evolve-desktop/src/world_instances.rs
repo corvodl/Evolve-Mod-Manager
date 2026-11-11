@@ -583,31 +583,124 @@ pub(super) struct Instance {
 /// object index. A world and its edited copies share one; the renderer
 /// rewrites only the affected placements, without rebuilding the scene.
 #[derive(Clone, Default)]
-pub(super) struct PlacementPreview(Arc<std::sync::Mutex<(u64, HashMap<usize, Transform>)>>);
+pub(super) struct PlacementPreview(Arc<std::sync::Mutex<PreviewState>>);
+
+#[derive(Clone, Default)]
+struct PreviewState {
+    generation: u64,
+    transforms: HashMap<usize, Transform>,
+    /// Edited polygon vertices of area objects (local, as authored).
+    shapes: HashMap<usize, Vec<[f32; 3]>>,
+}
 
 impl PlacementPreview {
-    pub fn set(&self, transforms: HashMap<usize, Transform>) {
+    fn update(&self, change: impl FnOnce(&mut PreviewState)) {
         if let Ok(mut preview) = self.0.lock() {
-            preview.0 += 1;
-            preview.1 = transforms;
+            change(&mut preview);
+            preview.generation += 1;
+        }
+    }
+
+    pub fn set(&self, transforms: HashMap<usize, Transform>) {
+        self.update(|preview| preview.transforms = transforms);
+    }
+
+    /// Show an area's polygon with these vertices until cleared.
+    pub fn set_shape(&self, object_index: usize, points: Vec<[f32; 3]>) {
+        self.update(|preview| {
+            preview.shapes.insert(object_index, points);
+        });
+    }
+
+    pub fn clear_shapes(&self) {
+        if self
+            .0
+            .lock()
+            .is_ok_and(|preview| !preview.shapes.is_empty())
+        {
+            self.update(|preview| preview.shapes.clear());
         }
     }
 
     pub fn clear(&self) {
-        if let Ok(mut preview) = self.0.lock()
-            && !preview.1.is_empty()
+        if self
+            .0
+            .lock()
+            .is_ok_and(|preview| !preview.transforms.is_empty() || !preview.shapes.is_empty())
         {
-            preview.0 += 1;
-            preview.1.clear();
+            self.update(|preview| {
+                preview.transforms.clear();
+                preview.shapes.clear();
+            });
         }
     }
 
-    fn snapshot(&self) -> (u64, HashMap<usize, Transform>) {
+    fn snapshot(&self) -> PreviewState {
         self.0
             .lock()
-            .map(|preview| (preview.0, preview.1.clone()))
+            .map(|preview| preview.clone())
             .unwrap_or_default()
     }
+}
+
+/// An area's outline: a ZooKeeper home area, or a gameplay AreaShape such as
+/// a map's out-of-bounds boundary. Kept with its object and local vertices,
+/// so a move or a vertex edit in progress redraws it.
+#[derive(Clone, Debug)]
+pub(super) struct AreaOutline {
+    pub object_index: usize,
+    pub use_terrain: bool,
+    pub boundary: bool,
+    pub world: Transform,
+    pub points: Vec<[f32; 3]>,
+}
+
+/// A spawn's line to its home area, by scene object index.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SpawnLink {
+    pub spawn: usize,
+    pub home: usize,
+    pub from: [f32; 3],
+    pub to: [f32; 3],
+}
+
+/// The local point a world transform places at `world`: the inverse of
+/// [`place`].
+pub(super) fn unplace(transform: Transform, world: [f32; 3]) -> [f32; 3] {
+    let offset: [f32; 3] = std::array::from_fn(|i| world[i] - transform.position[i]);
+    let [w, x, y, z] = transform.quaternion;
+    let rotated = place(
+        Transform {
+            position: [0.0; 3],
+            quaternion: [w, -x, -y, -z],
+            scale: [1.0; 3],
+        },
+        offset,
+    );
+    std::array::from_fn(|i| {
+        if transform.scale[i].abs() > 1e-8 {
+            rotated[i] / transform.scale[i]
+        } else {
+            rotated[i]
+        }
+    })
+}
+
+/// A local point placed by a world transform: scale, rotate, then move.
+pub(super) fn place(transform: Transform, point: [f32; 3]) -> [f32; 3] {
+    let scaled: [f32; 3] = std::array::from_fn(|i| point[i] * transform.scale[i]);
+    let [w, x, y, z] = transform.quaternion;
+    let t = [
+        2.0 * (y * scaled[2] - z * scaled[1]),
+        2.0 * (z * scaled[0] - x * scaled[2]),
+        2.0 * (x * scaled[1] - y * scaled[0]),
+    ];
+    let rotated = [
+        scaled[0] + w * t[0] + (y * t[2] - z * t[1]),
+        scaled[1] + w * t[1] + (z * t[0] - x * t[2]),
+        scaled[2] + w * t[2] + (x * t[1] - y * t[0]),
+    ];
+    std::array::from_fn(|i| transform.position[i] + rotated[i])
 }
 
 #[derive(Clone, Default)]
@@ -616,8 +709,8 @@ pub(super) struct World {
     pub placement_preview: PlacementPreview,
     pub instance_count: usize,
     pub wildlife_distances: Option<evolve_core::zookeeper::SpawnDistances>,
-    pub wildlife_shapes: Arc<Vec<(bool, Vec<[f32; 3]>)>>,
-    pub wildlife_links: Arc<Vec<([f32; 3], [f32; 3])>>,
+    pub wildlife_shapes: Arc<Vec<AreaOutline>>,
+    pub wildlife_links: Arc<Vec<SpawnLink>>,
     pub time_of_day: Option<Arc<super::level_environment::TimeOfDay>>,
     pub fog_profile: Option<super::level_environment::FogProfile>,
     /// A weather zone with its own TimeOfDay and fog (Ice_Alpine's biodome).
@@ -2082,6 +2175,8 @@ pub(super) struct Renderer {
     wildlife_buffer: wgpu::Buffer,
     wildlife_count: u32,
     wildlife_last_origin: Option<[f32; 2]>,
+    /// The placement preview the wildlife overlay last drew.
+    wildlife_preview_generation: u64,
     sky_uniform: wgpu::Buffer,
     local_uniform: wgpu::Buffer,
     hdr_uniform: wgpu::Buffer,
@@ -3809,6 +3904,7 @@ impl Renderer {
             wildlife_buffer,
             wildlife_count: 0,
             wildlife_last_origin: None,
+            wildlife_preview_generation: 0,
             sky_uniform,
             local_uniform,
             hdr_uniform,
@@ -4423,7 +4519,11 @@ impl Renderer {
     /// Write the live transforms of placements being edited into the
     /// instance buffers of their groups, and restore groups they left.
     fn apply_placement_preview(&mut self, queue: &wgpu::Queue, world: &World) {
-        let (generation, overrides) = world.placement_preview.snapshot();
+        let PreviewState {
+            generation,
+            transforms: overrides,
+            ..
+        } = world.placement_preview.snapshot();
         if generation == self.preview_generation {
             return;
         }
@@ -5756,13 +5856,16 @@ impl Renderer {
             return;
         }
         let origin = [camera[0], camera[1]];
+        let preview = world.placement_preview.snapshot();
         if self
             .wildlife_last_origin
             .is_some_and(|previous| previous == origin)
+            && self.wildlife_preview_generation == preview.generation
         {
             return;
         }
         self.wildlife_last_origin = Some(origin);
+        self.wildlife_preview_generation = preview.generation;
         let terrain = world
             .groups
             .iter()
@@ -5852,21 +5955,46 @@ impl Renderer {
                 );
             }
         }
-        for (use_terrain, polygon) in world.wildlife_shapes.iter().take(1024) {
+        // Areas and links follow a move or vertex edit in progress.
+        let placed = |index: usize, fallback: Transform| {
+            preview.transforms.get(&index).copied().unwrap_or(fallback)
+        };
+        for area in world.wildlife_shapes.iter().take(1024) {
+            let transform = placed(area.object_index, area.world);
+            let polygon = preview
+                .shapes
+                .get(&area.object_index)
+                .unwrap_or(&area.points)
+                .iter()
+                .map(|point| place(transform, *point))
+                .collect::<Vec<_>>();
+            let tint = if area.boundary {
+                [0.96, 0.30, 0.30, 0.85]
+            } else {
+                [0.99, 0.67, 0.18, 0.8]
+            };
             for pair in polygon.windows(2) {
-                segment(pair[0], pair[1], [0.99, 0.67, 0.18, 0.8], *use_terrain);
+                segment(pair[0], pair[1], tint, area.use_terrain);
             }
             if polygon.len() > 2 {
                 segment(
                     *polygon.last().unwrap_or(&polygon[0]),
                     polygon[0],
-                    [0.99, 0.67, 0.18, 0.8],
-                    *use_terrain,
+                    tint,
+                    area.use_terrain,
                 );
             }
         }
-        for &(spawn, home) in world.wildlife_links.iter().take(20000) {
-            segment(spawn, home, [0.54, 0.78, 0.95, 0.52], true);
+        for link in world.wildlife_links.iter().take(20000) {
+            let from = preview
+                .transforms
+                .get(&link.spawn)
+                .map_or(link.from, |t| t.position);
+            let to = preview
+                .transforms
+                .get(&link.home)
+                .map_or(link.to, |t| t.position);
+            segment(from, to, [0.54, 0.78, 0.95, 0.52], true);
         }
         if points.is_empty() {
             self.wildlife_count = 0;

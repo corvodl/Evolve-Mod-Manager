@@ -159,6 +159,23 @@ impl Fields {
     }
 
     pub fn shape(&self, guid: String) -> Result<LayerAuthoringEdit, String> {
+        Ok(LayerAuthoringEdit::Shape {
+            guid,
+            points: self.points()?,
+        })
+    }
+
+    /// Replace the polygon field with these vertices.
+    pub fn set_points(&mut self, points: &[[f32; 3]]) {
+        self.polygon = points
+            .iter()
+            .map(|p| p.iter().map(f32::to_string).collect::<Vec<_>>().join(","))
+            .collect::<Vec<_>>()
+            .join("; ");
+    }
+
+    /// The polygon field's vertices.
+    pub fn points(&self) -> Result<Vec<[f32; 3]>, String> {
         let mut points = Vec::new();
         for item in self.polygon.split(';') {
             let raw = item.trim();
@@ -178,7 +195,7 @@ impl Fields {
         if points.len() < 3 {
             return Err("An area polygon requires at least 3 vertices (x,y,z; ...)".into());
         }
-        Ok(LayerAuthoringEdit::Shape { guid, points })
+        Ok(points)
     }
 
     pub fn brush(&self, paint: bool) -> Result<TerrainBrushEdit, String> {

@@ -1549,47 +1549,59 @@ pub(super) fn assemble_wildlife(
         .ok_or("No wildlife placements could be assembled")?;
     let mut world = (*assembled.world).clone();
     world.wildlife_distances = assembled.report.spawn_distances;
+    // Home areas, and gameplay areas such as the out-of-bounds boundary.
     world.wildlife_shapes = std::sync::Arc::new(
         scene
             .objects
             .iter()
-            .filter(|object| {
+            .enumerate()
+            .filter(|(_, object)| {
                 !object.hidden
-                    && object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+                    && (object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+                        || object.kind.eq_ignore_ascii_case("AreaShape"))
                     && object.shape_points.len() >= 2
             })
             .take(1024)
-            .map(|object| {
-                (
-                    object.wildlife.use_terrain_height.unwrap_or(false),
-                    object
-                        .shape_points
-                        .iter()
-                        .map(|point| transformed(object.world, *point, false))
-                        .collect(),
-                )
+            .map(|(object_index, object)| world_instances::AreaOutline {
+                object_index,
+                use_terrain: object.wildlife.use_terrain_height.unwrap_or(false),
+                boundary: object.kind.eq_ignore_ascii_case("AreaShape"),
+                world: object.world,
+                points: object.shape_points.clone(),
             })
             .collect(),
     );
     let areas = scene
         .objects
         .iter()
-        .filter(|object| !object.hidden && object.kind.eq_ignore_ascii_case("ZooKeeperShape"))
-        .map(|object| (object.name.to_ascii_lowercase(), object.world.position))
+        .enumerate()
+        .filter(|(_, object)| !object.hidden && object.kind.eq_ignore_ascii_case("ZooKeeperShape"))
+        .map(|(index, object)| {
+            (
+                object.name.to_ascii_lowercase(),
+                (index, object.world.position),
+            )
+        })
         .collect::<HashMap<_, _>>();
     world.wildlife_links = std::sync::Arc::new(
         scene
             .objects
             .iter()
-            .filter(|object| {
+            .enumerate()
+            .filter(|(_, object)| {
                 !object.hidden
                     && object.kind.eq_ignore_ascii_case("CreatureSpawn")
                     && !object.home_area.is_empty()
             })
-            .filter_map(|spawn| {
+            .filter_map(|(spawn, object)| {
                 areas
-                    .get(&spawn.home_area.to_ascii_lowercase())
-                    .map(|home| (spawn.world.position, *home))
+                    .get(&object.home_area.to_ascii_lowercase())
+                    .map(|&(home, to)| world_instances::SpawnLink {
+                        spawn,
+                        home,
+                        from: object.world.position,
+                        to,
+                    })
             })
             .take(20000)
             .collect(),

@@ -275,6 +275,71 @@ pub(super) fn draw(
     }
 }
 
+/// The polygon vertex handle under the cursor (screen pixels), if any.
+pub(super) fn hit_vertex(
+    vertices: &[[f32; 3]],
+    project: &dyn Fn([f32; 3]) -> Option<[f32; 2]>,
+    cursor: [f32; 2],
+) -> Option<usize> {
+    vertices
+        .iter()
+        .enumerate()
+        .filter_map(|(index, vertex)| {
+            let at = project(*vertex)?;
+            let distance = ((cursor[0] - at[0]).powi(2) + (cursor[1] - at[1]).powi(2)).sqrt();
+            (distance <= GRAB).then_some((distance, index))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, index)| index)
+}
+
+/// Square handles on an area polygon's vertices; `focus` is brightened.
+pub(super) fn draw_vertices(
+    primitive: &mut Primitive,
+    vertices: &[[f32; 3]],
+    project: &dyn Fn([f32; 3]) -> Option<[f32; 2]>,
+    width: f32,
+    height: f32,
+    focus: Option<usize>,
+) {
+    let ndc = |p: [f32; 2]| [p[0] / width * 2.0 - 1.0, 1.0 - p[1] / height * 2.0];
+    // The outline as edited so far, shown even with the wildlife layer off.
+    let screen = vertices.iter().map(|v| project(*v)).collect::<Vec<_>>();
+    for (index, a) in screen.iter().enumerate() {
+        let b = screen[(index + 1) % screen.len()];
+        let (Some(a), Some(b)) = (*a, b) else {
+            continue;
+        };
+        let Some(direction) = normalize2([b[0] - a[0], b[1] - a[1]]) else {
+            continue;
+        };
+        let side = [-direction[1], direction[0]];
+        let corners = [
+            [a[0] + side[0], a[1] + side[1]],
+            [b[0] + side[0], b[1] + side[1]],
+            [b[0] - side[0], b[1] - side[1]],
+            [a[0] - side[0], a[1] - side[1]],
+        ]
+        .map(ndc);
+        let color = [1.0, 0.62, 0.15, 0.75];
+        primitive.add_overlay_triangle([corners[0], corners[1], corners[2]], color);
+        primitive.add_overlay_triangle([corners[0], corners[2], corners[3]], color);
+    }
+    for (index, vertex) in vertices.iter().enumerate() {
+        let Some(at) = project(*vertex) else {
+            continue;
+        };
+        let (half, color) = if focus == Some(index) {
+            (6.5, [1.0, 0.95, 0.8, 1.0])
+        } else {
+            (5.0, [1.0, 0.62, 0.15, 1.0])
+        };
+        for triangle in square(at, half) {
+            primitive.add_overlay_triangle(triangle.map(ndc), color);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +348,14 @@ mod tests {
     /// centred at (200, 200).
     fn project(p: [f32; 3]) -> Option<[f32; 2]> {
         Some([200.0 + p[0] * 10.0, 200.0 - p[2] * 10.0])
+    }
+
+    #[test]
+    fn polygon_vertices_are_grabbed_nearest_first() {
+        let vertices = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [5.0, 0.0, 5.0]];
+        assert_eq!(hit_vertex(&vertices, &project, [208.0, 200.0]), Some(1));
+        assert_eq!(hit_vertex(&vertices, &project, [251.0, 149.0]), Some(2));
+        assert_eq!(hit_vertex(&vertices, &project, [230.0, 230.0]), None);
     }
 
     #[test]

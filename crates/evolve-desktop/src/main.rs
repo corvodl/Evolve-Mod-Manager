@@ -731,6 +731,10 @@ struct State {
     level_transform: Option<level_transform::ModalTransform>,
     /// The gizmo shown on the selection.
     level_gizmo: level_transform::Mode,
+    /// A polygon vertex being dragged: its index and the height it moves at.
+    level_vertex_drag: Option<(usize, f32)>,
+    /// The dragged vertex has moved, so releasing saves the polygon.
+    level_vertex_moved: bool,
     /// RMB is held in the Level Editor: mouse-look, and WASD/QE fly.
     level_looking: bool,
     scan_cancel: Option<Arc<AtomicBool>>,
@@ -2820,6 +2824,10 @@ enum Message {
     ),
     /// Which gizmo the Select tool shows: move, rotate or scale.
     LevelGizmoMode(level_transform::Mode),
+    /// A polygon vertex of the selected area is dragged to the ground point
+    /// under this ray; releasing saves the polygon.
+    LevelVertexDrag(usize, Option<([f32; 3], [f32; 3])>),
+    LevelVertexRelease,
     LevelSaveProjectChanges,
     LevelUndoCommitted,
     LevelRedoCommitted,
@@ -4003,6 +4011,10 @@ fn refresh_wildlife_visibility(state: &mut State) {
 }
 
 fn sync_level_fields(state: &mut State) {
+    // A new selection drops polygon edits that were never saved.
+    if let Some(source) = &state.level_world_source {
+        source.placement_preview.clear_shapes();
+    }
     let transform = state
         .level_selected
         .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
@@ -6621,7 +6633,78 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             refresh_level_transform_preview(state);
         }
         Message::LevelGizmoMode(mode) => state.level_gizmo = mode,
-        Message::LevelAuthoringChanged(key, text) => state.level_authoring.change(key, text),
+        Message::LevelVertexDrag(vertex, ray) => {
+            let Some((index, object)) = state.level_selected.and_then(|index| {
+                Some((
+                    index,
+                    state.level_scene.as_ref()?.objects.get(index)?.clone(),
+                ))
+            }) else {
+                return Task::none();
+            };
+            let mut points = state
+                .level_authoring
+                .points()
+                .unwrap_or_else(|_| object.shape_points.clone());
+            let Some(local) = points.get(vertex).copied() else {
+                return Task::none();
+            };
+            // The vertex slides over the horizontal plane at its own height.
+            let height = match state.level_vertex_drag {
+                Some((dragged, height)) if dragged == vertex => height,
+                _ => {
+                    let height = world_instances::place(object.world, local)[2];
+                    state.level_vertex_drag = Some((vertex, height));
+                    state.level_vertex_moved = false;
+                    height
+                }
+            };
+            let Some((origin, direction)) = ray else {
+                return Task::none();
+            };
+            if direction[2].abs() < 1e-4 {
+                return Task::none();
+            }
+            let t = (height - origin[2]) / direction[2];
+            if !(0.0..1e6).contains(&t) {
+                return Task::none();
+            }
+            let world = [
+                origin[0] + direction[0] * t,
+                origin[1] + direction[1] * t,
+                height,
+            ];
+            points[vertex] = world_instances::unplace(object.world, world);
+            state.level_authoring.set_points(&points);
+            state.level_vertex_moved = true;
+            if let Some(source) = &state.level_world_source {
+                source.placement_preview.set_shape(index, points);
+            }
+            state.status = format!(
+                "Vertex {} at {:.2}, {:.2} · release to save the polygon",
+                vertex + 1,
+                world[0],
+                world[1]
+            );
+        }
+        Message::LevelVertexRelease => {
+            state.level_vertex_drag = None;
+            if std::mem::take(&mut state.level_vertex_moved) {
+                return update(state, Message::LevelSaveWildlifeShape);
+            }
+        }
+        Message::LevelAuthoringChanged(key, text) => {
+            let polygon = matches!(key, level_authoring::TextField::Polygon);
+            state.level_authoring.change(key, text);
+            // Typed polygon vertices show in the viewport as they are edited.
+            if polygon
+                && let Some(index) = state.level_selected
+                && let Ok(points) = state.level_authoring.points()
+                && let Some(source) = &state.level_world_source
+            {
+                source.placement_preview.set_shape(index, points);
+            }
+        }
         Message::LevelAuthoringToggleEnabled => {
             if !state.level_read_only {
                 state.level_authoring.spawn_enabled = !state.level_authoring.spawn_enabled;
@@ -6669,7 +6752,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                     _ => {
                         state.level_paste_at = None;
-                        state.status = "Placements stored in terrain.dat can be copied, pasted, duplicated and deleted; adding next to or editing them is not supported yet.".into();
+                        state.status = "Placements stored in terrain.dat can be moved, rotated, scaled, copied, duplicated and deleted; adding next to them is not supported yet.".into();
                         return Task::none();
                     }
                 };
@@ -17645,6 +17728,68 @@ mod project_edit_tests {
         // A child's local position moves by the same world offset.
         let pasted = paste_local_position(&object("x", "Brush"), [20.0, 12.0, 15.0]);
         assert_eq!(pasted, [10.0, 2.0, 5.0]);
+    }
+
+    #[test]
+    fn dragging_an_area_vertex_edits_its_polygon_then_saves_it() {
+        // An area at (100, 0, 5), turned a quarter about Z, with local points.
+        let quarter = std::f32::consts::FRAC_1_SQRT_2;
+        let area = evolve_core::PlacedObject {
+            id: "area-guid".into(),
+            parent: String::new(),
+            layer: "mission_mission0.xml".into(),
+            name: "OutOfBounds_Shape".into(),
+            kind: "AreaShape".into(),
+            model: String::new(),
+            material: String::new(),
+            hidden: false,
+            local: evolve_core::Transform::default(),
+            world: evolve_core::Transform {
+                position: [100.0, 0.0, 5.0],
+                quaternion: [quarter, 0.0, 0.0, quarter],
+                scale: [1.0; 3],
+            },
+            status: String::new(),
+            populations: Vec::new(),
+            home_area: String::new(),
+            shape_points: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]],
+            wildlife: Default::default(),
+        };
+        let mut state = State {
+            level_project: Some(ProjectRow {
+                label: "Project".into(),
+                target: "level.pak".into(),
+                source_build: String::new(),
+                status: String::new(),
+                details: String::new(),
+                workspace: PathBuf::from("C:/projects/example"),
+                modified: Vec::new(),
+                changed_known: true,
+                enabled: false,
+            }),
+            level_scene: Some(Arc::new(evolve_core::LevelScene {
+                schema: 1,
+                objects: vec![area],
+                diagnostics: Vec::new(),
+            })),
+            level_world_source: Some(Arc::new(world_instances::World::default())),
+            level_selected: Some(0),
+            ..Default::default()
+        };
+        sync_level_fields(&mut state);
+        // Straight down onto the ground at (90, 20): local (20, 10, 0) once
+        // the quarter turn is undone.
+        let down = |x: f32, y: f32| Some(([x, y, 50.0], [0.0, 0.0, -1.0]));
+        let _ = update(&mut state, Message::LevelVertexDrag(1, down(100.0, 10.0)));
+        let _ = update(&mut state, Message::LevelVertexDrag(1, down(90.0, 20.0)));
+        let points = state.level_authoring.points().unwrap();
+        assert!((points[1][0] - 20.0).abs() < 1e-3, "{points:?}");
+        assert!((points[1][1] - 10.0).abs() < 1e-3, "{points:?}");
+        assert!(points[1][2].abs() < 1e-3, "{points:?}");
+        assert_eq!(points[0], [0.0, 0.0, 0.0]);
+        // Releasing saves the edited polygon to its layer.
+        let _ = update(&mut state, Message::LevelVertexRelease);
+        assert!(state.busy, "{}", state.status);
     }
 
     #[test]
