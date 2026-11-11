@@ -1985,11 +1985,13 @@ mod tests {
         let opaque = crate::materials::MaterialSlot {
             name: "rocky3 body".into(),
             shader: "Illum".into(),
+            mtl_flags: 0,
             maps: vec![],
             opacity: Some(1.0),
             alpha_test: None,
             glow_amount: None,
             alpha_glow: false,
+            vertex_colors: false,
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,

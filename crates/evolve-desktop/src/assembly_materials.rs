@@ -151,10 +151,48 @@ fn embedded_material_hints(
     {
         return Ok(Vec::new());
     }
+    // A render node names its material chunk (MatID at +76 of the node).
+    // Collision proxies often point at another library's material, which the
+    // engine never draws, so only visible nodes' materials count when the
+    // file has nodes. town03_bldg1.cgf: one visible node uses town03, its 74
+    // physics proxies use town01.
+    let mut visible_materials = Vec::new();
+    let mut has_nodes = false;
+    for i in 0..count {
+        let at = start + i * 16;
+        if !matches!(u32_at(at), Some(0x0800100B | 0x0823100B)) {
+            continue;
+        }
+        let Some(offset) = u32_at(at + 12).map(|v| v as usize) else {
+            continue;
+        };
+        let (Some(name), Some(material)) = (data.get(offset..offset + 64), u32_at(offset + 76))
+        else {
+            continue;
+        };
+        has_nodes = true;
+        let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
+        let label = String::from_utf8_lossy(&name[..end]).to_ascii_lowercase();
+        let collision = label.starts_with("$physics")
+            || label.starts_with("physics_proxy")
+            || label.starts_with("phys_")
+            || label.starts_with("collision_")
+            || label.starts_with("proxy_")
+            || label.ends_with("_proxy");
+        if !collision {
+            visible_materials.push(material);
+        }
+    }
     let mut hints = Vec::new();
     for i in 0..count {
         let at = start + i * 16;
         if u32_at(at) != Some(0x08021014) {
+            continue;
+        }
+        if has_nodes
+            && !visible_materials.is_empty()
+            && u32_at(at + 4).is_none_or(|id| !visible_materials.contains(&id))
+        {
             continue;
         }
         let (Some(len), Some(offset)) = (u32_at(at + 8), u32_at(at + 12)) else {
@@ -1189,6 +1227,7 @@ fn load_authored_subset_surfaces(
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            vertex_colors: false,
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
@@ -1219,8 +1258,7 @@ fn load_authored_subset_surfaces(
                     document.slots.len()
                 )
             })?;
-            if leaf.shader.eq_ignore_ascii_case("NoDraw")
-                || (is_original_beam_effect(leaf) && !mesh_effect_preview(leaf))
+            if leaf.engine_hidden() || (is_original_beam_effect(leaf) && !mesh_effect_preview(leaf))
             {
                 // An effect-only beam needs an additive/volumetric shader.
                 // Do not turn that source volume into an opaque solid tube.
@@ -1293,6 +1331,7 @@ fn load_authored_subset_surfaces(
                                 )
                             };
                             surface.layer_params = leaf.layer_params;
+                            surface.vertex_colors = leaf.vertex_colors;
                             surface.layer_specular = leaf.layer_specular;
                             surface.detail_tile = leaf.detail_tile;
                             surface.detail_map = layer("detail");
@@ -1630,6 +1669,7 @@ pub fn load_with_progress(
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            vertex_colors: false,
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
@@ -1681,7 +1721,7 @@ pub fn load_with_progress(
                 .ok_or_else(|| {
                     format!("Original material slot {} is missing", part.material_slot)
                 })?;
-            if leaf.shader.eq_ignore_ascii_case("NoDraw") {
+            if leaf.engine_hidden() {
                 surface.visible = false;
                 return Ok(());
             }
@@ -1859,6 +1899,7 @@ mod tests {
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            vertex_colors: false,
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
@@ -1935,11 +1976,13 @@ mod tests {
         let mut slot = evolve_core::MaterialSlot {
             name: "glow".into(),
             shader: "Illum".into(),
+            mtl_flags: 0,
             maps: vec![],
             opacity: None,
             alpha_test: None,
             glow_amount: Some(3.0),
             alpha_glow: true,
+            vertex_colors: false,
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,
@@ -2156,6 +2199,7 @@ mod tests {
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            vertex_colors: false,
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
@@ -2208,6 +2252,7 @@ mod tests {
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            vertex_colors: false,
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
@@ -2301,10 +2346,12 @@ mod tests {
         let make = |shader: &str, scalar: Option<f32>, with_mask: bool| evolve_core::MaterialSlot {
             name: "Goliath_Body".into(),
             shader: shader.into(),
+            mtl_flags: 0,
             opacity: scalar,
             alpha_test: None,
             glow_amount: None,
             alpha_glow: false,
+            vertex_colors: false,
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,
@@ -2462,6 +2509,7 @@ mod tests {
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            vertex_colors: false,
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
@@ -2604,6 +2652,7 @@ mod tests {
         .unwrap();
         let mesh = evolve_core::RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: evolve_core::ModelInfo {
                 format: "test".into(),
                 version: 7,
@@ -2956,6 +3005,7 @@ mod tests {
         let ordinary = evolve_core::MaterialSlot {
             name: "armor".into(),
             shader: "Illum".into(),
+            mtl_flags: 0,
             maps: vec![evolve_core::TextureReference {
                 role: "diffuse".into(),
                 path: "characters/armor.dds".into(),
@@ -2964,6 +3014,7 @@ mod tests {
             alpha_test: None,
             glow_amount: None,
             alpha_glow: false,
+            vertex_colors: false,
             shader_gen_mask: None,
             diffuse_tint: None,
             specular_tint: None,

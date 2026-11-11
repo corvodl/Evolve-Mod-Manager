@@ -1986,11 +1986,24 @@ impl Operation {
                             .map_err(|e| e.to_string())?
                     }
                     ProjectLevelMutation::Terrain(change) => {
-                        if !member.to_ascii_lowercase().ends_with("heightmap.dat") {
-                            return Err("Terrain brush must target the owning Heightmap.dat".into());
+                        let lower = member.to_ascii_lowercase();
+                        if lower.ends_with("heightmap.dat") {
+                            evolve_core::edit_terrain_bytes(&original, change)
+                                .map_err(|e| e.to_string())?
+                        } else if lower == "terrain/terrain.dat"
+                            || lower.ends_with("/terrain/terrain.dat")
+                        {
+                            if let evolve_core::TerrainBrushEdit::Paint { layer_id, .. } = change {
+                                level_authoring::check_compiled_surface_type(&source, layer_id)?;
+                            }
+                            evolve_core::edit_compiled_terrain_bytes(&original, change)
+                                .map_err(|e| e.to_string())?
+                        } else {
+                            return Err(
+                                "Terrain brush must target the owning Heightmap.dat or terrain.dat"
+                                    .into(),
+                            );
                         }
-                        evolve_core::edit_terrain_bytes(&original, change)
-                            .map_err(|e| e.to_string())?
                     }
                     ProjectLevelMutation::Vegetation(change) => {
                         if !member.to_ascii_lowercase().ends_with("vegetationmap.dat") {
@@ -2064,6 +2077,7 @@ impl Operation {
                 let info = terrain.info.clone();
                 let preview = RenderMesh {
                     vertex_alpha: None,
+                    vertex_color: None,
                     info: ModelInfo {
                         format: "CryEngine Heightmap.dat".into(),
                         version: 1,
@@ -3384,6 +3398,17 @@ fn fresh_unique_authored_level_guid(
     original: &str,
     scene: Option<&evolve_core::LevelScene>,
 ) -> Result<String, String> {
+    // Compiled mission entities (Legacy-ported maps) are named by a numeric
+    // EntityId; the writer adds a fresh EntityGuid and rejects an ID in use.
+    if !original.is_empty() && original.bytes().all(|b| b.is_ascii_digit()) {
+        let highest = scene
+            .into_iter()
+            .flat_map(|scene| &scene.objects)
+            .filter_map(|object| object.id.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0);
+        return Ok((highest + 1).to_string());
+    }
     for _ in 0..16 {
         let candidate = fresh_authored_level_guid(original)?;
         if let Some(scene) = scene
@@ -3457,8 +3482,9 @@ fn selected_project_terrain_source(state: &State) -> Result<PathBuf, String> {
         .library_map
         .as_ref()
         .and_then(|(_, maps, index)| maps.get(*index))
-        .and_then(|map| map.terrain.clone())
-        .ok_or("Selected map has no Heightmap.dat")?;
+        // A Legacy-ported map's only heightmap is its compiled terrain.dat.
+        .and_then(|map| map.terrain.clone().or_else(|| map.compiled_terrain.clone()))
+        .ok_or("Selected map has no Heightmap.dat or terrain.dat")?;
     if relative.is_absolute()
         || relative
             .components()
@@ -17282,6 +17308,7 @@ mod project_edit_tests {
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            vertex_colors: false,
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
@@ -17355,6 +17382,7 @@ mod project_edit_tests {
             detail_map: None,
             blend_layer: None,
             blend_mask: None,
+            vertex_colors: false,
             blend_normal: None,
             detail_tile: None,
             layer_params: None,
@@ -17373,6 +17401,7 @@ mod project_edit_tests {
         };
         let model = Arc::new(RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: evolve_core::ModelInfo {
                 format: "test".into(),
                 version: 0,
@@ -17543,6 +17572,7 @@ mod project_edit_tests {
             inventory: Some(scan_directory(dir.path()).unwrap()),
             model: Some(Arc::new(RenderMesh {
                 vertex_alpha: None,
+                vertex_color: None,
                 info: evolve_core::ModelInfo {
                     format: "test".into(),
                     version: 7,

@@ -27,7 +27,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 const MAX_ARCHIVES: usize = 1_024;
-const MAX_MODELS: usize = 1_024;
+// Unique model/material GPU groups. Every pair is already decoded before this
+// applies and texture memory has its own residency budget, so this only bounds
+// draw calls. Legacy-ported maps add their terrain.dat brushes on top of the
+// mission's objects and exceeded the previous 1,024.
+const MAX_MODELS: usize = 8_192;
 // A 2048-sample heightmap alone is about 4.2M vertices and 25M indices.
 const MAX_VERTICES: usize = 4_500_000;
 const MAX_INDICES: usize = 26_000_000;
@@ -481,6 +485,7 @@ fn neutral(first_index: u32, index_count: u32) -> Surface {
         detail_map: None,
         blend_layer: None,
         blend_mask: None,
+        vertex_colors: false,
         blend_normal: None,
         detail_tile: None,
         layer_params: None,
@@ -881,7 +886,16 @@ fn wildlife_marker_mesh() -> RenderMesh {
         uv0: None,
         normals: None,
         vertex_alpha: None,
+        vertex_color: None,
     }
+}
+
+/// Many placements of one model that are drawn but never edited or picked,
+/// such as a Legacy-ported map's merged grass and small rocks.
+#[derive(Clone, Debug)]
+pub(super) struct BulkInstances {
+    pub model: String,
+    pub transforms: Vec<Transform>,
 }
 
 pub(super) fn assemble(
@@ -890,8 +904,40 @@ pub(super) fn assemble(
     terrain: Option<&RenderMesh>,
     project_inventory: Option<&Inventory>,
     resolve_wildlife: bool,
+    bulk: &[BulkInstances],
 ) -> Result<Option<Assembled>, String> {
     let mut report = Report::default();
+    // Each bulk model resolves through one stand-in object appended after the
+    // real ones; its placements then carry no selectable object index.
+    let real_objects = scene.map_or(0, |scene| scene.objects.len());
+    let with_bulk;
+    let scene = match scene {
+        Some(scene) if !bulk.is_empty() => {
+            let mut extended = scene.clone();
+            extended
+                .objects
+                .extend(bulk.iter().enumerate().map(|(index, group)| PlacedObject {
+                    id: format!("__bulk_{index}"),
+                    parent: String::new(),
+                    layer: String::new(),
+                    name: group.model.clone(),
+                    kind: "BulkInstances".into(),
+                    model: group.model.clone(),
+                    material: String::new(),
+                    hidden: false,
+                    local: Transform::default(),
+                    world: Transform::default(),
+                    status: String::new(),
+                    populations: Vec::new(),
+                    home_area: String::new(),
+                    shape_points: Vec::new(),
+                    wildlife: Default::default(),
+                }));
+            with_bulk = extended;
+            Some(&with_bulk)
+        }
+        other => other,
+    };
     let mut combined = RenderMesh {
         info: ModelInfo {
             format: "Original Evolve level geometry preview".into(),
@@ -907,6 +953,7 @@ pub(super) fn assemble(
         uv0: Some(Vec::new()),
         normals: Some(Vec::new()),
         vertex_alpha: Some(Vec::new()),
+        vertex_color: None,
     };
     let mut surfaces = Vec::new();
     let picks = Vec::new();
@@ -1114,9 +1161,12 @@ pub(super) fn assemble(
             let model_indices = if let Some(indices) = resolved.get(&key) {
                 indices.clone()
             } else {
+                // At the cap, skip only *new* unique models. Further placements
+                // of models already resolved must still be drawn.
                 if models.len() >= MAX_MODELS {
                     budget_hit = true;
-                    break;
+                    failures.insert(key);
+                    continue;
                 }
                 let Some(decoded) = decoded_pairs.remove(&key) else {
                     failures.insert(key);
@@ -1150,7 +1200,8 @@ pub(super) fn assemble(
                 }
                 if models.len().saturating_add(meshes.len()) > MAX_MODELS {
                     budget_hit = true;
-                    break;
+                    failures.insert(key);
+                    continue;
                 }
                 let mut per_mesh_materials: Vec<Vec<Surface>> = Vec::new();
                 // Preserve the actual resolver/decoder reason for every
@@ -1288,6 +1339,7 @@ pub(super) fn assemble(
                     );
                 }
                 let mut indices = Vec::with_capacity(meshes.len());
+                let mut partial = false;
                 for (part_index, part) in meshes.into_iter().enumerate() {
                     let mesh = part.mesh;
                     let radius = world_instances::radius(&mesh);
@@ -1302,6 +1354,7 @@ pub(super) fn assemble(
                     let batches = surface_batch_ranges(&costs, geometry);
                     if models.len().saturating_add(batches.len()) > MAX_MODELS {
                         budget_hit = true;
+                        partial = true;
                         break;
                     }
                     let shared = std::sync::Arc::new(mesh);
@@ -1323,12 +1376,32 @@ pub(super) fn assemble(
                     }
                     report.geometries += 1;
                 }
-                if budget_hit {
-                    break;
+                if partial {
+                    // Groups already pushed for this model stay empty (no
+                    // instances), so a partially resident model is never drawn.
+                    failures.insert(key);
+                    continue;
                 }
                 resolved.insert(key, indices.clone());
                 indices
             };
+            if let Some(group) = object_index
+                .checked_sub(real_objects)
+                .and_then(|index| bulk.get(index))
+            {
+                for model in model_indices {
+                    models[model]
+                        .instances
+                        .extend(group.transforms.iter().map(|transform| {
+                            world_instances::Instance {
+                                object_index: world_instances::NOT_SELECTABLE,
+                                transform: *transform,
+                            }
+                        }));
+                }
+                report.placed += group.transforms.len();
+                continue;
+            }
             for group in model_indices {
                 models[group].instances.push(world_instances::Instance {
                     object_index,
@@ -1424,7 +1497,7 @@ pub(super) fn assemble_wildlife(
             object.hidden = true;
         }
     }
-    let assembled = assemble(archive, Some(&wildlife), None, None, true)?
+    let assembled = assemble(archive, Some(&wildlife), None, None, true, &[])?
         .ok_or("No wildlife placements could be assembled")?;
     let mut world = (*assembled.world).clone();
     world.wildlife_distances = assembled.report.spawn_distances;
@@ -1725,6 +1798,7 @@ mod tests {
                 }
                 Ok(vec![RenderMesh {
                     vertex_alpha: None,
+                    vertex_color: None,
                     info: ModelInfo {
                         format: "test".into(),
                         version: 7,
@@ -1792,6 +1866,7 @@ mod tests {
             |_path| {
                 Ok(vec![RenderMesh {
                     vertex_alpha: None,
+                    vertex_color: None,
                     info: ModelInfo {
                         format: "test".into(),
                         version: 7,
@@ -1872,6 +1947,7 @@ mod tests {
     fn combined_scene_offsets_indices_and_material_ranges_per_instance() {
         let source = RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: ModelInfo {
                 format: "Fixture".into(),
                 version: 1,
@@ -1893,6 +1969,7 @@ mod tests {
             uv0: Some(Vec::new()),
             normals: Some(Vec::new()),
             vertex_alpha: Some(Vec::new()),
+            vertex_color: None,
         };
         let mut ranges = Vec::new();
         assert!(append(

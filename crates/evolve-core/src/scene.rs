@@ -249,8 +249,11 @@ fn parse_element(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("{layer}#{idx}"))
         .to_ascii_lowercase();
+    // Editor layers link children with Parent/Group GUIDs; engine-exported
+    // mission XML links an Entity to its parent's EntityId with ParentId.
     let parent = attr(e, b"Parent")?
         .or(attr(e, b"Group")?)
+        .or(attr(e, b"ParentId")?)
         .unwrap_or_default()
         .to_ascii_lowercase();
     let mut model = String::new();
@@ -1325,6 +1328,17 @@ mod tests {
             Err(SceneError::DuplicateGuid(_))
         ));
         assert!(parse_level_scene(&[("x", b"<!DOCTYPE x><Objects/>")]).is_err());
+    }
+    #[test]
+    fn compiled_mission_entities_resolve_parent_id() {
+        let xml = br#"<Mission><Objects>
+            <Entity Name="ship" Pos="100,0,0" EntityClass="BasicEntity" EntityId="936"/>
+            <Entity Name="jet" ParentId="936" Pos="1,0,0" EntityClass="ParticleEffect" EntityId="575"/>
+        </Objects></Mission>"#;
+        let scene = parse_level_scene(&[("mission_mission0.xml", xml)]).unwrap();
+        let jet = scene.objects.iter().find(|obj| obj.id == "575").unwrap();
+        assert_eq!(jet.parent, "936");
+        assert_eq!(jet.world.position, [101.0, 0.0, 0.0]);
     }
     #[test]
     fn exports_transform_only_to_new_layer() {
