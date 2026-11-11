@@ -108,6 +108,10 @@ pub struct MaterialSlot {
     /// Exact CryEngine StringGenMask ALPHAGLOW flag, not diffuse alpha alone.
     #[serde(default)]
     pub alpha_glow: bool,
+    /// StringGenMask DECAL: the surface shows only where its diffuse alpha
+    /// covers it, as a decal does.
+    #[serde(default)]
+    pub decal: bool,
     /// StringGenMask VERTCOLORS: Illum multiplies diffuse by vertex color.
     #[serde(default)]
     pub vertex_colors: bool,
@@ -621,6 +625,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         alpha_test,
                         glow_amount,
                         alpha_glow: source_alpha_glow(&node)?,
+                        decal: source_gen_flag(&node, "DECAL")?,
                         vertex_colors: source_gen_flag(&node, "VERTCOLORS")?,
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
@@ -761,6 +766,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         alpha_test: material_alpha_test(&node)?,
                         glow_amount: authored_glow_amount(&node)?,
                         alpha_glow: source_alpha_glow(&node)?,
+                        decal: source_gen_flag(&node, "DECAL")?,
                         vertex_colors: source_gen_flag(&node, "VERTCOLORS")?,
                         shader_gen_mask: source_shader_gen_mask(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
