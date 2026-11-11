@@ -27,7 +27,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 const MAX_ARCHIVES: usize = 1_024;
-const MAX_MODELS: usize = 1_024;
+// Unique model/material GPU groups. Every pair is already decoded before this
+// applies and texture memory has its own residency budget, so this only bounds
+// draw calls. Legacy-ported maps add their terrain.dat brushes on top of the
+// mission's objects and exceeded the previous 1,024.
+const MAX_MODELS: usize = 8_192;
 // A 2048-sample heightmap alone is about 4.2M vertices and 25M indices.
 const MAX_VERTICES: usize = 4_500_000;
 const MAX_INDICES: usize = 26_000_000;
@@ -1114,9 +1118,12 @@ pub(super) fn assemble(
             let model_indices = if let Some(indices) = resolved.get(&key) {
                 indices.clone()
             } else {
+                // At the cap, skip only *new* unique models. Further placements
+                // of models already resolved must still be drawn.
                 if models.len() >= MAX_MODELS {
                     budget_hit = true;
-                    break;
+                    failures.insert(key);
+                    continue;
                 }
                 let Some(decoded) = decoded_pairs.remove(&key) else {
                     failures.insert(key);
@@ -1150,7 +1157,8 @@ pub(super) fn assemble(
                 }
                 if models.len().saturating_add(meshes.len()) > MAX_MODELS {
                     budget_hit = true;
-                    break;
+                    failures.insert(key);
+                    continue;
                 }
                 let mut per_mesh_materials: Vec<Vec<Surface>> = Vec::new();
                 // Preserve the actual resolver/decoder reason for every
@@ -1288,6 +1296,7 @@ pub(super) fn assemble(
                     );
                 }
                 let mut indices = Vec::with_capacity(meshes.len());
+                let mut partial = false;
                 for (part_index, part) in meshes.into_iter().enumerate() {
                     let mesh = part.mesh;
                     let radius = world_instances::radius(&mesh);
@@ -1302,6 +1311,7 @@ pub(super) fn assemble(
                     let batches = surface_batch_ranges(&costs, geometry);
                     if models.len().saturating_add(batches.len()) > MAX_MODELS {
                         budget_hit = true;
+                        partial = true;
                         break;
                     }
                     let shared = std::sync::Arc::new(mesh);
@@ -1323,8 +1333,11 @@ pub(super) fn assemble(
                     }
                     report.geometries += 1;
                 }
-                if budget_hit {
-                    break;
+                if partial {
+                    // Groups already pushed for this model stay empty (no
+                    // instances), so a partially resident model is never drawn.
+                    failures.insert(key);
+                    continue;
                 }
                 resolved.insert(key, indices.clone());
                 indices

@@ -622,6 +622,10 @@ pub fn parse_world_model_parts_with_subsets(
     // A compiled CGF may contain standalone physics, collision, or helper
     // mesh chunks. Draw NODE-referenced render meshes, not every MeshChunk.
     const NODE: u32 = 0x0800100B;
+    // Stage 2 compiled CGFs store the same NodeChunk layout (64-byte name,
+    // object id at +64) under chunk version 0x823. Without recognizing it,
+    // their `$physics_proxy` meshes look like streamless visible geometry.
+    const NODE_V823: u32 = 0x0823100B;
     let all_mesh_chunks = chunks
         .iter()
         .filter(|(ty, _, _, _)| *ty == MESH)
@@ -659,7 +663,7 @@ pub fn parse_world_model_parts_with_subsets(
     let mut has_nonhelper_nodes = false;
     let mut unresolved_node_target = false;
     for (kind, at, size, _) in &chunks {
-        if *kind != NODE {
+        if *kind != NODE && *kind != NODE_V823 {
             continue;
         }
         has_nodes = true;
@@ -1482,6 +1486,44 @@ pub(crate) mod tests {
         assert!(matches!(
             parse_world_model_parts(&helper_only_fixture()),
             Err(ModelError::NoRenderableMesh)
+        ));
+    }
+
+    /// Retag every NodeChunk with the Stage 2 v0x823 chunk type.
+    fn as_stage2_nodes(mut data: Vec<u8>) -> Vec<u8> {
+        let count = u32at(&data, 8).unwrap() as usize;
+        for row in 0..count {
+            let at = 16 + row * 16;
+            if u32at(&data, at).unwrap() == 0x0800100B {
+                data[at..at + 4].copy_from_slice(&0x0823100Bu32.to_le_bytes());
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn stage2_node_chunks_exclude_streamless_physics_proxies() {
+        // Shipped Stage 2 rocks/trees (riverbank01_a, canopy01, tower01_a)
+        // pair each visible mesh with a `$physics_proxy` NODE whose MeshChunk
+        // has no position/index streams. With v0x823 nodes unrecognized, that
+        // proxy was treated as corrupt visible geometry and the whole model
+        // was refused.
+        let mut data = as_stage2_nodes(world_node_fixture());
+        let helper = u32at(&data, 16 + 8 * 16 + 12).unwrap() as usize;
+        data[helper..helper + 64].fill(0);
+        data[helper..helper + 14].copy_from_slice(b"$physics_proxy");
+        let parts = parse_world_model_parts(&data).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].indices, vec![0, 1, 2]);
+        assert!(matches!(
+            parse_world_model_parts(&as_stage2_nodes(collision_only_fixture())),
+            Err(ModelError::NoRenderableMesh)
+        ));
+        assert!(matches!(
+            parse_world_model_parts_with_subsets(
+                &as_stage2_nodes(visible_missing_stream_fixture())
+            ),
+            Err(ModelError::Format(_))
         ));
     }
 

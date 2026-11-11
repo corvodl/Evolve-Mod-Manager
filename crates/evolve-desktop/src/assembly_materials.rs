@@ -1219,8 +1219,7 @@ fn load_authored_subset_surfaces(
                     document.slots.len()
                 )
             })?;
-            if leaf.shader.eq_ignore_ascii_case("NoDraw")
-                || (is_original_beam_effect(leaf) && !mesh_effect_preview(leaf))
+            if leaf.engine_hidden() || (is_original_beam_effect(leaf) && !mesh_effect_preview(leaf))
             {
                 // An effect-only beam needs an additive/volumetric shader.
                 // Do not turn that source volume into an opaque solid tube.
@@ -1681,7 +1680,7 @@ pub fn load_with_progress(
                 .ok_or_else(|| {
                     format!("Original material slot {} is missing", part.material_slot)
                 })?;
-            if leaf.shader.eq_ignore_ascii_case("NoDraw") {
+            if leaf.engine_hidden() {
                 surface.visible = false;
                 return Ok(());
             }
@@ -1935,6 +1934,7 @@ mod tests {
         let mut slot = evolve_core::MaterialSlot {
             name: "glow".into(),
             shader: "Illum".into(),
+            mtl_flags: 0,
             maps: vec![],
             opacity: None,
             alpha_test: None,
@@ -2301,6 +2301,7 @@ mod tests {
         let make = |shader: &str, scalar: Option<f32>, with_mask: bool| evolve_core::MaterialSlot {
             name: "Goliath_Body".into(),
             shader: shader.into(),
+            mtl_flags: 0,
             opacity: scalar,
             alpha_test: None,
             glow_amount: None,
@@ -2956,6 +2957,7 @@ mod tests {
         let ordinary = evolve_core::MaterialSlot {
             name: "armor".into(),
             shader: "Illum".into(),
+            mtl_flags: 0,
             maps: vec![evolve_core::TextureReference {
                 role: "diffuse".into(),
                 path: "characters/armor.dds".into(),

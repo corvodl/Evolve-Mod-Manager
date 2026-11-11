@@ -91,6 +91,9 @@ pub struct MaterialSlot {
     pub name: String,
     pub shader: String,
     pub maps: Vec<TextureReference>,
+    /// Original decimal CryEngine MtlFlags (0 when absent).
+    #[serde(default)]
+    pub mtl_flags: u32,
     /// Source MTL scalar Opacity attribute. Separate from diffuse DDS alpha
     /// (CryEngine may use that alpha for gloss, masking or emission).
     #[serde(default)]
@@ -184,6 +187,27 @@ fn attr(node: &BytesStart<'_>, wanted: &[u8]) -> Result<Option<String>, Material
 
 /// Parse the authored scalar as a normalized material factor. It is never
 /// inferred from diffuse DDS alpha or a shader name.
+/// CryEngine `MTL_FLAG_NODRAW`: the engine never renders this material.
+pub const MTL_FLAG_NODRAW: u32 = 0x400;
+/// CryEngine `MTL_FLAG_COLLISION_PROXY`: physics-only, never rendered.
+pub const MTL_FLAG_COLLISION_PROXY: u32 = 0x2000;
+
+fn material_flags(node: &BytesStart<'_>) -> Result<u32, MaterialError> {
+    // An unparsable flag word is ignored rather than guessed at.
+    Ok(attr(node, b"MtlFlags")?
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .unwrap_or(0))
+}
+
+impl MaterialSlot {
+    /// True when the engine itself never draws this slot: a NoDraw shader or
+    /// a NODRAW / COLLISION_PROXY material flag (e.g. play-area boundary walls).
+    pub fn engine_hidden(&self) -> bool {
+        self.shader.eq_ignore_ascii_case("NoDraw")
+            || self.mtl_flags & (MTL_FLAG_NODRAW | MTL_FLAG_COLLISION_PROXY) != 0
+    }
+}
+
 fn material_opacity(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
     let Some(text) = attr(node, b"Opacity")? else {
         return Ok(None);
@@ -585,6 +609,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         name,
                         shader,
                         maps: Vec::new(),
+                        mtl_flags: material_flags(&node)?,
                         opacity,
                         alpha_test,
                         glow_amount,
@@ -723,6 +748,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                             .unwrap_or_else(|| format!("Material{}", slots.len())),
                         shader: attr(&node, b"Shader")?.unwrap_or_default(),
                         maps: Vec::new(),
+                        mtl_flags: material_flags(&node)?,
                         opacity: material_opacity(&node)?,
                         alpha_test: material_alpha_test(&node)?,
                         glow_amount: authored_glow_amount(&node)?,
@@ -1011,6 +1037,19 @@ pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn collision_proxy_and_nodraw_flags_hide_illum_materials() {
+        // Ice_Alpine's materials/special/collision_proxy_boundary.mtl.
+        let hidden = |xml: &[u8]| super::parse_material(xml).unwrap().slots[0].engine_hidden();
+        assert!(hidden(
+            br#"<Material Shader="Illum" MtlFlags="532512" Opacity="0.02"/>"#
+        ));
+        assert!(hidden(br#"<Material Shader="Illum" MtlFlags="1024"/>"#));
+        assert!(hidden(br#"<Material Shader="NoDraw"/>"#));
+        assert!(!hidden(br#"<Material Shader="Illum" MtlFlags="524416"/>"#));
+        assert!(!hidden(br#"<Material Shader="Illum" MtlFlags="garbage"/>"#));
+    }
+
     #[test]
     fn parses_original_hex_particle_feature_masks_without_inventing_invalid_flags() {
         let doc = super::parse_material(br#"<Material Shader="Particles" GenMask="220" StringGenMask="">

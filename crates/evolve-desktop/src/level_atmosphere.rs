@@ -75,6 +75,88 @@ fn rotate(q: [f32; 4], p: [f32; 3]) -> [f32; 3] {
         p[2] + 2.0 * (w * uv[2] + uuv[2]),
     ]
 }
+/// The whole placement element around an attribute at `offset`: an editor
+/// layer's `<Object>` or a compiled mission's `<Entity>`, through its closing
+/// tag. A compiled mission has no `<Object>` at all, so reading to the next
+/// `</Object>` there would mix in every later entity's properties.
+fn enclosing_object(text: &str, offset: usize) -> &str {
+    let before = &text[..offset];
+    let (start, close) = match (before.rfind("<Object"), before.rfind("<Entity ")) {
+        (Some(object), Some(entity)) if entity > object => (entity, "</Entity>"),
+        (Some(object), _) => (object, "</Object>"),
+        (None, Some(entity)) => (entity, "</Entity>"),
+        (None, None) => (offset, "</Object>"),
+    };
+    let rest = &text[start..];
+    let head = rest.find('>').map_or(rest.len(), |end| end + 1);
+    if rest[..head].ends_with("/>") {
+        return &rest[..head];
+    }
+    &rest[..rest.find(close).unwrap_or(rest.len())]
+}
+
+fn quaternion_product(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let [aw, ax, ay, az] = a;
+    let [bw, bx, by, bz] = b;
+    [
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ]
+}
+
+/// Compiled mission entities keyed by EntityId, for resolving ParentId.
+fn mission_entity_heads(text: &str) -> HashMap<&str, &str> {
+    text.match_indices("<Entity ")
+        .filter_map(|(start, _)| {
+            let head = &text[start..start + text[start..].find('>')?];
+            Some((xml_attribute(head, "EntityId")?, head))
+        })
+        .collect()
+}
+
+/// World position and rotation of a placement. A compiled mission child's
+/// Pos and Rotate are relative to its ParentId entity; editor layer objects
+/// and unparented entities are already in world space.
+fn world_placement(object: &str, entities: &HashMap<&str, &str>) -> Option<([f32; 3], [f32; 4])> {
+    let head = &object[..object.find('>').unwrap_or(object.len())];
+    let local = |head: &str| {
+        let position = xml_tuple(head, "Pos").filter(|pos| pos.len() == 3)?;
+        let rotation = xml_tuple(head, "Rotate")
+            .filter(|rotate| rotate.len() == 4)
+            .map_or([1.0, 0.0, 0.0, 0.0], |r| [r[0], r[1], r[2], r[3]]);
+        Some(([position[0], position[1], position[2]], rotation))
+    };
+    let (mut position, mut rotation) = local(head)?;
+    let mut parent = xml_attribute(head, "ParentId");
+    for _ in 0..32 {
+        let Some(id) = parent else {
+            return Some((position, rotation));
+        };
+        let parent_head = entities.get(id)?;
+        let (origin, turn) = local(parent_head)?;
+        let scale = xml_tuple(parent_head, "Scale")
+            .filter(|scale| scale.len() == 3)
+            .map_or([1.0; 3], |s| [s[0], s[1], s[2]]);
+        let offset = rotate(
+            turn,
+            [
+                position[0] * scale[0],
+                position[1] * scale[1],
+                position[2] * scale[2],
+            ],
+        );
+        position = [
+            origin[0] + offset[0],
+            origin[1] + offset[1],
+            origin[2] + offset[2],
+        ];
+        rotation = quaternion_product(turn, rotation);
+        parent = xml_attribute(parent_head, "ParentId");
+    }
+    None
+}
 fn unit(v: [f32; 3]) -> [f32; 3] {
     let norm = v.iter().map(|n| n * n).sum::<f32>().sqrt();
     if norm < 1e-5 {
@@ -1118,8 +1200,10 @@ pub(super) fn authored_ambient_cube(
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
         for (offset, _) in text.match_indices("EntityClass=\"EnvironmentLight\"") {
-            let object = &text[offset..];
-            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let object = enclosing_object(&text, offset);
+            if xml_attribute(object, "bActive") == Some("0") {
+                continue;
+            }
             let Some(cubemap) = xml_attribute(object, "texture_deferred_cubemap") else {
                 continue;
             };
@@ -1208,24 +1292,18 @@ pub(super) fn authored_local_probes(
     let mut pending = Vec::new();
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
+        let entities = mission_entity_heads(&text);
         for (offset, _) in text.match_indices("EntityClass=\"EnvironmentLight\"") {
-            let start = text[..offset].rfind("<Object").unwrap_or(offset);
-            let object = &text[start..];
-            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
-            let (Some(cubemap), Some(position)) = (
+            let object = enclosing_object(&text, offset);
+            let (Some(cubemap), Some((position, rotation))) = (
                 xml_attribute(object, "texture_deferred_cubemap"),
-                xml_tuple(object, "Pos").filter(|pos| pos.len() == 3),
+                world_placement(object, &entities),
             ) else {
                 continue;
             };
             if xml_attribute(object, "bActive") == Some("0") {
                 continue;
             }
-            let rotation = xml_tuple(object, "Rotate")
-                .filter(|rotate| rotate.len() == 4)
-                .map_or([1.0, 0.0, 0.0, 0.0], |rotate| {
-                    [rotate[0], rotate[1], rotate[2], rotate[3]]
-                });
             let scale = mtl_value(object, "fDiffuseMultiplier", 1.0);
             let color = xml_tuple(object, "clrDiffuse").unwrap_or_default();
             pending.push(Pending {
@@ -1381,8 +1459,7 @@ pub(super) fn authored_decals(
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
         for (offset, _) in text.match_indices(" Type=\"Decal\"") {
-            let start = text[..offset].rfind("<Object").unwrap_or(offset);
-            let object = &text[start..];
+            let object = enclosing_object(&text, offset);
             let object = &object[..object.find('>').unwrap_or(object.len())];
             let (Some(position), Some(material)) = (
                 xml_tuple(object, "Pos").filter(|pos| pos.len() == 3),
@@ -1665,9 +1742,7 @@ pub(super) fn authored_roads(
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
         for (offset, _) in text.match_indices(" Type=\"Road\"") {
-            let start = text[..offset].rfind("<Object").unwrap_or(offset);
-            let object = &text[start..];
-            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let object = enclosing_object(&text, offset);
             let head = &object[..object.find('>').unwrap_or(object.len())];
             let (Some(position), Some(material)) = (
                 xml_tuple(head, "Pos").filter(|pos| pos.len() == 3),
@@ -1734,8 +1809,7 @@ pub(super) fn authored_rain_darkening(layers: &[(String, Vec<u8>)]) -> f32 {
         .find_map(|(_, bytes)| {
             let text = String::from_utf8_lossy(bytes);
             let at = text.find("EntityClass=\"Rain\"")?;
-            let object = &text[at..];
-            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let object = enclosing_object(&text, at);
             xml_attribute(object, "fDiffuseDarkening")?
                 .parse::<f32>()
                 .ok()
@@ -1838,9 +1912,7 @@ pub(super) fn authored_water(
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
         for (offset, _) in text.match_indices(" Type=\"WaterVolume\"") {
-            let start = text[..offset].rfind("<Object").unwrap_or(offset);
-            let object = &text[start..];
-            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let object = enclosing_object(&text, offset);
             let Some(origin) = xml_tuple(object, "Pos").filter(|pos| pos.len() == 3) else {
                 continue;
             };
@@ -2135,6 +2207,49 @@ pub(super) fn load_static_sky(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compiled_mission_entities_keep_their_own_properties_and_parent_space() {
+        // A compiled mission lists <Entity> elements with no </Object> at all.
+        // Each probe must read its own cubemap, box and world position.
+        let mission = r#"<Mission><Objects>
+          <Entity Name="host" Pos="100,0,0" Rotate="0.70710677,0,0,0.70710677" Scale="2,2,2" EntityClass="Brush" EntityId="7"/>
+          <Entity Name="probe_a" Pos="10,20,30" EntityClass="EnvironmentLight" EntityId="8">
+            <Properties texture_deferred_cubemap="a_cm.tif" BoxSizeX="5"/>
+          </Entity>
+          <Entity Name="probe_b" ParentId="7" Pos="1,0,0" EntityClass="EnvironmentLight" EntityId="9">
+            <Properties texture_deferred_cubemap="b_cm.tif" BoxSizeX="200"/>
+          </Entity>
+        </Objects></Mission>"#;
+        let entities = super::mission_entity_heads(mission);
+        let found = mission
+            .match_indices("EntityClass=\"EnvironmentLight\"")
+            .map(|(offset, _)| {
+                let object = super::enclosing_object(mission, offset);
+                let (position, _) = super::world_placement(object, &entities).unwrap();
+                (
+                    super::xml_attribute(object, "texture_deferred_cubemap").unwrap(),
+                    super::xml_attribute(object, "BoxSizeX").unwrap(),
+                    position,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(found[0].0, "a_cm.tif");
+        assert_eq!(found[0].1, "5");
+        assert_eq!(found[0].2, [10.0, 20.0, 30.0]);
+        assert_eq!(found[1].0, "b_cm.tif");
+        assert_eq!(found[1].1, "200");
+        // Parent turned 90 degrees about Z and scaled 2: local +X lands at +2 Y.
+        let [x, y, z] = found[1].2;
+        assert!((x - 100.0).abs() < 1e-4 && (y - 2.0).abs() < 1e-4 && z.abs() < 1e-4);
+        // An editor layer object still reads through its own </Object>.
+        let layer = r#"<Objects><Object Id="a" Pos="1,2,3" EntityClass="EnvironmentLight"><Properties BoxSizeX="9"/></Object><Object Id="b" BoxSizeX="1"/></Objects>"#;
+        let at = layer.find("EntityClass").unwrap();
+        assert_eq!(
+            super::xml_attribute(super::enclosing_object(layer, at), "BoxSizeX"),
+            Some("9")
+        );
+    }
+
     #[test]
     fn time_of_day_sun_rises_peaks_and_sets_on_the_authored_path() {
         let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-3);
