@@ -25,6 +25,9 @@ pub(super) enum SculptMode {
     Raise,
     Flatten,
     Smooth,
+    /// Turn terrain holes under the brush into ground at the stroke's
+    /// starting height (terrain.dat maps, which have holes).
+    Create,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -62,13 +65,22 @@ pub(super) struct GroundPatch {
     pub data: Vec<f32>,
 }
 
-pub(super) type GroundPatches = Arc<Mutex<Vec<GroundPatch>>>;
+/// Pending ground-mesh updates for the renderer.
+#[derive(Default)]
+pub(super) struct GroundUpdates {
+    pub rows: Vec<GroundPatch>,
+    /// A whole new index list, after holes were filled or restored.
+    pub indices: Option<Vec<u32>>,
+}
+
+pub(super) type GroundPatches = Arc<Mutex<GroundUpdates>>;
 
 /// A rectangle of samples (x0, y0, x1, y1 inclusive) and its old contents.
 struct Snapshot {
     rect: [u32; 4],
     heights: Vec<f32>,
     surfaces: Option<Vec<u8>>,
+    holes: Option<Vec<bool>>,
 }
 
 struct Stroke {
@@ -77,6 +89,7 @@ struct Stroke {
     flatten_to: f32,
     heights: Vec<f32>,
     surfaces: Option<Vec<u8>>,
+    holes: Option<Vec<bool>>,
     touched: Option<[u32; 4]>,
 }
 
@@ -93,6 +106,9 @@ pub(super) struct TerrainSession {
     surfaces: Option<Vec<u8>>,
     saved_heights: Vec<f32>,
     saved_surfaces: Option<Vec<u8>>,
+    /// terrain.dat: per-sample hole flags as the ground mesh was built.
+    holes: Option<Vec<bool>>,
+    saved_holes: Option<Vec<bool>>,
     dirty: Option<[u32; 4]>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
@@ -189,10 +205,12 @@ impl TerrainSession {
         patches: GroundPatches,
     ) -> Result<Self, String> {
         let bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
+        let mut holes = None;
         let (width, height, unit, max_height, heights, surfaces) = if compiled {
             let terrain =
                 evolve_core::decode_compiled_terrain(&bytes).map_err(|e| e.to_string())?;
             let side = terrain.units + 1;
+            holes = Some(terrain.holes);
             (
                 side,
                 side,
@@ -228,6 +246,8 @@ impl TerrainSession {
             max_height,
             saved_heights: heights.clone(),
             saved_surfaces: surfaces.clone(),
+            saved_holes: holes.clone(),
+            holes,
             heights,
             surfaces,
             dirty: None,
@@ -251,6 +271,10 @@ impl TerrainSession {
     }
     pub fn can_paint(&self) -> bool {
         self.surfaces.is_some()
+    }
+    /// Only terrain.dat has holes to turn into ground.
+    pub fn can_create(&self) -> bool {
+        self.holes.is_some()
     }
 
     fn index(&self, x: u32, y: u32) -> usize {
@@ -308,6 +332,7 @@ impl TerrainSession {
             flatten_to: self.height_at(at[0], at[1]).unwrap_or(at[2]),
             heights: self.heights.clone(),
             surfaces: self.surfaces.clone(),
+            holes: self.holes.clone(),
             touched: None,
         });
     }
@@ -343,6 +368,7 @@ impl TerrainSession {
         // Smooth reads the heights from before this dab.
         let before = self.heights.clone();
         let mut changed = false;
+        let mut filled = false;
         for x in x0..=x1 {
             for y in y0..=y1 {
                 let w = weight(x, y);
@@ -361,11 +387,30 @@ impl TerrainSession {
                     }
                     continue;
                 }
+                if settings.mode == SculptMode::Create && !lower {
+                    if w >= 0.5 && self.holes.as_ref().is_some_and(|holes| holes[index]) {
+                        let surface = self
+                            .nearest_ground_surface(x, y)
+                            .unwrap_or(settings.surface);
+                        if let Some(surfaces) = self.surfaces.as_mut() {
+                            surfaces[index] = surface;
+                        }
+                        if let Some(holes) = self.holes.as_mut() {
+                            holes[index] = false;
+                        }
+                        self.heights[index] = flatten_to;
+                        filled = true;
+                        changed = true;
+                    }
+                    continue;
+                }
                 let current = self.heights[index];
                 let target = if lower {
                     current - strength * w * settings.radius * 0.05
                 } else {
                     match settings.mode {
+                        // Handled above: it fills holes rather than reshaping.
+                        SculptMode::Create => current,
                         SculptMode::Raise => current + strength * w * settings.radius * 0.05,
                         SculptMode::Flatten => current + (flatten_to - current) * strength * w,
                         SculptMode::Smooth => {
@@ -395,8 +440,54 @@ impl TerrainSession {
             }
             self.dirty = Some(grow(self.dirty, rect));
             self.publish(rect);
+            if filled {
+                self.publish_indices();
+            }
         }
         changed
+    }
+
+    /// The surface of the closest sample that is ground, for new terrain.
+    fn nearest_ground_surface(&self, x: u32, y: u32) -> Option<u8> {
+        let (surfaces, holes) = (self.surfaces.as_ref()?, self.holes.as_ref()?);
+        for ring in 1..=32u32 {
+            for nx in x.saturating_sub(ring)..=(x + ring).min(self.width - 1) {
+                for ny in y.saturating_sub(ring)..=(y + ring).min(self.height - 1) {
+                    if nx.abs_diff(x) != ring && ny.abs_diff(y) != ring {
+                        continue;
+                    }
+                    let index = self.index(nx, ny);
+                    if !holes[index] && surfaces[index] != evolve_core::HOLE_ID {
+                        return Some(surfaces[index]);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Rebuild the ground mesh's triangles, leaving out the quads whose
+    /// corner sample is a hole, exactly as the terrain mesh was built.
+    fn publish_indices(&self) {
+        let Some(holes) = &self.holes else {
+            return;
+        };
+        let rows = self.ys.len();
+        let mut indices = Vec::with_capacity((self.xs.len() - 1) * (rows - 1) * 6);
+        for (column, &x) in self.xs.iter().enumerate().take(self.xs.len() - 1) {
+            for (row, &y) in self.ys.iter().enumerate().take(rows - 1) {
+                if holes[self.index(x, y)] {
+                    continue;
+                }
+                let a = (column * rows + row) as u32;
+                let b = a + rows as u32;
+                let c = a + 1;
+                indices.extend_from_slice(&[a, b, c, b, b + 1, c]);
+            }
+        }
+        if let Ok(mut queue) = self.patches.lock() {
+            queue.indices = Some(indices);
+        }
     }
 
     /// Finish a stroke as one undo step.
@@ -407,7 +498,12 @@ impl TerrainSession {
         let Some(rect) = stroke.touched else {
             return;
         };
-        let snapshot = self.snapshot_of(rect, &stroke.heights, stroke.surfaces.as_deref());
+        let snapshot = self.snapshot_of(
+            rect,
+            &stroke.heights,
+            stroke.surfaces.as_deref(),
+            stroke.holes.as_deref(),
+        );
         self.undo.push(snapshot);
         self.redo.clear();
         while self.undo.len() > 64 {
@@ -415,17 +511,27 @@ impl TerrainSession {
         }
     }
 
-    fn snapshot_of(&self, rect: [u32; 4], heights: &[f32], surfaces: Option<&[u8]>) -> Snapshot {
+    fn snapshot_of(
+        &self,
+        rect: [u32; 4],
+        heights: &[f32],
+        surfaces: Option<&[u8]>,
+        holes: Option<&[bool]>,
+    ) -> Snapshot {
         let mut snapshot = Snapshot {
             rect,
             heights: Vec::new(),
             surfaces: surfaces.map(|_| Vec::new()),
+            holes: holes.map(|_| Vec::new()),
         };
         for x in rect[0]..=rect[2] {
             for y in rect[1]..=rect[3] {
                 let index = self.index(x, y);
                 snapshot.heights.push(heights[index]);
                 if let (Some(out), Some(source)) = (snapshot.surfaces.as_mut(), surfaces) {
+                    out.push(source[index]);
+                }
+                if let (Some(out), Some(source)) = (snapshot.holes.as_mut(), holes) {
                     out.push(source[index]);
                 }
             }
@@ -435,7 +541,12 @@ impl TerrainSession {
 
     /// Swap a snapshot's region with the current contents; returns the swap.
     fn restore(&mut self, snapshot: Snapshot) -> Snapshot {
-        let current = self.snapshot_of(snapshot.rect, &self.heights, self.surfaces.as_deref());
+        let current = self.snapshot_of(
+            snapshot.rect,
+            &self.heights,
+            self.surfaces.as_deref(),
+            self.holes.as_deref(),
+        );
         let rect = snapshot.rect;
         let mut at = 0;
         for x in rect[0]..=rect[2] {
@@ -447,11 +558,15 @@ impl TerrainSession {
                 {
                     out[index] = source[at];
                 }
+                if let (Some(out), Some(source)) = (self.holes.as_mut(), snapshot.holes.as_ref()) {
+                    out[index] = source[at];
+                }
                 at += 1;
             }
         }
         self.dirty = Some(grow(self.dirty, rect));
         self.publish(rect);
+        self.publish_indices();
         current
     }
 
@@ -480,9 +595,11 @@ impl TerrainSession {
         };
         self.heights.clone_from(&self.saved_heights);
         self.surfaces.clone_from(&self.saved_surfaces);
+        self.holes.clone_from(&self.saved_holes);
         self.undo.clear();
         self.redo.clear();
         self.publish(rect);
+        self.publish_indices();
     }
 
     /// The edited rectangle as one patch for the terrain file writer.
@@ -563,7 +680,7 @@ impl TerrainSession {
             });
         }
         if let Ok(mut queue) = self.patches.lock() {
-            queue.extend(out);
+            queue.rows.extend(out);
         }
     }
 }
@@ -584,6 +701,8 @@ mod tests {
             surfaces: Some(vec![0; (width * height) as usize]),
             saved_heights: vec![z; (width * height) as usize],
             saved_surfaces: Some(vec![0; (width * height) as usize]),
+            holes: None,
+            saved_holes: None,
             dirty: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -616,7 +735,7 @@ mod tests {
         let patch = session.patch().unwrap();
         assert_eq!(patch.heights.len(), (patch.width * patch.height) as usize);
         assert!(patch.surfaces.is_empty());
-        assert!(!session.patches.lock().unwrap().is_empty());
+        assert!(!session.patches.lock().unwrap().rows.is_empty());
     }
 
     /// Brush a real Heightmap.dat and terrain.dat, save the patch with the
@@ -712,7 +831,7 @@ mod tests {
             let mut checked = 0;
             // Later rows overwrite earlier ones on the GPU, as here.
             let mut last = std::collections::BTreeMap::new();
-            for row in patches.lock().unwrap().iter() {
+            for row in patches.lock().unwrap().rows.iter() {
                 for (k, vertex) in row.data.chunks(VERTEX_FLOATS).enumerate() {
                     last.insert(row.first_vertex as usize + k, vertex.to_vec());
                 }
@@ -748,7 +867,64 @@ mod tests {
                 path.display()
             );
             assert!(raised > 50);
+            if !compiled {
+                continue;
+            }
+            // Create: drag from ground into a hole next to it.
+            let patches = GroundPatches::default();
+            let mut session =
+                TerrainSession::load(path.clone(), true, &before.info, patches.clone()).unwrap();
+            let holes = session.holes.clone().unwrap();
+            let side = session.height;
+            let unit = session.unit;
+            let edge = (2..side - 2)
+                .flat_map(|x| (2..side - 2).map(move |y| (x, y)))
+                .find(|&(x, y)| {
+                    holes[(x * side + y) as usize]
+                        && !holes[(x * side + y - 1) as usize]
+                        && holes[(x * side + y + 1) as usize]
+                })
+                .expect("a hole beside ground");
+            let start = [edge.0 as f32 * unit, (edge.1 - 1) as f32 * unit, 0.0];
+            let start = [
+                start[0],
+                start[1],
+                session.height_at(start[0], start[1]).unwrap(),
+            ];
+            let settings = BrushSettings {
+                mode: SculptMode::Create,
+                radius: unit * 3.0,
+                ..BrushSettings::default()
+            };
+            session.begin_stroke(start, false, false);
+            let target = [edge.0 as f32 * unit, (edge.1 + 1) as f32 * unit, start[2]];
+            assert!(session.dab(target, &settings));
+            session.end_stroke();
+            let patch = session.patch().unwrap();
+            assert!(patch.surfaces.iter().any(Option::is_some));
+            let saved = evolve_core::patch_compiled_terrain_bytes(&bytes, &patch).unwrap();
+            let decoded = evolve_core::decode_compiled_terrain(&saved).unwrap();
+            let filled = before_holes(&bytes) - decoded.holes.iter().filter(|h| **h).count();
+            assert!(filled > 0, "no holes filled");
+            let after = mesh(&saved);
+            let live = patches
+                .lock()
+                .unwrap()
+                .indices
+                .clone()
+                .expect("indices rebuilt");
+            assert_eq!(live, after.indices, "live triangles equal the saved mesh");
+            println!("{}: Create filled {filled} hole samples", path.display());
         }
+    }
+
+    fn before_holes(bytes: &[u8]) -> usize {
+        evolve_core::decode_compiled_terrain(bytes)
+            .unwrap()
+            .holes
+            .iter()
+            .filter(|h| **h)
+            .count()
     }
 
     #[test]

@@ -50,6 +50,14 @@ fn tool_bar(state: &State) -> Element<'_, Message> {
                 .push(mode("Raise", SculptMode::Raise))
                 .push(mode("Flatten", SculptMode::Flatten))
                 .push(mode("Smooth", SculptMode::Smooth));
+            // Legacy-ported maps' terrain.dat has holes to turn into ground.
+            if state
+                .terrain_session
+                .as_ref()
+                .is_some_and(|session| session.can_create())
+            {
+                bar = bar.push(mode("Create", SculptMode::Create));
+            }
         } else {
             bar = bar.push(text("Surface").size(11)).push(
                 text_input("ID", &state.terrain_brush_surface)

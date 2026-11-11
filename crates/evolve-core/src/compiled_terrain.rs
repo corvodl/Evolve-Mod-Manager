@@ -900,6 +900,8 @@ struct Brush<'a> {
     changed: [usize; 4],
     /// Painting: the SurfaceTypeID the edit gives a sample, if any.
     paint: Option<&'a dyn Fn(usize, usize) -> Option<u8>>,
+    /// Painting a hole turns it into ground; otherwise holes stay holes.
+    fill_holes: bool,
 }
 
 impl Brush<'_> {
@@ -917,6 +919,7 @@ fn encode_terrain_edit(
     surfaces: &[u8],
     changed: [usize; 4],
     paint: Option<&dyn Fn(usize, usize) -> Option<u8>>,
+    fill_holes: bool,
 ) -> Result<Vec<u8>, TerrainError> {
     let r = Reader { data: source };
     let (_, at) = r.table(32, 352)?;
@@ -927,6 +930,7 @@ fn encode_terrain_edit(
         side: terrain.units as usize + 1,
         changed,
         paint,
+        fill_holes,
     };
     let mut output = source[..start].to_vec();
     let (end, _) = rewrite_terrain_node(
@@ -962,7 +966,8 @@ fn encode_terrain_edit(
 }
 
 /// Write a [`crate::TerrainPatch`] into `terrain.dat`: the patch's heights,
-/// and its SurfaceTypeIDs where it paints (holes stay holes). The touched
+/// and its SurfaceTypeIDs where it paints. Painting a hole makes it ground,
+/// which is how the brush creates new terrain. The touched
 /// sectors are re-encoded as [`edit_compiled_terrain_bytes`] describes.
 pub fn patch_compiled_terrain_bytes(
     source: &[u8],
@@ -988,9 +993,8 @@ pub fn patch_compiled_terrain_bytes(
             let at = i * h + j;
             differs |= (heights[index] - patch.heights[at]).abs() > HEIGHT_STEP * 0.5;
             heights[index] = patch.heights[at];
-            if let Some(Some(id)) = patch.surfaces.get(at)
-                && surfaces[index] != HOLE_ID
-            {
+            // A patch may paint a hole, which makes it ground again.
+            if let Some(Some(id)) = patch.surfaces.get(at) {
                 differs |= surfaces[index] != *id;
                 surfaces[index] = *id;
             }
@@ -1007,6 +1011,7 @@ pub fn patch_compiled_terrain_bytes(
         &surfaces,
         [x0, y0, x0 + w - 1, y0 + h - 1],
         (!patch.surfaces.is_empty()).then_some(&paint as &dyn Fn(usize, usize) -> Option<u8>),
+        true,
     )
 }
 
@@ -1102,6 +1107,7 @@ pub fn edit_compiled_terrain_bytes(
         paint
             .is_some()
             .then_some(&disk as &dyn Fn(usize, usize) -> Option<u8>),
+        false,
     )
 }
 
@@ -1199,7 +1205,7 @@ fn rewrite_terrain_node(
             if bits != HOLE_SURFACE && bits > last {
                 bits = last;
             }
-            if bits != HOLE_SURFACE
+            if (bits != HOLE_SURFACE || brush.fill_holes)
                 && let Some(id) = brush.painted(x0 + lx, y0 + ly)
             {
                 bits = match summary.palette.iter().position(|known| *known == id) {
@@ -1605,6 +1611,34 @@ mod tests {
         let water = &t.water[0];
         assert_eq!((water.material, water.fog_density), (Some(0), 2.0));
         assert_eq!(water.points[1], [10.0, 0.0, 5.0]);
+    }
+
+    #[test]
+    fn terrain_patch_painting_a_hole_creates_ground() {
+        let source = fixture();
+        let before = decode_compiled_terrain(&source).unwrap();
+        let side = 17usize;
+        assert!(before.holes[15 * side + 15]);
+        let (x0, y0, w, h) = (12usize, 12usize, 5usize, 5usize);
+        let mut heights = Vec::new();
+        for i in 0..w {
+            for j in 0..h {
+                heights.push(before.heights[(x0 + i) * side + y0 + j]);
+            }
+        }
+        let patch = crate::terrain::TerrainPatch {
+            x: x0 as u32,
+            y: y0 as u32,
+            width: w as u32,
+            height: h as u32,
+            heights,
+            surfaces: vec![Some(4); w * h],
+        };
+        let filled = patch_compiled_terrain_bytes(&source, &patch).unwrap();
+        let after = decode_compiled_terrain(&filled).unwrap();
+        assert!(after.holes.iter().all(|hole| !hole), "every hole filled");
+        assert_eq!(after.surfaces[16 * side + 16], 4);
+        assert_eq!(after.brushes, before.brushes);
     }
 
     #[test]
