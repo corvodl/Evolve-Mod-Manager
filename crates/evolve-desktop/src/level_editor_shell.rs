@@ -15,7 +15,7 @@ fn menu_button(name: &'static str, id: &'static str) -> iced::widget::Button<'st
 /// and Paint, the active brush's settings and the unsaved-terrain controls.
 fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
     use crate::terrain_brush::{LevelTool, SculptMode};
-    use iced::widget::{slider, text_input};
+    use iced::widget::slider;
     let tool = |label: &'static str, value: LevelTool| {
         design::button(label)
             .style(if state.level_tool == value {
@@ -26,10 +26,11 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
             .on_press(Message::LevelSetTool(value))
     };
     let mut bar = row![
-        text("│").size(15).style(design::muted),
+        text("â”‚").size(15).style(design::muted),
         tool("Select", LevelTool::Select),
         tool("Sculpt", LevelTool::Sculpt),
         tool("Paint", LevelTool::Paint),
+        tool("Vegetation", LevelTool::Vegetation),
     ]
     .spacing(5)
     .align_y(iced::Alignment::Center);
@@ -47,13 +48,13 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
                 .on_press(Message::LevelGizmoMode(value))
         };
         bar = bar
-            .push(text("│").size(15).style(design::muted))
+            .push(text("â”‚").size(15).style(design::muted))
             .push(gizmo("Move", Mode::Move))
             .push(gizmo("Rotate", Mode::Rotate))
             .push(gizmo("Scale", Mode::Scale));
     }
     if state.level_tool != LevelTool::Select {
-        bar = bar.push(text("│").size(15).style(design::muted));
+        bar = bar.push(text("â”‚").size(15).style(design::muted));
         if state.level_tool == LevelTool::Sculpt {
             let mode = |label: &'static str, value: SculptMode| {
                 design::button(label)
@@ -76,13 +77,17 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
             {
                 bar = bar.push(mode("Create", SculptMode::Create));
             }
-        } else {
-            bar = bar.push(text("Surface").size(11)).push(
-                text_input("ID", &state.terrain_brush_surface)
-                    .on_input(Message::LevelBrushSurface)
-                    .size(12)
-                    .width(Length::Fixed(48.0)),
-            );
+        } else if state.level_tool == LevelTool::Paint {
+            // The material is chosen in the strip below.
+            let name = state
+                .level_surface_palette
+                .as_ref()
+                .and_then(|palette| palette.iter().find(|item| item.id == brush.surface))
+                .map_or_else(
+                    || format!("Surface {}", brush.surface),
+                    |item| item.name.clone(),
+                );
+            bar = bar.push(text(name).size(12));
         }
         let setting = |label: &'static str,
                        range: std::ops::RangeInclusive<f32>,
@@ -108,6 +113,25 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
             format!("{:.1} m", brush.radius),
             Message::LevelBrushRadius,
         ));
+        if state.level_tool == LevelTool::Vegetation {
+            bar = bar
+                .push(setting(
+                    "Density",
+                    1.0..=50.0,
+                    state.vegetation_density,
+                    1.0,
+                    format!("{:.0} / dab", state.vegetation_density),
+                    Message::LevelVegetationDensity,
+                ))
+                .push(setting(
+                    "Size Â±",
+                    0.0..=0.8,
+                    state.vegetation_jitter,
+                    0.05,
+                    format!("{:.0}%", state.vegetation_jitter * 100.0),
+                    Message::LevelVegetationJitter,
+                ));
+        }
         if state.level_tool == LevelTool::Sculpt {
             bar = bar
                 .push(setting(
@@ -138,7 +162,7 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
         });
         if on { button.on_press(message) } else { button }
     };
-    if state.level_tool == LevelTool::Select {
+    if matches!(state.level_tool, LevelTool::Select | LevelTool::Vegetation) {
         // The map's unsaved changes: live in the view, written by Save Map.
         let draft = state.level_draft.as_ref();
         let pending = draft.is_some_and(crate::level_draft::Draft::changed);
@@ -204,12 +228,17 @@ fn tool_hint(state: &State) -> &'static str {
     use crate::terrain_brush::LevelTool;
     match state.level_tool {
         LevelTool::Select => {
-            "Click select · G move · R/S rotate/scale gizmo · Del delete · Ctrl+C/V copy, paste · Shift+D duplicate · Ctrl+Z undo · Ctrl+S save map"
+            "Click select Â· G move Â· R/S rotate/scale gizmo Â· Del delete Â· Ctrl+C/V copy, paste Â· Shift+D duplicate Â· Ctrl+Z undo Â· Ctrl+S save map"
         }
         LevelTool::Sculpt => {
-            "LMB brush · Ctrl+LMB lower · Ctrl+Z undo · Ctrl+S save terrain · RMB look"
+            "LMB brush Â· Ctrl+LMB lower Â· Ctrl+Z undo Â· Ctrl+S save terrain Â· RMB look"
         }
-        LevelTool::Paint => "LMB paint · RMB look · WASD fly",
+        LevelTool::Paint => {
+            "Pick a material below Â· LMB paint Â· Ctrl+Z undo Â· Ctrl+S save terrain Â· RMB look"
+        }
+        LevelTool::Vegetation => {
+            "Pick a kind below Â· LMB paint Â· Ctrl+LMB erase Â· Ctrl+Z undo Â· Ctrl+S save map Â· RMB look"
+        }
     }
 }
 
@@ -229,7 +258,7 @@ fn map_chooser(state: &State) -> Element<'_, Message> {
     ].spacing(12);
 
     if state.busy {
-        choices = choices.push(text("Discovering or loading maps…").size(13));
+        choices = choices.push(text("Discovering or loading mapsâ€¦").size(13));
     }
     if let Some((project, maps)) = &state.level_project_choices {
         choices =
@@ -263,7 +292,7 @@ fn map_chooser(state: &State) -> Element<'_, Message> {
                 choices = choices.push(
                     design::button(text(format!(
                         "{}{}",
-                        if index == *current { "✓ " } else { "" },
+                        if index == *current { "âœ“ " } else { "" },
                         map.name
                     )))
                     .on_press_maybe((!state.busy).then_some(Message::LevelMapSelect(index)))
@@ -412,12 +441,12 @@ fn menu_content(state: &State) -> Option<Element<'_, Message>> {
         .spacing(2)
         .into(),
         "LevelHelp" => column![
-            text("WASD · fly relative to camera").size(12),
-            text("Q / E · descend / ascend").size(12),
-            text("Hold RMB and drag · look around").size(12),
-            text("Wheel · adjust field of view").size(12),
-            text("F · focus selection").size(12),
-            text("File → Open as Modding Project to edit").size(12),
+            text("WASD Â· fly relative to camera").size(12),
+            text("Q / E Â· descend / ascend").size(12),
+            text("Hold RMB and drag Â· look around").size(12),
+            text("Wheel Â· adjust field of view").size(12),
+            text("F Â· focus selection").size(12),
+            text("File â†’ Open as Modding Project to edit").size(12),
         ]
         .spacing(7)
         .into(),
@@ -450,7 +479,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             menu_button("Select", "LevelSelectMenu"),
             menu_button("Actor", "LevelActor"),
             menu_button("Help", "LevelHelp"),
-            design::button("Choose Map…").on_press(Message::LevelShowMapChooser),
+            design::button("Choose Mapâ€¦").on_press(Message::LevelShowMapChooser),
             space().width(Length::Fixed(8.0)),
             tools,
         ]
@@ -499,8 +528,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .spacing(14)
     .align_y(iced::Alignment::Center);
 
+    let palette: Element<'_, Message> = crate::level_palette::strip(state)
+        .unwrap_or_else(|| space().height(Length::Fixed(0.0)).into());
     let base = column![
         menus,
+        palette,
         container(level_workspace::view(state))
             .padding(8)
             .width(Fill)

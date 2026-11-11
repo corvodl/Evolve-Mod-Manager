@@ -55,6 +55,13 @@ impl Draft {
         self.redo.clear();
     }
 
+    /// Replace the current state without a new undo step: the rest of a
+    /// brush stroke whose first dab was pushed.
+    pub fn amend(&mut self, next: Snapshot) {
+        self.current = next;
+        self.redo.clear();
+    }
+
     pub fn undo(&mut self) -> bool {
         let Some(previous) = self.undo.pop() else {
             return false;
@@ -147,6 +154,66 @@ pub(super) fn copy(
         },
         new_index,
     ))
+}
+
+/// Many copies at once: each of object `origin` with a new id and local
+/// transform, in one pass over the scene (as a vegetation brush dab makes).
+pub(super) fn copy_many(
+    snapshot: &Snapshot,
+    copies: &[(usize, String, Transform)],
+) -> Result<Snapshot, String> {
+    if copies.is_empty() {
+        return Ok(snapshot.clone());
+    }
+    let mut scene = (*snapshot.scene).clone();
+    let mut origins = (*snapshot.origins).clone();
+    let mut added = Vec::with_capacity(copies.len());
+    for (origin, id, _) in copies {
+        let source = scene
+            .objects
+            .get(*origin)
+            .ok_or("That placement is no longer in the map")?
+            .clone();
+        origins.insert(id.clone(), source.id.clone());
+        let mut copied = source;
+        copied.id = id.clone();
+        copied.name = format!("{}_copy", copied.name);
+        added.push((*origin, scene.objects.len()));
+        scene.objects.push(copied);
+    }
+    let edits = copies
+        .iter()
+        .map(|(_, id, local)| (id.clone(), *local))
+        .collect::<Vec<_>>();
+    let scene = evolve_core::edit_level_transforms(&scene, &edits)
+        .map_err(|error| format!("Invalid transform: {error}"))?;
+    let world = snapshot.world.as_ref().map(|world| {
+        let mut next = world.updated(&scene);
+        let mut by_origin = HashMap::<usize, Vec<usize>>::new();
+        for &(origin, index) in &added {
+            by_origin.entry(origin).or_default().push(index);
+        }
+        for group in &mut next.groups {
+            let mut extra = Vec::new();
+            for instance in &group.instances {
+                if let Some(indices) = by_origin.get(&instance.object_index) {
+                    extra.extend(indices.iter().map(|&index| Instance {
+                        object_index: index,
+                        transform: scene.objects[index].world,
+                    }));
+                }
+            }
+            group.instances.extend(extra);
+        }
+        next.instance_count = next.groups.iter().map(|g| g.instances.len()).sum();
+        Arc::new(next)
+    });
+    Ok(Snapshot {
+        scene: Arc::new(scene),
+        world,
+        origins: Arc::new(origins),
+        deleted: snapshot.deleted.clone(),
+    })
 }
 
 /// Delete objects by index: hidden and no longer drawn or picked.
@@ -360,6 +427,20 @@ mod tests {
             changes(&draft.original, &draft.current),
             vec![Change::Transform { index: 0 }]
         );
+        // A brush dab's copies, all at once.
+        let many = copy_many(
+            &draft.current,
+            &[
+                (0, "f".into(), moved),
+                (0, "g".into(), Transform::default()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            many.scene.objects.len(),
+            draft.current.scene.objects.len() + 2
+        );
+        assert_eq!(root_origin(&many, "g"), "a");
         // A copy that is deleted again is simply never saved.
         let (copied, index) = copy(&draft.current, 1, "e".into(), moved).unwrap();
         let removed = delete(&copied, &[index]);

@@ -49,6 +49,7 @@ mod level_environment;
 mod level_gizmo;
 mod level_library;
 mod level_lighting;
+mod level_palette;
 mod level_pick;
 mod level_scene_renderer;
 mod level_transform;
@@ -717,7 +718,18 @@ struct State {
     /// The tool bar's active tool and brush in an editable project.
     level_tool: terrain_brush::LevelTool,
     terrain_brush: terrain_brush::BrushSettings,
-    terrain_brush_surface: String,
+    /// The Paint tool's terrain materials, with previews.
+    level_surface_palette: Option<Arc<Vec<level_palette::SurfaceItem>>>,
+    /// The Vegetation tool's kinds of vegetation, the chosen one (by model)
+    /// and its brush settings.
+    level_vegetation_palette: Option<Arc<Vec<level_palette::VegetationItem>>>,
+    level_vegetation_pick: Option<String>,
+    vegetation_density: f32,
+    vegetation_jitter: f32,
+    /// The last dab of a vegetation stroke, and whether the stroke has
+    /// made its undo step yet.
+    vegetation_stroke: Option<[f32; 3]>,
+    vegetation_stroke_pushed: bool,
     /// The project's terrain loaded for brushing; edits live here until saved.
     terrain_session: Option<terrain_brush::TerrainSession>,
     /// The brush outline under the mouse.
@@ -2897,7 +2909,14 @@ enum Message {
     LevelBrushRadius(f32),
     LevelBrushStrength(f32),
     LevelBrushHardness(f32),
-    LevelBrushSurface(String),
+    /// The Paint tool's materials finished loading; one was picked.
+    LevelSurfacePalette(Vec<level_palette::SurfaceItem>),
+    LevelPickSurface(u8),
+    /// The Vegetation tool's kinds (with previews); one was picked.
+    LevelVegetationPalette(Vec<level_palette::VegetationItem>),
+    LevelPickVegetation(String),
+    LevelVegetationDensity(f32),
+    LevelVegetationJitter(f32),
     /// A brush stroke starts where this view ray meets the ground.
     LevelBrushPress {
         lower: bool,
@@ -3540,6 +3559,294 @@ fn level_pending_edits(state: &State) -> Vec<(String, evolve_core::Transform)> {
 /// The editor is a preview unless a managed project is active. Every
 /// authoring command submits only a verified project source member to the
 /// existing backup/import transaction, never an imported PAK or library file.
+/// Load the Paint tool's materials and their previews in the background:
+/// a terrain.dat map's SurfaceTypes, or a Heightmap.dat map's paint layers.
+fn load_surface_palette(state: &mut State) -> Task<Message> {
+    let (Some(session), Some((archive, _, _))) = (&state.terrain_session, &state.library_map)
+    else {
+        return Task::none();
+    };
+    let surfaces = if session.compiled {
+        session
+            .source
+            .parent()
+            .and_then(Path::parent)
+            .and_then(|map| std::fs::read(map.join("leveldata.xml")).ok())
+            .map(|xml| terrain_material_probe::leveldata_surfaces(&xml))
+            .unwrap_or_default()
+    } else {
+        let mut seen = std::collections::BTreeSet::new();
+        evolve_core::read_terrain_paint(&session.source)
+            .ok()
+            .flatten()
+            .map(|paint| {
+                paint
+                    .layers
+                    .into_iter()
+                    .filter(|layer| seen.insert(layer.id))
+                    .map(|layer| (layer.id, layer.name, layer.surface_type))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if surfaces.is_empty() {
+        state.level_surface_palette = Some(Arc::new(Vec::new()));
+        state.status = "This map lists no terrain materials to paint with.".into();
+        return Task::none();
+    }
+    let archive = archive.clone();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                terrain_material_probe::surface_palette(&archive, &surfaces)
+                    .into_iter()
+                    .map(|entry| level_palette::SurfaceItem {
+                        id: entry.id,
+                        name: entry.name,
+                        preview: entry.thumbnail.as_ref().map(level_palette::handle),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default()
+        },
+        Message::LevelSurfacePalette,
+    )
+}
+
+/// The map's kinds of terrain.dat vegetation, most common first. False when
+/// it has none.
+fn vegetation_palette(state: &mut State) -> bool {
+    let Some(scene) = &state.level_scene else {
+        return false;
+    };
+    let mut kinds = std::collections::BTreeMap::<&str, (usize, usize)>::new();
+    for (index, object) in scene.objects.iter().enumerate() {
+        if object.kind.eq_ignore_ascii_case("CompiledVegetation") && !object.hidden {
+            kinds.entry(object.model.as_str()).or_insert((0, index)).0 += 1;
+        }
+    }
+    if kinds.is_empty() {
+        return false;
+    }
+    let previews = state
+        .level_vegetation_palette
+        .as_ref()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| (item.model.clone(), item.preview.clone()))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut items = kinds
+        .into_iter()
+        .map(|(model, (count, origin))| level_palette::VegetationItem {
+            model: model.to_owned(),
+            name: model
+                .rsplit('/')
+                .next()
+                .unwrap_or(model)
+                .trim_end_matches(".cgf")
+                .replace('_', " "),
+            count,
+            origin,
+            preview: previews.get(model).cloned().flatten(),
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| b.count.cmp(&a.count).then(a.name.cmp(&b.name)));
+    if !state
+        .level_vegetation_pick
+        .as_ref()
+        .is_some_and(|pick| items.iter().any(|item| item.model == *pick))
+    {
+        state.level_vegetation_pick = items.first().map(|item| item.model.clone());
+    }
+    state.level_vegetation_palette = Some(Arc::new(items));
+    true
+}
+
+/// Previews of the vegetation kinds, from the textures the view already
+/// decoded, made in the background.
+fn load_vegetation_previews(state: &mut State) -> Task<Message> {
+    let (Some(palette), Some(world)) = (&state.level_vegetation_palette, &state.level_world_source)
+    else {
+        return Task::none();
+    };
+    if palette.iter().all(|item| item.preview.is_some()) {
+        return Task::none();
+    }
+    let mut images = HashMap::new();
+    for group in &world.groups {
+        let Some(diffuse) = group
+            .surfaces
+            .iter()
+            .find_map(|surface| surface.diffuse.clone())
+        else {
+            continue;
+        };
+        for item in palette.iter() {
+            if !images.contains_key(&item.model)
+                && group
+                    .instances
+                    .iter()
+                    .any(|instance| instance.object_index == item.origin)
+            {
+                images.insert(item.model.clone(), diffuse.clone());
+            }
+        }
+    }
+    let items = (**palette).clone();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                items
+                    .into_iter()
+                    .map(|mut item| {
+                        if item.preview.is_none()
+                            && let Some(image) = images.get(&item.model)
+                        {
+                            item.preview = Some(level_palette::handle(
+                                &::image::imageops::thumbnail(image.as_ref(), 64, 64),
+                            ));
+                        }
+                        item
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default()
+        },
+        Message::LevelVegetationPalette,
+    )
+}
+
+/// One dab of the vegetation brush at the ground under a ray: scatter copies
+/// of the chosen kind in the brush circle, or with `erase` remove that kind
+/// there. A stroke is one undo step.
+fn vegetation_dab(state: &mut State, origin: [f32; 3], direction: [f32; 3], erase: bool) {
+    use rand::Rng;
+    let radius = state.terrain_brush.radius;
+    let Some(at) = state
+        .terrain_session
+        .as_ref()
+        .and_then(|session| session.hit(origin, direction))
+    else {
+        return;
+    };
+    if let Some(session) = &state.terrain_session {
+        state.terrain_brush_ring = Some(Arc::new(session.ring(at, radius)));
+    }
+    // Dabs half a radius apart along a stroke.
+    if let Some(last) = state.vegetation_stroke
+        && ((at[0] - last[0]).powi(2) + (at[1] - last[1]).powi(2)).sqrt() < radius * 0.5
+    {
+        return;
+    }
+    state.vegetation_stroke = Some(at);
+    let (Some(model), Some(snapshot)) = (state.level_vegetation_pick.clone(), draft_current(state))
+    else {
+        return;
+    };
+    let inside = |position: [f32; 3]| {
+        ((position[0] - at[0]).powi(2) + (position[1] - at[1]).powi(2)).sqrt() <= radius
+    };
+    let kind = |object: &evolve_core::PlacedObject| {
+        object.kind.eq_ignore_ascii_case("CompiledVegetation")
+            && !object.hidden
+            && object.model == model
+    };
+    let (next, done) = if erase {
+        let indices = snapshot
+            .scene
+            .objects
+            .iter()
+            .enumerate()
+            .filter(|(_, object)| kind(object) && inside(object.world.position))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if indices.is_empty() {
+            return;
+        }
+        let count = indices.len();
+        (
+            level_draft::delete(&snapshot, &indices),
+            format!("Erased {count} vegetation"),
+        )
+    } else {
+        // Any remaining instance of the kind is the template.
+        let Some(template) = snapshot.scene.objects.iter().position(kind) else {
+            state.status = "No instance of that vegetation is left to copy.".into();
+            return;
+        };
+        let source = snapshot.scene.objects[template].local;
+        let mut taken = snapshot
+            .scene
+            .objects
+            .iter()
+            .map(|object| object.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut next_id = 0usize;
+        let mut rng = rand::thread_rng();
+        let mut copies = Vec::new();
+        for _ in 0..state.vegetation_density.round().max(1.0) as usize {
+            let distance = radius * rng.r#gen::<f32>().sqrt();
+            let angle = rng.r#gen::<f32>() * std::f32::consts::TAU;
+            let (x, y) = (
+                at[0] + distance * angle.cos(),
+                at[1] + distance * angle.sin(),
+            );
+            let Some(z) = level_ground_height(state, x, y) else {
+                continue;
+            };
+            // A random turn about Z on top of the template's own rotation.
+            let (s, c) = (rng.r#gen::<f32>() * std::f32::consts::PI).sin_cos();
+            let q = source.quaternion;
+            let quaternion = [
+                c * q[0] - s * q[3],
+                c * q[1] - s * q[2],
+                c * q[2] + s * q[1],
+                c * q[3] + s * q[0],
+            ];
+            let size = 1.0 + state.vegetation_jitter * (rng.r#gen::<f32>() * 2.0 - 1.0);
+            let id = loop {
+                let id = format!("__compiled_copy_{next_id}");
+                next_id += 1;
+                if taken.insert(id.clone()) {
+                    break id;
+                }
+            };
+            copies.push((
+                template,
+                id,
+                evolve_core::Transform {
+                    position: [x, y, z],
+                    quaternion,
+                    scale: source.scale.map(|v| v * size),
+                },
+            ));
+        }
+        let count = copies.len();
+        match level_draft::copy_many(&snapshot, &copies) {
+            Ok(next) => (next, format!("Painted {count} vegetation")),
+            Err(reason) => {
+                state.status = reason;
+                return;
+            }
+        }
+    };
+    if state.vegetation_stroke_pushed
+        && let Some(draft) = state.level_draft.as_mut()
+    {
+        draft.amend(next);
+        show_draft(state);
+        state.status = format!("{done} · Ctrl+Z undo · Ctrl+S save map");
+    } else {
+        state.vegetation_stroke_pushed = true;
+        apply_draft_edit(state, next, &done);
+    }
+}
+
 /// Whether the open map has unsaved changes.
 fn draft_pending(state: &State) -> bool {
     state
@@ -7003,14 +7310,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.level_transform.is_some() {
                 return update(state, Message::LevelTransformCancel);
             }
-            let brushing = state.level_tool != terrain_brush::LevelTool::Select
-                && state.terrain_session.as_ref().is_some_and(|session| {
-                    if undo {
-                        session.can_undo()
-                    } else {
-                        session.can_redo()
-                    }
-                });
+            let brushing = matches!(
+                state.level_tool,
+                terrain_brush::LevelTool::Sculpt | terrain_brush::LevelTool::Paint
+            ) && state.terrain_session.as_ref().is_some_and(|session| {
+                if undo {
+                    session.can_undo()
+                } else {
+                    session.can_redo()
+                }
+            });
             return update(
                 state,
                 match (brushing, undo) {
@@ -7022,11 +7331,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::LevelSaveKey(_) => {
-            let terrain = state.level_tool != terrain_brush::LevelTool::Select
-                && state
-                    .terrain_session
-                    .as_ref()
-                    .is_some_and(|session| session.is_dirty());
+            let terrain = matches!(
+                state.level_tool,
+                terrain_brush::LevelTool::Sculpt | terrain_brush::LevelTool::Paint
+            ) && state
+                .terrain_session
+                .as_ref()
+                .is_some_and(|session| session.is_dirty());
             return update(
                 state,
                 if terrain {
@@ -7378,18 +7689,63 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             }
+            if tool == terrain_brush::LevelTool::Vegetation && !vegetation_palette(state) {
+                state.status = "This map has no terrain.dat vegetation to paint with.".into();
+                return Task::none();
+            }
             state.level_tool = tool;
             state.terrain_brush_ring = None;
+            if state.vegetation_density < 1.0 {
+                state.vegetation_density = 6.0;
+                state.vegetation_jitter = 0.2;
+            }
+            if tool == terrain_brush::LevelTool::Paint && state.level_surface_palette.is_none() {
+                return load_surface_palette(state);
+            }
+            if tool == terrain_brush::LevelTool::Vegetation {
+                return load_vegetation_previews(state);
+            }
         }
         Message::LevelSculptMode(mode) => state.terrain_brush.mode = mode,
         Message::LevelBrushRadius(value) => state.terrain_brush.radius = value.clamp(0.5, 200.0),
         Message::LevelBrushStrength(value) => state.terrain_brush.strength = value.clamp(0.01, 1.0),
         Message::LevelBrushHardness(value) => state.terrain_brush.hardness = value.clamp(0.0, 0.95),
-        Message::LevelBrushSurface(value) => {
-            if let Ok(id) = value.trim().parse::<u8>() {
-                state.terrain_brush.surface = id;
+        Message::LevelSurfacePalette(items) => {
+            if !items
+                .iter()
+                .any(|item| item.id == state.terrain_brush.surface)
+                && let Some(first) = items.first()
+            {
+                state.terrain_brush.surface = first.id;
             }
-            state.terrain_brush_surface = value;
+            state.level_surface_palette = Some(Arc::new(items));
+        }
+        Message::LevelPickSurface(id) => state.terrain_brush.surface = id,
+        Message::LevelVegetationPalette(items) => {
+            state.level_vegetation_palette = Some(Arc::new(items));
+        }
+        Message::LevelPickVegetation(model) => state.level_vegetation_pick = Some(model),
+        Message::LevelVegetationDensity(value) => state.vegetation_density = value.clamp(1.0, 50.0),
+        Message::LevelVegetationJitter(value) => state.vegetation_jitter = value.clamp(0.0, 0.8),
+        Message::LevelBrushPress {
+            lower,
+            origin,
+            direction,
+        } if state.level_tool == terrain_brush::LevelTool::Vegetation => {
+            state.vegetation_stroke = None;
+            state.vegetation_stroke_pushed = false;
+            vegetation_dab(state, origin, direction, lower);
+        }
+        Message::LevelBrushDrag(origin, direction)
+            if state.level_tool == terrain_brush::LevelTool::Vegetation =>
+        {
+            if state.vegetation_stroke.is_some() {
+                let erase = state.keyboard_modifiers.control();
+                vegetation_dab(state, origin, direction, erase);
+            }
+        }
+        Message::LevelBrushRelease if state.level_tool == terrain_brush::LevelTool::Vegetation => {
+            state.vegetation_stroke = None;
         }
         Message::LevelBrushPress {
             lower,
@@ -15954,6 +16310,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_project_choices = None;
                     let loaded = *loaded;
                     state.level_draft = None;
+                    state.level_surface_palette = None;
+                    state.level_vegetation_palette = None;
                     let same_project_and_map = state
                         .level_project
                         .as_ref()

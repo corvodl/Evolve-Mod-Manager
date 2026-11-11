@@ -106,6 +106,80 @@ fn material_path(path: &str) -> Option<String> {
     }
 }
 
+/// A terrain material to paint with: its paint ID, a readable name and a
+/// small preview of its Terrain.Layer diffuse texture, when one resolves.
+pub(super) struct PaletteEntry {
+    pub id: u8,
+    pub name: String,
+    pub thumbnail: Option<image::RgbaImage>,
+}
+
+/// The SurfaceTypes of a map's `leveldata.xml`: SurfaceTypeID, name and
+/// detail material, as a compiled terrain.dat paints them.
+pub(super) fn leveldata_surfaces(xml: &[u8]) -> Vec<(u8, String, String)> {
+    let mut reader = quick_xml::Reader::from_reader(xml);
+    let mut out = Vec::new();
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(e) | quick_xml::events::Event::Empty(e))
+                if e.name().as_ref() == b"SurfaceType" =>
+            {
+                let id = attr(&e, b"SurfaceTypeID").and_then(|v| v.parse::<u8>().ok());
+                let name = attr(&e, b"Name").unwrap_or_default();
+                let material = attr(&e, b"DetailMaterial").unwrap_or_else(|| name.clone());
+                if let Some(id) = id
+                    && out.len() < 256
+                {
+                    out.push((id, name, material));
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// "materials/terrain/snow_dirt_a" as "snow dirt a".
+fn readable(name: &str) -> String {
+    let stem = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let stem = stem.strip_suffix(".mtl").unwrap_or(stem);
+    stem.replace('_', " ")
+}
+
+/// Previews for terrain materials (paint ID, name, material path), from the
+/// same game installation as the map. A material whose texture cannot be
+/// resolved is still listed, without a preview.
+pub(super) fn surface_palette(
+    selected: &ImportedPak,
+    surfaces: &[(u8, String, String)],
+) -> Vec<PaletteEntry> {
+    let catalog = same_install_catalog(selected).ok();
+    surfaces
+        .iter()
+        .map(|(id, name, material)| {
+            let thumbnail = (|| {
+                let catalog = catalog.as_ref()?;
+                let material = material_path(material)?;
+                let path = verified(find(catalog, &material).ok()??).ok()?;
+                let document = read_material(&path).ok()?;
+                let diffuse = terrain_layer_diffuse(&document).ok()??;
+                let image = load_detail_image(catalog, &diffuse, &material).ok()?;
+                Some(image::imageops::thumbnail(&image, 64, 64))
+            })();
+            PaletteEntry {
+                id: *id,
+                name: if name.is_empty() {
+                    readable(material)
+                } else {
+                    readable(name)
+                },
+                thumbnail,
+            }
+        })
+        .collect()
+}
+
 /// Reviews original materials from imported PAKs in the *same installed Game
 /// directory* as the map. Missing/ambiguous materials never fall back to a
 /// different build, similar basename, or a supplied ZIP copied into Git.

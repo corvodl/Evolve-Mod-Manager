@@ -2634,6 +2634,15 @@ mod tests {
     /// A project created as an imported snapshot (as the app makes them, with
     /// no registered build) must still resolve the game's shared assets.
     /// Opens an existing project folder read-only.
+    fn project_folder_leveldata(map: &LoadedMap) -> PathBuf {
+        map.project
+            .as_ref()
+            .unwrap()
+            .workspace
+            .join("files")
+            .join("leveldata.xml")
+    }
+
     #[test]
     #[ignore = "requires a local snapshot project (EVOLVE_BENCH_PROJECT) and library"]
     fn snapshot_projects_resolve_shared_game_assets() {
@@ -2675,6 +2684,16 @@ mod tests {
             "{} groups",
             assembled.world.groups.len()
         );
+        // The Paint tool's materials resolve their previews.
+        let leveldata = std::fs::read(project_folder_leveldata(&map)).unwrap();
+        let surfaces = crate::terrain_material_probe::leveldata_surfaces(&leveldata);
+        let palette = crate::terrain_material_probe::surface_palette(&map.archive, &surfaces);
+        let previews = palette.iter().filter(|e| e.thumbnail.is_some()).count();
+        println!(
+            "{previews} of {} terrain materials have a preview",
+            palette.len()
+        );
+        assert!(!palette.is_empty() && previews * 2 >= palette.len());
         // A reload after an edit reuses the decoded models and textures, so
         // the renderer can keep the GPU groups of everything unchanged.
         let previous = assembled.world.clone();
