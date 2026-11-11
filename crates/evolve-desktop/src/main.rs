@@ -808,7 +808,13 @@ enum ProjectLevelMutation {
 enum Operation {
     IndexProjects(PathBuf, PathBuf),
     BuildRawProject(ProjectRow, PathBuf, PathBuf),
-    ExportPak(ProjectRow, PathBuf, PathBuf, PathBuf, modding_projects::PakExportMode),
+    ExportPak(
+        ProjectRow,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        modding_projects::PakExportMode,
+    ),
     StageBuiltOfflineTest(ProjectRow, PathBuf, PathBuf),
     ImportRawProjectMember(ProjectRow, PathBuf, String, PathBuf),
     RestoreRawProjectMember(ProjectRow, PathBuf, String),
@@ -1285,8 +1291,14 @@ impl Operation {
             )
             .map(|(entry, target, verified)| Completed::BuiltRawProject(entry, target, verified)),
             Self::ExportPak(project, projects, stage, destination, mode) => {
-                modding_projects::export_project_pak(&project, &projects, &stage, &destination, mode)
-                    .map(|(path, count)| Completed::PakExported(path, count, mode))
+                modding_projects::export_project_pak(
+                    &project,
+                    &projects,
+                    &stage,
+                    &destination,
+                    mode,
+                )
+                .map(|(path, count)| Completed::PakExported(path, count, mode))
             }
             Self::StageBuiltOfflineTest(project, output, stage) => {
                 modding_projects::prepare_built_offline_test(&project, &output, &stage)
@@ -3741,8 +3753,7 @@ fn native_mod_pak_save_picker(suggested: String) -> Option<PathBuf> {
             return None;
         }
         let path = PathBuf::from(String::from_utf8(result.stdout).ok()?.trim());
-        return (path.is_absolute() && path.parent().is_some_and(Path::is_dir))
-            .then_some(path);
+        return (path.is_absolute() && path.parent().is_some_and(Path::is_dir)).then_some(path);
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -5449,14 +5460,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             if state.gfx_session.as_ref().is_some_and(|s| {
-                s.project.as_ref().is_some_and(|p| p.workspace == project.workspace)
-                    && s.edits > 0 && !s.applied
+                s.project
+                    .as_ref()
+                    .is_some_and(|p| p.workspace == project.workspace)
+                    && s.edits > 0
+                    && !s.applied
             }) {
-                state.status = "Apply pending GFX edits to the Mod Project before exporting.".into();
+                state.status =
+                    "Apply pending GFX edits to the Mod Project before exporting.".into();
                 return Task::none();
             }
             let suggestion = match modding_projects::suggested_pak_export_name(
-                &project, &state.modding_name_input, mode,
+                &project,
+                &state.modding_name_input,
+                mode,
             ) {
                 Ok(name) => name,
                 Err(error) => {

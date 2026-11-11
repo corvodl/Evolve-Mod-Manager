@@ -1472,9 +1472,14 @@ pub(crate) fn sparse_pak_filename(input: &str) -> Result<String, String> {
     let stem = stem.strip_prefix("zz_").unwrap_or(stem).replace(' ', "_");
     if stem.is_empty()
         || stem.len() > 80
-        || !stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        || !stem
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
-        return Err("Use 1–80 ASCII letters, numbers, spaces, underscores or hyphens for a mod PAK name.".into());
+        return Err(
+            "Use 1–80 ASCII letters, numbers, spaces, underscores or hyphens for a mod PAK name."
+                .into(),
+        );
     }
     Ok(format!("zz_{stem}.pak"))
 }
@@ -1501,12 +1506,16 @@ pub fn export_project_pak(
             return Err("Custom PAK filename must be zz_[modname].pak".into());
         }
     } else if selected != suggested_pak_export_name(project, "", mode)? {
-        return Err("Keep the original PAK filename; choose another destination folder instead".into());
+        return Err(
+            "Keep the original PAK filename; choose another destination folder instead".into(),
+        );
     }
     if fs::symlink_metadata(destination).is_ok() {
         return Err("Export file already exists; choose a NEW output file".into());
     }
-    let parent = destination.parent().ok_or("Export path has no parent directory")?;
+    let parent = destination
+        .parent()
+        .ok_or("Export path has no parent directory")?;
     if !fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_dir()) {
         return Err("Choose a real existing destination folder, not a linked directory".into());
     }
@@ -1521,7 +1530,9 @@ pub fn export_project_pak(
         8 * 1024 * 1024,
     )?;
     let original_name = super::modding_keys::signed_basename(&signed_full)?;
-    let signed_name = manifest["signed_basename"].as_str().unwrap_or(&original_name);
+    let signed_name = manifest["signed_basename"]
+        .as_str()
+        .unwrap_or(&original_name);
     if signed_name != original_name && signed_name != original_name.to_ascii_lowercase() {
         return Err("Built archive and signed source basename disagree".into());
     }
@@ -1546,11 +1557,12 @@ pub fn export_project_pak(
             )?;
         Ok((destination.to_owned(), verified.modified.len()))
     } else {
-        let temporary = tempfile::Builder::new()
+        let mut temporary = tempfile::Builder::new()
             .prefix(".full-pak-export-")
             .tempfile_in(parent)
             .map_err(|e| e.to_string())?;
-        fs::copy(&signed_full, temporary.path())
+        let mut input = File::open(&signed_full).map_err(|e| e.to_string())?;
+        std::io::copy(&mut input, temporary.as_file_mut())
             .map_err(|e| format!("Cannot copy complete PAK: {e}"))?;
         evolve_core::inspect_signed_pak(temporary.path(), &public, signed_name)
             .map_err(|e| format!("Copied PAK signature verification failed: {e}"))?;
@@ -1574,9 +1586,14 @@ mod sparse_pak_tests {
     #[test]
     fn names_are_safe_and_portable() {
         assert_eq!(sparse_pak_filename("My Mod").unwrap(), "zz_My_Mod.pak");
-        assert_eq!(sparse_pak_filename("zz_Example.pak").unwrap(), "zz_Example.pak");
+        assert_eq!(
+            sparse_pak_filename("zz_Example.pak").unwrap(),
+            "zz_Example.pak"
+        );
         assert_eq!(sparse_pak_filename("Test-7").unwrap(), "zz_Test-7.pak");
-        for invalid in ["", "../bad", "a/b", "a\\b", "a:b", "z.other", "✨", "zz_.pak"] {
+        for invalid in [
+            "", "../bad", "a/b", "a\\b", "a:b", "z.other", "✨", "zz_.pak",
+        ] {
             assert!(sparse_pak_filename(invalid).is_err(), "{invalid}");
         }
     }
@@ -1594,9 +1611,18 @@ mod sparse_pak_tests {
             changed_known: true,
             enabled: false,
         };
-        assert_eq!(suggested_pak_export_name(&project, &project.label, PakExportMode::ChangedZz).unwrap(), "zz_Custom_Mod.pak");
-        assert_eq!(suggested_pak_export_name(&project, "", PakExportMode::ChangedOriginal).unwrap(), "OriginalAssets.pak");
-        assert_eq!(suggested_pak_export_name(&project, "", PakExportMode::FullOriginal).unwrap(), "OriginalAssets.pak");
+        assert_eq!(
+            suggested_pak_export_name(&project, &project.label, PakExportMode::ChangedZz).unwrap(),
+            "zz_Custom_Mod.pak"
+        );
+        assert_eq!(
+            suggested_pak_export_name(&project, "", PakExportMode::ChangedOriginal).unwrap(),
+            "OriginalAssets.pak"
+        );
+        assert_eq!(
+            suggested_pak_export_name(&project, "", PakExportMode::FullOriginal).unwrap(),
+            "OriginalAssets.pak"
+        );
     }
 }
 

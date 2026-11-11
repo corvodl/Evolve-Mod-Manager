@@ -330,18 +330,17 @@ impl OfficialTools {
             return Err("Changed-only export needs a safe .pak filename".into());
         }
 
-        let source_index = open_verified_signed_pak(
-            signed_source,
-            &self.public_key,
-            signed_source_name,
-        )
-        .map_err(|e| format!("Intermediate PAK signature verification failed: {e}"))?;
+        let source_index =
+            open_verified_signed_pak(signed_source, &self.public_key, signed_source_name)
+                .map_err(|e| format!("Intermediate PAK signature verification failed: {e}"))?;
         let mut known = HashMap::new();
         let mut known_case = HashSet::new();
         for entry in &source_index.info.entries {
             if !safe_member(&entry.path)
                 || !known_case.insert(entry.path.to_ascii_lowercase())
-                || known.insert(entry.path.clone(), (entry.size, entry.crc32)).is_some()
+                || known
+                    .insert(entry.path.clone(), (entry.size, entry.crc32))
+                    .is_some()
             {
                 return Err("Built source contains unsafe or case-colliding members".into());
             }
@@ -352,7 +351,9 @@ impl OfficialTools {
                 || !changed_case.insert(member.to_ascii_lowercase())
                 || !known.contains_key(member)
             {
-                return Err(format!("Unsafe, duplicated or missing changed member: {member}"));
+                return Err(format!(
+                    "Unsafe, duplicated or missing changed member: {member}"
+                ));
             }
         }
         let parent = output.parent().ok_or("Output has no parent directory")?;
@@ -373,10 +374,14 @@ impl OfficialTools {
         for member in changed_members {
             let source_file = unpacked.join(member);
             if !fs::symlink_metadata(&source_file).is_ok_and(|m| m.file_type().is_file()) {
-                return Err(format!("Decoded changed member is not a regular file: {member}"));
+                return Err(format!(
+                    "Decoded changed member is not a regular file: {member}"
+                ));
             }
             if file_crc(&source_file)? != known[member] {
-                return Err(format!("Decoded member bytes disagree with signed source: {member}"));
+                return Err(format!(
+                    "Decoded member bytes disagree with signed source: {member}"
+                ));
             }
             let target = filtered.join(member);
             fs::create_dir_all(target.parent().ok_or("Invalid changed member path")?)
@@ -390,18 +395,29 @@ impl OfficialTools {
         let result = open_verified_signed_pak(&signed, &self.public_key, basename)
             .map_err(|e| format!("Changed-only PAK signature verification failed: {e}"))?;
         if result.info.entries.len() != changed_members.len()
-            || result.info.entries.iter().any(|entry| !changed_members.contains(&entry.path))
+            || result
+                .info
+                .entries
+                .iter()
+                .any(|entry| !changed_members.contains(&entry.path))
         {
             return Err("Sparse output contains an omitted or unexpected member".into());
         }
         for member in changed_members {
-            let entry = result.info.entries.iter().find(|x| x.path == *member)
+            let entry = result
+                .info
+                .entries
+                .iter()
+                .find(|x| x.path == *member)
                 .ok_or("Sparse output is missing a changed member")?;
             if (entry.size, entry.crc32) != known[member] {
-                return Err(format!("Signed sparse member differs from edited file: {member}"));
+                return Err(format!(
+                    "Signed sparse member differs from edited file: {member}"
+                ));
             }
             if entry.size <= 64 * 1024 * 1024 {
-                let bytes = result.read_member(&signed, member, entry.size)
+                let bytes = result
+                    .read_member(&signed, member, entry.size)
                     .map_err(|e| format!("Cannot decrypt new PAK member: {e}"))?;
                 if bytes != fs::read(filtered.join(member)).map_err(|e| e.to_string())? {
                     return Err(format!("Sparse member payload differs: {member}"));
