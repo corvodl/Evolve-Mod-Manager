@@ -2007,6 +2007,64 @@ fn open_selected(
         diagnostics.push("Heightmap.dat was not in this PAK; terrain cannot be shown yet.".into());
         None
     };
+    // A compiled terrain.dat paints each sample with a SurfaceTypeID from the
+    // map's leveldata.xml, whose DetailMaterial is a Terrain.Layer material:
+    // the same layer data a Heightmap.dat carries, so its ground gets the
+    // same per-material detail instead of the baked colour atlas alone.
+    if terrain_paint.is_none()
+        && let Some(compiled) = &compiled_terrain
+    {
+        let leveldata = inventory
+            .entries
+            .iter()
+            .find(|entry| {
+                let lower = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
+                lower.strip_prefix("files/").unwrap_or(&lower) == "leveldata.xml"
+            })
+            .and_then(|entry| {
+                verified_source(&root, Path::new(&entry.relative_path), 16 * 1024 * 1024).ok()
+            })
+            .and_then(|file| fs::read(file).ok());
+        let surfaces = leveldata
+            .as_deref()
+            .map(crate::terrain_material_probe::leveldata_surfaces)
+            .unwrap_or_default();
+        let side = compiled.units + 1;
+        if !surfaces.is_empty() && compiled.surfaces.len() == (side as usize) * (side as usize) {
+            let paint = TerrainPaintMap {
+                width: side,
+                height: side,
+                layer_names: surfaces
+                    .iter()
+                    .map(|(id, name, _)| (*id, name.clone()))
+                    .collect(),
+                layers: surfaces
+                    .iter()
+                    .map(|(id, name, material)| evolve_core::TerrainLayerDefinition {
+                        id: *id,
+                        name: name.clone(),
+                        surface_type: material.clone(),
+                        filter_color: None,
+                        brightness: None,
+                        tiling: None,
+                    })
+                    .collect(),
+                surface_types: Vec::new(),
+                ids: compiled.surfaces.clone(),
+            };
+            diagnostics.push(format!(
+                "terrain.dat surface types: {} SurfaceTypes from leveldata.xml paint {} used IDs.",
+                surfaces.len(),
+                paint
+                    .ids
+                    .iter()
+                    .filter(|&&id| id != evolve_core::HOLE_ID)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+            ));
+            terrain_paint = Some(paint);
+        }
+    }
     if scene.is_none() && terrain.is_none() {
         return Err(diagnostics.join(" "));
     }
@@ -2684,6 +2742,15 @@ mod tests {
             "{} groups",
             assembled.world.groups.len()
         );
+        // A terrain.dat map's SurfaceType materials draw on the GPU, not
+        // only the grey baked atlas.
+        let layers = assembled
+            .world
+            .terrain_gpu
+            .as_ref()
+            .map_or(0, |gpu| gpu.layers.len());
+        println!("{layers} terrain material layers on the GPU");
+        assert!(layers > 16, "{layers}");
         // The Paint tool's materials resolve their previews.
         let leveldata = std::fs::read(project_folder_leveldata(&map)).unwrap();
         let surfaces = crate::terrain_material_probe::leveldata_surfaces(&leveldata);

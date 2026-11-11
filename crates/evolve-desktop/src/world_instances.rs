@@ -1521,7 +1521,7 @@ fn upload_terrain_layers(
         },
     );
     let paint_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut desc = [[0.0f32; 4]; 33];
+    let mut desc = [[0.0f32; 4]; 1 + 2 * MAX_TERRAIN_LAYERS];
     if let Some(s) = source {
         desc[0] = [pw as f32, ph as f32, s.unit, s.layers.len() as f32];
         for (index, layer) in s.layers.iter().enumerate() {
@@ -1531,7 +1531,7 @@ fn upload_terrain_layers(
                 layer.tile[1],
                 layer.strength,
             ];
-            desc[index + 17] = [
+            desc[index + 1 + MAX_TERRAIN_LAYERS] = [
                 layer.blend_factor,
                 layer.blend_falloff,
                 layer.pom_displacement,
@@ -1556,6 +1556,9 @@ fn upload_terrain_layers(
             + pw as u64 * ph as u64 * 4,
     }
 }
+
+/// Painted terrain materials the shader takes (its `SourceTerrainParams`).
+pub(super) const MAX_TERRAIN_LAYERS: usize = 32;
 
 struct GpuParticles {
     instances: wgpu::Buffer,
