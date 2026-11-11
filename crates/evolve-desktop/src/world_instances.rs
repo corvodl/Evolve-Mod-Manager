@@ -1030,8 +1030,10 @@ impl World {
         next
     }
 
-    /// Conservative ray/sphere picking for original world instances. It is
-    /// intentionally approximate until per-mesh BVH ray traversal is ready.
+    /// The placement under a viewport point: the nearest one whose visible
+    /// triangles the view ray actually hits. Bounding spheres only narrow
+    /// down candidates, so a tree's wide canopy sphere no longer catches
+    /// clicks beside it. The ground hides what is behind it.
     pub fn pick(
         &self,
         camera: level_camera::Camera,
@@ -1041,37 +1043,18 @@ impl World {
         zoom: f32,
         point: [f32; 2],
     ) -> Option<usize> {
-        let (forward, right, up) = level_camera::basis(yaw, pitch);
-        let t = (camera.fov_degrees.clamp(25.0, 110.0).to_radians() * 0.5).tan()
-            / zoom.clamp(0.2, 80.0);
-        let mut direction = [
-            forward[0] + point[0] * t * aspect * right[0] + point[1] * t * up[0],
-            forward[1] + point[0] * t * aspect * right[1] + point[1] * t * up[1],
-            forward[2] + point[0] * t * aspect * right[2] + point[1] * t * up[2],
-        ];
-        let len = direction.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if len <= 1e-6 || !len.is_finite() {
-            return None;
-        }
-        for x in &mut direction {
-            *x /= len;
-        }
-        let mut closest = (f32::INFINITY, None);
-        for group in &self.groups {
+        let direction = level_camera::view_ray(camera, yaw, pitch, aspect, zoom, point)?;
+        let origin = camera.position;
+        // Candidates: placements whose bounding sphere the ray enters.
+        let mut candidates = Vec::new();
+        for (group_index, group) in self.groups.iter().enumerate() {
             for instance in &group.instances {
-                if instance.object_index >= NOT_SELECTABLE {
+                if instance.object_index == NOT_SELECTABLE {
                     continue;
                 }
-                let p = instance.transform.position;
-                let delta = [
-                    p[0] - camera.position[0],
-                    p[1] - camera.position[1],
-                    p[2] - camera.position[2],
-                ];
-                let dot = delta.iter().zip(direction).map(|(a, b)| a * b).sum::<f32>();
-                if dot < 0.0 || dot > closest.0 {
-                    continue;
-                }
+                let delta: [f32; 3] =
+                    std::array::from_fn(|i| instance.transform.position[i] - origin[i]);
+                let along = delta.iter().zip(direction).map(|(a, b)| a * b).sum::<f32>();
                 let radius = group.radius
                     * instance
                         .transform
@@ -1080,18 +1063,151 @@ impl World {
                         .copied()
                         .map(f32::abs)
                         .fold(0.0, f32::max);
-                let radial_sq = delta.iter().map(|x| x * x).sum::<f32>() - dot * dot;
-                if radial_sq <= radius * radius && radius > 0.0 {
-                    let hit = (radius * radius - radial_sq.max(0.0)).max(0.0).sqrt();
-                    let distance = (dot - hit).max(0.0);
-                    if distance < closest.0 {
-                        closest = (distance, Some(instance.object_index));
-                    }
+                if radius <= 0.0 {
+                    continue;
                 }
+                let radial_sq = delta.iter().map(|x| x * x).sum::<f32>() - along * along;
+                if radial_sq > radius * radius || along + radius < 0.0 {
+                    continue;
+                }
+                let entry = along - (radius * radius - radial_sq.max(0.0)).sqrt();
+                candidates.push((entry.max(0.0), group_index, *instance));
+            }
+        }
+        candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut closest = (f32::INFINITY, None);
+        for (entry, group_index, instance) in candidates {
+            if entry > closest.0 {
+                break;
+            }
+            let Some(distance) = ray_hits_instance(
+                &self.groups[group_index],
+                instance.transform,
+                origin,
+                direction,
+            ) else {
+                continue;
+            };
+            if distance < closest.0 {
+                // The ground blocks the view but cannot itself be selected.
+                let selectable = instance.object_index != usize::MAX;
+                closest = (distance, selectable.then_some(instance.object_index));
             }
         }
         closest.1
     }
+}
+
+/// Where a ray first meets a placed mesh's visible triangles, as a distance
+/// along the (unit) world ray.
+fn ray_hits_instance(
+    group: &ModelGroup,
+    transform: Transform,
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> Option<f32> {
+    // Bring the ray into the mesh's own space. Distances along it stay the
+    // same, as the direction is mapped without renormalizing.
+    let q = transform.quaternion;
+    let norm = q.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm < 1e-8 {
+        return None;
+    }
+    let inverse = [q[0] / norm, -q[1] / norm, -q[2] / norm, -q[3] / norm];
+    let rotate = |v: [f32; 3]| {
+        let [w, x, y, z] = inverse;
+        let t = [
+            2.0 * (y * v[2] - z * v[1]),
+            2.0 * (z * v[0] - x * v[2]),
+            2.0 * (x * v[1] - y * v[0]),
+        ];
+        [
+            v[0] + w * t[0] + (y * t[2] - z * t[1]),
+            v[1] + w * t[1] + (z * t[0] - x * t[2]),
+            v[2] + w * t[2] + (x * t[1] - y * t[0]),
+        ]
+    };
+    let unscale = |v: [f32; 3]| -> Option<[f32; 3]> {
+        let mut out = [0.0; 3];
+        for i in 0..3 {
+            if transform.scale[i].abs() < 1e-8 {
+                return None;
+            }
+            out[i] = v[i] / transform.scale[i];
+        }
+        Some(out)
+    };
+    let local_origin = unscale(rotate(std::array::from_fn(|i| {
+        origin[i] - transform.position[i]
+    })))?;
+    let local_direction = unscale(rotate(direction))?;
+    let mesh = &group.mesh;
+    let mut ranges = group
+        .surfaces
+        .iter()
+        .filter(|surface| surface.visible)
+        .map(|surface| {
+            surface.first_index as usize..(surface.first_index + surface.index_count) as usize
+        })
+        .collect::<Vec<_>>();
+    if group.surfaces.is_empty() {
+        ranges.push(0..mesh.indices.len());
+    }
+    let mut nearest: Option<f32> = None;
+    for range in ranges {
+        let range = range.start.min(mesh.indices.len())..range.end.min(mesh.indices.len());
+        for triangle in mesh.indices[range].as_chunks::<3>().0 {
+            let corner = |i: usize| mesh.positions.get(triangle[i] as usize).copied();
+            let (Some(a), Some(b), Some(c)) = (corner(0), corner(1), corner(2)) else {
+                continue;
+            };
+            if let Some(t) = ray_triangle(local_origin, local_direction, a, b, c)
+                && nearest.is_none_or(|best| t < best)
+            {
+                nearest = Some(t);
+            }
+        }
+    }
+    nearest
+}
+
+/// Möller–Trumbore: the ray parameter where it crosses a triangle, either side.
+fn ray_triangle(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    a: [f32; 3],
+    b: [f32; 3],
+    c: [f32; 3],
+) -> Option<f32> {
+    let sub = |p: [f32; 3], q: [f32; 3]| [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    let cross = |u: [f32; 3], v: [f32; 3]| {
+        [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ]
+    };
+    let dot = |u: [f32; 3], v: [f32; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    let edge1 = sub(b, a);
+    let edge2 = sub(c, a);
+    let p = cross(direction, edge2);
+    let det = dot(edge1, p);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let inverse = 1.0 / det;
+    let s = sub(origin, a);
+    let u = dot(s, p) * inverse;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = cross(s, edge1);
+    let v = dot(direction, q) * inverse;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = dot(edge2, q) * inverse;
+    (t > 0.0 && t.is_finite()).then_some(t)
 }
 
 pub(super) fn radius(mesh: &RenderMesh) -> f32 {
@@ -5965,6 +6081,64 @@ mod tests {
         assert!(!entry.contains("distance_fog("));
         assert!(!entry.contains("shade("));
         naga::front::wgsl::parse_str(shader).expect("terrain source shader parses");
+    }
+
+    #[test]
+    fn picking_needs_a_triangle_not_just_the_bounding_sphere() {
+        // A thin 1 m wide, 10 m tall trunk: its bounding sphere is 10 m wide.
+        let mesh = Arc::new(RenderMesh {
+            vertex_alpha: None,
+            vertex_color: None,
+            info: evolve_core::ModelInfo {
+                format: "test".into(),
+                version: 1,
+                chunk_count: 0,
+                vertex_count: 4,
+                triangle_count: 2,
+                original_uv0: true,
+                original_normals: true,
+            },
+            positions: vec![
+                [-0.5, 0.0, 0.0],
+                [0.5, 0.0, 0.0],
+                [0.5, 0.0, 10.0],
+                [-0.5, 0.0, 10.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv0: None,
+            normals: None,
+        });
+        let tree = |object_index: usize, x: f32| Instance {
+            object_index,
+            transform: Transform {
+                position: [x, 0.0, 0.0],
+                ..Transform::default()
+            },
+        };
+        let world = World {
+            groups: vec![ModelGroup {
+                radius: radius(&mesh),
+                mesh,
+                surfaces: Vec::new(),
+                instances: vec![tree(7, 0.0), tree(8, 4.0)],
+            }],
+            ..World::default()
+        };
+        // Looking along +Y from 20 m back, level with the trunks' middle.
+        let camera = level_camera::Camera {
+            position: [0.0, -20.0, 5.0],
+            speed: 10.0,
+            fov_degrees: 60.0,
+        };
+        let pick = |x: f32| {
+            // A screen point whose ray crosses y = 0 at (x, 0, 5).
+            let tangent = (30.0f32).to_radians().tan();
+            world.pick(camera, 0.0, 0.0, 1.0, 1.0, [x / (20.0 * tangent), 0.0])
+        };
+        assert_eq!(pick(0.0), Some(7));
+        assert_eq!(pick(4.1), Some(8));
+        // Beside the first trunk, though well inside its sphere: nothing.
+        assert_eq!(pick(2.0), None);
     }
 
     #[test]

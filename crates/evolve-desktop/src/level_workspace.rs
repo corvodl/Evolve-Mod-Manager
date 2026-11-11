@@ -286,18 +286,11 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 .level_picks
                 .clone()
                 .unwrap_or_else(|| Arc::new(Vec::new())),
-            // The axes follow a transform in progress.
-            selected_pivot: state
+            gizmo: selection_gizmo(state),
+            transforming: state
                 .level_transform
                 .as_ref()
-                .and_then(|operation| operation.results().first().map(|t| t.position))
-                .or_else(|| {
-                    state
-                        .level_selected
-                        .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
-                        .map(|o| o.world.position)
-                }),
-            transforming: state.level_transform.is_some(),
+                .map(|operation| (operation.mode, operation.axis)),
             brush: state.level_project.is_some()
                 && !state.level_read_only
                 && state.level_tool != super::terrain_brush::LevelTool::Select,
@@ -977,6 +970,50 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .width(Length::Fixed(350.0))
         .height(Fill);
     row![viewport, inspector].spacing(8).height(Fill).into()
+}
+
+/// The gizmo on the selection: at the centre of the selected placements,
+/// following a transform in progress. Only for editable projects in the
+/// Select tool.
+fn selection_gizmo(state: &State) -> Option<(crate::level_transform::Mode, [f32; 3])> {
+    if state.level_project.is_none()
+        || state.level_read_only
+        || state.level_tool != super::terrain_brush::LevelTool::Select
+    {
+        return None;
+    }
+    let centre = |points: Vec<[f32; 3]>| {
+        (!points.is_empty()).then(|| {
+            let count = points.len() as f32;
+            let sum = points.iter().fold([0.0; 3], |sum, p| {
+                [sum[0] + p[0], sum[1] + p[1], sum[2] + p[2]]
+            });
+            sum.map(|v| v / count)
+        })
+    };
+    if let Some(operation) = &state.level_transform {
+        let pivot = centre(operation.results().iter().map(|t| t.position).collect())?;
+        return Some((operation.mode, pivot));
+    }
+    let scene = state.level_scene.as_ref()?;
+    let mut indices = state
+        .level_selection
+        .indices
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    if indices.is_empty() {
+        indices.extend(state.level_selected);
+    }
+    let pivot = centre(
+        indices
+            .iter()
+            .filter_map(|&index| scene.objects.get(index))
+            .filter(|object| !object.kind.eq_ignore_ascii_case("Vegetation"))
+            .map(|object| object.world.position)
+            .collect(),
+    )?;
+    Some((state.level_gizmo, pivot))
 }
 
 /// Enter in a transform field saves it, for an editable placement.

@@ -34,6 +34,24 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
     .spacing(5)
     .align_y(iced::Alignment::Center);
     let brush = state.terrain_brush;
+    if state.level_tool == LevelTool::Select {
+        // The gizmo the selection shows, as Blender's Move/Rotate/Scale tools.
+        use crate::level_transform::Mode;
+        let gizmo = |label: &'static str, value: Mode| {
+            design::button(label)
+                .style(if state.level_gizmo == value {
+                    design::primary
+                } else {
+                    design::secondary
+                })
+                .on_press(Message::LevelGizmoMode(value))
+        };
+        bar = bar
+            .push(text("│").size(15).style(design::muted))
+            .push(gizmo("Move", Mode::Move))
+            .push(gizmo("Rotate", Mode::Rotate))
+            .push(gizmo("Scale", Mode::Scale));
+    }
     if state.level_tool != LevelTool::Select {
         bar = bar.push(text("│").size(15).style(design::muted));
         if state.level_tool == LevelTool::Sculpt {

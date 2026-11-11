@@ -5,8 +5,9 @@
 //! feeds it pointer rays and draws its results.
 use evolve_core::Transform;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Mode {
+    #[default]
     Move,
     Rotate,
     Scale,

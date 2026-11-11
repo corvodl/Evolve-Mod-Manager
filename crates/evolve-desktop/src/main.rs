@@ -45,6 +45,7 @@ mod level_edit_history;
 mod level_editor_shell;
 mod level_effect_sources;
 mod level_environment;
+mod level_gizmo;
 mod level_library;
 mod level_lighting;
 mod level_pick;
@@ -728,6 +729,8 @@ struct State {
     level_pointer_ray: Option<([f32; 3], [f32; 3])>,
     /// A G/R/S move, rotate or scale in progress.
     level_transform: Option<level_transform::ModalTransform>,
+    /// The gizmo shown on the selection.
+    level_gizmo: level_transform::Mode,
     /// RMB is held in the Level Editor: mouse-look, and WASD/QE fly.
     level_looking: bool,
     scan_cancel: Option<Arc<AtomicBool>>,
@@ -2809,7 +2812,14 @@ enum Message {
     ToggleLevelViewportFullscreen,
     ToggleViewerViewportFullscreen,
     ViewportEscape(window::Id),
-    LevelGizmoMove(usize, f32),
+    /// A gizmo handle was grabbed: transform along its axis (None: free).
+    LevelGizmoGrab(
+        level_transform::Mode,
+        Option<usize>,
+        Option<([f32; 3], [f32; 3])>,
+    ),
+    /// Which gizmo the Select tool shows: move, rotate or scale.
+    LevelGizmoMode(level_transform::Mode),
     LevelSaveProjectChanges,
     LevelUndoCommitted,
     LevelRedoCommitted,
@@ -6602,39 +6612,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::OpenImportedMap(archive, index));
         }
         Message::LevelToggleOverview => state.level_show_overview = !state.level_show_overview,
-        Message::LevelGizmoMove(axis, distance) => {
-            if state.level_project.is_none()
-                || axis > 2
-                || !distance.is_finite()
-                || distance.abs() > 10_000.0
-            {
-                return Task::none();
+        Message::LevelGizmoGrab(mode, axis, ray) => {
+            state.level_pointer_ray = ray;
+            start_level_transform(state, mode);
+            if let (Some(axis), Some(operation)) = (axis, state.level_transform.as_mut()) {
+                operation.toggle_axis(axis);
             }
-            let Some(object) = state
-                .level_selected
-                .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
-            else {
-                return Task::none();
-            };
-            if object.kind.eq_ignore_ascii_case("Vegetation") {
-                return Task::none();
-            }
-            let coords = state
-                .level_edit_position
-                .split(',')
-                .map(|x| x.trim().parse::<f32>())
-                .collect::<Result<Vec<_>, _>>();
-            if let Ok(mut coords) = coords
-                && coords.len() == 3
-            {
-                coords[axis] += distance;
-                state.level_edit_position = coords
-                    .iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-            }
+            refresh_level_transform_preview(state);
         }
+        Message::LevelGizmoMode(mode) => state.level_gizmo = mode,
         Message::LevelAuthoringChanged(key, text) => state.level_authoring.change(key, text),
         Message::LevelAuthoringToggleEnabled => {
             if !state.level_read_only {

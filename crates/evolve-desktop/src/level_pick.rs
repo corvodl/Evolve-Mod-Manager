@@ -1,6 +1,8 @@
 //! Source-geometry 3D picking for the Level Editor. The renderer remains the
 //! existing textured wgpu pipeline; this adds accurate triangle selection in
 //! screen space rather than picking the nearest 2D overview dot.
+use super::level_gizmo::{self, Handle};
+use super::level_transform::Mode;
 use super::{Message, level_scene_renderer::PickRange, textured};
 use evolve_core::RenderMesh;
 use iced::{Event, Rectangle, mouse, widget::shader};
@@ -10,7 +12,8 @@ use std::sync::Arc;
 pub(super) struct LevelViewport {
     pub inner: textured::Scene,
     pub picks: Arc<Vec<PickRange>>,
-    pub selected_pivot: Option<[f32; 3]>,
+    /// The transform gizmo to show for the selection, and where.
+    pub gizmo: Option<(Mode, [f32; 3])>,
     pub editable: bool,
     /// A terrain sculpt or paint tool is active: left-drag brushes the
     /// ground; right and middle drag and the keyboard still move the camera.
@@ -18,21 +21,57 @@ pub(super) struct LevelViewport {
     /// Ctrl is held: a sculpt stroke lowers instead.
     pub brush_invert: bool,
     pub brush_ring: Option<Arc<Vec<[f32; 3]>>>,
-    /// A G/R/S transform is in progress: the mouse drives it, LMB applies
-    /// and RMB cancels.
-    pub transforming: bool,
+    /// A G/R/S transform in progress, and its axis: the mouse drives it,
+    /// LMB applies and RMB cancels.
+    pub transforming: Option<(Mode, Option<usize>)>,
 }
 
 #[derive(Default)]
 pub(super) struct ViewState {
     navigation: super::view_navigation::Navigation,
-    moving: Option<usize>,
-    last_cursor: Option<iced::Point>,
+    /// A gizmo handle is being dragged: releasing LMB applies it.
+    gizmo_drag: bool,
     /// The mouse button of a brush stroke in progress.
     brushing: Option<mouse::Button>,
 }
 
 impl LevelViewport {
+    /// A world point in viewport pixels, or None behind the camera.
+    fn screen(&self, bounds: Rectangle) -> Option<impl Fn([f32; 3]) -> Option<[f32; 2]>> {
+        let camera = self.inner.level_camera?;
+        let (yaw, pitch, zoom) = (self.inner.yaw, self.inner.pitch, self.inner.zoom);
+        let (width, height) = (bounds.width.max(1.0), bounds.height.max(1.0));
+        Some(move |point: [f32; 3]| {
+            let ndc = camera.project(point, yaw, pitch, width / height, zoom);
+            (ndc[0] != 3.0 || ndc[1] != 3.0)
+                .then(|| [(ndc[0] + 1.0) * width * 0.5, (1.0 - ndc[1]) * height * 0.5])
+        })
+    }
+
+    /// World length of the gizmo arms: about 90 pixels at the pivot's depth.
+    fn gizmo_size(&self, pivot: [f32; 3], bounds: Rectangle) -> Option<f32> {
+        let camera = self.inner.level_camera?;
+        let (forward, _, _) = super::level_camera::basis(self.inner.yaw, self.inner.pitch);
+        let depth = (0..3)
+            .map(|i| (pivot[i] - camera.position[i]) * forward[i])
+            .sum::<f32>();
+        if depth <= 0.1 {
+            return None;
+        }
+        let tangent = (camera.fov_degrees.clamp(25.0, 110.0).to_radians() * 0.5).tan()
+            / self.inner.zoom.clamp(0.2, 80.0);
+        Some(depth * tangent * 90.0 / (bounds.height.max(1.0) * 0.5))
+    }
+
+    /// The gizmo handle under a viewport position.
+    fn gizmo_handle(&self, bounds: Rectangle, position: iced::Point) -> Option<(Mode, Handle)> {
+        let (mode, pivot) = self.gizmo?;
+        let size = self.gizmo_size(pivot, bounds)?;
+        let screen = self.screen(bounds)?;
+        level_gizmo::hit(mode, pivot, size, &screen, [position.x, position.y])
+            .map(|handle| (mode, handle))
+    }
+
     /// The world ray under a viewport position, in flight-camera mode.
     fn ray(&self, bounds: Rectangle, position: iced::Point) -> Option<([f32; 3], [f32; 3])> {
         let camera = self.inner.level_camera?;
@@ -248,12 +287,19 @@ impl shader::Program<Message> for LevelViewport {
         // Initialise the existing orbit/pan gesture for subsequent mouse moves
         // even when an object is selected by this click.
         let location = cursor.position_in(bounds);
-        if self.transforming {
+        if self.transforming.is_some() {
             return match event {
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                     Some(shader::Action::publish(Message::LevelTransformConfirm).and_capture())
                 }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                    if state.gizmo_drag =>
+                {
+                    state.gizmo_drag = false;
+                    Some(shader::Action::publish(Message::LevelTransformConfirm).and_capture())
+                }
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                    state.gizmo_drag = false;
                     Some(shader::Action::publish(Message::LevelTransformCancel).and_capture())
                 }
                 Event::Mouse(mouse::Event::CursorMoved { .. }) => {
@@ -289,77 +335,34 @@ impl shader::Program<Message> for LevelViewport {
                 })
                 .map(|message| shader::Action::publish(message).and_capture());
         }
-        if let Some(axis) = state.moving {
-            match event {
-                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                    state.moving = None;
-                    state.last_cursor = None;
-                    return Some(
-                        shader::Action::publish(Message::LevelApplyTransform).and_capture(),
-                    );
-                }
-                Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                    let before = state.last_cursor.replace(*position)?;
-                    let pivot = self.selected_pivot?;
-                    let projector = Projection::new(&self.inner, bounds)?;
-                    let start = projector.project(pivot);
-                    let mut end = pivot;
-                    end[axis] += projector.extent * 0.05;
-                    let end = projector.project(end);
-                    let vx = end[0] - start[0];
-                    let vy = end[1] - start[1];
-                    let denominator = vx * vx + vy * vy;
-                    if denominator < 1.0 {
-                        return None;
-                    }
-                    let delta = ((position.x - before.x) * vx + (position.y - before.y) * vy)
-                        / denominator
-                        * projector.extent
-                        * 0.05;
-                    if !delta.is_finite() || delta.abs() > projector.extent {
-                        return None;
-                    }
-                    return Some(
-                        shader::Action::publish(Message::LevelGizmoMove(axis, delta)).and_capture(),
-                    );
-                }
-                _ => return None,
-            }
+        if matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+        ) {
+            state.gizmo_drag = false;
         }
+        // Grabbing a gizmo handle starts that transform; releasing applies it.
         if self.editable
             && matches!(
                 event,
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             )
-            && let (Some(pivot), Some(location)) = (self.selected_pivot, location)
-            && let Some(proj) = Projection::new(&self.inner, bounds)
+            && let Some(position) = location
+            && let Some((mode, handle)) = self.gizmo_handle(bounds, position)
         {
-            let start = proj.project(pivot);
-            for axis in 0..3 {
-                let mut end = pivot;
-                end[axis] += proj.extent * 0.05;
-                let end = proj.project(end);
-                let vx = end[0] - start[0];
-                let vy = end[1] - start[1];
-                let length = vx * vx + vy * vy;
-                if length < 16.0 {
-                    continue;
-                }
-                let t = (((location.x - start[0]) * vx + (location.y - start[1]) * vy) / length)
-                    .clamp(0.0, 1.0);
-                let dx = location.x - (start[0] + t * vx);
-                let dy = location.y - (start[1] + t * vy);
-                if dx * dx + dy * dy < 64.0 && t > 0.2 {
-                    state.moving = Some(axis);
-                    state.last_cursor = Some(iced::Point::new(
-                        location.x + bounds.x,
-                        location.y + bounds.y,
-                    ));
-                    return Some(
-                        shader::Action::publish(Message::LevelGizmoMove(axis, 0.0)).and_capture(),
-                    );
-                }
-            }
+            state.gizmo_drag = true;
+            let axis = match handle {
+                Handle::Axis(axis) => Some(axis),
+                Handle::Free => None,
+            };
+            return Some(
+                shader::Action::publish(Message::LevelGizmoGrab(
+                    mode,
+                    axis,
+                    self.ray(bounds, position),
+                ))
+                .and_capture(),
+            );
         }
         let navigation = state
             .navigation
@@ -455,29 +458,33 @@ impl shader::Program<Message> for LevelViewport {
                 primitive.add_level_axis(ndc(pair[0]), ndc(pair[1]), [1.0, 0.78, 0.25, 1.0]);
             }
         }
-        if let Some(pivot) = self.selected_pivot
-            && let Some(proj) = Projection::new(&self.inner, bounds)
+        if let Some((mode, pivot)) = self.gizmo
+            && let Some(size) = self.gizmo_size(pivot, bounds)
+            && let Some(screen) = self.screen(bounds)
         {
-            let start = proj.project(pivot);
-            let ndc = |p: [f32; 3]| {
-                [
-                    p[0] * 2.0 / proj.width - 1.0,
-                    1.0 - p[1] * 2.0 / proj.height,
-                    p[2].clamp(0.0, 1.0),
-                ]
+            let (mode, focus, dim) = match self.transforming {
+                // While transforming, the gizmo shows the operation and its axis.
+                Some((mode, axis)) => (mode, Some(axis.map_or(Handle::Free, Handle::Axis)), true),
+                None => (
+                    mode,
+                    cursor
+                        .position_in(bounds)
+                        .and_then(|position| self.gizmo_handle(bounds, position))
+                        .map(|(_, handle)| handle),
+                    false,
+                ),
             };
-            for (axis, color) in [
-                [0.95, 0.20, 0.24, 1.0],
-                [0.25, 0.90, 0.34, 1.0],
-                [0.28, 0.56, 0.98, 1.0],
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let mut end = pivot;
-                end[axis] += proj.extent * 0.05;
-                primitive.add_level_axis(ndc(start), ndc(proj.project(end)), color);
-            }
+            level_gizmo::draw(
+                &mut primitive,
+                mode,
+                pivot,
+                size,
+                &screen,
+                bounds.width.max(1.0),
+                bounds.height.max(1.0),
+                focus,
+                dim,
+            );
         }
         primitive
     }
