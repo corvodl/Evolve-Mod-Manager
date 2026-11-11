@@ -900,18 +900,43 @@ fn vegetation_angles(q: [f32; 4]) -> [u8; 3] {
     [turn(yaw), turn(roll), turn(pitch)]
 }
 
+/// Edits to a `terrain.dat`'s brush and vegetation placements, all by their
+/// index in the file as loaded, applied together in one pass.
+#[derive(Clone, Debug, Default)]
+pub struct CompiledEdits {
+    /// New world transforms of existing placements.
+    pub transforms: Vec<(CompiledPlacement, Transform)>,
+    pub deletes: Vec<CompiledPlacement>,
+    /// New placements: a copy of the first one at the second's transform.
+    pub copies: Vec<(CompiledPlacement, Transform)>,
+}
+
 /// Move, rotate or scale brush and vegetation placements of a `terrain.dat`.
-/// Each record keeps its octree cell while its new bounding box still fits
-/// that cell; one that leaves it moves to the root block, which spans the
-/// whole map. Positions must stay inside the map. A vegetation record stores
-/// one uniform scale and angles in 1/256 turns, so its scale is the mean of
-/// the requested axes and its rotation is the nearest it can hold. The
-/// result must decode to the same placements, the edited ones changed.
+/// See [`apply_compiled_edits`].
 pub fn transform_compiled_placements(
     source: &[u8],
     edits: &[(CompiledPlacement, Transform)],
 ) -> Result<Vec<u8>, TerrainError> {
-    if edits.is_empty() || edits.len() > 4096 {
+    apply_compiled_edits(
+        source,
+        &CompiledEdits {
+            transforms: edits.to_vec(),
+            ..CompiledEdits::default()
+        },
+    )
+}
+
+/// Apply moves, deletions and copies to a `terrain.dat` at once, every one
+/// named by its index in `source`, so no edit shifts another's index. A moved
+/// record keeps its octree cell while its new bounding box still fits that
+/// cell; one that leaves it, and every copy, goes to the root block, which
+/// spans the whole map. Positions must stay inside the map. A vegetation
+/// record stores one uniform scale and angles in 1/256 turns, so its scale is
+/// the mean of the requested axes and its rotation is the nearest it can
+/// hold. The result must decode to exactly the expected placements.
+pub fn apply_compiled_edits(source: &[u8], edits: &CompiledEdits) -> Result<Vec<u8>, TerrainError> {
+    let count = edits.transforms.len() + edits.deletes.len() + edits.copies.len();
+    if count == 0 || count > 16384 {
         return Err(TerrainError::Limits);
     }
     let terrain = decode_compiled_terrain(source)?;
@@ -921,11 +946,23 @@ pub fn transform_compiled_placements(
         std::array::from_fn(|i| r.f32(node + 4 + i * 4).unwrap_or(f32::NAN))
     };
     let map = cube_of(root);
-    let mut expected_brushes = terrain.brushes.clone();
-    let mut expected_vegetation = terrain.vegetation.clone();
-    // (span, new record bytes, stays in its cell)
-    let mut changes = Vec::<(RecordSpan, Vec<u8>, bool)>::new();
-    for (placement, transform) in edits {
+    let span_of = |placement: CompiledPlacement| {
+        match placement {
+            CompiledPlacement::Brush(index) => terrain.brush_records.get(index),
+            CompiledPlacement::Vegetation(index) => terrain.vegetation_records.get(index),
+        }
+        .copied()
+        .ok_or_else(|| format("That terrain.dat placement no longer exists"))
+    };
+    // A placement's record, rewritten for a new transform, with the
+    // brush or vegetation it will decode to and whether it fits its cell.
+    enum Decoded {
+        Brush(CompiledBrush),
+        Plant(CompiledVegetation),
+    }
+    let moved = |placement: CompiledPlacement,
+                 transform: &Transform|
+     -> Result<(RecordSpan, Vec<u8>, Decoded, bool), TerrainError> {
         if transform
             .position
             .iter()
@@ -943,58 +980,44 @@ pub fn transform_compiled_placements(
                 map[0], map[3]
             )));
         }
-        let (span, old_matrix, new_matrix) = match *placement {
-            CompiledPlacement::Brush(index) => {
-                let brush = terrain
-                    .brushes
-                    .get(index)
-                    .ok_or_else(|| format("That terrain.dat placement no longer exists"))?;
-                let matrix = transform_matrix(transform);
-                expected_brushes[index].matrix = matrix;
-                (terrain.brush_records[index], brush.matrix, matrix)
-            }
-            CompiledPlacement::Vegetation(index) => {
-                let plant = terrain
-                    .vegetation
-                    .get(index)
-                    .ok_or_else(|| format("That terrain.dat placement no longer exists"))?;
-                let scale = transform.scale.iter().map(|s| s.abs()).sum::<f32>() / 3.0;
-                let edited = CompiledVegetation {
-                    position: transform.position,
-                    scale,
-                    angles: vegetation_angles(transform.quaternion),
-                    ..plant.clone()
-                };
-                let matrices = (
-                    transform_matrix(&plant.transform()),
-                    transform_matrix(&edited.transform()),
-                );
-                expected_vegetation[index] = edited;
-                (terrain.vegetation_records[index], matrices.0, matrices.1)
-            }
-        };
-        if changes.iter().any(|(other, _, _)| other.at == span.at) {
-            return Err(format("The same terrain.dat placement was edited twice"));
-        }
+        let span = span_of(placement)?;
         let mut record = r.bytes(span.at, span.size)?.to_vec();
         let write = |record: &mut Vec<u8>, offset: usize, value: f32| {
             record[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         };
-        match *placement {
-            CompiledPlacement::Brush(_) => {
-                for (i, value) in new_matrix.iter().enumerate() {
+        let (old_matrix, new_matrix, decoded) = match placement {
+            CompiledPlacement::Brush(index) => {
+                let brush = &terrain.brushes[index];
+                let matrix = transform_matrix(transform);
+                for (i, value) in matrix.iter().enumerate() {
                     write(&mut record, 40 + i * 4, *value);
                 }
+                let edited = CompiledBrush {
+                    matrix,
+                    ..brush.clone()
+                };
+                (brush.matrix, matrix, Decoded::Brush(edited))
             }
             CompiledPlacement::Vegetation(index) => {
-                let plant = &expected_vegetation[index];
-                for (i, value) in plant.position.iter().enumerate() {
+                let plant = &terrain.vegetation[index];
+                let edited = CompiledVegetation {
+                    position: transform.position,
+                    scale: transform.scale.iter().map(|s| s.abs()).sum::<f32>() / 3.0,
+                    angles: vegetation_angles(transform.quaternion),
+                    ..plant.clone()
+                };
+                for (i, value) in edited.position.iter().enumerate() {
                     write(&mut record, 40 + i * 4, *value);
                 }
-                write(&mut record, 52, plant.scale);
-                record[57..60].copy_from_slice(&plant.angles);
+                write(&mut record, 52, edited.scale);
+                record[57..60].copy_from_slice(&edited.angles);
+                (
+                    transform_matrix(&plant.transform()),
+                    transform_matrix(&edited.transform()),
+                    Decoded::Plant(edited),
+                )
             }
-        }
+        };
         // The bounding box moves with the placement: its corners, carried
         // from the old placement to the new one.
         let delta = compose_affine(
@@ -1035,23 +1058,71 @@ pub fn transform_compiled_placements(
         let fits = span.node == root
             || (0..3)
                 .all(|axis| new_box[axis] >= cell[axis] && new_box[axis + 3] <= cell[axis + 3]);
-        changes.push((span, record, fits));
-    }
+        Ok((span, record, decoded, fits))
+    };
+    let mut expected_brushes = terrain
+        .brushes
+        .iter()
+        .cloned()
+        .map(Some)
+        .collect::<Vec<_>>();
+    let mut expected_vegetation = terrain
+        .vegetation
+        .iter()
+        .cloned()
+        .map(Some)
+        .collect::<Vec<_>>();
+    let mut added_brushes = Vec::new();
+    let mut added_vegetation = Vec::new();
     let mut output = source.to_vec();
-    for (span, record, fits) in &changes {
-        if *fits {
-            output[span.at..span.at + span.size].copy_from_slice(record);
+    // Spans to cut out, and records to add to the root block.
+    let mut removed = Vec::<RecordSpan>::new();
+    let mut appended = Vec::<u8>::new();
+    let mut seen = std::collections::HashSet::new();
+    for placement in &edits.deletes {
+        let span = span_of(*placement)?;
+        if !seen.insert(span.at) {
+            return Err(format("The same terrain.dat placement was edited twice"));
+        }
+        match *placement {
+            CompiledPlacement::Brush(index) => expected_brushes[index] = None,
+            CompiledPlacement::Vegetation(index) => expected_vegetation[index] = None,
+        }
+        removed.push(span);
+    }
+    for (placement, transform) in &edits.transforms {
+        let (span, record, decoded, fits) = moved(*placement, transform)?;
+        if !seen.insert(span.at) {
+            return Err(format("The same terrain.dat placement was edited twice"));
+        }
+        match (*placement, decoded) {
+            (CompiledPlacement::Brush(index), Decoded::Brush(brush)) => {
+                expected_brushes[index] = Some(brush);
+            }
+            (CompiledPlacement::Vegetation(index), Decoded::Plant(plant)) => {
+                expected_vegetation[index] = Some(plant);
+            }
+            _ => return Err(TerrainError::Limits),
+        }
+        if fits {
+            output[span.at..span.at + span.size].copy_from_slice(&record);
+        } else {
+            removed.push(span);
+            appended.extend_from_slice(&record);
         }
     }
-    // Records leaving their cell: remove them from the end backwards, so the
-    // earlier offsets stay valid, then append them all to the root block.
-    let mut leaving = changes
-        .iter()
-        .filter(|(_, _, fits)| !fits)
-        .collect::<Vec<_>>();
-    leaving.sort_by_key(|(span, _, _)| std::cmp::Reverse(span.at));
-    let mut appended = Vec::new();
-    for (span, record, _) in leaving {
+    for (origin, transform) in &edits.copies {
+        let (_, record, decoded, _) = moved(*origin, transform)?;
+        match decoded {
+            Decoded::Brush(brush) => added_brushes.push(brush),
+            Decoded::Plant(plant) => added_vegetation.push(plant),
+        }
+        appended.extend_from_slice(&record);
+    }
+    // Cut from the end backwards, so the earlier offsets stay valid; every
+    // owning node header comes before its records.
+    removed.sort_by_key(|span| std::cmp::Reverse(span.at));
+    for span in removed {
         let block = Reader { data: &output }.u32(span.node + 28)? as usize;
         if block < span.size {
             return Err(TerrainError::Limits);
@@ -1059,7 +1130,6 @@ pub fn transform_compiled_placements(
         output.drain(span.at..span.at + span.size);
         output[span.node + 28..span.node + 32]
             .copy_from_slice(&((block - span.size) as u32).to_le_bytes());
-        appended.extend_from_slice(record);
     }
     if !appended.is_empty() {
         let block = Reader { data: &output }.u32(root + 28)? as usize;
@@ -1071,49 +1141,54 @@ pub fn transform_compiled_placements(
     let total = u32::try_from(output.len()).map_err(|_| TerrainError::Limits)?;
     output[4..8].copy_from_slice(&total.to_le_bytes());
     let check = decode_compiled_terrain(&output)?;
-    // Order changes for records that moved to the root; compare as sets.
+    // Records that moved to the root change order; compare as sets.
     let sorted = |mut items: Vec<String>| {
         items.sort();
         items
     };
-    let brushes = |list: &[CompiledBrush]| {
+    let brushes = |list: &mut dyn Iterator<Item = &CompiledBrush>| {
         sorted(
-            list.iter()
-                .map(|b| {
-                    format!(
-                        "{} {:?} {} {:?}",
-                        b.model,
-                        b.material,
-                        b.layer,
-                        b.matrix.map(f32::to_bits)
-                    )
-                })
-                .collect(),
+            list.map(|b| {
+                format!(
+                    "{} {:?} {} {:?}",
+                    b.model,
+                    b.material,
+                    b.layer,
+                    b.matrix.map(f32::to_bits)
+                )
+            })
+            .collect(),
         )
     };
-    let plants = |list: &[CompiledVegetation]| {
+    let plants = |list: &mut dyn Iterator<Item = &CompiledVegetation>| {
         sorted(
-            list.iter()
-                .map(|v| {
-                    format!(
-                        "{} {} {:?} {} {:?}",
-                        v.group,
-                        v.layer,
-                        v.position.map(f32::to_bits),
-                        v.scale.to_bits(),
-                        v.angles
-                    )
-                })
-                .collect(),
+            list.map(|v| {
+                format!(
+                    "{} {} {:?} {} {:?}",
+                    v.group,
+                    v.layer,
+                    v.position.map(f32::to_bits),
+                    v.scale.to_bits(),
+                    v.angles
+                )
+            })
+            .collect(),
         )
     };
-    if brushes(&check.brushes) != brushes(&expected_brushes)
-        || plants(&check.vegetation) != plants(&expected_vegetation)
+    if brushes(&mut check.brushes.iter())
+        != brushes(&mut expected_brushes.iter().flatten().chain(&added_brushes))
+        || plants(&mut check.vegetation.iter())
+            != plants(
+                &mut expected_vegetation
+                    .iter()
+                    .flatten()
+                    .chain(&added_vegetation),
+            )
         || check.heights != terrain.heights
         || check.skipped_blocks != 0
     {
         return Err(format(
-            "terrain.dat did not decode to the same placements with the edited ones moved",
+            "terrain.dat did not decode to exactly the edited placements",
         ));
     }
     Ok(output)
@@ -2248,9 +2323,74 @@ mod tests {
                     && v.scale == 1.5
                     && v.angles == [64, 0, 0])
             );
+            // A move, a deletion and a copy together, by loaded index.
+            let edited = apply_compiled_edits(
+                &bytes,
+                &CompiledEdits {
+                    transforms: vec![(CompiledPlacement::Brush(brush), nudged)],
+                    deletes: vec![CompiledPlacement::Vegetation(plant)],
+                    copies: vec![(CompiledPlacement::Brush(brush + 1), far)],
+                },
+            )
+            .unwrap();
+            let after = decode_compiled_terrain(&edited).unwrap();
+            assert_eq!(after.brushes.len(), t.brushes.len() + 1);
+            assert_eq!(after.vegetation.len() + 1, t.vegetation.len());
             checked += 1;
         }
         assert!(checked > 0);
+    }
+
+    #[test]
+    fn applies_moves_deletes_and_copies_in_one_pass() {
+        let source = fixture();
+        let before = decode_compiled_terrain(&source).unwrap();
+        let mut moved = before.brushes[0].transform();
+        moved.position = [6.0, 7.0, 8.0];
+        let mut copy = before.vegetation[0].transform();
+        copy.position = [2.0, 3.0, 4.0];
+        let edited = apply_compiled_edits(
+            &source,
+            &CompiledEdits {
+                transforms: vec![(CompiledPlacement::Brush(0), moved)],
+                deletes: vec![CompiledPlacement::Vegetation(0)],
+                // A copy of the deleted plant still uses its original record.
+                copies: vec![
+                    (CompiledPlacement::Vegetation(0), copy),
+                    (CompiledPlacement::Brush(0), before.brushes[0].transform()),
+                ],
+            },
+        )
+        .unwrap();
+        let after = decode_compiled_terrain(&edited).unwrap();
+        assert_eq!(after.brushes.len(), 2);
+        assert!(
+            after
+                .brushes
+                .iter()
+                .any(|b| b.transform().position == [6.0, 7.0, 8.0])
+        );
+        let original = before.brushes[0].transform().position;
+        assert!(
+            after
+                .brushes
+                .iter()
+                .any(|b| b.transform().position == original)
+        );
+        assert_eq!(after.vegetation.len(), 1);
+        assert_eq!(after.vegetation[0].position, [2.0, 3.0, 4.0]);
+        // Deleting and moving the same placement is refused.
+        assert!(
+            apply_compiled_edits(
+                &source,
+                &CompiledEdits {
+                    transforms: vec![(CompiledPlacement::Brush(0), moved)],
+                    deletes: vec![CompiledPlacement::Brush(0)],
+                    copies: Vec::new(),
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]

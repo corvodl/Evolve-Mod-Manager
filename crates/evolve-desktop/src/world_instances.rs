@@ -1120,7 +1120,48 @@ impl World {
                 }
             }
         }
+        // Area outlines and spawn links follow their objects too.
+        next.wildlife_shapes = Arc::new(
+            self.wildlife_shapes
+                .iter()
+                .filter_map(|area| {
+                    let object = scene.objects.get(area.object_index)?;
+                    (!object.hidden).then(|| AreaOutline {
+                        world: object.world,
+                        points: object.shape_points.clone(),
+                        ..area.clone()
+                    })
+                })
+                .collect(),
+        );
+        next.wildlife_links = Arc::new(
+            self.wildlife_links
+                .iter()
+                .filter_map(|link| {
+                    let spawn = scene.objects.get(link.spawn)?;
+                    let home = scene.objects.get(link.home)?;
+                    (!spawn.hidden && !home.hidden).then_some(SpawnLink {
+                        from: spawn.world.position,
+                        to: home.world.position,
+                        ..*link
+                    })
+                })
+                .collect(),
+        );
         next
+    }
+
+    /// The map-wide environment the renderer uploads once.
+    fn environment(&self) -> Environment {
+        Environment {
+            light_cookies: self.light_cookies.clone(),
+            water: self.water.clone(),
+            particles: self.particles.clone(),
+            decals: self.decals.clone(),
+            local_lights: self.local_lights.clone(),
+            probe_cube: self.probe_cube.clone(),
+            static_sky: self.static_sky.clone(),
+        }
     }
 
     /// The placement under a viewport point: the nearest one whose visible
@@ -1554,6 +1595,30 @@ struct GpuSurface {
     _blend_mask_image: wgpu::Texture,
     _alpha_uniform: wgpu::Buffer,
 }
+/// A world's light cookies, water, effects, lights, probe and sky: what an
+/// edited copy of the same map shares, so the renderer keeps their uploads.
+struct Environment {
+    light_cookies: Arc<Vec<Option<image::RgbaImage>>>,
+    water: Arc<Vec<super::level_atmosphere::WaterSurface>>,
+    particles: Arc<Vec<super::level_atmosphere::ParticleBatch>>,
+    decals: Arc<Vec<super::level_atmosphere::DecalBatch>>,
+    local_lights: Arc<Vec<super::level_atmosphere::LocalLight>>,
+    probe_cube: Option<Arc<super::level_atmosphere::ProbeCube>>,
+    static_sky: Option<Arc<super::level_atmosphere::StaticSky>>,
+}
+
+impl Environment {
+    fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.light_cookies, &other.light_cookies)
+            && Arc::ptr_eq(&self.water, &other.water)
+            && Arc::ptr_eq(&self.particles, &other.particles)
+            && Arc::ptr_eq(&self.decals, &other.decals)
+            && Arc::ptr_eq(&self.local_lights, &other.local_lights)
+            && same_arc(self.probe_cube.as_ref(), other.probe_cube.as_ref())
+            && same_arc(self.static_sky.as_ref(), other.static_sky.as_ref())
+    }
+}
+
 /// The decoded sources a [`GpuGroup`] was built from. Holding them keeps
 /// their allocations alive, so pointer equality means the same source.
 struct GroupSource {
@@ -2194,6 +2259,8 @@ pub(super) struct Renderer {
     world_identity: usize,
     last_full_textures: bool,
     groups: Vec<Option<GpuGroup>>,
+    /// The environment last uploaded; held, so its identity cannot be reused.
+    environment: Option<Environment>,
     /// What each resident group was built from, so a new world of the same
     /// map (an edit, a moved placement) keeps the groups that did not change.
     group_sources: Vec<Option<GroupSource>>,
@@ -3922,6 +3989,7 @@ impl Renderer {
             last_full_textures: true,
             groups: Vec::new(),
             group_sources: Vec::new(),
+            environment: None,
             preview_generation: 0,
             preview_groups: HashSet::new(),
             cache: TextureCache::new(),
@@ -4657,6 +4725,7 @@ impl Renderer {
             self.wildlife_last_origin = None;
             self.groups.clear();
             self.group_sources.clear();
+            self.environment = None;
             self.cache.clear();
             self.source_hashes.clear();
             self.pending_diffuse.clear();
@@ -4700,32 +4769,44 @@ impl Renderer {
             self.last_full_textures = full_textures;
             self.last_camera = None;
             self.shadow_groups_seen = 0;
-            self.cookie_view = upload_light_cookies(device, queue, &world.light_cookies);
-            self.update_water(device, queue, world);
-            self.update_particles(device, queue, world);
-            self.update_decals(device, queue, world);
+            // An edited copy of the same map shares its lighting, water,
+            // effects and sky: only re-upload those for a different map.
+            let environment = world.environment();
+            let new_environment = self
+                .environment
+                .as_ref()
+                .is_none_or(|previous| !previous.same(&environment));
+            self.environment = Some(environment);
+            if new_environment {
+                self.cookie_view = upload_light_cookies(device, queue, &world.light_cookies);
+                self.update_water(device, queue, world);
+                self.update_particles(device, queue, world);
+                self.update_decals(device, queue, world);
+            }
             self.ambient_cube = world.ambient_cube;
             self.surface_darkening = 1.0 - world.rain_darkening;
             self.local_probe_slots = [None; LOCAL_PROBE_SLOTS];
             self.probe_tint = world.probe_cube.as_ref().map_or([0.0; 4], |cube| {
                 [cube.tint[0], cube.tint[1], cube.tint[2], 0.0]
             });
-            self.shadow_group = shadow_bind_group(
-                device,
-                &self.shadow_sample_layout,
-                &self.shadow_uniform,
-                &self.shadow_array,
-                &self.shadow_compare,
-                &upload_probe_cube(device, queue, world.probe_cube.as_deref()),
-                &self.probe_sampler,
-                &self.local_probe_uniform,
-                &self.local_probe_view,
-            );
+            if new_environment {
+                self.shadow_group = shadow_bind_group(
+                    device,
+                    &self.shadow_sample_layout,
+                    &self.shadow_uniform,
+                    &self.shadow_array,
+                    &self.shadow_compare,
+                    &upload_probe_cube(device, queue, world.probe_cube.as_deref()),
+                    &self.probe_sampler,
+                    &self.local_probe_uniform,
+                    &self.local_probe_view,
+                );
+                self.update_sky_source(device, queue, world);
+                self.update_light_point_sources(device, world);
+                self.update_source_spotlight_beams(device, world);
+            }
             self.last_camera = None;
             self.last_lighting_hour = f32::NAN;
-            self.update_sky_source(device, queue, world);
-            self.update_light_point_sources(device, world);
-            self.update_source_spotlight_beams(device, world);
             self.wildlife_last_origin = None;
             world.gpu_progress.pending.store(1, Ordering::Relaxed);
         }

@@ -138,6 +138,45 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
         });
         if on { button.on_press(message) } else { button }
     };
+    if state.level_tool == LevelTool::Select {
+        // The map's unsaved changes: live in the view, written by Save Map.
+        let draft = state.level_draft.as_ref();
+        let pending = draft.is_some_and(crate::level_draft::Draft::changed);
+        let count = draft.map_or(0, |draft| draft.undo.len());
+        return bar
+            .push(space().width(Fill))
+            .push(
+                text(if pending {
+                    format!(
+                        "{count} unsaved change{}",
+                        if count == 1 { "" } else { "s" }
+                    )
+                } else {
+                    String::new()
+                })
+                .size(11)
+                .style(design::muted),
+            )
+            .push(action(
+                "Undo",
+                false,
+                draft.is_some_and(|d| !d.undo.is_empty()),
+                Message::LevelDraftUndo,
+            ))
+            .push(action(
+                "Redo",
+                false,
+                draft.is_some_and(|d| !d.redo.is_empty()),
+                Message::LevelDraftRedo,
+            ))
+            .push(action("Discard", false, pending, Message::LevelDiscardMap))
+            .push(action(
+                "Save Map",
+                true,
+                pending && !state.busy,
+                Message::LevelSaveMap,
+            ));
+    }
     bar.push(space().width(Fill))
         .push(action(
             "Undo",
@@ -165,9 +204,11 @@ fn tool_hint(state: &State) -> &'static str {
     use crate::terrain_brush::LevelTool;
     match state.level_tool {
         LevelTool::Select => {
-            "Click select · G move · R rotate · S scale · Del delete · Ctrl+C/V copy, paste · Shift+D duplicate · RMB look"
+            "Click select · G move · R/S rotate/scale gizmo · Del delete · Ctrl+C/V copy, paste · Shift+D duplicate · Ctrl+Z undo · Ctrl+S save map"
         }
-        LevelTool::Sculpt => "LMB brush · Ctrl+LMB lower · RMB look · WASD fly",
+        LevelTool::Sculpt => {
+            "LMB brush · Ctrl+LMB lower · Ctrl+Z undo · Ctrl+S save terrain · RMB look"
+        }
         LevelTool::Paint => "LMB paint · RMB look · WASD fly",
     }
 }

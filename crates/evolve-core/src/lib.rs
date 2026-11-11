@@ -96,11 +96,12 @@ pub use client_hook::{
     inspect_pak_hook_pair, prepare_client_hook,
 };
 pub use compiled_terrain::{
-    CompiledBrush, CompiledDecal, CompiledPlacement, CompiledRoad, CompiledTerrain,
+    CompiledBrush, CompiledDecal, CompiledEdits, CompiledPlacement, CompiledRoad, CompiledTerrain,
     CompiledVegetation, CompiledWater, HOLE_ID, MergedMeshInstance, RecordSpan,
-    copy_compiled_placement, decode_compiled_terrain, decode_merged_mesh_sector,
-    delete_compiled_placement, edit_compiled_terrain_bytes, patch_compiled_terrain_bytes,
-    read_compiled_terrain, read_merged_mesh_sectors, transform_compiled_placements,
+    apply_compiled_edits, copy_compiled_placement, decode_compiled_terrain,
+    decode_merged_mesh_sector, delete_compiled_placement, edit_compiled_terrain_bytes,
+    patch_compiled_terrain_bytes, read_compiled_terrain, read_merged_mesh_sectors,
+    transform_compiled_placements,
 };
 pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
 pub use dds::{
@@ -176,8 +177,8 @@ pub use rig::{
 };
 pub use scene::{
     LevelScene, PlacedObject, ReadOnlySceneRecovery, SceneError, Transform, edit_level_transform,
-    export_edited_layer, export_edited_layers, export_edited_layers_guarded, load_level_scene,
-    parse_level_scene, parse_level_scene_read_only,
+    edit_level_transforms, export_edited_layer, export_edited_layers, export_edited_layers_guarded,
+    load_level_scene, parse_level_scene, parse_level_scene_read_only,
 };
 pub use signed_pak::{
     SignedEntry, SignedPakError, SignedPakInfo, SignedRebuildReport, extract_signed_pak,

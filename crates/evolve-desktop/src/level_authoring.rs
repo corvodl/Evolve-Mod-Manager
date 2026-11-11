@@ -634,7 +634,7 @@ pub(super) fn placement_editor<'a>(
                 .size(12),
             )
             .push(edit_field("Polygon vertices", &forms.polygon, TextField::Polygon))
-            .push(crate::design::button("Save area polygon to LYR")
+            .push(crate::design::button("Apply polygon")
                 .style(crate::design::primary)
                 .on_press(Message::LevelSaveWildlifeShape))
             .push(text("Authored polygon vertices (minimum 3); verified against owning LYR/XML structure.")

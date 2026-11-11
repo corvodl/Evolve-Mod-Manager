@@ -41,6 +41,7 @@ mod level_authoring;
 mod level_camera;
 #[cfg(test)]
 mod level_capture;
+mod level_draft;
 mod level_edit_history;
 mod level_editor_shell;
 mod level_effect_sources;
@@ -731,6 +732,8 @@ struct State {
     level_transform: Option<level_transform::ModalTransform>,
     /// The gizmo shown on the selection.
     level_gizmo: level_transform::Mode,
+    /// Unsaved map changes, shown live; Save Map writes them.
+    level_draft: Option<level_draft::Draft>,
     /// A polygon vertex being dragged: its index and the height it moves at.
     level_vertex_drag: Option<(usize, f32)>,
     /// The dragged vertex has moved, so releasing saves the polygon.
@@ -824,6 +827,13 @@ enum ViewerTab {
     Compare,
 }
 
+/// All of a map draft's changes to one project file.
+#[derive(Debug, Clone)]
+enum LevelFileEdit {
+    Xml(Vec<evolve_core::scene_authoring::LayerAuthoringEdit>),
+    Compiled(evolve_core::CompiledEdits),
+}
+
 #[derive(Debug, Clone)]
 enum ProjectLevelMutation {
     Xml(evolve_core::scene_authoring::LayerAuthoringEdit),
@@ -834,10 +844,6 @@ enum ProjectLevelMutation {
     CompiledDelete(evolve_core::CompiledPlacement),
     /// Copy one to a new world position.
     CompiledCopy(evolve_core::CompiledPlacement, [f32; 3]),
-    /// Move, rotate or scale terrain.dat placements (world transforms).
-    CompiledTransform(Vec<(evolve_core::CompiledPlacement, evolve_core::Transform)>),
-    /// Several XML edits to one layer, saved together.
-    XmlBatch(Vec<evolve_core::scene_authoring::LayerAuthoringEdit>),
     Vegetation(vegetation_map::VegetationEdit),
 }
 
@@ -1004,6 +1010,8 @@ enum Operation {
         PathBuf,
     ),
     SaveProjectSource(ProjectRow, PathBuf, ProjectLevelMutation, PathBuf, PathBuf),
+    /// Save a map's unsaved changes: each changed file, once.
+    SaveLevelDraft(ProjectRow, Vec<(PathBuf, LevelFileEdit)>, PathBuf),
     RestoreCommittedLevel(
         ProjectRow,
         Arc<level_edit_history::CommittedRevision>,
@@ -1192,6 +1200,8 @@ enum Completed {
     DirectGameStarted(u32, Vec<String>),
     InitialSetupCreated(initial_setup::InitialSetup),
     TestSetupCreated(initial_setup::InitialSetup),
+    /// A map draft was saved: the project and how many files changed.
+    LevelDraftSaved(ProjectRow, usize),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
     OfflineLauncherRestored(usize, bool),
     OfflineLauncherRecoveryWarning(String),
@@ -2073,40 +2083,6 @@ impl Operation {
                         evolve_core::copy_compiled_placement(&original, placement, position)
                             .map_err(|e| e.to_string())?
                     }
-                    ProjectLevelMutation::CompiledTransform(edits) => {
-                        let lower = member.to_ascii_lowercase();
-                        if lower != "terrain/terrain.dat"
-                            && !lower.ends_with("/terrain/terrain.dat")
-                        {
-                            return Err(
-                                "terrain.dat placements are transformed within terrain.dat".into(),
-                            );
-                        }
-                        evolve_core::transform_compiled_placements(&original, &edits)
-                            .map_err(|e| e.to_string())?
-                    }
-                    ProjectLevelMutation::XmlBatch(edits) => {
-                        if !(member.to_ascii_lowercase().ends_with(".lyr")
-                            || member.to_ascii_lowercase().ends_with(".xml"))
-                            || edits.is_empty()
-                            || edits.len() > 512
-                            || edits.iter().any(|edit| {
-                                !matches!(
-                                    edit,
-                                    evolve_core::scene_authoring::LayerAuthoringEdit::Transform { .. }
-                                )
-                            })
-                        {
-                            return Err("A batch edit must be transforms in one LYR/XML layer".into());
-                        }
-                        let mut bytes = original.clone();
-                        for edit in &edits {
-                            bytes =
-                                evolve_core::scene_authoring::edit_native_layer_bytes(&bytes, edit)
-                                    .map_err(|e| e.to_string())?;
-                        }
-                        bytes
-                    }
                     ProjectLevelMutation::TerrainPatch(patch) => {
                         let lower = member.to_ascii_lowercase();
                         if lower.ends_with("heightmap.dat") {
@@ -2171,6 +2147,70 @@ impl Operation {
                     saved,
                     saved.then_some(revision),
                 ))
+            }
+            Self::SaveLevelDraft(project, files, projects_root) => {
+                // Every file is edited in memory first: nothing is written
+                // unless all of them succeed.
+                let root = std::fs::canonicalize(project.workspace.join("files"))
+                    .map_err(|e| e.to_string())?;
+                let mut outputs = Vec::with_capacity(files.len());
+                for (source, edit) in files {
+                    let metadata = std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
+                    let source = std::fs::canonicalize(&source).map_err(|e| e.to_string())?;
+                    if !metadata.file_type().is_file()
+                        || metadata.len() > 192 * 1024 * 1024
+                        || !source.starts_with(&root)
+                    {
+                        return Err("Source is not a regular managed project member".into());
+                    }
+                    let member = source
+                        .strip_prefix(&root)
+                        .map_err(|_| "Level source is outside this Modding project")?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let lower = member.to_ascii_lowercase();
+                    let original = std::fs::read(&source).map_err(|e| e.to_string())?;
+                    let output = match edit {
+                        LevelFileEdit::Xml(edits) => {
+                            if !(lower.ends_with(".lyr") || lower.ends_with(".xml")) {
+                                return Err(format!("{member} is not an XML layer"));
+                            }
+                            let mut bytes = original.clone();
+                            for edit in &edits {
+                                bytes = evolve_core::scene_authoring::edit_native_layer_bytes(
+                                    &bytes, edit,
+                                )
+                                .map_err(|e| format!("{member}: {e}"))?;
+                            }
+                            bytes
+                        }
+                        LevelFileEdit::Compiled(edits) => {
+                            if lower != "terrain/terrain.dat"
+                                && !lower.ends_with("/terrain/terrain.dat")
+                            {
+                                return Err(format!("{member} is not the map's terrain.dat"));
+                            }
+                            evolve_core::apply_compiled_edits(&original, &edits)
+                                .map_err(|e| format!("{member}: {e}"))?
+                        }
+                    };
+                    outputs.push((member, original, output));
+                }
+                let mut saved = 0;
+                for (member, original, output) in outputs {
+                    if output != original
+                        && modding_projects::save_level_member_checked(
+                            &project,
+                            &projects_root,
+                            &member,
+                            &original,
+                            &output,
+                        )?
+                    {
+                        saved += 1;
+                    }
+                }
+                Ok(Completed::LevelDraftSaved(project, saved))
             }
             Self::RestoreCommittedLevel(project, revision, undo, root) => {
                 revision.apply(&project, &root, undo)?;
@@ -2828,6 +2868,17 @@ enum Message {
     /// under this ray; releasing saves the polygon.
     LevelVertexDrag(usize, Option<([f32; 3], [f32; 3])>),
     LevelVertexRelease,
+    /// Undo or redo an unsaved map change.
+    LevelDraftUndo,
+    LevelDraftRedo,
+    /// Write the unsaved map changes to the project, then reload the map.
+    LevelSaveMap,
+    /// Drop the unsaved map changes.
+    LevelDiscardMap,
+    /// Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) and Ctrl+S in the Level Editor.
+    LevelUndoKey(window::Id),
+    LevelRedoKey(window::Id),
+    LevelSaveKey(window::Id),
     LevelSaveProjectChanges,
     LevelUndoCommitted,
     LevelRedoCommitted,
@@ -3489,6 +3540,281 @@ fn level_pending_edits(state: &State) -> Vec<(String, evolve_core::Transform)> {
 /// The editor is a preview unless a managed project is active. Every
 /// authoring command submits only a verified project source member to the
 /// existing backup/import transaction, never an imported PAK or library file.
+/// Whether the open map has unsaved changes.
+fn draft_pending(state: &State) -> bool {
+    state
+        .level_draft
+        .as_ref()
+        .is_some_and(level_draft::Draft::changed)
+}
+
+/// The map as the editor shows it now, for the next change.
+fn draft_current(state: &State) -> Option<level_draft::Snapshot> {
+    if let Some(draft) = &state.level_draft {
+        return Some(draft.current.clone());
+    }
+    Some(level_draft::Snapshot {
+        scene: state.level_scene.clone()?,
+        world: state.level_world_source.clone(),
+        origins: Arc::default(),
+        deleted: Arc::default(),
+    })
+}
+
+/// Show the draft's current snapshot: scene, world, selection and fields.
+fn show_draft(state: &mut State) {
+    let Some(draft) = &state.level_draft else {
+        return;
+    };
+    let current = draft.current.clone();
+    let count = current.scene.objects.len();
+    state.level_scene = Some(current.scene.clone());
+    state.level_world_source = current.world.clone();
+    if let Some(world) = &state.level_world_source {
+        world.placement_preview.clear();
+    }
+    refresh_wildlife_visibility(state);
+    let hidden = |index: usize| {
+        current
+            .scene
+            .objects
+            .get(index)
+            .is_none_or(|object| object.hidden)
+    };
+    state
+        .level_selection
+        .indices
+        .retain(|&index| index < count && !hidden(index));
+    if state.level_selected.is_some_and(hidden) {
+        state.level_selected = None;
+    }
+    sync_level_fields(state);
+}
+
+/// Make `next` the map's current state, undoably.
+fn apply_draft_edit(state: &mut State, next: level_draft::Snapshot, done: &str) {
+    if state.level_draft.is_none()
+        && let Some(loaded) = draft_current(state)
+    {
+        state.level_draft = Some(level_draft::Draft::new(loaded));
+    }
+    let Some(draft) = state.level_draft.as_mut() else {
+        return;
+    };
+    draft.push(next);
+    show_draft(state);
+    state.status = format!("{done} · Ctrl+Z undo · Ctrl+S save map");
+}
+
+/// Copy, delete or reshape the selection in the draft.
+fn draft_object_edit(state: &mut State, message: &Message) -> Task<Message> {
+    let (object, _) = match selected_project_object_source(state) {
+        Ok(found) => found,
+        Err(reason) => {
+            state.status = reason;
+            return Task::none();
+        }
+    };
+    let Some(index) = state.level_selected else {
+        return Task::none();
+    };
+    let Some(snapshot) = draft_current(state) else {
+        return Task::none();
+    };
+    match message {
+        Message::LevelDuplicateSelected => {
+            let id = if is_compiled_kind(&object) {
+                let taken = snapshot
+                    .scene
+                    .objects
+                    .iter()
+                    .map(|o| o.id.as_str())
+                    .collect::<std::collections::HashSet<_>>();
+                match (0..)
+                    .map(|n: usize| format!("__compiled_copy_{n}"))
+                    .find(|id| !taken.contains(id.as_str()))
+                {
+                    Some(id) => id,
+                    None => return Task::none(),
+                }
+            } else {
+                match fresh_unique_authored_level_guid(&object.id, Some(&snapshot.scene)) {
+                    Ok(id) => id,
+                    Err(reason) => {
+                        state.status = reason;
+                        return Task::none();
+                    }
+                }
+            };
+            // A paste lands at its target; Shift+D 2 m along X.
+            let target = state.level_paste_at.take().unwrap_or([
+                object.world.position[0] + 2.0,
+                object.world.position[1],
+                object.world.position[2],
+            ]);
+            let local = evolve_core::Transform {
+                position: paste_local_position(&object, target),
+                ..object.local
+            };
+            match level_draft::copy(&snapshot, index, id, local) {
+                Ok((next, copied)) => {
+                    state.level_selection.clear();
+                    state.level_selection.indices.insert(copied);
+                    state.level_selected = Some(copied);
+                    apply_draft_edit(state, next, &format!("Copied {}", object.name));
+                }
+                Err(reason) => state.status = reason,
+            }
+        }
+        Message::LevelDeleteSelected => {
+            let mut indices = state
+                .level_selection
+                .indices
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            if indices.is_empty() {
+                indices.push(index);
+            }
+            for &each in &indices {
+                let Some(object) = snapshot.scene.objects.get(each) else {
+                    continue;
+                };
+                if object.kind.eq_ignore_ascii_case("Vegetation") {
+                    state.status =
+                        "Delete VegetationMap.dat instances one at a time with Delete vegetation."
+                            .into();
+                    return Task::none();
+                }
+                if !is_compiled_kind(object)
+                    && let Err(reason) =
+                        level_authoring::validate_deletion(&snapshot.scene, &object.id)
+                {
+                    state.status = reason;
+                    return Task::none();
+                }
+            }
+            let next = level_draft::delete(&snapshot, &indices);
+            state.level_selection.clear();
+            state.level_selected = None;
+            apply_draft_edit(
+                state,
+                next,
+                &format!(
+                    "Deleted {} placement{}",
+                    indices.len(),
+                    if indices.len() == 1 { "" } else { "s" }
+                ),
+            );
+        }
+        Message::LevelSaveWildlifeShape => {
+            if !(object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+                || object.kind.eq_ignore_ascii_case("AreaShape"))
+            {
+                state.status = "Select an area to edit its polygon.".into();
+                return Task::none();
+            }
+            match state.level_authoring.points() {
+                Ok(points) => {
+                    let next = level_draft::shape(&snapshot, index, points);
+                    apply_draft_edit(state, next, &format!("Reshaped {}", object.name));
+                }
+                Err(reason) => state.status = reason,
+            }
+        }
+        _ => {}
+    }
+    Task::none()
+}
+
+/// Every unsaved change as edits to the project files that hold them.
+fn draft_file_edits(state: &State) -> Result<Vec<(PathBuf, LevelFileEdit)>, String> {
+    use evolve_core::scene_authoring::LayerAuthoringEdit;
+    let draft = state.level_draft.as_ref().ok_or("No unsaved changes")?;
+    let current = &draft.current;
+    let loaded = |id: &str| {
+        draft
+            .original
+            .scene
+            .objects
+            .iter()
+            .find(|object| object.id == id)
+    };
+    let mut files: Vec<(PathBuf, LevelFileEdit)> = Vec::new();
+    fn file(files: &mut Vec<(PathBuf, LevelFileEdit)>, path: PathBuf, compiled: bool) -> usize {
+        if let Some(at) = files.iter().position(|(p, _)| *p == path) {
+            return at;
+        }
+        files.push((
+            path,
+            if compiled {
+                LevelFileEdit::Compiled(evolve_core::CompiledEdits::default())
+            } else {
+                LevelFileEdit::Xml(Vec::new())
+            },
+        ));
+        files.len() - 1
+    }
+    for change in level_draft::changes(&draft.original, current) {
+        let index = match &change {
+            level_draft::Change::Copy { index, .. }
+            | level_draft::Change::Transform { index }
+            | level_draft::Change::Shape { index }
+            | level_draft::Change::Delete { index } => *index,
+        };
+        let (object, path) = project_object_source(state, index)?;
+        let compiled = is_compiled_kind(&object);
+        let at = file(&mut files, path, compiled);
+        let placement = |object: &evolve_core::PlacedObject| {
+            compiled_placement(object)
+                .ok_or_else(|| format!("{} is not a terrain.dat placement", object.name))
+        };
+        match (&mut files[at].1, change) {
+            (LevelFileEdit::Compiled(edits), level_draft::Change::Copy { .. }) => {
+                let root = level_draft::root_origin(current, &object.id);
+                let origin = loaded(root).ok_or("A copy's original placement is missing")?;
+                edits.copies.push((placement(origin)?, object.world));
+            }
+            (LevelFileEdit::Compiled(edits), level_draft::Change::Transform { .. }) => {
+                // A copy is written where it is now.
+                if !current.origins.contains_key(&object.id) {
+                    edits.transforms.push((placement(&object)?, object.world));
+                }
+            }
+            (LevelFileEdit::Compiled(edits), level_draft::Change::Delete { .. }) => {
+                edits.deletes.push(placement(&object)?);
+            }
+            (LevelFileEdit::Compiled(_), level_draft::Change::Shape { .. }) => {}
+            (LevelFileEdit::Xml(edits), level_draft::Change::Copy { origin, .. }) => {
+                edits.push(LayerAuthoringEdit::Duplicate {
+                    guid: origin,
+                    new_guid: object.id.clone(),
+                    name: object.name.clone(),
+                    position: Some(object.local.position),
+                });
+            }
+            (LevelFileEdit::Xml(edits), level_draft::Change::Transform { .. }) => {
+                edits.push(LayerAuthoringEdit::Transform {
+                    guid: object.id.clone(),
+                    transform: object.local,
+                });
+            }
+            (LevelFileEdit::Xml(edits), level_draft::Change::Shape { .. }) => {
+                edits.push(LayerAuthoringEdit::Shape {
+                    guid: object.id.clone(),
+                    points: object.shape_points.clone(),
+                });
+            }
+            (LevelFileEdit::Xml(edits), level_draft::Change::Delete { .. }) => {
+                edits.push(LayerAuthoringEdit::Delete {
+                    guid: object.id.clone(),
+                });
+            }
+        }
+    }
+    Ok(files)
+}
+
 /// Start a G/R/S transform of the selected placements.
 fn start_level_transform(state: &mut State, mode: level_transform::Mode) {
     if state.level_project.is_none()
@@ -3572,48 +3898,9 @@ fn clear_level_transform_preview(state: &mut State) {
     }
 }
 
-/// Save a finished G/R/S transform to the project file that owns the
-/// placements. The preview stays on screen until the map reloads.
+/// Apply a finished G/R/S or gizmo transform to the map draft.
 fn confirm_level_transform(state: &mut State) -> Task<Message> {
     let Some(operation) = state.level_transform.take() else {
-        return Task::none();
-    };
-    let locals = operation.local_results();
-    let worlds = operation.results();
-    let mut source = None;
-    let mut compiled = Vec::new();
-    let mut xml = Vec::new();
-    for ((target, local), world) in operation.targets.iter().zip(locals).zip(worlds) {
-        let (object, path) = match project_object_source(state, target.index) {
-            Ok(found) => found,
-            Err(reason) => {
-                clear_level_transform_preview(state);
-                state.status = reason;
-                return Task::none();
-            }
-        };
-        if source
-            .as_ref()
-            .is_some_and(|first: &PathBuf| *first != path)
-        {
-            clear_level_transform_preview(state);
-            state.status = "Transform placements from one file at a time: terrain.dat placements and mission or layer objects are saved separately.".into();
-            return Task::none();
-        }
-        source = Some(path);
-        if let Some(placement) = compiled_placement(&object) {
-            compiled.push((placement, world));
-        } else {
-            xml.push(
-                evolve_core::scene_authoring::LayerAuthoringEdit::Transform {
-                    guid: object.id.clone(),
-                    transform: local,
-                },
-            );
-        }
-    }
-    let Some(source) = source else {
-        clear_level_transform_preview(state);
         return Task::none();
     };
     let unchanged = operation
@@ -3626,23 +3913,36 @@ fn confirm_level_transform(state: &mut State) -> Task<Message> {
         state.status = "Transform cancelled: nothing moved.".into();
         return Task::none();
     }
-    let change = if compiled.is_empty() {
-        ProjectLevelMutation::XmlBatch(xml)
-    } else {
-        ProjectLevelMutation::CompiledTransform(compiled)
-    };
-    let count = operation.targets.len();
-    let task = submit_level_project_edit(state, source, change);
-    if !state.busy {
-        // Refused before saving: put everything back.
+    let edits = operation
+        .targets
+        .iter()
+        .map(|target| target.index)
+        .zip(operation.local_results())
+        .collect::<Vec<_>>();
+    let Some(snapshot) = draft_current(state) else {
         clear_level_transform_preview(state);
-    } else {
-        state.status = format!(
-            "Saving the transform of {count} placement{}…",
-            if count == 1 { "" } else { "s" }
-        );
+        return Task::none();
+    };
+    match level_draft::transform(&snapshot, &edits) {
+        Ok(next) => {
+            let count = edits.len();
+            let done = format!(
+                "{} {count} placement{}",
+                match operation.mode {
+                    level_transform::Mode::Move => "Moved",
+                    level_transform::Mode::Rotate => "Rotated",
+                    level_transform::Mode::Scale => "Scaled",
+                },
+                if count == 1 { "" } else { "s" }
+            );
+            apply_draft_edit(state, next, &done);
+        }
+        Err(reason) => {
+            clear_level_transform_preview(state);
+            state.status = reason;
+        }
     }
-    task
+    Task::none()
 }
 
 /// Reload the open project map after a saved edit or undo, reusing what did
@@ -3673,6 +3973,10 @@ fn submit_level_project_edit(
     }
     if state.busy || state.level_dirty_count != 0 {
         state.status = "Save any pending transform changes before another source edit.".into();
+        return Task::none();
+    }
+    if draft_pending(state) {
+        state.status = "Save the map (Ctrl+S) or undo its unsaved changes before this edit.".into();
         return Task::none();
     }
     let project = state.level_project.clone().unwrap();
@@ -3802,6 +4106,12 @@ fn level_ground_hit(state: &State, origin: [f32; 3], direction: [f32; 3]) -> Opt
 }
 
 /// The terrain.dat record behind a Legacy-ported map's brush or vegetation.
+/// A placement stored in terrain.dat, including copies made in a draft.
+fn is_compiled_kind(object: &evolve_core::PlacedObject) -> bool {
+    object.kind.eq_ignore_ascii_case("CompiledBrush")
+        || object.kind.eq_ignore_ascii_case("CompiledVegetation")
+}
+
 fn compiled_placement(
     object: &evolve_core::PlacedObject,
 ) -> Option<evolve_core::CompiledPlacement> {
@@ -3846,7 +4156,7 @@ fn project_object_source(
         return Err("This object GUID occurs in multiple original LYR layers. Editing is disabled until its owning source can be uniquely identified.".into());
     }
     let root = project.workspace.join("files");
-    let relative = if compiled_placement(&object).is_some() {
+    let relative = if is_compiled_kind(&object) {
         state
             .library_map
             .as_ref()
@@ -4452,9 +4762,9 @@ fn operation_label(operation: &Operation) -> &'static str {
             "Assembling level scene"
         }
         Operation::LoadLevelWildlife(..) => "Loading source-backed wildlife preview",
-        Operation::SaveProjectLevel(..) | Operation::SaveProjectSource(..) => {
-            "Saving editable level project"
-        }
+        Operation::SaveProjectLevel(..)
+        | Operation::SaveProjectSource(..)
+        | Operation::SaveLevelDraft(..) => "Saving editable level project",
         Operation::RestoreCommittedLevel(..) => "Restoring verified project revision",
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
@@ -6542,6 +6852,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::OpenLevelEditorWindow => return Task::none(),
         Message::LevelShowMapChooser => {
+            if draft_pending(state) {
+                state.status = "Save the map (Ctrl+S) or discard its unsaved changes first.".into();
+                return Task::none();
+            }
             state.level_map_prompt = true;
             state.level_map_choices = None;
             state.level_project_choices = None;
@@ -6633,6 +6947,95 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             refresh_level_transform_preview(state);
         }
         Message::LevelGizmoMode(mode) => state.level_gizmo = mode,
+        Message::LevelDraftUndo | Message::LevelDraftRedo => {
+            if state.busy {
+                return Task::none();
+            }
+            let undo = matches!(message, Message::LevelDraftUndo);
+            let moved = state
+                .level_draft
+                .as_mut()
+                .is_some_and(|draft| if undo { draft.undo() } else { draft.redo() });
+            if moved {
+                show_draft(state);
+                let left = state
+                    .level_draft
+                    .as_ref()
+                    .map_or(0, |draft| draft.undo.len());
+                state.status = format!(
+                    "{} · {left} change{} to undo",
+                    if undo { "Undone" } else { "Redone" },
+                    if left == 1 { "" } else { "s" }
+                );
+            } else {
+                state.status = format!("Nothing to {}.", if undo { "undo" } else { "redo" });
+            }
+        }
+        Message::LevelDiscardMap => {
+            if let Some(draft) = state.level_draft.as_mut() {
+                while draft.undo() {}
+                show_draft(state);
+                state.level_draft = None;
+                state.status = "Unsaved map changes discarded.".into();
+            }
+        }
+        Message::LevelSaveMap => {
+            if state.busy || !draft_pending(state) {
+                return Task::none();
+            }
+            let Some(project) = state.level_project.clone() else {
+                return Task::none();
+            };
+            match draft_file_edits(state) {
+                Ok(files) if files.is_empty() => {
+                    state.level_draft = None;
+                    state.status = "Nothing to save.".into();
+                }
+                Ok(files) => {
+                    let root = PathBuf::from(&state.preferences.projects);
+                    return launch(state, Operation::SaveLevelDraft(project, files, root));
+                }
+                Err(reason) => state.status = format!("Cannot save the map: {reason}"),
+            }
+        }
+        Message::LevelUndoKey(_) | Message::LevelRedoKey(_) => {
+            let undo = matches!(message, Message::LevelUndoKey(_));
+            if state.level_transform.is_some() {
+                return update(state, Message::LevelTransformCancel);
+            }
+            let brushing = state.level_tool != terrain_brush::LevelTool::Select
+                && state.terrain_session.as_ref().is_some_and(|session| {
+                    if undo {
+                        session.can_undo()
+                    } else {
+                        session.can_redo()
+                    }
+                });
+            return update(
+                state,
+                match (brushing, undo) {
+                    (true, true) => Message::LevelBrushUndo,
+                    (true, false) => Message::LevelBrushRedo,
+                    (false, true) => Message::LevelDraftUndo,
+                    (false, false) => Message::LevelDraftRedo,
+                },
+            );
+        }
+        Message::LevelSaveKey(_) => {
+            let terrain = state.level_tool != terrain_brush::LevelTool::Select
+                && state
+                    .terrain_session
+                    .as_ref()
+                    .is_some_and(|session| session.is_dirty());
+            return update(
+                state,
+                if terrain {
+                    Message::LevelBrushSave
+                } else {
+                    Message::LevelSaveMap
+                },
+            );
+        }
         Message::LevelVertexDrag(vertex, ray) => {
             let Some((index, object)) = state.level_selected.and_then(|index| {
                 Some((
@@ -6725,6 +7128,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         | Message::LevelScaleVegetation
         | Message::LevelDuplicateVegetation
         | Message::LevelDeleteVegetation => {
+            if matches!(
+                message,
+                Message::LevelDuplicateSelected
+                    | Message::LevelDeleteSelected
+                    | Message::LevelSaveWildlifeShape
+            ) {
+                return draft_object_edit(state, &message);
+            }
             let (object, source) = match selected_project_object_source(state) {
                 Ok(found) => found,
                 Err(reason) => {
@@ -9916,20 +10327,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         return Task::none();
                     }
                 };
-                // terrain.dat stores world transforms; layers store local ones.
-                let change = match compiled_placement(&object) {
-                    // They have no parent: local is world.
-                    Some(placement) => {
-                        ProjectLevelMutation::CompiledTransform(vec![(placement, transform)])
-                    }
-                    None => ProjectLevelMutation::Xml(
-                        evolve_core::scene_authoring::LayerAuthoringEdit::Transform {
-                            guid: object.id,
-                            transform,
-                        },
-                    ),
+                let _ = source;
+                let (Some(index), Some(snapshot)) = (state.level_selected, draft_current(state))
+                else {
+                    return Task::none();
                 };
-                return submit_level_project_edit(state, source, change);
+                match level_draft::transform(&snapshot, &[(index, transform)]) {
+                    Ok(next) => apply_draft_edit(state, next, &format!("Moved {}", object.name)),
+                    Err(reason) => state.status = reason,
+                }
+                return Task::none();
             }
             if state.level_read_only {
                 state.status = "Imported levels are read-only. Use File → Open as Modding Project to create an editable copy.".into();
@@ -10379,15 +10786,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             if pressed && !state.level_looking {
-                let mode = match key {
-                    'g' => Some(level_transform::Mode::Move),
-                    'r' => Some(level_transform::Mode::Rotate),
-                    's' => Some(level_transform::Mode::Scale),
-                    _ => None,
-                };
-                if let Some(mode) = mode {
-                    start_level_transform(state, mode);
-                    return Task::none();
+                // G grabs at once, as in Blender; R and S show the rotate or
+                // scale gizmo, which turns or scales when a handle is dragged.
+                match key {
+                    'g' => {
+                        start_level_transform(state, level_transform::Mode::Move);
+                        return Task::none();
+                    }
+                    'r' | 's' if state.level_tool == terrain_brush::LevelTool::Select => {
+                        state.level_gizmo = if key == 'r' {
+                            level_transform::Mode::Rotate
+                        } else {
+                            level_transform::Mode::Scale
+                        };
+                        return Task::none();
+                    }
+                    _ => {}
                 }
             }
             if key == 'f' && pressed {
@@ -15420,6 +15834,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .as_ref()
                         .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
+                Ok(Completed::LevelDraftSaved(project, saved)) => {
+                    state.level_draft = None;
+                    state.status = format!(
+                        "Map saved: {saved} file{} written. Reloading…",
+                        if saved == 1 { "" } else { "s" }
+                    );
+                    return reload_project_level(state, project);
+                }
                 Ok(Completed::ProjectLevelSaved(project, saved, revision)) => {
                     if let Some(revision) = revision {
                         state.level_committed_redo.clear();
@@ -15508,6 +15930,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .map(|group| group.instances.len())
                             .sum();
                         state.level_world_source = Some(Arc::new(merged));
+                        if let Some(draft) = state.level_draft.as_mut() {
+                            draft.current.world = state.level_world_source.clone();
+                        }
                         state.level_wildlife_resolved = true;
                         state.level_spawn_distances = report.spawn_distances;
                         state
@@ -15528,6 +15953,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_map_choices = None;
                     state.level_project_choices = None;
                     let loaded = *loaded;
+                    state.level_draft = None;
                     let same_project_and_map = state
                         .level_project
                         .as_ref()
@@ -17217,6 +17643,9 @@ impl Desktop {
             Message::LevelCameraKey(id, _, _)
             | Message::LevelLookButton(id, _)
             | Message::LevelEnterKey(id)
+            | Message::LevelUndoKey(id)
+            | Message::LevelRedoKey(id)
+            | Message::LevelSaveKey(id)
                 if self.level_id != Some(id) =>
             {
                 Task::none()
@@ -17592,18 +18021,22 @@ impl Desktop {
                     ..
                 }) if status == iced::event::Status::Ignored
                     && ((modifiers.control()
-                        && (value.eq_ignore_ascii_case("c")
-                            || value.eq_ignore_ascii_case("v")))
+                        && ["c", "v", "z", "y", "s"]
+                            .iter()
+                            .any(|key| value.eq_ignore_ascii_case(key)))
                         || (modifiers.shift()
                             && !modifiers.control()
                             && value.eq_ignore_ascii_case("d"))) =>
                 {
-                    Some(if value.eq_ignore_ascii_case("d") {
-                        Message::LevelDuplicateKey(id)
-                    } else if value.eq_ignore_ascii_case("c") {
-                        Message::LevelCopyKey(id)
-                    } else {
-                        Message::LevelPasteKey(id)
+                    let key = value.to_ascii_lowercase();
+                    Some(match key.as_str() {
+                        "d" => Message::LevelDuplicateKey(id),
+                        "c" => Message::LevelCopyKey(id),
+                        "v" => Message::LevelPasteKey(id),
+                        "z" if modifiers.shift() => Message::LevelRedoKey(id),
+                        "z" => Message::LevelUndoKey(id),
+                        "y" => Message::LevelRedoKey(id),
+                        _ => Message::LevelSaveKey(id),
                     })
                 }
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -17787,8 +18220,18 @@ mod project_edit_tests {
         assert!((points[1][1] - 10.0).abs() < 1e-3, "{points:?}");
         assert!(points[1][2].abs() < 1e-3, "{points:?}");
         assert_eq!(points[0], [0.0, 0.0, 0.0]);
-        // Releasing saves the edited polygon to its layer.
+        // Releasing applies it to the map draft, undoably; Ctrl+S saves.
         let _ = update(&mut state, Message::LevelVertexRelease);
+        assert!(draft_pending(&state));
+        let shape = |state: &State| state.level_scene.as_ref().unwrap().objects[0].shape_points[1];
+        assert!((shape(&state)[0] - 20.0).abs() < 1e-3);
+        let window = window::Id::unique();
+        let _ = update(&mut state, Message::LevelUndoKey(window));
+        assert_eq!(shape(&state), [10.0, 0.0, 0.0]);
+        assert!(!draft_pending(&state));
+        let _ = update(&mut state, Message::LevelRedoKey(window));
+        assert!((shape(&state)[0] - 20.0).abs() < 1e-3);
+        let _ = update(&mut state, Message::LevelSaveKey(window));
         assert!(state.busy, "{}", state.status);
     }
 
@@ -17843,15 +18286,11 @@ mod project_edit_tests {
         let key = |state: &mut State, key: char| {
             let _ = update(state, Message::LevelCameraKey(window, key, true));
         };
-        // S scales, rather than flying the camera back.
+        // S shows the scale gizmo, rather than flying the camera back.
         key(&mut state, 's');
         assert!(state.level_keys.is_empty());
-        assert_eq!(
-            state.level_transform.as_ref().map(|op| op.mode),
-            Some(level_transform::Mode::Scale)
-        );
-        let _ = update(&mut state, Message::LevelTransformCancel);
         assert!(state.level_transform.is_none());
+        assert_eq!(state.level_gizmo, level_transform::Mode::Scale);
         // G, X, 5: five metres along X, shown before it is saved.
         key(&mut state, 'g');
         key(&mut state, 'x');
@@ -17859,9 +18298,22 @@ mod project_edit_tests {
         let moved = state.level_transform.as_ref().unwrap().results()[0].position;
         assert_eq!(moved, [16.0, 12.0, 13.0]);
         assert!(state.status.starts_with("Move along X"), "{}", state.status);
-        // Enter saves it to the layer that owns the placement.
+        // Enter applies it to the map at once; Ctrl+Z and Ctrl+Y step
+        // through it, and Ctrl+S saves it to the layer that owns it.
         let _ = update(&mut state, Message::LevelEnterKey(window));
         assert!(state.level_transform.is_none());
+        let at = |state: &State| {
+            state.level_scene.as_ref().unwrap().objects[0]
+                .world
+                .position
+        };
+        assert_eq!(at(&state), [16.0, 12.0, 13.0]);
+        assert!(!state.busy);
+        let _ = update(&mut state, Message::LevelUndoKey(window));
+        assert_eq!(at(&state), [11.0, 12.0, 13.0]);
+        let _ = update(&mut state, Message::LevelRedoKey(window));
+        assert_eq!(at(&state), [16.0, 12.0, 13.0]);
+        let _ = update(&mut state, Message::LevelSaveKey(window));
         assert!(state.busy, "{}", state.status);
         // With RMB held, WASD flies the camera.
         state.busy = false;
