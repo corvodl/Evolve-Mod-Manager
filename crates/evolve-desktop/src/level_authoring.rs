@@ -176,7 +176,7 @@ impl Fields {
             points.push(arr);
         }
         if points.len() < 3 {
-            return Err("Wildlife polygon requires at least 3 vertices (x,y,z; ...)".into());
+            return Err("An area polygon requires at least 3 vertices (x,y,z; ...)".into());
         }
         Ok(LayerAuthoringEdit::Shape { guid, points })
     }
@@ -604,9 +604,18 @@ pub(super) fn placement_editor<'a>(
                     .style(crate::design::primary)
                     .on_press(Message::LevelSaveWildlifeSpawn),
             );
-    } else if object.kind.eq_ignore_ascii_case("ZooKeeperShape") {
+    } else if object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+        || object.kind.eq_ignore_ascii_case("AreaShape")
+    {
         column = column
-            .push(text("ZooKeeper area vertices (x,y,z; x,y,z; ...)").size(12))
+            .push(
+                text(if object.kind.eq_ignore_ascii_case("AreaShape") {
+                    "Area vertices relative to its position (x,y,z; ...). An out-of-bounds area's outline is the playable space."
+                } else {
+                    "ZooKeeper area vertices (x,y,z; x,y,z; ...)"
+                })
+                .size(12),
+            )
             .push(edit_field("Polygon vertices", &forms.polygon, TextField::Polygon))
             .push(crate::design::button("Save area polygon to LYR")
                 .style(crate::design::primary)

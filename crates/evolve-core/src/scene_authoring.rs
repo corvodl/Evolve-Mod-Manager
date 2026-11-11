@@ -350,7 +350,7 @@ fn transform_target(
             }
         }
         LayerAuthoringEdit::Shape { points, .. } => {
-            if !object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+            if !polygon_area(object)
                 || points.len() != object.shape_points.len()
                 || !(3..=8192).contains(&points.len())
                 || points
@@ -389,6 +389,13 @@ fn transform_target(
         _ => (),
     }
     Ok(())
+}
+
+/// Placements whose authored `<Points>` polygon can be edited: ZooKeeper
+/// areas and gameplay AreaShapes such as a map's OutOfBounds_Shape.
+fn polygon_area(object: &PlacedObject) -> bool {
+    object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+        || object.kind.eq_ignore_ascii_case("AreaShape")
 }
 
 /// Engine-exported mission XML (a Legacy-ported map's mission_*.xml) names an
@@ -704,7 +711,7 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             events.splice(end + 1..end + 1, cloned);
         }
         LayerAuthoringEdit::Shape { points, .. } => {
-            if !object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+            if !polygon_area(object)
                 || !(3..=8192).contains(&points.len())
                 || points
                     .iter()
@@ -1174,6 +1181,41 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn mission_out_of_bounds_area_polygon_can_grow() {
+        // The shape of a compiled mission's OutOfBounds_Shape: an AreaShape
+        // linking the reversed ForbiddenArea that damages players outside it.
+        let mission = br#"<Mission><Objects><Entity Name="OutOfBounds_Shape" Pos="500,600,80" EntityClass="AreaShape" EntityId="111" EntityGuid="4000000000000111"><Properties Height="85.9"/><Points><Point Pos="0,0,0"/><Point Pos="10,0,0"/><Point Pos="10,10,0"/></Points><Entities><Entity Id="379"/></Entities></Entity><Entity Name="OutOfBounds_Damage" Pos="0,0,0" EntityClass="ForbiddenArea" EntityId="379" EntityGuid="4000000000000379"><Properties bReversed="1"/></Entity></Objects></Mission>"#;
+        let scene = parse_level_scene(&[("mission", mission)]).unwrap();
+        let area = scene
+            .objects
+            .iter()
+            .find(|o| o.name == "OutOfBounds_Shape")
+            .unwrap();
+        assert_eq!(area.kind, "AreaShape");
+        assert_eq!(area.shape_points.len(), 3);
+        let grown = [[0., 0., 0.], [40., 0., 0.], [40., 40., 0.], [0., 40., 0.]];
+        let edited = edit_layer_bytes(
+            mission,
+            &LayerAuthoringEdit::Shape {
+                guid: area.id.clone(),
+                points: grown.to_vec(),
+            },
+        )
+        .unwrap();
+        let scene = parse_level_scene(&[("edited", &edited)]).unwrap();
+        let area = scene
+            .objects
+            .iter()
+            .find(|o| o.name == "OutOfBounds_Shape")
+            .unwrap();
+        assert_eq!(area.shape_points, grown);
+        let text = String::from_utf8(edited).unwrap();
+        // The damage-area link and the forbidden area itself are untouched.
+        assert!(text.contains(r#"<Entities><Entity Id="379"/></Entities>"#));
+        assert!(text.contains(r#"bReversed="1""#));
     }
 
     #[test]

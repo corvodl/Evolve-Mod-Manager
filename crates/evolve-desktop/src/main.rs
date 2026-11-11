@@ -820,6 +820,8 @@ enum ProjectLevelMutation {
     TerrainPatch(evolve_core::TerrainPatch),
     /// Delete a brush or vegetation placement stored in terrain.dat.
     CompiledDelete(evolve_core::CompiledPlacement),
+    /// Copy one to a new world position.
+    CompiledCopy(evolve_core::CompiledPlacement, [f32; 3]),
     Vegetation(vegetation_map::VegetationEdit),
 }
 
@@ -2034,6 +2036,18 @@ impl Operation {
                             );
                         }
                         evolve_core::delete_compiled_placement(&original, placement)
+                            .map_err(|e| e.to_string())?
+                    }
+                    ProjectLevelMutation::CompiledCopy(placement, position) => {
+                        let lower = member.to_ascii_lowercase();
+                        if lower != "terrain/terrain.dat"
+                            && !lower.ends_with("/terrain/terrain.dat")
+                        {
+                            return Err(
+                                "terrain.dat placements are copied within terrain.dat".into()
+                            );
+                        }
+                        evolve_core::copy_compiled_placement(&original, placement, position)
                             .map_err(|e| e.to_string())?
                     }
                     ProjectLevelMutation::TerrainPatch(patch) => {
@@ -6402,17 +6416,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             };
             if let Some(placement) = compiled_placement(&object) {
-                if !matches!(message, Message::LevelDeleteSelected) {
-                    state.level_paste_at = None;
-                    state.status = "Placements stored in terrain.dat can be deleted here; copying, adding next to or editing them is not supported yet.".into();
-                    return Task::none();
-                }
-                state.status = format!("Deleting {} from terrain.dat…", object.name);
-                return submit_level_project_edit(
-                    state,
-                    source,
-                    ProjectLevelMutation::CompiledDelete(placement),
-                );
+                let edit = match message {
+                    Message::LevelDeleteSelected => {
+                        state.status = format!("Deleting {} from terrain.dat…", object.name);
+                        ProjectLevelMutation::CompiledDelete(placement)
+                    }
+                    // Shift+D and Ctrl+V: a paste lands at its target, a
+                    // duplicate 2 m along X. terrain.dat stores world positions.
+                    Message::LevelDuplicateSelected => {
+                        let original = object.world.position;
+                        let position = state.level_paste_at.take().unwrap_or([
+                            original[0] + 2.0,
+                            original[1],
+                            original[2],
+                        ]);
+                        state.status = format!("Copying {} within terrain.dat…", object.name);
+                        ProjectLevelMutation::CompiledCopy(placement, position)
+                    }
+                    _ => {
+                        state.level_paste_at = None;
+                        state.status = "Placements stored in terrain.dat can be copied, pasted, duplicated and deleted; adding next to or editing them is not supported yet.".into();
+                        return Task::none();
+                    }
+                };
+                return submit_level_project_edit(state, source, edit);
             }
             let edit = match message {
                 Message::LevelAddGeometry => {
@@ -9900,10 +9927,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select an object to copy.".into();
                 return Task::none();
             };
-            if compiled_placement(object).is_some() {
-                state.status = "Placements stored in terrain.dat cannot be copied yet.".into();
-                return Task::none();
-            }
             state.status = format!("Copied {}. Ctrl+V places a copy at the mouse.", object.name);
             state.level_clipboard = Some(object.id.clone());
         }
@@ -17261,10 +17284,10 @@ mod project_edit_tests {
         let window = window::Id::unique();
         let _ = update(&mut state, Message::LevelCopyKey(window));
         assert_eq!(state.level_clipboard.as_deref(), Some("rock-guid"));
+        // terrain.dat placements copy too.
         state.level_selected = Some(1);
         let _ = update(&mut state, Message::LevelCopyKey(window));
-        assert_eq!(state.level_clipboard.as_deref(), Some("rock-guid"));
-        assert!(state.status.contains("terrain.dat"));
+        assert_eq!(state.level_clipboard.as_deref(), Some("__compiled_brush_4"));
         // A child's local position moves by the same world offset.
         let pasted = paste_local_position(&object("x", "Brush"), [20.0, 12.0, 15.0]);
         assert_eq!(pasted, [10.0, 2.0, 5.0]);
