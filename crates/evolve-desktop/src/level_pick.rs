@@ -400,6 +400,14 @@ impl shader::Program<Message> for LevelViewport {
                 other => super::view_navigation::message(other),
             })
             .map(|message| shader::Action::publish(message).and_capture())
+            .or_else(|| {
+                // Track the ray under the mouse so Ctrl+V can paste there.
+                let Event::Mouse(mouse::Event::CursorMoved { .. }) = event else {
+                    return None;
+                };
+                let ray = location.and_then(|position| self.ray(bounds, position));
+                Some(shader::Action::publish(Message::LevelPointerRay(ray)))
+            })
     }
     fn draw(
         &self,

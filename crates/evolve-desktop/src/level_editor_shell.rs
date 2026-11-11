@@ -116,7 +116,7 @@ fn tool_bar(state: &State) -> Element<'_, Message> {
         .push(space().width(Fill))
         .push(
             text(match state.level_tool {
-                LevelTool::Select => "Click to select · Delete removes it · RMB look · WASD fly",
+                LevelTool::Select => "Click select · Del delete · Ctrl+C/Ctrl+V copy, paste at mouse · Shift+D duplicate · RMB look",
                 LevelTool::Sculpt => "LMB brush · Ctrl+LMB lower · RMB look · WASD fly",
                 LevelTool::Paint => "LMB paint · RMB look · WASD fly",
             })

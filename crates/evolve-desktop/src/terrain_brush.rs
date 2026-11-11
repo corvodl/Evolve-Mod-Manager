@@ -103,6 +103,71 @@ pub(super) struct TerrainSession {
     patches: GroundPatches,
 }
 
+/// Where a ray first passes below a height field, refined by bisection.
+pub(super) fn march(
+    height_at: impl Fn(f32, f32) -> Option<f32>,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    step: f32,
+    far: f32,
+) -> Option<[f32; 3]> {
+    let step = step.max(0.25);
+    let at = |t: f32| std::array::from_fn::<f32, 3, _>(|i| origin[i] + direction[i] * t);
+    let above = |p: [f32; 3]| height_at(p[0], p[1]).map(|h| p[2] > h);
+    let mut previous = 0.0;
+    let mut t = 0.0;
+    while t < far {
+        t += step;
+        if above(at(t)) == Some(false) {
+            let (mut lo, mut hi) = (previous, t);
+            for _ in 0..12 {
+                let mid = (lo + hi) * 0.5;
+                if above(at(mid)) == Some(false) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            return Some(at(hi));
+        }
+        previous = t;
+    }
+    None
+}
+
+/// Ground height at world XY from the on-screen terrain mesh (a grid of
+/// `render_positions` columns and rows), bilinear within a cell.
+pub(super) fn mesh_height(
+    mesh: &evolve_core::RenderMesh,
+    info: &TerrainInfo,
+    x: f32,
+    y: f32,
+) -> Option<f32> {
+    let xs = evolve_core::render_positions(info.width, info.stride);
+    let ys = evolve_core::render_positions(info.height, info.stride);
+    if xs.len() < 2 || ys.len() < 2 || mesh.positions.len() != xs.len() * ys.len() {
+        return None;
+    }
+    let cell = |samples: &[u32], value: f32| -> Option<(usize, f32)> {
+        let world = |i: usize| samples[i] as f32 * info.unit;
+        if value < world(0) || value > world(samples.len() - 1) {
+            return None;
+        }
+        let i = samples
+            .partition_point(|s| *s as f32 * info.unit <= value)
+            .clamp(1, samples.len() - 1)
+            - 1;
+        Some((i, (value - world(i)) / (world(i + 1) - world(i)).max(1e-6)))
+    };
+    let (i, tx) = cell(&xs, x)?;
+    let (j, ty) = cell(&ys, y)?;
+    let z = |i: usize, j: usize| mesh.positions[i * ys.len() + j][2];
+    Some(
+        (z(i, j) * (1.0 - tx) + z(i + 1, j) * tx) * (1.0 - ty)
+            + (z(i, j + 1) * (1.0 - tx) + z(i + 1, j + 1) * tx) * ty,
+    )
+}
+
 fn grow(rect: Option<[u32; 4]>, other: [u32; 4]) -> [u32; 4] {
     rect.map_or(other, |r| {
         [
@@ -212,30 +277,14 @@ impl TerrainSession {
 
     /// Where a view ray first meets the terrain.
     pub fn hit(&self, origin: [f32; 3], direction: [f32; 3]) -> Option<[f32; 3]> {
-        let step = (self.unit * 0.5).max(0.25);
         let far = (self.width.max(self.height) as f32 * self.unit * 1.5).min(20_000.0);
-        let at = |t: f32| std::array::from_fn::<f32, 3, _>(|i| origin[i] + direction[i] * t);
-        let above = |p: [f32; 3]| self.height_at(p[0], p[1]).map(|h| p[2] > h);
-        let mut previous = 0.0;
-        let mut t = 0.0;
-        while t < far {
-            t += step;
-            if above(at(t)) == Some(false) {
-                // Refine between the last point above and this one below.
-                let (mut lo, mut hi) = (previous, t);
-                for _ in 0..12 {
-                    let mid = (lo + hi) * 0.5;
-                    if above(at(mid)) == Some(false) {
-                        hi = mid;
-                    } else {
-                        lo = mid;
-                    }
-                }
-                return Some(at(hi));
-            }
-            previous = t;
-        }
-        None
+        march(
+            |x, y| self.height_at(x, y),
+            origin,
+            direction,
+            self.unit * 0.5,
+            far,
+        )
     }
 
     /// The brush outline on the ground, slightly lifted so it stays visible.
@@ -700,6 +749,54 @@ mod tests {
             );
             assert!(raised > 50);
         }
+    }
+
+    #[test]
+    fn mesh_heights_and_rays_follow_a_strided_ground_grid() {
+        // A 5×5-sample, unit-2 map drawn with stride 2: columns 0, 2, 4.
+        let info = TerrainInfo {
+            width: 5,
+            height: 5,
+            unit: 2.0,
+            max_height: 100.0,
+            decoded_samples: 25,
+            stride: 2,
+        };
+        let mut positions = Vec::new();
+        for x in [0u32, 2, 4] {
+            for y in [0u32, 2, 4] {
+                positions.push([x as f32 * 2.0, y as f32 * 2.0, (x + y) as f32]);
+            }
+        }
+        let mesh = evolve_core::RenderMesh {
+            info: evolve_core::ModelInfo {
+                format: String::new(),
+                version: 1,
+                chunk_count: 0,
+                vertex_count: 9,
+                triangle_count: 0,
+                original_uv0: false,
+                original_normals: false,
+            },
+            positions,
+            indices: Vec::new(),
+            uv0: None,
+            normals: None,
+            vertex_alpha: None,
+            vertex_color: None,
+        };
+        // z = (x + y) / 2 in world metres.
+        assert!((mesh_height(&mesh, &info, 3.0, 5.0).unwrap() - 4.0).abs() < 1e-5);
+        assert!(mesh_height(&mesh, &info, 9.0, 1.0).is_none());
+        let hit = march(
+            |x, y| mesh_height(&mesh, &info, x, y),
+            [4.0, 4.0, 50.0],
+            [0.0, 0.0, -1.0],
+            1.0,
+            100.0,
+        )
+        .unwrap();
+        assert!((hit[2] - 4.0).abs() < 0.01);
     }
 
     #[test]

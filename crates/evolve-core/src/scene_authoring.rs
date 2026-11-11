@@ -38,6 +38,8 @@ pub enum LayerAuthoringEdit {
         guid: String,
         new_guid: String,
         name: String,
+        /// The copy's local position; None places it 2 m along X.
+        position: Option<[f32; 3]>,
     },
     /// Remove one object only when it has no scene descendants or home areas.
     Delete { guid: String },
@@ -657,8 +659,14 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             }
             events.drain(start..=end);
         }
-        LayerAuthoringEdit::Duplicate { new_guid, name, .. } => {
+        LayerAuthoringEdit::Duplicate {
+            new_guid,
+            name,
+            position,
+            ..
+        } => {
             if !bounded_guid(new_guid)
+                || position.is_some_and(|p| p.iter().any(|v| !v.is_finite()))
                 || !authored_display_name(name)
                 || original
                     .objects
@@ -680,7 +688,8 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             }
             let mut cloned = events[start..=end].to_vec();
             let offset = object.local.position;
-            let new_pos = [offset[0] + 2.0, offset[1], offset[2]]
+            let new_pos = position
+                .unwrap_or([offset[0] + 2.0, offset[1], offset[2]])
                 .iter()
                 .map(f32::to_string)
                 .collect::<Vec<_>>()
@@ -955,6 +964,7 @@ mod tests {
             guid: fresh.into(),
             new_guid: "{6DA3E510-0081-4321-AD45-111111111111}".into(),
             name: "New stone copy".into(),
+            position: None,
         };
         let doubled = edit_layer_bytes(text.as_bytes(), &duplicate).unwrap();
         assert_eq!(
@@ -1008,6 +1018,7 @@ mod tests {
                 guid: "first".into(),
                 new_guid: "new01".into(),
                 name: "new_rock".into(),
+                position: None,
             },
         )
         .unwrap();
@@ -1028,6 +1039,32 @@ mod tests {
                 .objects
                 .len(),
             3
+        );
+        // A paste places the copy, with every property, at its target.
+        let pasted = edit_layer_bytes(
+            XML,
+            &LayerAuthoringEdit::Duplicate {
+                guid: "first".into(),
+                new_guid: "new02".into(),
+                name: "pasted_rock".into(),
+                position: Some([40.0, 50.5, 6.25]),
+            },
+        )
+        .unwrap();
+        let scene = parse_level_scene(&[("pasted", &pasted)]).unwrap();
+        assert_eq!(scene.objects[1].local.position, [40.0, 50.5, 6.25]);
+        assert_eq!(scene.objects[1].model, scene.objects[0].model);
+        assert!(
+            edit_layer_bytes(
+                XML,
+                &LayerAuthoringEdit::Duplicate {
+                    guid: "first".into(),
+                    new_guid: "new03".into(),
+                    name: "bad".into(),
+                    position: Some([f32::NAN, 0.0, 0.0]),
+                },
+            )
+            .is_err()
         );
     }
 
@@ -1156,7 +1193,8 @@ mod tests {
                 &LayerAuthoringEdit::Duplicate {
                     guid: "shape".into(),
                     new_guid: "spawn".into(),
-                    name: "bad".into()
+                    name: "bad".into(),
+                    position: None
                 }
             )
             .is_err()
