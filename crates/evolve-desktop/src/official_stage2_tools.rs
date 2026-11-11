@@ -302,8 +302,8 @@ impl OfficialTools {
         Ok(())
     }
 
-    /// Export only selected changed entries into a separately mountable
-    /// archive signed for its OWN zz_ basename, never the source basename.
+    /// Export only changed members under either the custom zz_ filename or
+    /// the original PAK name; sign against the selected output basename.
     pub fn export_changed_members_pak(
         &self,
         signed_source: &Path,
@@ -322,8 +322,12 @@ impl OfficialTools {
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or("Output filename missing")?;
-        if !basename.starts_with("zz_") || !basename.ends_with(".pak") {
-            return Err("Sparse exports must be named zz_[modname].pak".into());
+        if !basename.ends_with(".pak")
+            || basename.len() > 240
+            || basename.contains('/')
+            || basename.contains('\\')
+        {
+            return Err("Changed-only export needs a safe .pak filename".into());
         }
 
         let source_index = open_verified_signed_pak(
@@ -353,7 +357,7 @@ impl OfficialTools {
         }
         let parent = output.parent().ok_or("Output has no parent directory")?;
         let scratch = tempfile::Builder::new()
-            .prefix(".zz-pak-export-")
+            .prefix(".changed-pak-export-")
             .tempdir_in(parent)
             .map_err(|e| e.to_string())?;
         let unpacked = scratch.path().join("full-decrypted");
@@ -384,7 +388,7 @@ impl OfficialTools {
         let signed = scratch.path().join(basename);
         self.invoke("e", &filtered, Some(&signed))?;
         let result = open_verified_signed_pak(&signed, &self.public_key, basename)
-            .map_err(|e| format!("New zz_ PAK signature verification failed: {e}"))?;
+            .map_err(|e| format!("Changed-only PAK signature verification failed: {e}"))?;
         if result.info.entries.len() != changed_members.len()
             || result.info.entries.iter().any(|entry| !changed_members.contains(&entry.path))
         {

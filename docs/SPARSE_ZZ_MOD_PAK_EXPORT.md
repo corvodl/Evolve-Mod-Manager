@@ -1,44 +1,56 @@
-# Standalone sparse mod PAK export
+# Export a Mod Project to a signed PAK
 
-From **Modding**, select an editable project, choose its mod name, then click
-**Export Mod as zz_ PAK…** (also available from the Edit menu). A native
-**Save As** dialog allows any existing destination folder and a custom
-`zz_[modname].pak` filename. This is independent of the existing Build Mod
-and Play with Mods/PAK swap workflows; it neither installs nor enables mods.
+On the **Modding** page, select an editable Mod Project and click
+**Export Mod…** (also in the **Edit** menu). Select one of three formats,
+then use the native Windows **Save As** dialog to choose any existing
+destination folder.
 
-## Contents and signing
+| Choice | Filename | Included archive members |
+| --- | --- | --- |
+| Changed addon | `zz_[modname].pak` | Only verified changed files |
+| Changed original-name | `[OriginalPakName].pak` | Only verified changed files |
+| Entire original PAK | `[OriginalPakName].pak` | All original files, with changes applied |
 
-- Only the 1–64 **verified changed project members** are packaged, not the
-  original archive's unchanged files. Registered additions are included where
-  supported by the current signed build backend. Unregistered files are ignored.
-- The normal build pipeline first validates the project against its authenticated
-  source PAK and serializes CryXML and other edited assets. This produces an
-  intermediate complete signed PAK, not the final export.
-- The authorized official Stage 2 tool decrypts that signed intermediate and
-  signs a fresh PAK from a directory containing **only changed members**. The
-  new `zz_` output basename is used for signing; simply renaming an already
-  signed original PAK would fail basename authentication.
-- Before publication, the manager independently checks the signed PAK under
-  its new filename, exact changed member list, size and CRC32 for every member,
-  and decrypted bytes for members up to 64 MiB. It refuses unsafe filenames,
-  duplicate/case-colliding entries, and an existing output file.
-- Custom name is 1–80 ASCII letters, digits, spaces, underscores or hyphens;
-  spaces become underscores. A `zz_` prefix is not doubled.
-- The official developer encoder must be present and match the configured
-  signing stage. This PR contains no developer executable or private key.
-  The fallback locally configured PEM path is not used for sparse exports.
+The first option uses the project's **Mod name** as the suggested filename.
+You can choose another valid `zz_` name in Save As; names accept ASCII
+letters, digits, spaces (converted to underscores), underscores, and hyphens.
+The latter two options must preserve the exact physical filename of the
+project's original PAK. They may be exported to any other folder, but cannot
+be renamed in Save As without changing the signed archive's identity.
 
-## Scope and acceptance
+## What happens
 
-One project is exported per operation. A project can target one original PAK,
-and this version does not combine multiple projects. The user chooses the
-destination; the original game, recovery journal and Mod Project contents stay
-unchanged. A cache or isolated intermediate full PAK may be written inside
-the Modding build area as part of the already existing verified build process.
+- Each option runs the existing authenticated **Build Mod** validation and
+  serialized asset output, including registered additions when the current
+  backend supports them. Unchanged/unregistered loose project files are
+  excluded from changed-only exports.
+- The two **changed-only** formats require the authorized official Stage 2
+  encoder. An isolated complete signed build is decoded, only the changed
+  members are copied to a new temporary folder, and the official encoder
+  signs that filtered folder using the **chosen output basename**. The
+  manager verifies the new PAK's signature, exact changed-member list,
+  sizes/CRC32 and smaller decrypted members before publishing it.
+- The **entire original PAK** format copies the already rebuilt and signed
+  archive with the original filename. Signature and SHA-256 copy identity
+  are verified before publication. This retains the existing signing-backend
+  fallback where the official encoder is not configured.
+- Exports use a create-only publication and refuse any existing output file,
+  including concurrent overwrite attempts.
+- A single selected Mod Project is exported per operation. Export does not
+  install or enable a mod, change original game PAKs, modify launcher
+  selection, or bypass the swap/recovery journal.
+- Pending GFX scratch edits must be applied to the Mod Project first.
 
-The reported `zz_` load-order override is based on user testing. Validate
-the exported addon in-game on the supported Windows build: replacement wins
-over the original when loaded, no original archive is replaced, removing the
-addon restores stock content, and signature verification survives copying the
-exported file to its final location. Proprietary Windows encoder and hook
-compatibility are not exercised by standard hosted CI.
+## Compatibility and acceptance testing
+
+The reported `zz_` addon load-order precedence is based on user discovery.
+**Windows and in-game verification are still required.** Confirm that each
+mode is accepted by the official Stage 2 tool and the supported Evolve build,
+that unchanged members are absent from both changed-only exports, and that
+the entire original-name export includes unchanged members. In particular,
+a changed-only PAK **with the original filename** might require different
+mount ordering or might shadow the stock PAK; do not assume it behaves the
+same as the `zz_` additive override until tested on game files. Confirm
+reversible removal and no change to the installed stock archives.
+
+This PR includes no proprietary encoder binaries, signing keys or game assets.

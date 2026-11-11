@@ -716,6 +716,7 @@ struct State {
     modding_projects: Option<Vec<ProjectRow>>,
     modding_selected: Option<usize>,
     modding_name_input: String,
+    modding_export_options_open: bool,
     modding_added_member: String,
     mod_launch_progress: Option<Arc<AtomicUsize>>,
     mod_toggle_animations: Vec<ModToggleAnimation>,
@@ -807,7 +808,7 @@ enum ProjectLevelMutation {
 enum Operation {
     IndexProjects(PathBuf, PathBuf),
     BuildRawProject(ProjectRow, PathBuf, PathBuf),
-    ExportSparsePak(ProjectRow, PathBuf, PathBuf, PathBuf),
+    ExportPak(ProjectRow, PathBuf, PathBuf, PathBuf, modding_projects::PakExportMode),
     StageBuiltOfflineTest(ProjectRow, PathBuf, PathBuf),
     ImportRawProjectMember(ProjectRow, PathBuf, String, PathBuf),
     RestoreRawProjectMember(ProjectRow, PathBuf, String),
@@ -1147,7 +1148,7 @@ enum Completed {
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
     BuiltRawProject(String, PathBuf, ProjectRow),
-    SparsePakExported(PathBuf, usize),
+    PakExported(PathBuf, usize, modding_projects::PakExportMode),
     OfflineTestPrepared(String),
     LevelExported(usize, usize, PathBuf),
     LevelFbxExported(usize, usize, PathBuf),
@@ -1283,9 +1284,9 @@ impl Operation {
                 &project, &projects, &stage,
             )
             .map(|(entry, target, verified)| Completed::BuiltRawProject(entry, target, verified)),
-            Self::ExportSparsePak(project, projects, stage, destination) => {
-                modding_projects::export_project_sparse_pak(&project, &projects, &stage, &destination)
-                    .map(|(path, count)| Completed::SparsePakExported(path, count))
+            Self::ExportPak(project, projects, stage, destination, mode) => {
+                modding_projects::export_project_pak(&project, &projects, &stage, &destination, mode)
+                    .map(|(path, count)| Completed::PakExported(path, count, mode))
             }
             Self::StageBuiltOfflineTest(project, output, stage) => {
                 modding_projects::prepare_built_offline_test(&project, &output, &stage)
@@ -2619,7 +2620,8 @@ enum Message {
     ModdingReviewChanges,
     ModdingBuild,
     ModdingExportPak,
-    ModdingExportPakPicked(ProjectRow, Option<PathBuf>),
+    ModdingExportChoose(modding_projects::PakExportMode),
+    ModdingExportPakPicked(ProjectRow, modding_projects::PakExportMode, Option<PathBuf>),
     ModdingBuildForOfflineTest,
     ModdingUnpackPak,
     EditorReplacementChanged(String),
@@ -3722,11 +3724,11 @@ fn native_level_scene_save_picker(fbx: bool) -> Option<PathBuf> {
     (selected.is_absolute() && selected.parent().is_some_and(Path::is_dir)).then_some(selected)
 }
 
-/// Native Save As picker for independent signed zz_ PAK exports.
-fn native_sparse_pak_save_picker(suggested: String) -> Option<PathBuf> {
+/// Native Save As picker for the selected independently signed mod PAK format.
+fn native_mod_pak_save_picker(suggested: String) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        let script = r#"[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.SaveFileDialog; $d.Title='Export independent signed mod PAK'; $d.Filter='Evolve signed PAK (*.pak)|*.pak'; $d.DefaultExt='pak'; $d.AddExtension=$true; $d.OverwritePrompt=$true; $d.FileName=$env:EVOLVE_SPARSE_PAK_NAME; if ($d.ShowDialog() -eq 'OK') { [Console]::Write($d.FileName) }"#;
+        let script = r#"[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.SaveFileDialog; $d.Title='Export independent signed mod PAK'; $d.Filter='Evolve signed PAK (*.pak)|*.pak'; $d.DefaultExt='pak'; $d.AddExtension=$true; $d.OverwritePrompt=$false; $d.FileName=$env:EVOLVE_SPARSE_PAK_NAME; if ($d.ShowDialog() -eq 'OK') { [Console]::Write($d.FileName) }"#;
         let mut picker = std::process::Command::new("powershell.exe");
         use std::os::windows::process::CommandExt;
         picker.creation_flags(0x0800_0000);
@@ -3917,7 +3919,7 @@ fn operation_label(operation: &Operation) -> &'static str {
     match operation {
         Operation::IndexProjects(..) => "Indexing mod projects",
         Operation::BuildRawProject(..) | Operation::RebuildPak(..) => "Building mod PAK",
-        Operation::ExportSparsePak(..) => "Exporting changed-only zz_ mod PAK",
+        Operation::ExportPak(..) => "Exporting independent signed mod PAK",
         Operation::StageBuiltOfflineTest(..) => "Preparing signed offline test",
         Operation::ImportRawProjectMember(..) => "Importing asset into mod project",
         Operation::RestoreRawProjectMember(..) => "Restoring original project asset",
@@ -5003,6 +5005,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.keyboard_modifiers.control(),
             );
             state.modding_selected = state.project_selection.primary_after(index);
+            state.modding_export_options_open = false;
             state.modding_changes_page = 0;
             if let Some(project) = state
                 .modding_selected
@@ -5426,6 +5429,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Finish the current operation before exporting.".into();
                 return Task::none();
             }
+            if state.modding_selected.is_none() {
+                state.status = "Select an editable Mod Project to export.".into();
+                return Task::none();
+            }
+            state.modding_export_options_open = !state.modding_export_options_open;
+        }
+        Message::ModdingExportChoose(mode) => {
+            if state.busy || state.gfx_busy {
+                state.status = "Finish the current operation before exporting.".into();
+                return Task::none();
+            }
             let Some(project) = state
                 .modding_selected
                 .and_then(|i| state.modding_projects.as_ref()?.get(i))
@@ -5441,8 +5455,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Apply pending GFX edits to the Mod Project before exporting.".into();
                 return Task::none();
             }
-            let suggestion = match modding_projects::sparse_pak_filename(
-                &state.modding_name_input,
+            let suggestion = match modding_projects::suggested_pak_export_name(
+                &project, &state.modding_name_input, mode,
             ) {
                 Ok(name) => name,
                 Err(error) => {
@@ -5450,32 +5464,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             };
+            state.modding_export_options_open = false;
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || native_sparse_pak_save_picker(suggestion))
+                    tokio::task::spawn_blocking(move || native_mod_pak_save_picker(suggestion))
                         .await
                         .ok()
                         .flatten()
                 },
-                move |destination| Message::ModdingExportPakPicked(project, destination),
+                move |destination| Message::ModdingExportPakPicked(project, mode, destination),
             );
         }
-        Message::ModdingExportPakPicked(project, Some(destination)) => {
+        Message::ModdingExportPakPicked(project, mode, Some(destination)) => {
             if state.busy || state.gfx_busy {
                 state.status = "Finish the current operation before exporting.".into();
                 return Task::none();
             }
             return launch(
                 state,
-                Operation::ExportSparsePak(
+                Operation::ExportPak(
                     project,
                     PathBuf::from(&state.preferences.projects),
                     PathBuf::from(&state.preferences.stage),
                     destination,
+                    mode,
                 ),
             );
         }
-        Message::ModdingExportPakPicked(_, None) => {}
+        Message::ModdingExportPakPicked(_, _, None) => {}
         kind @ (Message::ModdingBuild | Message::ModdingBuildForOfflineTest) => {
             state.modding_prepare_offline_test =
                 matches!(kind, Message::ModdingBuildForOfflineTest);
@@ -15042,10 +15058,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Files);
                 }
-                Ok(Completed::SparsePakExported(path, count)) => {
+                Ok(Completed::PakExported(path, count, mode)) => {
                     state.status = format!(
-                        "Exported and RSA-verified {} changed file(s) to {}. Independent zz_ PAK; installed game files were not replaced.",
+                        "Exported and signature-verified {} member(s) as {} to {}. Installed game files were not replaced.",
                         count,
+                        mode.label(),
                         path.display()
                     );
                 }
