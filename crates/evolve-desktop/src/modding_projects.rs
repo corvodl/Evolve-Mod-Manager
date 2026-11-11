@@ -1420,6 +1420,88 @@ pub fn build_project_raw(
     }
 }
 
+
+/// Validate a user-friendly addon name independently of the original signed
+/// source PAK's basename. Keep the resulting archive name deterministic.
+pub(crate) fn sparse_pak_filename(input: &str) -> Result<String, String> {
+    let input = input.trim();
+    let stem = input
+        .strip_suffix(".pak")
+        .or_else(|| input.strip_suffix(".PAK"))
+        .unwrap_or(input);
+    let stem = stem.strip_prefix("zz_").unwrap_or(stem).replace(' ', "_");
+    if stem.is_empty()
+        || stem.len() > 80
+        || !stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err("Use 1–80 ASCII letters, numbers, spaces, underscores or hyphens for a mod PAK name.".into());
+    }
+    Ok(format!("zz_{stem}.pak"))
+}
+
+/// Export a Mod Project as a standalone, custom-named overlay PAK with *only*
+/// its changed members. Never publish a complete stock PAK under the zz_ name.
+/// The existing full build supplies correctly encoded CryXML and verified
+/// changes; the official encoder signs the filtered archive independently.
+pub fn export_project_sparse_pak(
+    project: &ProjectRow,
+    projects: &Path,
+    stage: &Path,
+    destination: &Path,
+) -> Result<(PathBuf, usize), String> {
+    if !destination.is_absolute() {
+        return Err("Choose an absolute output path using Save As".into());
+    }
+    let chosen = destination
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("Choose a named .pak file")?;
+    if sparse_pak_filename(chosen)? != chosen {
+        return Err("The selected filename must be zz_[modname].pak".into());
+    }
+    if fs::symlink_metadata(destination).is_ok() {
+        return Err("A file already exists at the selected path; choose a NEW filename".into());
+    }
+    let parent = destination.parent().ok_or("Selected output has no parent directory")?;
+    if !fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_dir()) {
+        return Err("Choose a real existing destination folder, not a link".into());
+    }
+    let _ = fs::canonicalize(parent).map_err(|e| format!("Cannot access output folder: {e}"))?;
+    let tools = super::official_stage2_tools::for_stage(stage)?
+        .ok_or("Standalone zz_ PAK export requires the configured official Stage 2 encoder")?;
+    let (_built_note, signed_full, verified) = build_project_raw(project, projects, stage)?;
+    let manifest = read_json(
+        &verified.workspace.join(".evolve-pak-workspace.json"),
+        8 * 1024 * 1024,
+    )?;
+    let physical = super::modding_keys::signed_basename(&signed_full)?;
+    let signed_name = manifest["signed_basename"].as_str().unwrap_or(&physical);
+    if signed_name != physical && signed_name != physical.to_ascii_lowercase() {
+        return Err("Built source PAK has an untrusted signed basename".into());
+    }
+    tools.export_changed_members_pak(
+        &signed_full,
+        signed_name,
+        &verified.modified,
+        destination,
+    )?;
+    Ok((destination.to_owned(), verified.modified.len()))
+}
+
+#[cfg(test)]
+mod sparse_pak_tests {
+    use super::sparse_pak_filename;
+    #[test]
+    fn names_are_safe_and_portable() {
+        assert_eq!(sparse_pak_filename("My Mod").unwrap(), "zz_My_Mod.pak");
+        assert_eq!(sparse_pak_filename("zz_Example.pak").unwrap(), "zz_Example.pak");
+        assert_eq!(sparse_pak_filename("Test-7").unwrap(), "zz_Test-7.pak");
+        for invalid in ["", "../bad", "a/b", "a\\b", "a:b", "z.other", "✨", "zz_.pak"] {
+            assert!(sparse_pak_filename(invalid).is_err(), "{invalid}");
+        }
+    }
+}
+
 /// Provision only the installed PAK targeted by this enabled Mod Project.
 /// The verified setup inventory supplies the exact path and source digest;
 /// no basename-only lookup across the game is allowed.

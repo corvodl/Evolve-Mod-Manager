@@ -301,6 +301,115 @@ impl OfficialTools {
             .map_err(|e| format!("Cannot publish verified official PAK: {e}"))?;
         Ok(())
     }
+
+    /// Export only selected changed entries into a separately mountable
+    /// archive signed for its OWN zz_ basename, never the source basename.
+    pub fn export_changed_members_pak(
+        &self,
+        signed_source: &Path,
+        signed_source_name: &str,
+        changed_members: &[String],
+        output: &Path,
+    ) -> Result<(), String> {
+        use evolve_core::signed_pak::open_verified_signed_pak;
+        if changed_members.is_empty() || changed_members.len() > 64 {
+            return Err("Sparse PAK export requires 1–64 changed members".into());
+        }
+        if fs::symlink_metadata(output).is_ok() {
+            return Err("Export already exists; refusing to overwrite".into());
+        }
+        let basename = output
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or("Output filename missing")?;
+        if !basename.starts_with("zz_") || !basename.ends_with(".pak") {
+            return Err("Sparse exports must be named zz_[modname].pak".into());
+        }
+
+        let source_index = open_verified_signed_pak(
+            signed_source,
+            &self.public_key,
+            signed_source_name,
+        )
+        .map_err(|e| format!("Intermediate PAK signature verification failed: {e}"))?;
+        let mut known = HashMap::new();
+        let mut known_case = HashSet::new();
+        for entry in &source_index.info.entries {
+            if !safe_member(&entry.path)
+                || !known_case.insert(entry.path.to_ascii_lowercase())
+                || known.insert(entry.path.clone(), (entry.size, entry.crc32)).is_some()
+            {
+                return Err("Built source contains unsafe or case-colliding members".into());
+            }
+        }
+        let mut changed_case = HashSet::new();
+        for member in changed_members {
+            if !safe_member(member)
+                || !changed_case.insert(member.to_ascii_lowercase())
+                || !known.contains_key(member)
+            {
+                return Err(format!("Unsafe, duplicated or missing changed member: {member}"));
+            }
+        }
+        let parent = output.parent().ok_or("Output has no parent directory")?;
+        let scratch = tempfile::Builder::new()
+            .prefix(".zz-pak-export-")
+            .tempdir_in(parent)
+            .map_err(|e| e.to_string())?;
+        let unpacked = scratch.path().join("full-decrypted");
+        let filtered = scratch.path().join("changed-only");
+        fs::create_dir(&unpacked).map_err(|e| e.to_string())?;
+        fs::create_dir(&filtered).map_err(|e| e.to_string())?;
+        self.invoke("d", signed_source, Some(&unpacked))?;
+        let decoded = walk_files(&unpacked)?;
+        if decoded.len() != known.len() || decoded.iter().any(|m| !known.contains_key(m)) {
+            return Err("Official decoder member inventory disagrees with signed source".into());
+        }
+
+        for member in changed_members {
+            let source_file = unpacked.join(member);
+            if !fs::symlink_metadata(&source_file).is_ok_and(|m| m.file_type().is_file()) {
+                return Err(format!("Decoded changed member is not a regular file: {member}"));
+            }
+            if file_crc(&source_file)? != known[member] {
+                return Err(format!("Decoded member bytes disagree with signed source: {member}"));
+            }
+            let target = filtered.join(member);
+            fs::create_dir_all(target.parent().ok_or("Invalid changed member path")?)
+                .map_err(|e| e.to_string())?;
+            fs::copy(&source_file, &target).map_err(|e| e.to_string())?;
+        }
+
+        // The official e command signs an archive by the output basename.
+        let signed = scratch.path().join(basename);
+        self.invoke("e", &filtered, Some(&signed))?;
+        let result = open_verified_signed_pak(&signed, &self.public_key, basename)
+            .map_err(|e| format!("New zz_ PAK signature verification failed: {e}"))?;
+        if result.info.entries.len() != changed_members.len()
+            || result.info.entries.iter().any(|entry| !changed_members.contains(&entry.path))
+        {
+            return Err("Sparse output contains an omitted or unexpected member".into());
+        }
+        for member in changed_members {
+            let entry = result.info.entries.iter().find(|x| x.path == *member)
+                .ok_or("Sparse output is missing a changed member")?;
+            if (entry.size, entry.crc32) != known[member] {
+                return Err(format!("Signed sparse member differs from edited file: {member}"));
+            }
+            if entry.size <= 64 * 1024 * 1024 {
+                let bytes = result.read_member(&signed, member, entry.size)
+                    .map_err(|e| format!("Cannot decrypt new PAK member: {e}"))?;
+                if bytes != fs::read(filtered.join(member)).map_err(|e| e.to_string())? {
+                    return Err(format!("Sparse member payload differs: {member}"));
+                }
+            }
+        }
+        // Hard link is a create-only publication, preventing overwrite races.
+        // The temp directory shares the output's filesystem.
+        fs::hard_link(&signed, output)
+            .map_err(|e| format!("Cannot publish NEW sparse PAK without overwrite: {e}"))?;
+        Ok(())
+    }
 }
 
 fn file_crc(path: &Path) -> Result<(u64, u32), String> {

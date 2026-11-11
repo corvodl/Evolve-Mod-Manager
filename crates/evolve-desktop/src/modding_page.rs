@@ -255,6 +255,8 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
             ))),
             design::button("Build Mod")
                 .on_press(Message::MenuCommand(Box::new(Message::ModdingBuild))),
+            design::button("Export Mod as zz_ PAK…")
+                .on_press(Message::MenuCommand(Box::new(Message::ModdingExportPak))),
         ]
         .spacing(3)
         .into(),
@@ -1383,6 +1385,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .spacing(8)
         .align_y(iced::Center),
         selected_actions,
+        row![
+            design::button("Export Mod as zz_ PAK…")
+                .style(design::primary)
+                .on_press_maybe(state.modding_selected.map(|_| Message::ModdingExportPak)),
+            text("Choose any folder and export only changed assets as a separate signed archive.")
+                .size(11)
+                .style(design::muted),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
     ]
     .spacing(10);
     if state.modding_advanced {
