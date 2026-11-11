@@ -78,7 +78,7 @@ fn capture_real_map_views() {
                 changed_known: true,
                 enabled: false,
             };
-            level_library::open_project(project, 0, Path::new(&library_root)).unwrap()
+            level_library::open_project(project, 0, Path::new(&library_root), None).unwrap()
         }
         Err(_) => level_library::open(archive.clone(), 0).unwrap(),
     };

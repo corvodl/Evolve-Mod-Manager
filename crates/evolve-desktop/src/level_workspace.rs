@@ -552,6 +552,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 ))
                 .size(12)
                 .style(design::muted),
+                text(format!("Zoom {:.1}×", state.zoom)).size(12),
+                iced::widget::slider(
+                    0.2..=80.0,
+                    state.zoom.clamp(0.2, 80.0),
+                    Message::ZoomChanged
+                )
+                .width(Length::Fixed(160.0)),
                 space().width(Fill),
                 text("RMB Look · WASD Fly · Q/E Elevate · F Focus")
                     .size(11)
@@ -559,20 +566,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             ]
             .spacing(10)
             .align_y(iced::Center),
-            row![
-                text("Yaw").size(12),
-                iced::widget::slider(-180.0..=180.0, state.yaw, Message::YawChanged).width(Fill),
-                text("Pitch").size(12),
-                iced::widget::slider(-85.0..=85.0, state.pitch, Message::PitchChanged).width(Fill),
-                text(format!("Zoom {:.1}×", state.zoom)).size(12),
-                iced::widget::slider(
-                    0.2..=80.0,
-                    state.zoom.clamp(0.2, 80.0),
-                    Message::ZoomChanged
-                )
-                .width(Fill),
-            ]
-            .spacing(8),
             if state.level_show_overview {
                 Element::from(
                     column![

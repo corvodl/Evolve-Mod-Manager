@@ -943,26 +943,43 @@ impl World {
         ]
     }
 
-    pub fn precompute_gpu_source_hashes(&mut self) {
+    /// Hash every source image for the GPU texture cache. `previous`, a world
+    /// of the same map that is still alive, supplies hashes it already has:
+    /// its images are alive too, so an equal address is the same image, and
+    /// reused images (see `level_scene_renderer::begin_decode_reuse`) are not
+    /// hashed again.
+    pub fn precompute_gpu_source_hashes_from(&mut self, previous: Option<&World>) {
+        // Only this world's own images go in the table: an address of an
+        // image that has since been freed must never carry over to a later one.
+        let known = previous.map(|previous| previous.source_pixel_hashes.clone());
         let mut hashes = SourceKeys::new();
+        let mut add = |image: &Arc<image::RgbaImage>, role: u8| {
+            let address = Arc::as_ptr(image) as usize;
+            if let Some(digest) = known.as_ref().and_then(|known| known.get(&address)) {
+                hashes.insert(address, *digest);
+            } else {
+                let _ = texture_key(Some(image), role, false, &mut hashes);
+            }
+        };
         for group in &self.groups {
             for surface in &group.surfaces {
-                for source in [
+                for image in [
                     surface.diffuse.as_ref(),
                     surface.opacity.as_ref(),
                     surface.normal.as_ref(),
                     surface.specular.as_ref(),
                     surface.gloss.as_ref(),
                     surface.emissive.as_ref(),
-                ] {
-                    if source.is_some() {
-                        let _ = texture_key(source, 0, false, &mut hashes);
-                    }
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    add(image, 0);
                 }
             }
         }
-        if let Some(ref detail) = self.terrain_detail {
-            let _ = texture_key(Some(detail), 6, false, &mut hashes);
+        if let Some(detail) = self.terrain_detail.clone() {
+            add(&detail, 6);
         }
         self.source_pixel_hashes = Arc::new(hashes);
     }
@@ -1296,6 +1313,134 @@ struct GpuSurface {
     _blend_mask_image: wgpu::Texture,
     _alpha_uniform: wgpu::Buffer,
 }
+/// The decoded sources a [`GpuGroup`] was built from. Holding them keeps
+/// their allocations alive, so pointer equality means the same source.
+struct GroupSource {
+    mesh: Arc<RenderMesh>,
+    surfaces: Vec<Surface>,
+    terrain_detail: Option<Arc<image::RgbaImage>>,
+    terrain_gpu: Option<Arc<super::terrain_material_probe::GpuTerrainSource>>,
+}
+
+impl GroupSource {
+    fn of(world: &World, idx: usize) -> Self {
+        let group = &world.groups[idx];
+        let ground = is_ground(group);
+        Self {
+            mesh: group.mesh.clone(),
+            surfaces: group.surfaces.clone(),
+            terrain_detail: world.terrain_detail.clone().filter(|_| ground),
+            terrain_gpu: world.terrain_gpu.clone().filter(|_| ground),
+        }
+    }
+
+    fn builds(&self, world: &World, idx: usize) -> bool {
+        let group = &world.groups[idx];
+        let ground = is_ground(group);
+        Arc::ptr_eq(&self.mesh, &group.mesh)
+            && self.surfaces.len() == group.surfaces.len()
+            && self
+                .surfaces
+                .iter()
+                .zip(&group.surfaces)
+                .all(|(a, b)| same_surface(a, b))
+            && same_arc(
+                self.terrain_detail.as_ref(),
+                world.terrain_detail.as_ref().filter(|_| ground),
+            )
+            && same_arc(
+                self.terrain_gpu.as_ref(),
+                world.terrain_gpu.as_ref().filter(|_| ground),
+            )
+    }
+}
+
+fn same_arc<T>(a: Option<&Arc<T>>, b: Option<&Arc<T>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Whether two materials draw identically: the same images (by allocation)
+/// and the same values. Every field is listed, so adding one to [`Surface`]
+/// fails to compile here until it is compared too.
+fn same_surface(a: &Surface, b: &Surface) -> bool {
+    let Surface {
+        first_index,
+        index_count,
+        visible,
+        transparent,
+        foliage_cutout,
+        distance_clouds,
+        uv_transform,
+        material_tint,
+        material_specular,
+        material_emissive,
+        emission_on_diffuse,
+        emission_alpha_mask,
+        material_shininess,
+        waterfall,
+        detail_map,
+        blend_layer,
+        blend_mask,
+        vertex_colors,
+        blend_normal,
+        detail_tile,
+        layer_params,
+        foliage_transmit,
+        layer_specular,
+        alpha_cutoff,
+        diffuse,
+        normal,
+        emissive,
+        armor_emissive,
+        emission_strength,
+        emissive_uv,
+        specular,
+        gloss,
+        opacity,
+    } = a;
+    *first_index == b.first_index
+        && *index_count == b.index_count
+        && *visible == b.visible
+        && *transparent == b.transparent
+        && *foliage_cutout == b.foliage_cutout
+        && *distance_clouds == b.distance_clouds
+        && *uv_transform == b.uv_transform
+        && *material_tint == b.material_tint
+        && *material_specular == b.material_specular
+        && *material_emissive == b.material_emissive
+        && *emission_on_diffuse == b.emission_on_diffuse
+        && *emission_alpha_mask == b.emission_alpha_mask
+        && *material_shininess == b.material_shininess
+        && *waterfall == b.waterfall
+        && *vertex_colors == b.vertex_colors
+        && *detail_tile == b.detail_tile
+        && *layer_params == b.layer_params
+        && *foliage_transmit == b.foliage_transmit
+        && *layer_specular == b.layer_specular
+        && *alpha_cutoff == b.alpha_cutoff
+        && *emission_strength == b.emission_strength
+        && format!("{emissive_uv:?}") == format!("{:?}", b.emissive_uv)
+        && [
+            (detail_map, &b.detail_map),
+            (blend_layer, &b.blend_layer),
+            (blend_mask, &b.blend_mask),
+            (blend_normal, &b.blend_normal),
+            (diffuse, &b.diffuse),
+            (normal, &b.normal),
+            (emissive, &b.emissive),
+            (armor_emissive, &b.armor_emissive),
+            (specular, &b.specular),
+            (gloss, &b.gloss),
+            (opacity, &b.opacity),
+        ]
+        .into_iter()
+        .all(|(a, b)| same_arc(a.as_ref(), b.as_ref()))
+}
+
 struct GpuGroup {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -1806,6 +1951,9 @@ pub(super) struct Renderer {
     world_identity: usize,
     last_full_textures: bool,
     groups: Vec<Option<GpuGroup>>,
+    /// What each resident group was built from, so a new world of the same
+    /// map (an edit, a moved placement) keeps the groups that did not change.
+    group_sources: Vec<Option<GroupSource>>,
     cache: TextureCache,
     source_hashes: SourceKeys,
     pending_diffuse: HashMap<TextureKey, PendingDiffuseMip>,
@@ -3526,6 +3674,7 @@ impl Renderer {
             world_identity: 0,
             last_full_textures: true,
             groups: Vec::new(),
+            group_sources: Vec::new(),
             cache: TextureCache::new(),
             source_hashes: SourceKeys::new(),
             pending_diffuse: HashMap::new(),
@@ -4118,6 +4267,74 @@ impl Renderer {
         }
     }
 
+    /// Move every resident group that `world` draws from the very same
+    /// sources to its new index, rewriting only its placements. Returns how
+    /// many were kept; with none, the caller starts the GPU scene afresh.
+    fn reuse_groups(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) -> usize {
+        let mut old = std::mem::take(&mut self.groups)
+            .into_iter()
+            .zip(std::mem::take(&mut self.group_sources))
+            .map(|(gpu, source)| gpu.zip(source))
+            .collect::<Vec<_>>();
+        let mut by_mesh = HashMap::<usize, Vec<usize>>::new();
+        for (index, entry) in old.iter().enumerate() {
+            if let Some((_, source)) = entry {
+                by_mesh
+                    .entry(Arc::as_ptr(&source.mesh) as usize)
+                    .or_default()
+                    .push(index);
+            }
+        }
+        self.groups = std::iter::repeat_with(|| None)
+            .take(world.groups.len())
+            .collect();
+        self.group_sources = std::iter::repeat_with(|| None)
+            .take(world.groups.len())
+            .collect();
+        let mut kept = 0;
+        for (idx, group) in world.groups.iter().enumerate() {
+            if group.instances.is_empty() {
+                continue;
+            }
+            let Some(candidates) = by_mesh.get_mut(&(Arc::as_ptr(&group.mesh) as usize)) else {
+                continue;
+            };
+            let Some(position) = candidates.iter().position(|&index| {
+                old[index]
+                    .as_ref()
+                    .is_some_and(|(_, source)| source.builds(world, idx))
+            }) else {
+                continue;
+            };
+            let Some((mut gpu, source)) = old[candidates.swap_remove(position)].take() else {
+                continue;
+            };
+            let placements = all_group_instances(group);
+            let needed = (placements.len().max(1) * std::mem::size_of::<InstanceGpu>()) as u64;
+            if needed > gpu.instances.size() {
+                let grown = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("All persistent world-placement transforms"),
+                    size: needed,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                gpu.geometry_bytes = gpu
+                    .geometry_bytes
+                    .saturating_sub(gpu.instances.size())
+                    .saturating_add(needed);
+                gpu.instances = grown;
+            }
+            if !placements.is_empty() {
+                queue.write_buffer(&gpu.instances, 0, bytemuck::cast_slice(&placements));
+            }
+            gpu.visible = placements.len().min(u32::MAX as usize) as u32;
+            self.groups[idx] = Some(gpu);
+            self.group_sources[idx] = Some(source);
+            kept += 1;
+        }
+        kept
+    }
+
     #[allow(clippy::too_many_arguments)] // Upload needs device, queue, world and camera projection parameters.
     pub fn prepare(
         &mut self,
@@ -4140,6 +4357,7 @@ impl Renderer {
             self.wildlife_count = 0;
             self.wildlife_last_origin = None;
             self.groups.clear();
+            self.group_sources.clear();
             self.cache.clear();
             self.source_hashes.clear();
             self.pending_diffuse.clear();
@@ -4154,15 +4372,27 @@ impl Renderer {
         self.sky_active = world.time_of_day.is_some() || world.static_sky.is_some();
         let key = Arc::as_ptr(world) as usize;
         if key != self.world_identity || self.last_full_textures != full_textures {
-            // Drop the former GPU scene before creating any new allocations.
-            // Full decoded source assets remain on World, not in this cache.
-            self.groups = std::iter::repeat_with(|| None)
-                .take(world.groups.len())
-                .collect();
-            self.cache.clear();
+            // Keep each resident group whose mesh and materials are the very
+            // same in the new world; only its placements may differ. Anything
+            // else is dropped before creating any new allocations. Full
+            // decoded source assets remain on World, not in this cache.
+            let kept = if self.last_full_textures == full_textures {
+                self.reuse_groups(device, queue, world)
+            } else {
+                0
+            };
+            if kept == 0 {
+                self.groups = std::iter::repeat_with(|| None)
+                    .take(world.groups.len())
+                    .collect();
+                self.group_sources = std::iter::repeat_with(|| None)
+                    .take(world.groups.len())
+                    .collect();
+                self.cache.clear();
+                self.pending_diffuse.clear();
+                self.mip_min_level.clear();
+            }
             self.source_hashes = (*world.source_pixel_hashes).clone();
-            self.pending_diffuse.clear();
-            self.mip_min_level.clear();
             self.mip_round_robin_cursor = 0;
             self.peak_gpu_bytes = 0;
             self.world_identity = key;
@@ -4358,6 +4588,7 @@ impl Renderer {
             used_bytes =
                 used_bytes.saturating_add(gpu._terrain_source.as_ref().map_or(0, |tex| tex.bytes));
             self.groups[idx] = Some(gpu);
+            self.group_sources[idx] = Some(GroupSource::of(world, idx));
             uploaded += 1;
         }
         self.pending_diffuse = pending_diffuse;

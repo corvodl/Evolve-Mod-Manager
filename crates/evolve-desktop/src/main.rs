@@ -972,7 +972,14 @@ enum Operation {
     DiscoverLevelMaps(evolve_core::ImportedPak),
     DiscoverProjectMaps(modding_projects::ProjectRow),
     LoadLevelWildlife(evolve_core::ImportedPak, Arc<LevelScene>),
-    OpenProjectLevel(modding_projects::ProjectRow, usize, PathBuf),
+    /// The last field is the map's current world when this reloads it after
+    /// an edit, so unchanged models and textures are reused.
+    OpenProjectLevel(
+        modding_projects::ProjectRow,
+        usize,
+        PathBuf,
+        Option<Arc<world_instances::World>>,
+    ),
     SaveProjectLevel(
         modding_projects::ProjectRow,
         PathBuf,
@@ -1900,8 +1907,8 @@ impl Operation {
                 level_scene_renderer::assemble_wildlife(&archive, &scene)
                     .map(|(world, report)| Completed::LevelWildlife(scene, world, report))
             }
-            Self::OpenProjectLevel(project, index, library_root) => {
-                level_library::open_project(project, index, &library_root)
+            Self::OpenProjectLevel(project, index, library_root, previous) => {
+                level_library::open_project(project, index, &library_root, previous)
                     .map(|map| Completed::ImportedMap(Box::new(map)))
             }
             Self::SaveProjectLevel(project, source, expected, edits, projects_root) => {
@@ -3413,6 +3420,23 @@ fn level_pending_edits(state: &State) -> Vec<(String, evolve_core::Transform)> {
 /// The editor is a preview unless a managed project is active. Every
 /// authoring command submits only a verified project source member to the
 /// existing backup/import transaction, never an imported PAK or library file.
+/// Reload the open project map after a saved edit or undo, reusing what did
+/// not change: decoded models and textures, GPU groups, camera and selection.
+fn reload_project_level(state: &mut State, project: modding_projects::ProjectRow) -> Task<Message> {
+    let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
+    let root = PathBuf::from(&state.library_root);
+    let previous = state
+        .level_project
+        .as_ref()
+        .is_some_and(|open| open.workspace == project.workspace)
+        .then(|| state.level_world_source.clone())
+        .flatten();
+    launch(
+        state,
+        Operation::OpenProjectLevel(project, index, root, previous),
+    )
+}
+
 fn submit_level_project_edit(
     state: &mut State,
     source: PathBuf,
@@ -6340,7 +6364,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let project = project.clone();
             return launch(
                 state,
-                Operation::OpenProjectLevel(project, index, PathBuf::from(&state.library_root)),
+                Operation::OpenProjectLevel(
+                    project,
+                    index,
+                    PathBuf::from(&state.library_root),
+                    None,
+                ),
             );
         }
         Message::LevelChooseMap(index) => {
@@ -6862,7 +6891,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.level_map_prompt = false;
             return if let Some(project) = project {
                 let root = PathBuf::from(&state.library_root);
-                launch(state, Operation::OpenProjectLevel(project, index, root))
+                launch(
+                    state,
+                    Operation::OpenProjectLevel(project, index, root, None),
+                )
             } else {
                 launch(state, Operation::OpenImportedMap(archive, index))
             };
@@ -13947,7 +13979,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .cloned()
                         {
                             let root = PathBuf::from(&state.library_root);
-                            return launch(state, Operation::OpenProjectLevel(project, 0, root));
+                            return launch(
+                                state,
+                                Operation::OpenProjectLevel(project, 0, root, None),
+                            );
                         }
                     }
                     state.modding_name_input = state
@@ -15055,9 +15090,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     } else {
                         "Project level matches its original bytes.".into()
                     };
-                    let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
-                    let root = PathBuf::from(&state.library_root);
-                    return launch(state, Operation::OpenProjectLevel(project, index, root));
+                    return reload_project_level(state, project);
                 }
                 Ok(Completed::ProjectLevelHistoryApplied(project, revision, undo)) => {
                     if undo {
@@ -15091,9 +15124,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Committed project edit reapplied."
                     }
                     .into();
-                    let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
-                    let root = PathBuf::from(&state.library_root);
-                    return launch(state, Operation::OpenProjectLevel(project, index, root));
+                    return reload_project_level(state, project);
                 }
                 Ok(Completed::LevelMaps(archive, maps)) => {
                     state.level_map_choices = Some((archive, maps));
@@ -15164,12 +15195,35 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.level_committed_undo.clear();
                         state.level_committed_redo.clear();
                     }
+                    // A reload after an edit keeps the view: camera, panels and
+                    // the selection (by object ID, as indices may shift).
+                    let keep_view = loaded.reloaded && same_project_and_map;
+                    let id_of = |index: usize| {
+                        state
+                            .level_scene
+                            .as_ref()
+                            .and_then(|scene| scene.objects.get(index))
+                            .map(|object| object.id.clone())
+                    };
+                    let kept_selection = keep_view.then(|| {
+                        (
+                            state.level_selected.and_then(id_of),
+                            state
+                                .level_selection
+                                .indices
+                                .iter()
+                                .filter_map(|&index| id_of(index))
+                                .collect::<Vec<_>>(),
+                        )
+                    });
                     state.level_wildlife_resolved = false;
                     state.level_spawn_distances = None;
                     state.level_diagnostics = loaded.diagnostics.clone();
-                    state.level_show_overview = false;
                     state.level_show_wildlife = false;
-                    state.level_sidebar_tab = LevelSidebarTab::Actors;
+                    if !keep_view {
+                        state.level_show_overview = false;
+                        state.level_sidebar_tab = LevelSidebarTab::Actors;
+                    }
                     let map_name = loaded.maps[loaded.index].name.clone();
                     state.input = loaded
                         .source
@@ -15221,6 +15275,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_redo.clear();
                     state.level_selection.clear();
                     state.level_selected = None;
+                    if let Some((primary, ids)) = kept_selection
+                        && let Some(scene) = state.level_scene.as_ref()
+                    {
+                        let index_of = |id: &str| scene.objects.iter().position(|o| o.id == id);
+                        state.level_selection.indices =
+                            ids.iter().filter_map(|id| index_of(id)).collect();
+                        state.level_selected = primary.as_deref().and_then(index_of);
+                        state.level_selection.anchor = state.level_selected;
+                    }
                     if let Some(assembled) = loaded.full_scene {
                         state.level_time_of_day = assembled
                             .world
@@ -15267,18 +15330,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         },
                         state.level_diagnostics.len(),
                     );
-                    // Keep the manager on its originating workspace.
-                    state.level_zoom = 1.0;
-                    state.yaw = -30.0;
-                    state.pitch = 32.0;
-                    state.zoom = 1.0;
-                    state.pan_x = 0.0;
-                    state.pan_y = 0.0;
-                    state.level_keys.clear();
-                    state.level_camera = state
-                        .model
-                        .as_ref()
-                        .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
+                    if keep_view {
+                        state.status = "Edit saved; only what changed was reloaded.".into();
+                    } else {
+                        // Keep the manager on its originating workspace.
+                        state.level_zoom = 1.0;
+                        state.yaw = -30.0;
+                        state.pitch = 32.0;
+                        state.zoom = 1.0;
+                        state.pan_x = 0.0;
+                        state.pan_y = 0.0;
+                        state.level_keys.clear();
+                        state.level_camera = state
+                            .model
+                            .as_ref()
+                            .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
+                    }
                 }
                 Ok(Completed::Level(scene, source, hash)) => {
                     state.library_map = None;
