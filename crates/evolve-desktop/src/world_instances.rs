@@ -593,6 +593,9 @@ pub(super) struct World {
     /// while the camera is inside it.
     pub interior: Option<Arc<InteriorWeather>>,
     camera_inside: Arc<std::sync::atomic::AtomicBool>,
+    /// Live terrain brush edits to the ground mesh (`groups[0]`), applied to
+    /// its GPU vertex buffer on the next frame.
+    pub ground_patches: super::terrain_brush::GroundPatches,
     pub source_resources: super::level_environment::ResourceSummary,
     /// Signed high-pass detail overlay; painted layer composition is prepared
     /// from verified same-install sources in the blocking map-open worker.
@@ -3618,7 +3621,8 @@ impl Renderer {
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Unique original world mesh vertices"),
             contents: bytemuck::cast_slice(&vert),
-            usage: wgpu::BufferUsages::VERTEX,
+            // The ground takes live terrain brush rows (apply_ground_patches).
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
         let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Unique original world mesh indices"),
@@ -4064,6 +4068,43 @@ impl Renderer {
                 + 16 * model.surfaces.len()) as u64,
         }
     }
+    /// Write queued terrain brush rows into the ground's vertex buffer. They
+    /// wait in the queue until the ground group is resident.
+    fn apply_ground_patches(&mut self, queue: &wgpu::Queue, world: &World) {
+        let Some(ground) = world.groups.first().filter(|group| is_ground(group)) else {
+            return;
+        };
+        let Some(Some(gpu)) = self.groups.first() else {
+            return;
+        };
+        let Ok(mut patches) = world.ground_patches.lock() else {
+            return;
+        };
+        if patches.is_empty() {
+            return;
+        }
+        let vertices = ground.mesh.positions.len();
+        let stride = std::mem::size_of::<Vertex>();
+        debug_assert_eq!(
+            stride,
+            super::terrain_brush::VERTEX_FLOATS * std::mem::size_of::<f32>()
+        );
+        for patch in patches.drain(..) {
+            let count = patch.data.len() / super::terrain_brush::VERTEX_FLOATS;
+            if patch.first_vertex as usize + count > vertices {
+                continue;
+            }
+            queue.write_buffer(
+                &gpu.vertices,
+                patch.first_vertex as u64 * stride as u64,
+                bytemuck::cast_slice(&patch.data),
+            );
+        }
+        for stale in &self.shadow_stale {
+            stale.store(true, Ordering::Relaxed);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)] // Upload needs device, queue, world and camera projection parameters.
     pub fn prepare(
         &mut self,
@@ -4149,6 +4190,7 @@ impl Renderer {
         } else {
             12.0
         };
+        self.apply_ground_patches(queue, world);
         let inside = camera.is_some_and(|camera| world.locate_camera(camera.position));
         let lighting_changed = self.last_lighting_hour != hour || self.last_inside != inside;
         self.last_inside = inside;

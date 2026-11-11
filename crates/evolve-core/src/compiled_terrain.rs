@@ -818,16 +818,116 @@ struct Brush<'a> {
     side: usize,
     /// Inclusive sample range the edit touches: x0, y0, x1, y1.
     changed: [usize; 4],
-    /// Painting: the SurfaceTypeID for samples inside the disk.
-    paint: Option<(u8, [usize; 2], usize)>,
+    /// Painting: the SurfaceTypeID the edit gives a sample, if any.
+    paint: Option<&'a dyn Fn(usize, usize) -> Option<u8>>,
 }
 
 impl Brush<'_> {
     fn painted(&self, x: usize, y: usize) -> Option<u8> {
-        let (id, [cx, cy], radius) = self.paint?;
-        let (dx, dy) = (x.abs_diff(cx), y.abs_diff(cy));
-        (dx * dx + dy * dy <= radius * radius).then_some(id)
+        self.paint.and_then(|paint| paint(x, y))
     }
+}
+
+/// Re-encode the sectors in `changed` to `heights` and the edit's paint, then
+/// prove the result decodes to exactly the intended heights and `surfaces`.
+fn encode_terrain_edit(
+    source: &[u8],
+    terrain: &CompiledTerrain,
+    heights: &[f32],
+    surfaces: &[u8],
+    changed: [usize; 4],
+    paint: Option<&dyn Fn(usize, usize) -> Option<u8>>,
+) -> Result<Vec<u8>, TerrainError> {
+    let r = Reader { data: source };
+    let (_, at) = r.table(32, 352)?;
+    let (_, at) = r.table(at, 256)?;
+    let (_, start) = r.table(at, 256)?;
+    let brush = Brush {
+        heights,
+        side: terrain.units as usize + 1,
+        changed,
+        paint,
+    };
+    let mut output = source[..start].to_vec();
+    let (end, _) = rewrite_terrain_node(
+        &r,
+        start,
+        terrain.units * terrain.unit_size as u32,
+        terrain,
+        &brush,
+        &mut output,
+    )?;
+    output.extend_from_slice(&source[end..]);
+    let size = u32::try_from(output.len()).map_err(|_| TerrainError::Limits)?;
+    output[4..8].copy_from_slice(&size.to_le_bytes());
+    // The result must decode, every height must land on the brush's target
+    // within one quantization step, and every surface must be as intended.
+    let check = decode_compiled_terrain(&output)?;
+    if check
+        .heights
+        .iter()
+        .zip(heights)
+        .any(|(got, want)| (got - want).abs() > HEIGHT_STEP * 0.51)
+    {
+        return Err(format(
+            "Re-encoded terrain.dat heights do not match the edit",
+        ));
+    }
+    if check.surfaces != surfaces {
+        return Err(format(
+            "Re-encoded terrain.dat surfaces do not match the edit",
+        ));
+    }
+    Ok(output)
+}
+
+/// Write a [`crate::TerrainPatch`] into `terrain.dat`: the patch's heights,
+/// and its SurfaceTypeIDs where it paints (holes stay holes). The touched
+/// sectors are re-encoded as [`edit_compiled_terrain_bytes`] describes.
+pub fn patch_compiled_terrain_bytes(
+    source: &[u8],
+    patch: &crate::terrain::TerrainPatch,
+) -> Result<Vec<u8>, TerrainError> {
+    let terrain = decode_compiled_terrain(source)?;
+    let side = terrain.units as usize + 1;
+    patch.check(side as u32, side as u32)?;
+    if patch.surfaces.iter().flatten().any(|id| *id >= 127) {
+        return Err(format("SurfaceTypeID must be below 127"));
+    }
+    let (x0, y0) = (patch.x as usize, patch.y as usize);
+    let (w, h) = (patch.width as usize, patch.height as usize);
+    let target = |x: usize, y: usize| {
+        (x >= x0 && y >= y0 && x < x0 + w && y < y0 + h).then(|| (x - x0) * h + (y - y0))
+    };
+    let mut heights = terrain.heights.clone();
+    let mut surfaces = terrain.surfaces.clone();
+    let mut differs = false;
+    for i in 0..w {
+        for j in 0..h {
+            let index = (x0 + i) * side + y0 + j;
+            let at = i * h + j;
+            differs |= (heights[index] - patch.heights[at]).abs() > HEIGHT_STEP * 0.5;
+            heights[index] = patch.heights[at];
+            if let Some(Some(id)) = patch.surfaces.get(at)
+                && surfaces[index] != HOLE_ID
+            {
+                differs |= surfaces[index] != *id;
+                surfaces[index] = *id;
+            }
+        }
+    }
+    if !differs {
+        return Err(format("The terrain patch changed no samples"));
+    }
+    let paint = |x: usize, y: usize| patch.surfaces.get(target(x, y)?).copied().flatten();
+    encode_terrain_edit(
+        source,
+        &terrain,
+        &heights,
+        &surfaces,
+        [x0, y0, x0 + w - 1, y0 + h - 1],
+        (!patch.surfaces.is_empty()).then_some(&paint as &dyn Fn(usize, usize) -> Option<u8>),
+    )
 }
 
 /// Edit `terrain.dat` with the same disk brush as [`crate::edit_terrain_bytes`]
@@ -908,47 +1008,21 @@ pub fn edit_compiled_terrain_bytes(
     {
         return Err(format("The terrain brush changed no samples"));
     }
-    let r = Reader { data: source };
-    let (_, at) = r.table(32, 352)?;
-    let (_, at) = r.table(at, 256)?;
-    let (_, start) = r.table(at, 256)?;
-    let brush = Brush {
-        heights: &heights,
-        side,
-        changed,
-        paint,
+    let disk = |x: usize, y: usize| {
+        let (id, [cx, cy], radius) = paint?;
+        let (dx, dy) = (x.abs_diff(cx), y.abs_diff(cy));
+        (dx * dx + dy * dy <= radius * radius).then_some(id)
     };
-    let mut output = source[..start].to_vec();
-    let (end, _) = rewrite_terrain_node(
-        &r,
-        start,
-        terrain.units * terrain.unit_size as u32,
+    encode_terrain_edit(
+        source,
         &terrain,
-        &brush,
-        &mut output,
-    )?;
-    output.extend_from_slice(&source[end..]);
-    let size = u32::try_from(output.len()).map_err(|_| TerrainError::Limits)?;
-    output[4..8].copy_from_slice(&size.to_le_bytes());
-    // The result must decode, every height must land on the brush's target
-    // within one quantization step, and every surface must be as intended.
-    let check = decode_compiled_terrain(&output)?;
-    if check
-        .heights
-        .iter()
-        .zip(&heights)
-        .any(|(got, want)| (got - want).abs() > HEIGHT_STEP * 0.51)
-    {
-        return Err(format(
-            "Re-encoded terrain.dat heights do not match the edit",
-        ));
-    }
-    if check.surfaces != surfaces {
-        return Err(format(
-            "Re-encoded terrain.dat surfaces do not match the edit",
-        ));
-    }
-    Ok(output)
+        &heights,
+        &surfaces,
+        changed,
+        paint
+            .is_some()
+            .then_some(&disk as &dyn Fn(usize, usize) -> Option<u8>),
+    )
 }
 
 fn rewrite_terrain_node(
@@ -1236,6 +1310,53 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn terrain_patch_sets_heights_and_paint_in_a_rectangle() {
+        let source = fixture();
+        let before = decode_compiled_terrain(&source).unwrap();
+        let side = 17usize;
+        let mut heights = Vec::new();
+        for i in 0..4 {
+            for j in 0..3 {
+                heights.push(12.0 + i as f32 * 0.5 + j as f32 * 0.25);
+            }
+        }
+        let patch = crate::terrain::TerrainPatch {
+            x: 2,
+            y: 3,
+            width: 4,
+            height: 3,
+            heights: heights.clone(),
+            surfaces: (0..12).map(|i| (i % 2 == 0).then_some(9)).collect(),
+        };
+        let edited = patch_compiled_terrain_bytes(&source, &patch).unwrap();
+        let after = decode_compiled_terrain(&edited).unwrap();
+        for i in 0..4 {
+            for j in 0..3 {
+                let index = (2 + i) * side + 3 + j;
+                let at = i * 3 + j;
+                assert!((after.heights[index] - heights[at]).abs() <= HEIGHT_STEP * 0.51);
+                let want = if at % 2 == 0 {
+                    9
+                } else {
+                    before.surfaces[index]
+                };
+                assert_eq!(after.surfaces[index], want);
+            }
+        }
+        assert_eq!(after.heights[0], before.heights[0]);
+        assert_eq!(after.brushes, before.brushes);
+        let unchanged = crate::terrain::TerrainPatch {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            heights: vec![before.heights[0]],
+            surfaces: Vec::new(),
+        };
+        assert!(patch_compiled_terrain_bytes(&source, &unchanged).is_err());
     }
 
     #[test]

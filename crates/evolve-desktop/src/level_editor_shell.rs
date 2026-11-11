@@ -11,6 +11,152 @@ fn menu_button(name: &'static str, id: &'static str) -> iced::widget::Button<'st
         .style(design::text_button)
         .on_press(Message::LibraryMenu(id))
 }
+/// The tool bar of an editable project: Select, Sculpt and Paint, with the
+/// active brush's settings and the unsaved-terrain controls beside them.
+fn tool_bar(state: &State) -> Element<'_, Message> {
+    use crate::terrain_brush::{LevelTool, SculptMode};
+    use iced::widget::{slider, text_input};
+    let tool = |label: &'static str, value: LevelTool| {
+        design::button(label)
+            .style(if state.level_tool == value {
+                design::primary
+            } else {
+                design::secondary
+            })
+            .on_press(Message::LevelSetTool(value))
+    };
+    let mut bar = row![
+        text("TOOLS").size(11).style(design::accent),
+        tool("Select", LevelTool::Select),
+        tool("Sculpt", LevelTool::Sculpt),
+        tool("Paint", LevelTool::Paint),
+    ]
+    .spacing(5)
+    .align_y(iced::Alignment::Center);
+    let brush = state.terrain_brush;
+    if state.level_tool != LevelTool::Select {
+        bar = bar.push(text("│").size(15).style(design::muted));
+        if state.level_tool == LevelTool::Sculpt {
+            let mode = |label: &'static str, value: SculptMode| {
+                design::button(label)
+                    .style(if brush.mode == value {
+                        design::primary
+                    } else {
+                        design::secondary
+                    })
+                    .on_press(Message::LevelSculptMode(value))
+            };
+            bar = bar
+                .push(mode("Raise", SculptMode::Raise))
+                .push(mode("Flatten", SculptMode::Flatten))
+                .push(mode("Smooth", SculptMode::Smooth));
+        } else {
+            bar = bar.push(text("Surface").size(11)).push(
+                text_input("ID", &state.terrain_brush_surface)
+                    .on_input(Message::LevelBrushSurface)
+                    .size(12)
+                    .width(Length::Fixed(48.0)),
+            );
+        }
+        let setting = |label: &'static str,
+                       range: std::ops::RangeInclusive<f32>,
+                       value: f32,
+                       step: f32,
+                       shown: String,
+                       on_change: fn(f32) -> Message| {
+            row![
+                text(label).size(11),
+                slider(range, value, on_change)
+                    .step(step)
+                    .width(Length::Fixed(90.0)),
+                text(shown).size(11).width(Length::Fixed(44.0)),
+            ]
+            .spacing(4)
+            .align_y(iced::Alignment::Center)
+        };
+        bar = bar.push(setting(
+            "Radius",
+            0.5..=100.0,
+            brush.radius,
+            0.5,
+            format!("{:.1} m", brush.radius),
+            Message::LevelBrushRadius,
+        ));
+        if state.level_tool == LevelTool::Sculpt {
+            bar = bar
+                .push(setting(
+                    "Strength",
+                    0.01..=1.0,
+                    brush.strength,
+                    0.01,
+                    format!("{:.0}%", brush.strength * 100.0),
+                    Message::LevelBrushStrength,
+                ))
+                .push(setting(
+                    "Hardness",
+                    0.0..=0.95,
+                    brush.hardness,
+                    0.05,
+                    format!("{:.0}%", brush.hardness * 100.0),
+                    Message::LevelBrushHardness,
+                ));
+        }
+    }
+    let session = state.terrain_session.as_ref();
+    let dirty = session.is_some_and(|s| s.is_dirty());
+    let action = |label: &'static str, primary: bool, on: bool, message: Message| {
+        let button = design::button(label).style(if primary {
+            design::primary
+        } else {
+            design::secondary
+        });
+        if on { button.on_press(message) } else { button }
+    };
+    bar = bar
+        .push(space().width(Fill))
+        .push(
+            text(match state.level_tool {
+                LevelTool::Select => "Click to select · drag to look · WASD fly",
+                LevelTool::Sculpt => "LMB brush · RMB lower · MMB look · WASD fly",
+                LevelTool::Paint => "LMB paint · MMB look · WASD fly",
+            })
+            .size(11)
+            .style(design::muted),
+        )
+        .push(action(
+            "Undo",
+            false,
+            session.is_some_and(|s| s.can_undo()),
+            Message::LevelBrushUndo,
+        ))
+        .push(action(
+            "Redo",
+            false,
+            session.is_some_and(|s| s.can_redo()),
+            Message::LevelBrushRedo,
+        ))
+        .push(action("Discard", false, dirty, Message::LevelBrushDiscard))
+        .push(action(
+            "Save Terrain",
+            true,
+            dirty && !state.busy,
+            Message::LevelBrushSave,
+        ));
+    container(bar)
+        .padding([6, 11])
+        .width(Fill)
+        .style(|theme| container::Style {
+            background: Some(Background::Color(design::sidebar(theme))),
+            border: Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 fn command<'a>(caption: &'static str, msg: Message) -> iced::widget::Button<'a, Message> {
     button(text(caption).size(12))
         .style(design::text_button)
@@ -304,9 +450,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .spacing(14)
     .align_y(iced::Alignment::Center);
 
+    let tools: Element<'_, Message> = if state.level_project.is_some() && !state.level_read_only {
+        tool_bar(state)
+    } else {
+        space().height(Length::Fixed(0.0)).into()
+    };
     let base = column![
         menus,
         toolbar,
+        tools,
         container(level_workspace::view(state))
             .padding(8)
             .width(Fill)

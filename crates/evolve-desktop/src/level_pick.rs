@@ -12,6 +12,10 @@ pub(super) struct LevelViewport {
     pub picks: Arc<Vec<PickRange>>,
     pub selected_pivot: Option<[f32; 3]>,
     pub editable: bool,
+    /// A terrain sculpt or paint tool is active: left and right drag brush
+    /// the ground; the middle button and the keyboard still fly the camera.
+    pub brush: bool,
+    pub brush_ring: Option<Arc<Vec<[f32; 3]>>>,
 }
 
 #[derive(Default)]
@@ -19,6 +23,68 @@ pub(super) struct ViewState {
     navigation: super::view_navigation::Navigation,
     moving: Option<usize>,
     last_cursor: Option<iced::Point>,
+    /// The mouse button of a brush stroke in progress.
+    brushing: Option<mouse::Button>,
+}
+
+impl LevelViewport {
+    /// The world ray under a viewport position, in flight-camera mode.
+    fn ray(&self, bounds: Rectangle, position: iced::Point) -> Option<([f32; 3], [f32; 3])> {
+        let camera = self.inner.level_camera?;
+        let point = [
+            2.0 * position.x / bounds.width.max(1.0) - 1.0,
+            1.0 - 2.0 * position.y / bounds.height.max(1.0),
+        ];
+        let direction = super::level_camera::view_ray(
+            camera,
+            self.inner.yaw,
+            self.inner.pitch,
+            bounds.width / bounds.height.max(1.0),
+            self.inner.zoom,
+            point,
+        )?;
+        Some((camera.position, direction))
+    }
+
+    /// Brush input. None leaves the event to camera navigation.
+    fn brush_event(
+        &self,
+        state: &mut ViewState,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<shader::Action<Message>> {
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(
+                button @ (mouse::Button::Left | mouse::Button::Right),
+            )) => {
+                let (origin, direction) = self.ray(bounds, cursor.position_in(bounds)?)?;
+                state.brushing = Some(*button);
+                Some(
+                    shader::Action::publish(Message::LevelBrushPress {
+                        lower: *button == mouse::Button::Right,
+                        origin,
+                        direction,
+                    })
+                    .and_capture(),
+                )
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(button))
+                if state.brushing == Some(*button) =>
+            {
+                state.brushing = None;
+                Some(shader::Action::publish(Message::LevelBrushRelease).and_capture())
+            }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) if state.brushing.is_some() => {
+                let (origin, direction) = self.ray(bounds, cursor.position_in(bounds)?)?;
+                Some(
+                    shader::Action::publish(Message::LevelBrushDrag(origin, direction))
+                        .and_capture(),
+                )
+            }
+            _ => None,
+        }
+    }
 }
 
 struct Projection {
@@ -179,6 +245,32 @@ impl shader::Program<Message> for LevelViewport {
         // Initialise the existing orbit/pan gesture for subsequent mouse moves
         // even when an object is selected by this click.
         let location = cursor.position_in(bounds);
+        if self.brush {
+            if let Some(action) = self.brush_event(state, event, bounds, cursor) {
+                return Some(action);
+            }
+            let navigation = state
+                .navigation
+                .handle(event, bounds, cursor, self.inner.shift);
+            if navigation.is_none()
+                && let Event::Mouse(mouse::Event::CursorMoved { .. }) = event
+            {
+                let ray = location.and_then(|position| self.ray(bounds, position));
+                return Some(shader::Action::publish(Message::LevelBrushHover(ray)));
+            }
+            return navigation
+                .map(|gesture| match gesture {
+                    super::view_navigation::Gesture::Zoom(delta) => {
+                        Message::LevelCameraZoomWheel(delta)
+                    }
+                    super::view_navigation::Gesture::Pan(dx, dy) => Message::ViewerOrbitDelta(
+                        dx * bounds.width * 0.175,
+                        -dy * bounds.height * 0.175,
+                    ),
+                    other => super::view_navigation::message(other),
+                })
+                .map(|message| shader::Action::publish(message).and_capture());
+        }
         if let Some(axis) = state.moving {
             match event {
                 Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
@@ -321,6 +413,22 @@ impl shader::Program<Message> for LevelViewport {
             cursor,
             bounds,
         );
+        if self.brush
+            && let Some(ring) = &self.brush_ring
+            && let Some(proj) = Projection::new(&self.inner, bounds)
+        {
+            let ndc = |p: [f32; 3]| {
+                let p = proj.project(p);
+                [
+                    p[0] * 2.0 / proj.width - 1.0,
+                    1.0 - p[1] * 2.0 / proj.height,
+                    p[2].clamp(0.0, 1.0),
+                ]
+            };
+            for pair in ring.windows(2) {
+                primitive.add_level_axis(ndc(pair[0]), ndc(pair[1]), [1.0, 0.78, 0.25, 1.0]);
+            }
+        }
         if let Some(pivot) = self.selected_pivot
             && let Some(proj) = Projection::new(&self.inner, bounds)
         {
