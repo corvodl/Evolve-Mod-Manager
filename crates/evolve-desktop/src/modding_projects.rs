@@ -1104,6 +1104,10 @@ fn build_imported_snapshot(
     } else if let Some(tools) = official {
         // Imported source is a stock-key PAK. The official encoder requires
         // the isolated once-converted version of that exact installed PAK.
+        // A sparse stage has none until a build needs it: prepare it first,
+        // as Play with Mods does.
+        provision_selected_original(&verified, stage)
+            .map_err(|e| format!("Cannot prepare the staged original PAK: {e}"))?;
         let relative = offline_test_target(&verified, stage)?;
         let converted = stage.join("paks").join(relative);
         tools
