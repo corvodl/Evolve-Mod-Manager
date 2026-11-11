@@ -18,7 +18,7 @@ pub(super) enum LevelTool {
     Paint,
 }
 
-/// What a left-button sculpt stroke does; the right button always lowers.
+/// What a left-button sculpt stroke does; holding Ctrl always lowers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum SculptMode {
     #[default]

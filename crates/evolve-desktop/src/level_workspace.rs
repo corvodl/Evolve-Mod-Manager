@@ -291,6 +291,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 && !state.level_read_only
                 && state.level_tool != super::terrain_brush::LevelTool::Select,
             brush_ring: state.terrain_brush_ring.clone(),
+            brush_invert: state.keyboard_modifiers.control(),
             editable: state.level_project.is_some()
                 && state
                     .level_selected

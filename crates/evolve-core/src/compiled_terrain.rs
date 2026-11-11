@@ -170,6 +170,19 @@ pub struct CompiledTerrain {
     pub other_records: usize,
     /// Octree blocks no known record sizes could frame; they were skipped.
     pub skipped_blocks: usize,
+    /// Where each of [`Self::brushes`] is stored, for deleting it.
+    pub brush_records: Vec<RecordSpan>,
+    /// Where each of [`Self::vegetation`] is stored, for deleting it.
+    pub vegetation_records: Vec<RecordSpan>,
+}
+
+/// A render-node record's bytes and the octree node whose block holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordSpan {
+    /// Offset of the owning octree node's header; its block size is at +28.
+    pub node: usize,
+    pub at: usize,
+    pub size: usize,
 }
 
 struct Reader<'a> {
@@ -283,6 +296,8 @@ pub fn decode_compiled_terrain(data: &[u8]) -> Result<CompiledTerrain, TerrainEr
         merged_mesh_cells: 0,
         other_records: 0,
         skipped_blocks: 0,
+        brush_records: Vec::new(),
+        vegetation_records: Vec::new(),
     };
     let at = terrain_node(&r, at, units * unit, &mut terrain)?;
     if terrain.heights.iter().any(|h| !h.is_finite()) {
@@ -408,7 +423,7 @@ fn octree_node(
         .checked_add(usize::try_from(size).map_err(|_| TerrainError::Limits)?)
         .ok_or(TerrainError::Limits)?;
     r.bytes(start, end - start)?;
-    object_block(r, start, end, out)?;
+    object_block(r, at, start, end, out)?;
     let mut next = end;
     for bit in 0..8 {
         if mask & (1 << bit) != 0 {
@@ -483,6 +498,7 @@ fn read_points(r: &Reader<'_>, at: usize, count: usize) -> Result<Vec<[f32; 3]>,
 
 fn object_block(
     r: &Reader<'_>,
+    node: usize,
     start: usize,
     end: usize,
     out: &mut CompiledTerrain,
@@ -496,7 +512,12 @@ fn object_block(
     };
     let materials = out.materials.len();
     let material = |index: i32| usize::try_from(index).ok().filter(|i| *i < materials);
-    for at in offsets {
+    for (position, &at) in offsets.iter().enumerate() {
+        let span = RecordSpan {
+            node,
+            at,
+            size: offsets.get(position + 1).copied().unwrap_or(end) - at,
+        };
         let kind = r.u32(at)?;
         let layer = r.u16(at + 28)?;
         match kind {
@@ -513,6 +534,7 @@ fn object_block(
                         layer,
                         matrix,
                     });
+                    out.brush_records.push(span);
                 }
             }
             DECAL => {
@@ -592,6 +614,7 @@ fn object_block(
                         scale,
                         angles: [angles[0], angles[1], angles[2]],
                     });
+                    out.vegetation_records.push(span);
                 }
             }
             MERGED_MESH => out.merged_mesh_cells += 1,
@@ -599,6 +622,63 @@ fn object_block(
         }
     }
     Ok(())
+}
+
+/// Which decoded placement of a `terrain.dat` to delete.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledPlacement {
+    /// Index into [`CompiledTerrain::brushes`].
+    Brush(usize),
+    /// Index into [`CompiledTerrain::vegetation`].
+    Vegetation(usize),
+}
+
+/// Remove one brush or vegetation placement from `terrain.dat`: its record's
+/// bytes leave the octree block that holds it and that block's size shrinks
+/// to match. Nothing else refers to records, so every other byte is kept.
+/// The result must decode with exactly that one placement gone.
+pub fn delete_compiled_placement(
+    source: &[u8],
+    placement: CompiledPlacement,
+) -> Result<Vec<u8>, TerrainError> {
+    let terrain = decode_compiled_terrain(source)?;
+    let span = match placement {
+        CompiledPlacement::Brush(index) => terrain.brush_records.get(index),
+        CompiledPlacement::Vegetation(index) => terrain.vegetation_records.get(index),
+    }
+    .copied()
+    .ok_or_else(|| format("That terrain.dat placement no longer exists"))?;
+    let r = Reader { data: source };
+    let block = r.u32(span.node + 28)? as usize;
+    let size = span.size;
+    if size == 0 || block < size {
+        return Err(TerrainError::Limits);
+    }
+    let mut output = Vec::with_capacity(source.len() - size);
+    output.extend_from_slice(&source[..span.at]);
+    output.extend_from_slice(&source[span.at + size..]);
+    output[span.node + 28..span.node + 32].copy_from_slice(&((block - size) as u32).to_le_bytes());
+    let total = u32::try_from(output.len()).map_err(|_| TerrainError::Limits)?;
+    output[4..8].copy_from_slice(&total.to_le_bytes());
+    let check = decode_compiled_terrain(&output)?;
+    let removed = match placement {
+        CompiledPlacement::Brush(index) => {
+            let mut expected = terrain.brushes.clone();
+            expected.remove(index);
+            check.brushes == expected && check.vegetation == terrain.vegetation
+        }
+        CompiledPlacement::Vegetation(index) => {
+            let mut expected = terrain.vegetation.clone();
+            expected.remove(index);
+            check.vegetation == expected && check.brushes == terrain.brushes
+        }
+    };
+    if !removed || check.heights != terrain.heights || check.skipped_blocks != 0 {
+        return Err(format(
+            "terrain.dat did not decode to exactly one fewer placement",
+        ));
+    }
+    Ok(output)
 }
 
 /// Decode one `merged_meshes_sectors/sector_X_Y_Z.dat` file.
@@ -1528,6 +1608,27 @@ mod tests {
     }
 
     #[test]
+    fn deletes_one_brush_or_vegetation_record() {
+        let source = fixture();
+        let before = decode_compiled_terrain(&source).unwrap();
+        assert_eq!(before.brush_records.len(), 1);
+        assert_eq!(before.brush_records[0].size, 104);
+        let without_brush =
+            delete_compiled_placement(&source, CompiledPlacement::Brush(0)).unwrap();
+        assert_eq!(without_brush.len(), source.len() - 104);
+        let after = decode_compiled_terrain(&without_brush).unwrap();
+        assert!(after.brushes.is_empty());
+        assert_eq!(after.vegetation, before.vegetation);
+        assert_eq!(after.heights, before.heights);
+        let without_plant =
+            delete_compiled_placement(&source, CompiledPlacement::Vegetation(0)).unwrap();
+        let after = decode_compiled_terrain(&without_plant).unwrap();
+        assert!(after.vegetation.is_empty());
+        assert_eq!(after.brushes, before.brushes);
+        assert!(delete_compiled_placement(&source, CompiledPlacement::Brush(1)).is_err());
+    }
+
+    #[test]
     fn decodes_merged_mesh_sector_instances() {
         let mut d = Vec::new();
         u(&mut d, &[MERGED_MAGIC, 2, 3, 4, 7, 2]);
@@ -1581,6 +1682,19 @@ mod tests {
             );
             assert_eq!(t.skipped_blocks, 0);
             assert!(merged.iter().all(|m| m.group < t.vegetation_groups.len()));
+            // Deleting any one placement leaves exactly the rest.
+            let bytes = fs::read(&terrain).unwrap();
+            for placement in [
+                CompiledPlacement::Brush(t.brushes.len() / 2),
+                CompiledPlacement::Vegetation(t.vegetation.len() / 2),
+            ] {
+                let edited = delete_compiled_placement(&bytes, placement).unwrap();
+                let after = decode_compiled_terrain(&edited).unwrap();
+                assert_eq!(
+                    after.brushes.len() + after.vegetation.len() + 1,
+                    t.brushes.len() + t.vegetation.len()
+                );
+            }
             checked += 1;
         }
         assert!(checked > 0);

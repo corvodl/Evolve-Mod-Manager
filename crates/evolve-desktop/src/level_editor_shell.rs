@@ -116,9 +116,9 @@ fn tool_bar(state: &State) -> Element<'_, Message> {
         .push(space().width(Fill))
         .push(
             text(match state.level_tool {
-                LevelTool::Select => "Click to select · drag to look · WASD fly",
-                LevelTool::Sculpt => "LMB brush · RMB lower · MMB look · WASD fly",
-                LevelTool::Paint => "LMB paint · MMB look · WASD fly",
+                LevelTool::Select => "Click to select · Delete removes it · RMB look · WASD fly",
+                LevelTool::Sculpt => "LMB brush · Ctrl+LMB lower · RMB look · WASD fly",
+                LevelTool::Paint => "LMB paint · RMB look · WASD fly",
             })
             .size(11)
             .style(design::muted),
@@ -443,9 +443,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         text(format!("{} selected", state.level_selection.indices.len())).size(11),
         text(format!("{} diagnostics", state.level_diagnostics.len())).size(11),
         space().width(Fill),
-        text("Original PAKs preserved")
-            .size(11)
-            .style(design::muted),
+        // Edits report success and refusals here; without it a refused edit
+        // looked like the button did nothing.
+        text(if state.status.is_empty() {
+            "Original PAKs preserved"
+        } else {
+            state.status.as_str()
+        })
+        .size(11)
+        .style(design::muted),
     ]
     .spacing(14)
     .align_y(iced::Alignment::Center);

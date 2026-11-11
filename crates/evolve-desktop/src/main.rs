@@ -812,6 +812,8 @@ enum ProjectLevelMutation {
     Terrain(evolve_core::TerrainBrushEdit),
     /// The interactive brush's edited rectangle, written in one save.
     TerrainPatch(evolve_core::TerrainPatch),
+    /// Delete a brush or vegetation placement stored in terrain.dat.
+    CompiledDelete(evolve_core::CompiledPlacement),
     Vegetation(vegetation_map::VegetationEdit),
 }
 
@@ -2016,6 +2018,18 @@ impl Operation {
                             );
                         }
                     }
+                    ProjectLevelMutation::CompiledDelete(placement) => {
+                        let lower = member.to_ascii_lowercase();
+                        if lower != "terrain/terrain.dat"
+                            && !lower.ends_with("/terrain/terrain.dat")
+                        {
+                            return Err(
+                                "terrain.dat placements are deleted from terrain.dat".into()
+                            );
+                        }
+                        evolve_core::delete_compiled_placement(&original, placement)
+                            .map_err(|e| e.to_string())?
+                    }
                     ProjectLevelMutation::TerrainPatch(patch) => {
                         let lower = member.to_ascii_lowercase();
                         if lower.ends_with("heightmap.dat") {
@@ -2807,6 +2821,8 @@ enum Message {
     LevelCameraFocus,
     LevelCameraReset,
     LevelCameraKey(window::Id, char, bool),
+    /// Delete or Backspace in the Level Editor window, not taken by a text field.
+    LevelDeleteKey(window::Id),
     LevelCameraWindowFocus(window::Id, bool),
     LevelCameraTick,
     LevelAnimationTick,
@@ -3477,6 +3493,20 @@ fn fresh_unique_authored_level_guid(
     Err("Failed to generate a unique level GUID".into())
 }
 
+/// The terrain.dat record behind a Legacy-ported map's brush or vegetation.
+fn compiled_placement(
+    object: &evolve_core::PlacedObject,
+) -> Option<evolve_core::CompiledPlacement> {
+    let index = |prefix: &str| object.id.strip_prefix(prefix)?.parse::<usize>().ok();
+    if object.kind.eq_ignore_ascii_case("CompiledBrush") {
+        index("__compiled_brush_").map(evolve_core::CompiledPlacement::Brush)
+    } else if object.kind.eq_ignore_ascii_case("CompiledVegetation") {
+        index("__compiled_vegetation_").map(evolve_core::CompiledPlacement::Vegetation)
+    } else {
+        None
+    }
+}
+
 fn selected_project_object_source(
     state: &State,
 ) -> Result<(evolve_core::PlacedObject, PathBuf), String> {
@@ -3496,7 +3526,14 @@ fn selected_project_object_source(
         return Err("This object GUID occurs in multiple original LYR layers. Editing is disabled until its owning source can be uniquely identified.".into());
     }
     let root = project.workspace.join("files");
-    let relative = if object.kind.eq_ignore_ascii_case("Vegetation") {
+    let relative = if compiled_placement(&object).is_some() {
+        state
+            .library_map
+            .as_ref()
+            .and_then(|(_, maps, index)| maps.get(*index))
+            .and_then(|map| map.compiled_terrain.clone())
+            .ok_or("Selected map has no terrain.dat")?
+    } else if object.kind.eq_ignore_ascii_case("Vegetation") {
         state
             .library_map
             .as_ref()
@@ -6319,6 +6356,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             };
+            if let Some(placement) = compiled_placement(&object) {
+                if !matches!(message, Message::LevelDeleteSelected) {
+                    state.status = "Placements stored in terrain.dat can be deleted here; copying, adding next to or editing them is not supported yet.".into();
+                    return Task::none();
+                }
+                state.status = format!("Deleting {} from terrain.dat…", object.name);
+                return submit_level_project_edit(
+                    state,
+                    source,
+                    ProjectLevelMutation::CompiledDelete(placement),
+                );
+            }
             let edit = match message {
                 Message::LevelAddGeometry => {
                     if object.kind.eq_ignore_ascii_case("Vegetation") {
@@ -9782,6 +9831,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             // Never resume an old held movement when the window reappears.
             state.level_keys.clear();
             state.level_last_pressed_at = None;
+        }
+        Message::LevelDeleteKey(_) => {
+            // The Select tool's keyboard delete: the same as Delete placement.
+            if state.level_tool == terrain_brush::LevelTool::Select
+                && state.level_project.is_some()
+                && !state.level_read_only
+                && state.level_selected.is_some()
+                && !state.busy
+            {
+                let selected = state
+                    .level_selected
+                    .and_then(|i| state.level_scene.as_ref()?.objects.get(i));
+                return update(
+                    state,
+                    if selected.is_some_and(|o| o.kind.eq_ignore_ascii_case("Vegetation")) {
+                        Message::LevelDeleteVegetation
+                    } else {
+                        Message::LevelDeleteSelected
+                    },
+                );
+            }
         }
         Message::LevelCameraKey(_, key, pressed) => {
             if key == 'f' && pressed {
@@ -16569,6 +16639,7 @@ impl Desktop {
                 }
             }
             Message::LevelCameraKey(id, _, _) if self.level_id != Some(id) => Task::none(),
+            Message::LevelDeleteKey(id) if self.level_id != Some(id) => Task::none(),
             Message::LevelCameraWindowFocus(id, _) if self.level_id != Some(id) => Task::none(),
             Message::ExportOpen => {
                 let prepare = update(&mut self.state, Message::ExportOpen);
@@ -16942,6 +17013,14 @@ impl Desktop {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
                 }) => Some(Message::ViewportEscape(id)),
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key:
+                        iced::keyboard::Key::Named(
+                            iced::keyboard::key::Named::Delete
+                            | iced::keyboard::key::Named::Backspace,
+                        ),
+                    ..
+                }) if status == iced::event::Status::Ignored => Some(Message::LevelDeleteKey(id)),
                 iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                     Some(Message::ModifiersChanged(modifiers))
                 }
