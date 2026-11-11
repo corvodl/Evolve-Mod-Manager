@@ -3753,7 +3753,7 @@ fn native_mod_pak_save_picker(suggested: String) -> Option<PathBuf> {
             return None;
         }
         let path = PathBuf::from(String::from_utf8(result.stdout).ok()?.trim());
-        return (path.is_absolute() && path.parent().is_some_and(Path::is_dir)).then_some(path);
+        (path.is_absolute() && path.parent().is_some_and(Path::is_dir)).then_some(path)
     }
     #[cfg(not(target_os = "windows"))]
     {
