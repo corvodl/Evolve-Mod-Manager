@@ -1143,82 +1143,99 @@ fn project_asset_source_from_archives(
     archives: &[ImportedPak],
 ) -> Option<PathBuf> {
     let target = Path::new(&project.target).file_name()?.to_str()?;
-    let mut matches = Vec::new();
-    for pak in archives {
-        if !pak.name.eq_ignore_ascii_case(target)
-            || !pak
-                .builds
-                .iter()
-                .any(|build| build == &project.source_build)
-        {
-            continue;
-        }
-        let source = PathBuf::from(&pak.source);
-        let Some(game) = source.ancestors().find(|parent| {
-            parent
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Game"))
-        }) else {
-            continue;
-        };
-        let Ok(meta) = fs::symlink_metadata(&source) else {
-            continue;
-        };
-        if !meta.file_type().is_file() || meta.len() > 2 * 1024 * 1024 * 1024 {
-            continue;
-        }
-        let Ok(canonical) = fs::canonicalize(&source) else {
-            continue;
-        };
-        if !canonical.starts_with(fs::canonicalize(game).ok()?) {
-            continue;
-        }
-        let manifest_path = Path::new(&pak.directory).join("asset-library.json");
-        let Ok(import_meta) = fs::symlink_metadata(&manifest_path) else {
-            continue;
-        };
-        if !import_meta.file_type().is_file() || import_meta.len() > 8 * 1024 * 1024 {
-            continue;
-        }
-        let Ok(import_bytes) = fs::read(manifest_path) else {
-            continue;
-        };
-        let Ok(import) = serde_json::from_slice::<serde_json::Value>(&import_bytes) else {
-            continue;
-        };
-        if !import["source_sha256"]
-            .as_str()
-            .is_some_and(|sha| sha.eq_ignore_ascii_case(expected))
-            || import["source_size"].as_u64() != Some(meta.len())
-        {
-            continue;
-        }
-        let Ok(mut file) = fs::File::open(&source) else {
-            continue;
-        };
-        let mut hasher = Sha256::new();
-        let mut buffer = [0u8; 64 * 1024];
-        let mut complete = true;
-        loop {
-            match file.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(count) => hasher.update(&buffer[..count]),
-                Err(_) => {
-                    complete = false;
-                    break;
-                }
-            }
-        }
-        if !complete || !format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(expected) {
-            continue;
-        }
-        // Canonical paths are used only for containment and identity checks;
-        // downstream consumers must retain ordinary Windows paths.
-        matches.push((canonical, source));
-    }
+    let mut matches = archives
+        .iter()
+        .filter(|pak| {
+            pak.name.eq_ignore_ascii_case(target)
+                && pak
+                    .builds
+                    .iter()
+                    .any(|build| build == &project.source_build)
+        })
+        .filter_map(|pak| verified_archive_source(pak, expected))
+        .collect::<Vec<_>>();
     matches.sort_by(|a, b| a.0.cmp(&b.0));
     matches.dedup_by(|a, b| a.0 == b.0);
     (matches.len() == 1).then(|| matches.remove(0).1)
+}
+
+/// An imported archive whose original file is still inside a game's `Game`
+/// folder and still hashes to `expected`, as its import recorded. Returns the
+/// canonical path (for identity checks) and the ordinary source path.
+fn verified_archive_source(pak: &ImportedPak, expected: &str) -> Option<(PathBuf, PathBuf)> {
+    let source = PathBuf::from(&pak.source);
+    let game = source.ancestors().find(|parent| {
+        parent
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Game"))
+    })?;
+    let meta = fs::symlink_metadata(&source).ok()?;
+    if !meta.file_type().is_file() || meta.len() > 2 * 1024 * 1024 * 1024 {
+        return None;
+    }
+    let canonical = fs::canonicalize(&source).ok()?;
+    if !canonical.starts_with(fs::canonicalize(game).ok()?) {
+        return None;
+    }
+    let manifest_path = Path::new(&pak.directory).join("asset-library.json");
+    let import_meta = fs::symlink_metadata(&manifest_path).ok()?;
+    if !import_meta.file_type().is_file() || import_meta.len() > 8 * 1024 * 1024 {
+        return None;
+    }
+    let import =
+        serde_json::from_slice::<serde_json::Value>(&fs::read(manifest_path).ok()?).ok()?;
+    if !import["source_sha256"]
+        .as_str()
+        .is_some_and(|sha| sha.eq_ignore_ascii_case(expected))
+        || import["source_size"].as_u64() != Some(meta.len())
+    {
+        return None;
+    }
+    let mut file = fs::File::open(&source).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => hasher.update(&buffer[..count]),
+            Err(_) => return None,
+        }
+    }
+    // Canonical paths are used only for containment and identity checks;
+    // downstream consumers must retain ordinary Windows paths.
+    format!("{:x}", hasher.finalize())
+        .eq_ignore_ascii_case(expected)
+        .then_some((canonical, source))
+}
+
+/// A project created as an imported snapshot records the exact library
+/// archive it was copied from. Its game assets come from that archive's
+/// verified source and builds, whatever build label the project row carries.
+fn snapshot_asset_archive(project: &ProjectRow, library_root: &Path) -> Option<ImportedPak> {
+    if !library_root.is_dir() {
+        return None;
+    }
+    let manifest_path = project.workspace.join(".evolve-pak-workspace.json");
+    let metadata = fs::symlink_metadata(&manifest_path).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > 32 * 1024 * 1024 {
+        return None;
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest_path).ok()?).ok()?;
+    if manifest["extraction_mode"].as_str() != Some("imported-snapshot") {
+        return None;
+    }
+    let id = manifest["imported_archive_id"].as_str()?;
+    let recorded = manifest["imported_source"].as_str()?;
+    let expected = manifest["imported_source_sha256"].as_str()?;
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let library = imported_library(library_root).ok()?;
+    let pak = library.archives.into_iter().find(|pak| {
+        pak.id == id && Path::new(&pak.source) == Path::new(recorded) && !pak.builds.is_empty()
+    })?;
+    verified_archive_source(&pak, expected).map(|_| pak)
 }
 
 /// Open a verified copy owned by the Modding project. The caller supplies the
@@ -1231,12 +1248,17 @@ pub(super) fn open_project(
 ) -> Result<LoadedMap, String> {
     let inventory = scan_directory(&project.workspace.join("files")).map_err(|e| e.to_string())?;
     let (root, maps) = discover_inventory(&inventory)?;
-    let build = if library_root.is_dir() && !project.source_build.trim().is_empty() {
-        vec![project.source_build.clone()]
-    } else {
-        Vec::new()
+    let (verified_source, build) = match snapshot_asset_archive(&project, library_root) {
+        Some(pak) => (Some(PathBuf::from(&pak.source)), pak.builds),
+        None => (
+            project_asset_source(&project, library_root),
+            if library_root.is_dir() && !project.source_build.trim().is_empty() {
+                vec![project.source_build.clone()]
+            } else {
+                Vec::new()
+            },
+        ),
     };
-    let verified_source = project_asset_source(&project, library_root);
     let archive = ImportedPak {
         id: "editable-level-project".into(),
         name: project.target.clone(),
@@ -2569,6 +2591,52 @@ mod tests {
             changed_known: true,
             enabled: false,
         }
+    }
+
+    /// A project created as an imported snapshot (as the app makes them, with
+    /// no registered build) must still resolve the game's shared assets.
+    /// Opens an existing project folder read-only.
+    #[test]
+    #[ignore = "requires a local snapshot project (EVOLVE_BENCH_PROJECT) and library"]
+    fn snapshot_projects_resolve_shared_game_assets() {
+        let library = PathBuf::from(std::env::var("EVOLVE_BENCH_LIBRARY").unwrap());
+        let workspace = PathBuf::from(std::env::var("EVOLVE_BENCH_PROJECT").unwrap());
+        let project = ProjectRow {
+            label: "Snapshot".into(),
+            target: "level.pak".into(),
+            source_build: "Unknown build".into(),
+            status: "Draft".into(),
+            details: String::new(),
+            workspace,
+            modified: vec![],
+            changed_known: true,
+            enabled: false,
+        };
+        let pak = snapshot_asset_archive(&project, &library).expect("snapshot archive verified");
+        assert!(!pak.builds.is_empty());
+        let map = open_project(project, 0, &library).unwrap();
+        let assembled = map.full_scene.as_ref().unwrap();
+        println!("{}", assembled.report.status());
+        assert!(
+            map.diagnostics
+                .iter()
+                .any(|note| note.contains("baked terrain") && note.contains("Applied")),
+            "terrain colour atlas not applied: {:?}",
+            map.diagnostics
+                .iter()
+                .filter(|note| note.to_ascii_lowercase().contains("terrain"))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            assembled.report.unresolved < 50,
+            "{}",
+            assembled.report.unresolved
+        );
+        assert!(
+            assembled.world.groups.len() > 800,
+            "{} groups",
+            assembled.world.groups.len()
+        );
     }
 
     #[test]
