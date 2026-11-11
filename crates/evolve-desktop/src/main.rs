@@ -1974,6 +1974,9 @@ impl Operation {
                         } else if lower == "terrain/terrain.dat"
                             || lower.ends_with("/terrain/terrain.dat")
                         {
+                            if let evolve_core::TerrainBrushEdit::Paint { layer_id, .. } = change {
+                                level_authoring::check_compiled_surface_type(&source, layer_id)?;
+                            }
                             evolve_core::edit_compiled_terrain_bytes(&original, change)
                                 .map_err(|e| e.to_string())?
                         } else {

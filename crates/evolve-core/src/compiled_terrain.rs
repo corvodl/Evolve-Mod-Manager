@@ -48,6 +48,8 @@ const MAX_OCTREE_DEPTH: usize = 32;
 /// Height of one 12-bit sample step; the low four bits are the surface index.
 const HEIGHT_STEP: f32 = 0.05;
 const HOLE_SURFACE: u16 = 15;
+/// [`CompiledTerrain::surfaces`] value of a hole sample.
+pub const HOLE_ID: u8 = 255;
 
 const BRUSH: u32 = 0x1A;
 const VEGETATION: u32 = 0x02;
@@ -151,6 +153,9 @@ pub struct CompiledTerrain {
     pub heights: Vec<f32>,
     /// One flag per sample: the quad starting here is a terrain hole.
     pub holes: Vec<bool>,
+    /// Each sample's SurfaceTypeID (the map's `leveldata.xml` SurfaceTypes),
+    /// or [`HOLE_ID`].
+    pub surfaces: Vec<u8>,
     pub vegetation_groups: Vec<String>,
     pub models: Vec<String>,
     pub materials: Vec<String>,
@@ -266,6 +271,7 @@ pub fn decode_compiled_terrain(data: &[u8]) -> Result<CompiledTerrain, TerrainEr
         ocean_level,
         heights: vec![f32::NAN; side * side],
         holes: vec![false; side * side],
+        surfaces: vec![HOLE_ID; side * side],
         vegetation_groups,
         models,
         materials,
@@ -312,10 +318,12 @@ fn terrain_node(
         return Err(TerrainError::Limits);
     }
     let samples_at = at + 44;
-    let mut next = (samples_at + n * n * 2 + 3) & !3;
-    next += 20 + ((palette + 3) & !3);
+    let palette_at = ((samples_at + n * n * 2 + 3) & !3) + 20;
+    let next = palette_at + ((palette + 3) & !3);
     r.bytes(samples_at, next - samples_at)?;
+    let palette = r.bytes(palette_at, palette)?;
     if size > out.sector_size {
+        let mut next = next;
         for _ in 0..4 {
             next = terrain_node(r, next, size / 2, out)?;
         }
@@ -366,6 +374,14 @@ fn terrain_node(
             if lx < cells && ly < cells {
                 out.holes[index] = nearest & 15 == HOLE_SURFACE;
             }
+            // Bits past the palette's end mean its last entry.
+            out.surfaces[index] = match nearest & 15 {
+                HOLE_SURFACE => HOLE_ID,
+                bits => palette
+                    .get(usize::from(bits).min(palette.len().saturating_sub(1)))
+                    .copied()
+                    .unwrap_or(HOLE_ID),
+            };
         }
     }
     Ok(next)
@@ -785,64 +801,99 @@ impl CompiledTerrain {
 
 /// Largest height a sector can hold above its own offset: 12 bits of 0.05 m.
 const MAX_SAMPLE_SPAN: f32 = 4095.0 * HEIGHT_STEP;
+/// Local surface slots a sector can address; 14 and 15 are reserved.
+const MAX_PALETTE: usize = 14;
 
-/// Bounds and level-of-detail errors a rewritten node reports to its parent.
+/// Bounds, level-of-detail errors and surface types a rewritten node reports
+/// to its parent.
 struct NodeSummary {
     min_z: f32,
     max_z: f32,
     errors: [f32; 5],
+    palette: Vec<u8>,
 }
 
-struct Sculpt<'a> {
+struct Brush<'a> {
     heights: &'a [f32],
     side: usize,
-    /// Inclusive sample range the edit changed: x0, y0, x1, y1.
+    /// Inclusive sample range the edit touches: x0, y0, x1, y1.
     changed: [usize; 4],
+    /// Painting: the SurfaceTypeID for samples inside the disk.
+    paint: Option<(u8, [usize; 2], usize)>,
 }
 
-/// Raise or lower `terrain.dat` heights with the same disk brush as
-/// [`crate::edit_terrain_bytes`] uses on `Heightmap.dat`: every sample within
-/// `radius` of sample (`x`, `y`) moves by `delta_height`.
+impl Brush<'_> {
+    fn painted(&self, x: usize, y: usize) -> Option<u8> {
+        let (id, [cx, cy], radius) = self.paint?;
+        let (dx, dy) = (x.abs_diff(cx), y.abs_diff(cy));
+        (dx * dx + dy * dy <= radius * radius).then_some(id)
+    }
+}
+
+/// Edit `terrain.dat` with the same disk brush as [`crate::edit_terrain_bytes`]
+/// uses on `Heightmap.dat`: every sample within `radius` of sample (`x`, `y`)
+/// is raised by `delta_height` (Sculpt) or given surface type `layer_id`
+/// (Paint). Holes stay holes.
+///
+/// For painting, `layer_id` is a `SurfaceTypeID` from the map's compiled
+/// `leveldata.xml`. Each sample's low four bits pick an entry of its sector's
+/// surface palette; bits past the palette's end mean its last entry (this
+/// reproduces 96% of the Tutorial's editor paint exactly, the rest within one
+/// paint pixel). A type a sector lacks is appended to its palette, and to its
+/// parents', which list every type below them.
 ///
 /// Only the sectors the brush touches are re-encoded, at full resolution
-/// (flat sectors are stored coarser), keeping each sample's surface bits.
-/// Their bounding boxes and level-of-detail errors, and their parents', only
-/// ever grow, so the engine never culls or simplifies the new shape away.
-/// Everything else, including the object octree, is copied byte for byte.
-/// Painting is refused: the surface palette is not decoded yet.
+/// (flat sectors are stored coarser). Their bounding boxes and level-of-detail
+/// errors, and their parents', only ever grow, so the engine never culls or
+/// simplifies the new shape away. Everything else, including the object
+/// octree, is copied byte for byte.
 pub fn edit_compiled_terrain_bytes(
     source: &[u8],
     edit: crate::terrain::TerrainBrushEdit,
 ) -> Result<Vec<u8>, TerrainError> {
-    let crate::terrain::TerrainBrushEdit::Sculpt {
-        x,
-        y,
-        radius,
-        delta_height,
-    } = edit
-    else {
-        return Err(format(
-            "Painting terrain.dat surface types is not supported; sculpting is",
-        ));
+    use crate::terrain::TerrainBrushEdit;
+    let (x, y, radius) = match edit {
+        TerrainBrushEdit::Sculpt { x, y, radius, .. }
+        | TerrainBrushEdit::Paint { x, y, radius, .. } => (x, y, radius),
     };
     let terrain = decode_compiled_terrain(source)?;
     let side = terrain.units as usize + 1;
     let (cx, cy, radius) = (x as usize, y as usize, radius as usize);
-    if cx >= side || cy >= side || radius > 128 || !delta_height.is_finite() {
+    if cx >= side || cy >= side || radius > 128 {
         return Err(TerrainError::Limits);
     }
-    if delta_height.abs() > MAX_SAMPLE_SPAN {
-        return Err(TerrainError::Limits);
-    }
+    let (delta, paint) = match edit {
+        TerrainBrushEdit::Sculpt { delta_height, .. } => {
+            if !delta_height.is_finite() || delta_height.abs() > MAX_SAMPLE_SPAN {
+                return Err(TerrainError::Limits);
+            }
+            (delta_height, None)
+        }
+        TerrainBrushEdit::Paint { layer_id, .. } => {
+            if layer_id >= 127 {
+                return Err(format("SurfaceTypeID must be below 127"));
+            }
+            (0.0, Some((layer_id, [cx, cy], radius)))
+        }
+    };
     let mut heights = terrain.heights.clone();
+    let mut surfaces = terrain.surfaces.clone();
     let mut changed = [usize::MAX, usize::MAX, 0, 0];
+    let mut differs = false;
     for sx in cx.saturating_sub(radius)..=(cx + radius).min(side - 1) {
         for sy in cy.saturating_sub(radius)..=(cy + radius).min(side - 1) {
             let (dx, dy) = (sx.abs_diff(cx), sy.abs_diff(cy));
             if dx * dx + dy * dy > radius * radius {
                 continue;
             }
-            heights[sx * side + sy] += delta_height;
+            let index = sx * side + sy;
+            heights[index] += delta;
+            if let Some((id, ..)) = paint
+                && surfaces[index] != HOLE_ID
+            {
+                differs |= surfaces[index] != id;
+                surfaces[index] = id;
+            }
             changed = [
                 changed[0].min(sx),
                 changed[1].min(sy),
@@ -851,17 +902,21 @@ pub fn edit_compiled_terrain_bytes(
             ];
         }
     }
-    if changed[0] == usize::MAX || delta_height == 0.0 {
+    if changed[0] == usize::MAX
+        || (paint.is_none() && delta == 0.0)
+        || (paint.is_some() && !differs)
+    {
         return Err(format("The terrain brush changed no samples"));
     }
     let r = Reader { data: source };
     let (_, at) = r.table(32, 352)?;
     let (_, at) = r.table(at, 256)?;
     let (_, start) = r.table(at, 256)?;
-    let sculpt = Sculpt {
+    let brush = Brush {
         heights: &heights,
         side,
         changed,
+        paint,
     };
     let mut output = source[..start].to_vec();
     let (end, _) = rewrite_terrain_node(
@@ -869,14 +924,14 @@ pub fn edit_compiled_terrain_bytes(
         start,
         terrain.units * terrain.unit_size as u32,
         &terrain,
-        &sculpt,
+        &brush,
         &mut output,
     )?;
     output.extend_from_slice(&source[end..]);
     let size = u32::try_from(output.len()).map_err(|_| TerrainError::Limits)?;
     output[4..8].copy_from_slice(&size.to_le_bytes());
-    // The result must decode, and every height must land on the brush's
-    // target within one quantization step.
+    // The result must decode, every height must land on the brush's target
+    // within one quantization step, and every surface must be as intended.
     let check = decode_compiled_terrain(&output)?;
     if check
         .heights
@@ -888,6 +943,11 @@ pub fn edit_compiled_terrain_bytes(
             "Re-encoded terrain.dat heights do not match the edit",
         ));
     }
+    if check.surfaces != surfaces {
+        return Err(format(
+            "Re-encoded terrain.dat surfaces do not match the edit",
+        ));
+    }
     Ok(output)
 }
 
@@ -896,14 +956,15 @@ fn rewrite_terrain_node(
     at: usize,
     size: u32,
     terrain: &CompiledTerrain,
-    sculpt: &Sculpt<'_>,
+    brush: &Brush<'_>,
     out: &mut Vec<u8>,
 ) -> Result<(usize, NodeSummary), TerrainError> {
     let n = r.u32(at + 36)? as usize;
-    let palette = r.u32(at + 40)? as usize;
+    let palette_len = r.u32(at + 40)? as usize;
     let samples_at = at + 44;
-    let errors_at = (samples_at + n * n * 2 + 3) & !3;
-    let end = errors_at + 20 + ((palette + 3) & !3);
+    let errors_at = samples_at + ((n * n * 2 + 3) & !3);
+    let palette_at = errors_at + 20;
+    let end = palette_at + ((palette_len + 3) & !3);
     let mut errors = [0.0f32; 5];
     for (index, error) in errors.iter_mut().enumerate() {
         *error = r.f32(errors_at + index * 4)?;
@@ -912,37 +973,52 @@ fn rewrite_terrain_node(
         min_z: r.f32(at + 12)?,
         max_z: r.f32(at + 24)?,
         errors,
+        palette: r.bytes(palette_at, palette_len)?.to_vec(),
     };
-    let header = out.len();
     if size > terrain.sector_size {
-        out.extend_from_slice(r.bytes(at, end - at)?);
+        let mut children = Vec::new();
         let mut next = end;
         for _ in 0..4 {
-            let (after, child) = rewrite_terrain_node(r, next, size / 2, terrain, sculpt, out)?;
+            let (after, child) =
+                rewrite_terrain_node(r, next, size / 2, terrain, brush, &mut children)?;
             next = after;
             summary.min_z = summary.min_z.min(child.min_z);
             summary.max_z = summary.max_z.max(child.max_z);
             for (mine, theirs) in summary.errors.iter_mut().zip(child.errors) {
                 *mine = mine.max(theirs);
             }
+            // A parent lists every surface type used below it.
+            for id in child.palette {
+                if !summary.palette.contains(&id) {
+                    summary.palette.push(id);
+                }
+            }
         }
-        write_summary(out, header, n, &summary);
+        write_node(
+            out,
+            r.bytes(at, 44)?,
+            n,
+            r.bytes(samples_at, n * n * 2)?,
+            &summary,
+        );
+        out.extend_from_slice(&children);
         return Ok((next, summary));
     }
     let unit = terrain.unit_size;
     let cells = (terrain.sector_size as f32 / unit) as usize;
     let x0 = (r.f32(at + 4)? / unit) as usize;
     let y0 = (r.f32(at + 8)? / unit) as usize;
-    let [cx0, cy0, cx1, cy1] = sculpt.changed;
+    let [cx0, cy0, cx1, cy1] = brush.changed;
     if x0 > cx1 || x0 + cells < cx0 || y0 > cy1 || y0 + cells < cy0 {
         out.extend_from_slice(r.bytes(at, end - at)?);
         return Ok((end, summary));
     }
     // Re-encode this sector at full resolution, keeping each sample's
-    // surface bits from the nearest stored sample, as the decoder does.
+    // surface from the nearest stored sample, as the decoder does. Bits past
+    // the palette's end are pinned to its last entry before it can grow.
     let step = cells / (n - 1);
     let full = cells + 1;
-    let height = |lx: usize, ly: usize| sculpt.heights[(x0 + lx) * sculpt.side + (y0 + ly)];
+    let height = |lx: usize, ly: usize| brush.heights[(x0 + lx) * brush.side + (y0 + ly)];
     let (mut low, mut high) = (f32::INFINITY, f32::NEG_INFINITY);
     for lx in 0..full {
         for ly in 0..full {
@@ -957,18 +1033,38 @@ fn rewrite_terrain_node(
             terrain.sector_size, terrain.sector_size
         )));
     }
+    let last = summary.palette.len().saturating_sub(1) as u16;
     let mut samples = Vec::with_capacity(full * full);
     for lx in 0..full {
         for ly in 0..full {
             let (fx, fy) = (lx as f32 / step as f32, ly as f32 / step as f32);
-            let surface = r.u16(
+            let mut bits = r.u16(
                 samples_at
                     + (((fx + 0.5) as usize).min(n - 1) * n + ((fy + 0.5) as usize).min(n - 1)) * 2,
             )? & 15;
+            if bits != HOLE_SURFACE && bits > last {
+                bits = last;
+            }
+            if bits != HOLE_SURFACE
+                && let Some(id) = brush.painted(x0 + lx, y0 + ly)
+            {
+                bits = match summary.palette.iter().position(|known| *known == id) {
+                    Some(slot) => slot as u16,
+                    None if summary.palette.len() < MAX_PALETTE => {
+                        summary.palette.push(id);
+                        (summary.palette.len() - 1) as u16
+                    }
+                    None => {
+                        return Err(format(format!(
+                            "The sector at {x0},{y0} already uses {MAX_PALETTE} surface types"
+                        )));
+                    }
+                };
+            }
             let steps = ((height(lx, ly) - offset) / HEIGHT_STEP)
                 .round()
                 .clamp(0.0, 4095.0);
-            samples.push(((steps as u16) << 4) | surface);
+            samples.push(((steps as u16) << 4) | bits);
         }
     }
     let quantized =
@@ -996,28 +1092,33 @@ fn rewrite_terrain_node(
     }
     summary.min_z = summary.min_z.min(low);
     summary.max_z = summary.max_z.max(high);
-    out.extend_from_slice(r.bytes(at, 44)?);
-    out[header + 28..header + 32].copy_from_slice(&offset.to_le_bytes());
-    out[header + 36..header + 40].copy_from_slice(&(full as u32).to_le_bytes());
-    for sample in &samples {
-        out.extend_from_slice(&sample.to_le_bytes());
-    }
-    out.resize((out.len() + 3) & !3, 0);
-    out.extend_from_slice(r.bytes(errors_at, end - errors_at)?);
-    write_summary(out, header, full, &summary);
+    let mut header = r.bytes(at, 44)?.to_vec();
+    header[28..32].copy_from_slice(&offset.to_le_bytes());
+    let bytes = samples
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    write_node(out, &header, full, &bytes, &summary);
     Ok((end, summary))
 }
 
-/// Store a node's bounds and errors into its already-written bytes.
-fn write_summary(out: &mut [u8], header: usize, n: usize, summary: &NodeSummary) {
-    out[header + 12..header + 16].copy_from_slice(&summary.min_z.to_le_bytes());
-    out[header + 24..header + 28].copy_from_slice(&summary.max_z.to_le_bytes());
-    // Node starts are 4-byte aligned in the file and in `out` alike.
-    let errors_at = (header + 44 + n * n * 2 + 3) & !3;
-    for (index, error) in summary.errors.iter().enumerate() {
-        let at = errors_at + index * 4;
-        out[at..at + 4].copy_from_slice(&error.to_le_bytes());
+/// Append one quadtree node: its header with the summary's bounds, sample
+/// count and palette size, the samples, the errors and the padded palette.
+/// Node starts are 4-byte aligned, and every node's length is a multiple of 4.
+fn write_node(out: &mut Vec<u8>, header: &[u8], n: usize, samples: &[u8], summary: &NodeSummary) {
+    let start = out.len();
+    out.extend_from_slice(header);
+    out[start + 12..start + 16].copy_from_slice(&summary.min_z.to_le_bytes());
+    out[start + 24..start + 28].copy_from_slice(&summary.max_z.to_le_bytes());
+    out[start + 36..start + 40].copy_from_slice(&(n as u32).to_le_bytes());
+    out[start + 40..start + 44].copy_from_slice(&(summary.palette.len() as u32).to_le_bytes());
+    out.extend_from_slice(samples);
+    out.resize(start + 44 + ((samples.len() + 3) & !3), 0);
+    for error in summary.errors {
+        out.extend_from_slice(&error.to_le_bytes());
     }
+    out.extend_from_slice(&summary.palette);
+    out.resize(out.len() + ((4 - summary.palette.len() % 4) % 4), 0);
 }
 
 #[cfg(test)]
@@ -1122,18 +1223,6 @@ mod tests {
             edited.len(),
             u32::from_le_bytes(edited[4..8].try_into().unwrap()) as usize
         );
-        assert!(
-            edit_compiled_terrain_bytes(
-                &source,
-                TerrainBrushEdit::Paint {
-                    x: 1,
-                    y: 1,
-                    radius: 1,
-                    layer_id: 0
-                }
-            )
-            .is_err()
-        );
         // A sector cannot span more than 12 bits of 0.05 m steps.
         assert!(
             edit_compiled_terrain_bytes(
@@ -1143,6 +1232,58 @@ mod tests {
                     y: 4,
                     radius: 1,
                     delta_height: 250.0
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn paints_surface_types_through_the_sector_palette() {
+        use crate::terrain::TerrainBrushEdit;
+        let mut source = fixture();
+        // Sample (0, 1) carries bits 3 past the one-entry palette [4]: it
+        // means the palette's last entry, and must keep meaning type 4.
+        let samples = source
+            .windows(6)
+            .position(|w| w == [0, 0, 160, 0, 64, 1])
+            .unwrap();
+        source[samples + 2] |= 3;
+        let before = decode_compiled_terrain(&source).unwrap();
+        let side = 17usize;
+        assert_eq!(before.surfaces[1], 4);
+        assert_eq!(before.surfaces[16 * side + 16], HOLE_ID);
+        let edited = edit_compiled_terrain_bytes(
+            &source,
+            TerrainBrushEdit::Paint {
+                x: 12,
+                y: 4,
+                radius: 2,
+                layer_id: 7,
+            },
+        )
+        .unwrap();
+        let after = decode_compiled_terrain(&edited).unwrap();
+        for sx in 0..side {
+            for sy in 0..side {
+                let index = sx * side + sy;
+                let (dx, dy) = (sx.abs_diff(12), sy.abs_diff(4));
+                let inside = dx * dx + dy * dy <= 4 && before.surfaces[index] != HOLE_ID;
+                let want = if inside { 7 } else { before.surfaces[index] };
+                assert_eq!(after.surfaces[index], want, "({sx},{sy})");
+                assert!((after.heights[index] - before.heights[index]).abs() <= 0.026);
+            }
+        }
+        assert_eq!(after.holes, before.holes);
+        // Painting what is already there changes nothing and is refused.
+        assert!(
+            edit_compiled_terrain_bytes(
+                &source,
+                TerrainBrushEdit::Paint {
+                    x: 1,
+                    y: 1,
+                    radius: 0,
+                    layer_id: 4
                 }
             )
             .is_err()

@@ -2501,6 +2501,51 @@ mod tests {
         duplicate.unwrap();
         add.unwrap();
         terrain.unwrap();
+        // Legacy-ported maps: paint a SurfaceTypeID the map defines and read
+        // it back from the saved terrain.dat.
+        if let Some(relative) = opened.maps[opened.index].compiled_terrain.clone() {
+            let path = files.join(&relative);
+            let member = relative.to_string_lossy().replace('\\', "/");
+            let (cx, cy) = std::env::var("EVOLVE_EDIT_PAINT")
+                .ok()
+                .and_then(|spot| {
+                    let (x, y) = spot.split_once(',')?;
+                    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+                })
+                .unwrap_or((356u32, 464u32));
+            let before = evolve_core::read_compiled_terrain(&path).unwrap();
+            let side = before.units as usize + 1;
+            let current = before.surfaces[cx as usize * side + cy as usize];
+            let id = (0u8..127)
+                .find(|id| {
+                    *id != current
+                        && crate::level_authoring::check_compiled_surface_type(&path, *id).is_ok()
+                })
+                .expect("a second surface type");
+            assert!(crate::level_authoring::check_compiled_surface_type(&path, 126).is_err());
+            let original = fs::read(&path).unwrap();
+            let edited = evolve_core::edit_compiled_terrain_bytes(
+                &original,
+                evolve_core::TerrainBrushEdit::Paint {
+                    x: cx,
+                    y: cy,
+                    radius: 10,
+                    layer_id: id,
+                },
+            )
+            .unwrap();
+            commit(&member, &original, &edited).unwrap();
+            reopen().unwrap();
+            let after = evolve_core::read_compiled_terrain(&path).unwrap();
+            assert_eq!(after.surfaces[cx as usize * side + cy as usize], id);
+            let changed = before
+                .surfaces
+                .iter()
+                .zip(&after.surfaces)
+                .filter(|(a, b)| a != b)
+                .count();
+            println!("{archive_name}: painted SurfaceTypeID {id} over {changed} samples");
+        }
         let last = reopen().unwrap();
         for object in &last.scene.as_ref().unwrap().objects {
             if object.name.ends_with("_copy") || object.name == "added_geometry" {

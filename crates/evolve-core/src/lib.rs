@@ -97,7 +97,7 @@ pub use client_hook::{
 };
 pub use compiled_terrain::{
     CompiledBrush, CompiledDecal, CompiledRoad, CompiledTerrain, CompiledVegetation, CompiledWater,
-    MergedMeshInstance, decode_compiled_terrain, decode_merged_mesh_sector,
+    HOLE_ID, MergedMeshInstance, decode_compiled_terrain, decode_merged_mesh_sector,
     edit_compiled_terrain_bytes, read_compiled_terrain, read_merged_mesh_sectors,
 };
 pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
