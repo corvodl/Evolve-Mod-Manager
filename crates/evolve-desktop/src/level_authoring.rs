@@ -584,20 +584,36 @@ pub(super) fn placement_editor<'a>(
 pub(super) fn terrain_editor(state: &super::State) -> iced::Element<'_, super::Message> {
     use super::Message;
     use iced::widget::{column, row, text};
+    let map = state
+        .library_map
+        .as_ref()
+        .and_then(|(_, maps, index)| maps.get(*index));
+    // A Legacy-ported map's heightmap is its compiled terrain.dat.
+    let compiled = map.is_some_and(|map| map.terrain.is_none() && map.compiled_terrain.is_some());
     if state.level_read_only
         || state.level_project.is_none()
-        || !state
-            .library_map
-            .as_ref()
-            .and_then(|(_, maps, index)| maps.get(*index))
-            .is_some_and(|map| map.terrain.is_some())
+        || !map.is_some_and(|map| map.terrain.is_some() || map.compiled_terrain.is_some())
     {
-        return text("Terrain editing requires a Modding project with Heightmap.dat.")
-            .size(11)
-            .style(crate::design::muted)
-            .into();
+        return text(
+            "Terrain editing requires a Modding project with Heightmap.dat or terrain.dat.",
+        )
+        .size(11)
+        .style(crate::design::muted)
+        .into();
     }
     let form = &state.level_authoring;
+    let sculpt = crate::design::button(if compiled {
+        "Sculpt terrain.dat"
+    } else {
+        "Sculpt Heightmap.dat"
+    })
+    .on_press(Message::LevelSculptTerrain);
+    let paint = crate::design::button("Paint LayerId");
+    let paint = if compiled {
+        paint
+    } else {
+        paint.on_press(Message::LevelPaintTerrain)
+    };
     column![
         text("Terrain source brush (project only)").size(13),
         row![
@@ -607,15 +623,17 @@ pub(super) fn terrain_editor(state: &super::State) -> iced::Element<'_, super::M
         ].spacing(6),
         row![
             edit_field("Height delta (world units)", &form.brush_delta_height, TextField::BrushDeltaHeight),
-            crate::design::button("Sculpt Heightmap.dat")
-                .on_press(Message::LevelSculptTerrain),
+            sculpt,
         ].spacing(6),
         row![
             edit_field("Authored LayerId", &form.brush_layer_id, TextField::BrushLayerId),
-            crate::design::button("Paint LayerId")
-                .on_press(Message::LevelPaintTerrain),
+            paint,
         ].spacing(6),
-        text("LayerId edits preserve the original baked texture atlas; native material repaint is not yet complete.")
+        text(if compiled {
+            "terrain.dat stores surface types differently; painting is not available on Legacy-ported maps yet."
+        } else {
+            "LayerId edits preserve the original baked texture atlas; native material repaint is not yet complete."
+        })
             .size(11).style(crate::design::muted),
     ].spacing(7).into()
 }

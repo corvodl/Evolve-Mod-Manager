@@ -49,6 +49,9 @@ pub struct RenderMesh {
     pub normals: Option<Vec<[f32; 3]>>,
     /// Authored vertex color alpha, which drives Illum layer blending.
     pub vertex_alpha: Option<Vec<u8>>,
+    /// Authored vertex color RGB, as stored (D3D byte order: B, G, R).
+    /// Illum materials with VERTCOLORS multiply diffuse by it.
+    pub vertex_color: Option<Vec<[u8; 3]>>,
 }
 
 /// A decoded source-authored world mesh with its own index ranges and
@@ -319,6 +322,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     let mut positions = Vec::with_capacity(nv);
     let mut packed_uv = Vec::new();
     let mut packed_alpha = Vec::new();
+    let mut packed_color = Vec::new();
     for i in 0..nv {
         let at = positions_stream.offset + i * positions_stream.stride;
         let v = if packed {
@@ -354,6 +358,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
             .to_f32();
             packed_uv.push([u, v]);
             packed_alpha.push(data[at + 11]);
+            packed_color.push([data[at + 8], data[at + 9], data[at + 10]]);
             [x, y, z]
         } else if positions_stream.stride == 8 {
             let mut v = [0f32; 4];
@@ -517,6 +522,18 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         _ if packed => Some(packed_alpha),
         _ => None,
     };
+    let vertex_color = match streams.get(&3) {
+        Some(stream) if stream.count == nv && stream.stride == 4 => Some(
+            (0..nv)
+                .map(|i| {
+                    let at = stream.offset + i * 4;
+                    [data[at], data[at + 1], data[at + 2]]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        _ if packed => Some(packed_color),
+        _ => None,
+    };
     let bounds = (0..3)
         .map(|i| {
             let lo = positions.iter().map(|v| v[i]).fold(f32::INFINITY, f32::min);
@@ -546,6 +563,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         uv0,
         normals,
         vertex_alpha,
+        vertex_color,
     })
 }
 
@@ -679,6 +697,7 @@ pub fn parse_world_model_parts_with_subsets(
         // Collision and physics-only NODEs are not render surfaces. Drawing
         // their MeshChunks creates giant neutral domes and bounding proxies.
         let collision = label.starts_with("$physics")
+            || label.starts_with("physics_proxy")
             || label.starts_with("phys_")
             || label.starts_with("collision_")
             || label.starts_with("proxy_")

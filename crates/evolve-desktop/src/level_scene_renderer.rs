@@ -485,6 +485,7 @@ fn neutral(first_index: u32, index_count: u32) -> Surface {
         detail_map: None,
         blend_layer: None,
         blend_mask: None,
+        vertex_colors: false,
         blend_normal: None,
         detail_tile: None,
         layer_params: None,
@@ -885,7 +886,16 @@ fn wildlife_marker_mesh() -> RenderMesh {
         uv0: None,
         normals: None,
         vertex_alpha: None,
+        vertex_color: None,
     }
+}
+
+/// Many placements of one model that are drawn but never edited or picked,
+/// such as a Legacy-ported map's merged grass and small rocks.
+#[derive(Clone, Debug)]
+pub(super) struct BulkInstances {
+    pub model: String,
+    pub transforms: Vec<Transform>,
 }
 
 pub(super) fn assemble(
@@ -894,8 +904,40 @@ pub(super) fn assemble(
     terrain: Option<&RenderMesh>,
     project_inventory: Option<&Inventory>,
     resolve_wildlife: bool,
+    bulk: &[BulkInstances],
 ) -> Result<Option<Assembled>, String> {
     let mut report = Report::default();
+    // Each bulk model resolves through one stand-in object appended after the
+    // real ones; its placements then carry no selectable object index.
+    let real_objects = scene.map_or(0, |scene| scene.objects.len());
+    let with_bulk;
+    let scene = match scene {
+        Some(scene) if !bulk.is_empty() => {
+            let mut extended = scene.clone();
+            extended
+                .objects
+                .extend(bulk.iter().enumerate().map(|(index, group)| PlacedObject {
+                    id: format!("__bulk_{index}"),
+                    parent: String::new(),
+                    layer: String::new(),
+                    name: group.model.clone(),
+                    kind: "BulkInstances".into(),
+                    model: group.model.clone(),
+                    material: String::new(),
+                    hidden: false,
+                    local: Transform::default(),
+                    world: Transform::default(),
+                    status: String::new(),
+                    populations: Vec::new(),
+                    home_area: String::new(),
+                    shape_points: Vec::new(),
+                    wildlife: Default::default(),
+                }));
+            with_bulk = extended;
+            Some(&with_bulk)
+        }
+        other => other,
+    };
     let mut combined = RenderMesh {
         info: ModelInfo {
             format: "Original Evolve level geometry preview".into(),
@@ -911,6 +953,7 @@ pub(super) fn assemble(
         uv0: Some(Vec::new()),
         normals: Some(Vec::new()),
         vertex_alpha: Some(Vec::new()),
+        vertex_color: None,
     };
     let mut surfaces = Vec::new();
     let picks = Vec::new();
@@ -1342,6 +1385,23 @@ pub(super) fn assemble(
                 resolved.insert(key, indices.clone());
                 indices
             };
+            if let Some(group) = object_index
+                .checked_sub(real_objects)
+                .and_then(|index| bulk.get(index))
+            {
+                for model in model_indices {
+                    models[model]
+                        .instances
+                        .extend(group.transforms.iter().map(|transform| {
+                            world_instances::Instance {
+                                object_index: world_instances::NOT_SELECTABLE,
+                                transform: *transform,
+                            }
+                        }));
+                }
+                report.placed += group.transforms.len();
+                continue;
+            }
             for group in model_indices {
                 models[group].instances.push(world_instances::Instance {
                     object_index,
@@ -1437,7 +1497,7 @@ pub(super) fn assemble_wildlife(
             object.hidden = true;
         }
     }
-    let assembled = assemble(archive, Some(&wildlife), None, None, true)?
+    let assembled = assemble(archive, Some(&wildlife), None, None, true, &[])?
         .ok_or("No wildlife placements could be assembled")?;
     let mut world = (*assembled.world).clone();
     world.wildlife_distances = assembled.report.spawn_distances;
@@ -1738,6 +1798,7 @@ mod tests {
                 }
                 Ok(vec![RenderMesh {
                     vertex_alpha: None,
+                    vertex_color: None,
                     info: ModelInfo {
                         format: "test".into(),
                         version: 7,
@@ -1805,6 +1866,7 @@ mod tests {
             |_path| {
                 Ok(vec![RenderMesh {
                     vertex_alpha: None,
+                    vertex_color: None,
                     info: ModelInfo {
                         format: "test".into(),
                         version: 7,
@@ -1885,6 +1947,7 @@ mod tests {
     fn combined_scene_offsets_indices_and_material_ranges_per_instance() {
         let source = RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: ModelInfo {
                 format: "Fixture".into(),
                 version: 1,
@@ -1906,6 +1969,7 @@ mod tests {
             uv0: Some(Vec::new()),
             normals: Some(Vec::new()),
             vertex_alpha: Some(Vec::new()),
+            vertex_color: None,
         };
         let mut ranges = Vec::new();
         assert!(append(

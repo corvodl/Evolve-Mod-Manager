@@ -1570,6 +1570,7 @@ mod tests {
     fn original_submaterial_primitives_keep_exact_ids_and_skin_accessors() {
         let mesh = RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: crate::model::ModelInfo {
                 format: "synthetic".into(),
                 version: 7,
@@ -1650,6 +1651,7 @@ mod tests {
     fn unrigged_source_exports_normal_map_without_diffuse_or_skeleton() {
         let mesh = RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: crate::model::ModelInfo {
                 format: "static CDF source".into(),
                 version: 7,

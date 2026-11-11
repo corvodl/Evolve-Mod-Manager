@@ -611,6 +611,7 @@ impl RiggedGlbPreview {
         }
         Ok(RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: ModelInfo {
                 format: "Converted GLB own-rig animation preview".into(),
                 version: 2,

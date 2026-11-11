@@ -1862,6 +1862,7 @@ fn terrain_mesh_tiles(source: &TerrainMesh) -> Result<Vec<RenderMesh>, LevelExpo
             }
             result.push(RenderMesh {
                 vertex_alpha: None,
+                vertex_color: None,
                 info: ModelInfo {
                     format: format!("CryEngine Terrain Tile ({x0},{y0})"),
                     version: 1,
@@ -2344,6 +2345,7 @@ mod tests {
     fn painted_terrain_retains_source_categorical_layer_face_groups() {
         let mesh = RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: ModelInfo {
                 format: "terrain fixture".into(),
                 version: 1,
@@ -2562,6 +2564,7 @@ mod tests {
         let obj = &scene.objects[0];
         let mesh = RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: ModelInfo {
                 format: "fixture".into(),
                 version: 1,
@@ -2690,6 +2693,7 @@ mod tests {
     fn creates_distinct_instance_nodes_under_common_zup_basis() {
         let model = RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: ModelInfo {
                 format: "test".into(),
                 version: 7,
@@ -2724,6 +2728,7 @@ mod tests {
     fn single_source_leaf_becomes_a_real_gltf_material() {
         let model = RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: ModelInfo {
                 format: "fixture".into(),
                 version: 1,
@@ -2759,6 +2764,7 @@ mod tests {
     fn ambiguous_multi_leaf_without_original_subsets_is_unassigned() {
         let mesh = RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: ModelInfo {
                 format: "fixture".into(),
                 version: 1,

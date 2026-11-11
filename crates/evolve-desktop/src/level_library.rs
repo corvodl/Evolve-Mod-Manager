@@ -159,7 +159,12 @@ fn map_group(relative: &str) -> (String, String) {
     }
     // Root mission/heightmap assets in a single map-owned PAK also belong to
     // the same map, even when the source lacks a verified Game/Levels parent.
-    if parts.len() == 1 && map_relative_member(&normalized) {
+    // That includes the compiled terrain/terrain.dat beside a root mission.
+    let compiled_terrain = normalized
+        .to_ascii_lowercase()
+        .trim_start_matches("files/")
+        .eq("terrain/terrain.dat");
+    if (parts.len() == 1 || compiled_terrain) && map_relative_member(&normalized) {
         return ("__archive_map__".into(), "Imported level".into());
     }
     let folder = parts.len().saturating_sub(1);
@@ -580,6 +585,105 @@ fn authored_environment(
     Ok(None)
 }
 
+/// Read a small weather preset through the same exact owner and build rules.
+fn weather_preset(
+    inventory: &Inventory,
+    name: &str,
+    library: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(path) = auto_resources::exact(inventory, name, library, build)? else {
+        return Ok(None);
+    };
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_file() && meta.len() <= 4 * 1024 * 1024 => {
+            fs::read(&path).map(Some).map_err(|e| e.to_string())
+        }
+        _ => Err(format!("{name} is linked or oversized")),
+    }
+}
+
+/// The client weather state a map switches to inside an authored area, such
+/// as Ice_Alpine's biodome: the TimeOfDay and Environment named by the
+/// map's weather/weather.xml for the "inside" client state, plus the mission
+/// areas whose trigger selects it. None when the map has no such state.
+fn authored_interior_weather(
+    archive: &ImportedPak,
+    map: &MapCandidate,
+    inventory: &Inventory,
+    layers: &[(String, Vec<u8>)],
+    diagnostics: &mut Vec<String>,
+) -> Option<crate::world_instances::InteriorWeather> {
+    const STATE: &str = "inside";
+    let folder = map_virtual_folder(map, archive)?;
+    let build = (archive.builds.len() == 1).then(|| archive.builds[0].as_str());
+    let library = build.and_then(|_| Path::new(&archive.directory).parent());
+    let read = |name: &str, diagnostics: &mut Vec<String>| match weather_preset(
+        inventory, name, library, build,
+    ) {
+        Ok(bytes) => bytes,
+        Err(reason) => {
+            diagnostics.push(format!("Could not read weather preset {name}: {reason}"));
+            None
+        }
+    };
+    let weather = read(&format!("{folder}/weather/weather.xml"), diagnostics)?;
+    let weather = String::from_utf8_lossy(&weather);
+    let marker = format!("clientstate=\"{STATE}\"");
+    let block = weather.find(&marker).map(|at| {
+        let rest = &weather[at..];
+        &rest[..rest.find("</WeatherState>").unwrap_or(rest.len())]
+    })?;
+    let preset = |element: &str, attribute: &str| {
+        let at = block.find(&format!("<{element} "))?;
+        let marker = format!(" {attribute}=\"");
+        let rest = &block[at..];
+        let rest = &rest[..rest.find('>').unwrap_or(rest.len())];
+        let start = rest.find(&marker)? + marker.len();
+        let name = &rest[start..start + rest[start..].find('"')?];
+        // Bare names live beside weather.xml; others are game-root paths.
+        Some(if name.contains('/') {
+            format!("{name}.xml")
+        } else {
+            format!("{folder}/weather/{name}.xml")
+        })
+    };
+    let (tod_name, env_name) = (preset("TimeOfDay", "tod"), preset("Environment", "env"));
+    let areas = crate::level_atmosphere::weather_state_areas(layers, STATE);
+    if areas.is_empty() {
+        diagnostics.push(format!(
+            "weather.xml has an \"{STATE}\" client state, but no mission area selects it."
+        ));
+        return None;
+    }
+    let time_of_day = tod_name.as_deref().and_then(|name| {
+        let parsed = level_environment::TimeOfDay::parse(&read(name, diagnostics)?);
+        parsed
+            .map_err(|reason| diagnostics.push(format!("{name} unsupported: {reason}")))
+            .ok()
+    });
+    let fog_profile = env_name.as_deref().and_then(|name| {
+        let parsed = level_environment::FogProfile::parse(&read(name, diagnostics)?);
+        parsed
+            .map_err(|reason| diagnostics.push(format!("{name} Fog unsupported: {reason}")))
+            .ok()
+    });
+    if time_of_day.is_none() && fog_profile.is_none() {
+        return None;
+    }
+    diagnostics.push(format!(
+        "Interior weather \"{STATE}\": {} with {} inside {} mission areas; used while the camera is inside them.",
+        tod_name.as_deref().filter(|_| time_of_day.is_some()).unwrap_or("outdoor TimeOfDay"),
+        env_name.as_deref().filter(|_| fog_profile.is_some()).unwrap_or("outdoor fog"),
+        areas.len()
+    ));
+    Some(crate::world_instances::InteriorWeather {
+        time_of_day: time_of_day.map(std::sync::Arc::new),
+        fog_profile,
+        areas,
+    })
+}
+
 fn authored_fx_catalog(
     root: &Path,
     inventory: &Inventory,
@@ -782,6 +886,29 @@ fn compiled_terrain_objects(
         ));
     }
     (objects, skipped)
+}
+
+/// Merged grass and small rocks, one draw-only instance list per model.
+fn merged_mesh_groups(
+    terrain: &evolve_core::CompiledTerrain,
+    merged: &[evolve_core::MergedMeshInstance],
+) -> Vec<crate::level_scene_renderer::BulkInstances> {
+    let mut groups = std::collections::BTreeMap::<usize, Vec<_>>::new();
+    for instance in merged {
+        groups
+            .entry(instance.group)
+            .or_default()
+            .push(instance.transform());
+    }
+    groups
+        .into_iter()
+        .filter_map(|(group, transforms)| {
+            Some(crate::level_scene_renderer::BulkInstances {
+                model: terrain.vegetation_groups.get(group)?.clone(),
+                transforms,
+            })
+        })
+        .collect()
 }
 
 fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), String> {
@@ -1326,7 +1453,7 @@ fn open_selected(
             active_layers.len()
         ));
     }
-    let water = match crate::level_atmosphere::authored_water(&archive, &sources) {
+    let mut water = match crate::level_atmosphere::authored_water(&archive, &sources) {
         Ok(water) => {
             diagnostics.push(format!("Original water volumes: {}.", water.len()));
             water
@@ -1506,6 +1633,7 @@ fn open_selected(
     }
     // A Legacy-ported map has no editor heightmap; its compiled terrain.dat
     // carries the heightmap, brushes and vegetation instead.
+    let mut bulk_instances = Vec::new();
     let compiled_terrain = match (&chosen.terrain, &chosen.compiled_terrain) {
         (None, Some(relative)) => {
             let path = verified_source(&root, relative, 256 * 1024 * 1024)?;
@@ -1530,8 +1658,37 @@ fn open_selected(
                         .map(|bytes| non_default_weather_layers(&bytes))
                         .unwrap_or_default();
                     let (objects, skipped) = compiled_terrain_objects(&compiled, &excluded);
+                    let baked_decals = crate::level_atmosphere::compiled_decals(
+                        &archive, &compiled, &excluded, &decals,
+                    )
+                    .unwrap_or_default();
+                    let baked_water =
+                        crate::level_atmosphere::compiled_water(&archive, &compiled, &excluded)
+                            .unwrap_or_default();
+                    let merged_files = inventory
+                        .entries
+                        .iter()
+                        .filter(|entry| {
+                            let lower = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
+                            let lower = lower.strip_prefix("files/").unwrap_or(&lower);
+                            lower.starts_with("terrain/merged_meshes_sectors/")
+                                && lower.ends_with(".dat")
+                        })
+                        .filter_map(|entry| {
+                            verified_source(&root, Path::new(&entry.relative_path), 64 << 20).ok()
+                        })
+                        .collect::<Vec<_>>();
+                    let merged = match evolve_core::read_merged_mesh_sectors(&merged_files) {
+                        Ok(merged) => merged,
+                        Err(error) => {
+                            diagnostics.push(format!(
+                                "Original merged grass sectors could not be decoded: {error}"
+                            ));
+                            Vec::new()
+                        }
+                    };
                     diagnostics.push(format!(
-                        "Original compiled terrain.dat v{}: {}×{} m heightmap ({} hole samples), {} brushes and {} vegetation instances placed{}; {} merged-mesh cells (grass streamed from merged_meshes_sectors) and {} decal/road/water/light records not drawn from it{}.",
+                        "Original compiled terrain.dat v{}: {}×{} m heightmap ({} hole samples), {} brushes and {} vegetation instances placed{}; {} decals and road pieces, {} water surfaces and {} merged grass/rock instances from {} sector files; {} light/fog records not drawn{}.",
                         compiled.version,
                         compiled.units as f32 * compiled.unit_size,
                         compiled.units as f32 * compiled.unit_size,
@@ -1543,17 +1700,23 @@ fn open_selected(
                         } else {
                             String::new()
                         },
-                        compiled.merged_mesh_cells,
+                        baked_decals.iter().map(|batch| batch.instances.len()).sum::<usize>(),
+                        baked_water.len(),
+                        merged.len(),
+                        merged_files.len(),
                         compiled.other_records,
                         if compiled.skipped_blocks > 0 {
                             format!(
-                                "; {} octree blocks ended in an unknown record type and their remainder was skipped",
+                                "; {} octree blocks could not be framed and were skipped",
                                 compiled.skipped_blocks
                             )
                         } else {
                             String::new()
                         },
                     ));
+                    decals.extend(baked_decals);
+                    water.extend(baked_water);
+                    bulk_instances = merged_mesh_groups(&compiled, &merged);
                     scene
                         .get_or_insert_with(|| LevelScene {
                             schema: 1,
@@ -1736,6 +1899,7 @@ fn open_selected(
                 Some((
                     RenderMesh {
                         vertex_alpha: None,
+                        vertex_color: None,
                         info: ModelInfo {
                             format: "CryEngine Heightmap.dat".into(),
                             version: 1,
@@ -1765,6 +1929,7 @@ fn open_selected(
                 Some((
                     RenderMesh {
                         vertex_alpha: None,
+                        vertex_color: None,
                         info: ModelInfo {
                             format: "CryEngine compiled terrain.dat".into(),
                             version: u32::from(compiled.version),
@@ -1800,6 +1965,7 @@ fn open_selected(
         terrain.as_ref().map(|(mesh, _)| mesh),
         project_inventory.as_ref(),
         false,
+        &bulk_instances,
     )?;
     if terrain.is_some()
         && let Some(package) = &terrain_pak
@@ -1886,6 +2052,8 @@ fn open_selected(
             )),
         }
     }
+    let interior_weather =
+        authored_interior_weather(&archive, chosen, &inventory, &sources, &mut diagnostics);
     let mut resources = authored_fx_catalog(&root, &inventory, scene.as_ref());
     resources.emitters = particle_placements.len();
     diagnostics.push(resources.description());
@@ -1908,6 +2076,7 @@ fn open_selected(
         world.light_cookies = std::sync::Arc::new(light_cookies);
         world.time_of_day = original_time.map(std::sync::Arc::new);
         world.fog_profile = original_fog;
+        world.interior = interior_weather.map(std::sync::Arc::new);
         world.source_resources = resources;
         // Map assembly already runs in an operation worker. Hash source
         // image identities here so the first viewport frame never spends
@@ -2074,6 +2243,298 @@ fn terrain_pixel_report(img: &image::RgbaImage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn copy_tree(from: &Path, to: &Path) {
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                fs::create_dir_all(&target).unwrap();
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// Stage an imported map PAK's files as a Modding project, open it the way
+    /// the editor does, commit one placement move through the project save
+    /// transaction, reopen, and check only that placement moved.
+    fn project_edit_round_trip(library: &Path, archive_name: &str, target: &str) {
+        let imports = imported_library(library).unwrap();
+        let archive = imports
+            .archives
+            .iter()
+            .find(|pak| {
+                pak.name.eq_ignore_ascii_case(archive_name)
+                    && pak.source.to_ascii_lowercase().contains("moddedevolve")
+                    && (archive_name != "level.pak"
+                        || pak.source.to_ascii_lowercase().contains(target))
+            })
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        // EVOLVE_EDIT_PROJECT_OUT keeps a Legacy-ported map's edited project
+        // (Edit) and a pristine copy (Before) there for visual captures.
+        let keep = std::env::var_os("EVOLVE_EDIT_PROJECT_OUT")
+            .filter(|_| archive_name == "level.pak")
+            .map(std::path::PathBuf::from);
+        let projects_root = keep.clone().unwrap_or_else(|| temp.path().join("Projects"));
+        if let Some(keep) = &keep {
+            let _ = fs::remove_dir_all(keep.join("Edit"));
+            let _ = fs::remove_dir_all(keep.join("Before"));
+            let pristine = keep.join("Before").join("files");
+            fs::create_dir_all(&pristine).unwrap();
+            copy_tree(&Path::new(&archive.directory).join("files"), &pristine);
+        }
+        let workspace = projects_root.join("Edit");
+        let files = workspace.join("files");
+        fs::create_dir_all(&files).unwrap();
+        copy_tree(&Path::new(&archive.directory).join("files"), &files);
+        fs::write(
+            workspace.join(".evolve-pak-workspace.json"),
+            serde_json::json!({"version": 1, "entries": []}).to_string(),
+        )
+        .unwrap();
+        let project = ProjectRow {
+            label: "Edit".into(),
+            target: format!("{target}/{archive_name}"),
+            source_build: String::new(),
+            status: "Draft".into(),
+            details: String::new(),
+            workspace: workspace.clone(),
+            modified: vec![],
+            changed_known: true,
+            enabled: false,
+        };
+        let opened = open_project(project.clone(), 0, library).unwrap();
+        let scene = opened.scene.as_ref().expect("project scene");
+        let object = scene
+            .objects
+            .iter()
+            .find(|object| {
+                object.model.to_ascii_lowercase().ends_with(".cgf")
+                    && !opened.duplicate_guids.contains(&object.id)
+                    && Path::new(&object.layer).extension().is_some_and(|ext| {
+                        ext.eq_ignore_ascii_case("lyr") || ext.eq_ignore_ascii_case("xml")
+                    })
+            })
+            .expect("an editable placement")
+            .clone();
+        let source = files.join(&object.layer);
+        let original = fs::read(&source).unwrap();
+        let member = object.layer.replace('\\', "/");
+        fs::write(
+            workspace.join(".evolve-pak-workspace.json"),
+            serde_json::json!({"version": 1, "entries": [{
+                "path": member,
+                "format": "raw",
+                "sha256": format!("{:x}", Sha256::digest(&original)),
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        let mut moved = object.local;
+        moved.position[0] += 1.0;
+        let edited = evolve_core::scene_authoring::edit_native_layer_bytes(
+            &original,
+            &evolve_core::scene_authoring::LayerAuthoringEdit::Transform {
+                guid: object.id.clone(),
+                transform: moved,
+            },
+        )
+        .unwrap();
+        assert_ne!(edited, original);
+        assert!(
+            crate::modding_projects::save_level_member_checked(
+                &project,
+                &projects_root,
+                &member,
+                &original,
+                &edited,
+            )
+            .unwrap()
+        );
+        let reopened = open_project(project, 0, library).unwrap();
+        let after = reopened.scene.as_ref().unwrap();
+        assert_eq!(after.objects.len(), scene.objects.len());
+        for (before, now) in scene.objects.iter().zip(&after.objects) {
+            assert_eq!(before.id, now.id);
+            if before.id == object.id {
+                assert_eq!(now.local.position, moved.position, "{}", object.name);
+            } else {
+                assert_eq!(before.local, now.local, "{} moved", before.name);
+            }
+        }
+        assert!(reopened.full_scene.is_some());
+        println!(
+            "{archive_name}: moved {} ({}) in {}; {} objects",
+            object.name,
+            object.kind,
+            object.layer,
+            after.objects.len()
+        );
+        // Duplicate, add geometry and sculpt terrain the way the editor's
+        // buttons do, committing each through the same project save.
+        let reopen = || open_project(project_row(&workspace, target, archive_name), 0, library);
+        let commit = |member: &str, original: &[u8], edited: &[u8]| -> Result<(), String> {
+            fs::write(
+                workspace.join(".evolve-pak-workspace.json"),
+                serde_json::json!({"version": 1, "entries": [{
+                    "path": member,
+                    "format": "raw",
+                    "sha256": format!("{:x}", Sha256::digest(original)),
+                }]})
+                .to_string(),
+            )
+            .unwrap();
+            crate::modding_projects::save_level_member_checked(
+                &project_row(&workspace, target, archive_name),
+                &projects_root,
+                member,
+                original,
+                edited,
+            )
+            .map(|_| ())
+        };
+        type Make<'a> = &'a dyn Fn(String) -> evolve_core::scene_authoring::LayerAuthoringEdit;
+        let xml_edit = |anchor: &evolve_core::PlacedObject, make: Make| -> Result<(), String> {
+            let current = reopen()?;
+            let scene = current.scene.as_ref().ok_or("no scene")?;
+            let guid = crate::fresh_unique_authored_level_guid(&anchor.id, Some(scene))?;
+            let original = fs::read(files.join(&anchor.layer)).map_err(|e| e.to_string())?;
+            let edited =
+                evolve_core::scene_authoring::edit_native_layer_bytes(&original, &make(guid))
+                    .map_err(|e| e.to_string())?;
+            commit(&anchor.layer.replace('\\', "/"), &original, &edited)?;
+            let count = reopen()?.scene.as_ref().ok_or("no scene")?.objects.len();
+            (count == scene.objects.len() + 1)
+                .then_some(())
+                .ok_or(format!("{count} objects after the edit"))
+        };
+        let duplicate = xml_edit(&object, &|new_guid| {
+            evolve_core::scene_authoring::LayerAuthoringEdit::Duplicate {
+                guid: object.id.clone(),
+                new_guid,
+                name: format!("{}_copy", object.name),
+            }
+        });
+        // Adding geometry clones a selected Brush placement as its template;
+        // pick the first placement the editor would accept as one.
+        let mut layers = std::collections::HashMap::<String, Vec<u8>>::new();
+        let brush = scene
+            .objects
+            .iter()
+            .filter(|candidate| candidate.model.to_ascii_lowercase().ends_with(".cgf"))
+            .take(500)
+            .find(|candidate| {
+                let bytes = layers
+                    .entry(candidate.layer.clone())
+                    .or_insert_with(|| fs::read(files.join(&candidate.layer)).unwrap_or_default());
+                evolve_core::scene_authoring::edit_native_layer_bytes(
+                    bytes,
+                    &evolve_core::scene_authoring::LayerAuthoringEdit::Insert {
+                        anchor_guid: candidate.id.clone(),
+                        new_guid: "{00000000-0000-4000-8000-000000000001}".into(),
+                        name: "probe".into(),
+                        model: candidate.model.replace('\\', "/"),
+                        transform: candidate.local,
+                    },
+                )
+                .is_ok()
+                    && !opened.duplicate_guids.contains(&candidate.id)
+                    && Path::new(&candidate.layer).extension().is_some_and(|ext| {
+                        ext.eq_ignore_ascii_case("lyr") || ext.eq_ignore_ascii_case("xml")
+                    })
+            })
+            .unwrap_or(&object)
+            .clone();
+        let mut added = brush.local;
+        added.position[1] += 6.0;
+        let add = xml_edit(&brush, &|new_guid| {
+            evolve_core::scene_authoring::LayerAuthoringEdit::Insert {
+                anchor_guid: brush.id.clone(),
+                new_guid,
+                name: "added_geometry".into(),
+                model: brush.model.replace('\\', "/"),
+                transform: added,
+            }
+        });
+        let terrain = (|| -> Result<(), String> {
+            let map = &opened.maps[opened.index];
+            let relative = map
+                .terrain
+                .clone()
+                .or_else(|| map.compiled_terrain.clone())
+                .ok_or("Selected map has no Heightmap.dat or terrain.dat")?;
+            let member = relative.to_string_lossy().replace('\\', "/");
+            let original = fs::read(files.join(&relative)).map_err(|e| e.to_string())?;
+            let (before, info) = opened.terrain.as_ref().ok_or("no terrain")?;
+            // EVOLVE_EDIT_SCULPT="x,y" places the kept project's brush.
+            let spot = keep
+                .as_ref()
+                .and_then(|_| std::env::var("EVOLVE_EDIT_SCULPT").ok())
+                .and_then(|spot| {
+                    let (x, y) = spot.split_once(',')?;
+                    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+                })
+                .unwrap_or((info.width / 2, info.height / 2));
+            let brush = evolve_core::TerrainBrushEdit::Sculpt {
+                x: spot.0,
+                y: spot.1,
+                radius: 12,
+                delta_height: 8.0,
+            };
+            let edited = if map.terrain.is_some() {
+                evolve_core::edit_terrain_bytes(&original, brush)
+            } else {
+                evolve_core::edit_compiled_terrain_bytes(&original, brush)
+            }
+            .map_err(|e| e.to_string())?;
+            commit(&member, &original, &edited)?;
+            let again = reopen()?;
+            let after = &again.terrain.as_ref().ok_or("terrain gone")?.0;
+            (before.positions != after.positions)
+                .then_some(())
+                .ok_or("terrain unchanged after reopen".into())
+        })();
+        println!("{archive_name}: duplicate {duplicate:?}; add {add:?}; terrain {terrain:?}");
+        duplicate.unwrap();
+        add.unwrap();
+        terrain.unwrap();
+        let last = reopen().unwrap();
+        for object in &last.scene.as_ref().unwrap().objects {
+            if object.name.ends_with("_copy") || object.name == "added_geometry" {
+                println!(
+                    "{archive_name}: {} {} at {:?}",
+                    object.name, object.model, object.world.position
+                );
+            }
+        }
+    }
+
+    fn project_row(workspace: &Path, target: &str, archive_name: &str) -> ProjectRow {
+        ProjectRow {
+            label: "Edit".into(),
+            target: format!("{target}/{archive_name}"),
+            source_build: String::new(),
+            status: "Draft".into(),
+            details: String::new(),
+            workspace: workspace.to_path_buf(),
+            modified: vec![],
+            changed_known: true,
+            enabled: false,
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local read-only imports (EVOLVE_BENCH_LIBRARY)"]
+    fn imported_maps_round_trip_project_edits() {
+        let library = std::env::var("EVOLVE_BENCH_LIBRARY").unwrap();
+        let library = Path::new(&library);
+        project_edit_round_trip(library, "levels_tutorial.pak", "levels");
+        // A Legacy-ported map: compiled mission plus terrain.dat in level.pak.
+        project_edit_round_trip(library, "level.pak", "ice_alpine");
+    }
 
     #[test]
     fn project_cross_pak_lookup_requires_exact_original_and_selected_build() {

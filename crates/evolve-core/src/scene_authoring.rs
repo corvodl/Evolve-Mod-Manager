@@ -389,6 +389,97 @@ fn transform_target(
     Ok(())
 }
 
+/// Engine-exported mission XML (a Legacy-ported map's mission_*.xml) names an
+/// Entity by a numeric EntityId plus a 64-bit hex EntityGuid, where editor
+/// layers use one Id GUID.
+fn mission_entity(element: &BytesStart<'_>) -> Result<bool, SceneError> {
+    Ok(value(element, b"Id")?.is_none() && value(element, b"EntityId")?.is_some())
+}
+
+/// A new EntityGuid no entity in this file uses yet. Shipped missions' GUIDs
+/// all begin with hex 4; new ones follow suit.
+fn fresh_entity_guid(events: &[Event<'static>], seed: &str) -> Result<String, SceneError> {
+    use sha2::{Digest, Sha256};
+    let mut taken = HashSet::new();
+    for event in events {
+        if let Event::Start(element) | Event::Empty(element) = event
+            && let Some(guid) = value(element, b"EntityGuid")?
+        {
+            taken.insert(guid.to_ascii_uppercase());
+        }
+    }
+    for attempt in 0u32..256 {
+        let digest = Sha256::digest(format!("{seed}:{attempt}:{}", events.len()));
+        let raw = u64::from_le_bytes(digest[..8].try_into().map_err(|_| SceneError::Limits)?);
+        let guid = format!(
+            "{:016X}",
+            (raw & 0x0FFF_FFFF_FFFF_FFFF) | 0x4000_0000_0000_0000
+        );
+        if !taken.contains(&guid) {
+            return Ok(guid);
+        }
+    }
+    Err(SceneError::Limits)
+}
+
+/// Attributes naming a copy of `element` as `new_id`, in its own ID scheme.
+fn identity(
+    events: &[Event<'static>],
+    element: &BytesStart<'_>,
+    new_id: &str,
+) -> Result<Vec<(&'static str, String)>, SceneError> {
+    if mission_entity(element)? {
+        if new_id.is_empty() || !new_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(SceneError::Xml(
+                "A mission entity copy needs a new numeric EntityId".into(),
+            ));
+        }
+        for event in events {
+            if let Event::Start(other) | Event::Empty(other) = event
+                && value(other, b"EntityId")?.is_some_and(|id| id == new_id)
+            {
+                return Err(SceneError::Xml(format!(
+                    "EntityId {new_id} is already in use"
+                )));
+            }
+        }
+        Ok(vec![
+            ("EntityId", new_id.to_owned()),
+            ("EntityGuid", fresh_entity_guid(events, new_id)?),
+        ])
+    } else {
+        Ok(vec![("Id", new_id.to_owned())])
+    }
+}
+
+/// A GeomEntity for a mission: a copy of the file's first top-level
+/// GeomEntity (keeping its Properties), or a bare one when there is none.
+fn mission_geometry_template(events: &[Event<'static>]) -> Result<Vec<Event<'static>>, SceneError> {
+    let links = entity_references(events)?;
+    for (index, event) in events.iter().enumerate() {
+        let (Event::Start(element) | Event::Empty(element)) = event else {
+            continue;
+        };
+        if links.contains(&index)
+            || !element.name().as_ref().eq_ignore_ascii_case(b"Entity")
+            || !value(element, b"EntityClass")?
+                .is_some_and(|class| class.eq_ignore_ascii_case("GeomEntity"))
+            || value(element, b"ParentId")?.is_some()
+        {
+            continue;
+        }
+        let Some(id) = value(element, b"EntityId")? else {
+            continue;
+        };
+        let (start, end) = find_object(events, &id)?;
+        return Ok(events[start..=end].to_vec());
+    }
+    let mut bare = BytesStart::new("Entity");
+    bare.push_attribute(("EntityClass", "GeomEntity"));
+    bare.push_attribute(("CastShadowMinSpec", "1"));
+    Ok(vec![Event::Empty(bare.into_owned())])
+}
+
 /// Patch a single original authored layer, not an entire flattened scene.
 /// The caller must import the output through a managed Modding project.
 /// A model-reference edit never modifies geometry assets and no source PAK
@@ -438,52 +529,96 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             {
                 return Err(SceneError::Limits);
             }
-            // Evolve's authored map geometry is an <Object Type="Brush">
-            // with a Prefab source-mesh reference, not an invented <Object
-            // Geometry="..."/> record. Clone only a real same-layer Brush
-            // template so native Layer and renderer/collision metadata survive.
-            let source_start = match &events[start] {
-                Event::Start(element) | Event::Empty(element) => element,
+            let anchor_start = match &events[start] {
+                Event::Start(element) | Event::Empty(element) => element.clone(),
                 _ => return Err(SceneError::Limits),
             };
-            if value(source_start, b"Type")?
-                .is_none_or(|value| !value.eq_ignore_ascii_case("Brush"))
-                || value(source_start, b"Prefab")?.is_none()
-                || events
-                    .iter()
-                    .take(end)
-                    .skip(start + 1)
-                    .any(|event| placement_tag(event) && opening(event))
-            {
-                return Err(SceneError::Xml(
+            if mission_entity(&anchor_start)? {
+                // A compiled mission has no Brush records (static geometry is
+                // baked into terrain.dat); geometry it adds is a GeomEntity.
+                let normalized = transform.normalize()?;
+                let fmt = |parts: &[f32]| {
+                    parts
+                        .iter()
+                        .map(f32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                let mut cloned = mission_geometry_template(&events)?;
+                let template = match &cloned[0] {
+                    Event::Start(element) | Event::Empty(element) => element.clone(),
+                    _ => return Err(SceneError::Limits),
+                };
+                let mut changes = identity(&events, &anchor_start, new_guid)?;
+                changes.extend([
+                    ("Name", name.to_owned()),
+                    ("Geometry", model.to_owned()),
+                    ("Pos", fmt(&normalized.position)),
+                    ("Rotate", fmt(&normalized.quaternion)),
+                    ("Scale", fmt(&normalized.scale)),
+                ]);
+                if let Some(layer) = value(&anchor_start, b"Layer")? {
+                    changes.push(("Layer", layer));
+                }
+                if let Some(parent) = value(&anchor_start, b"ParentId")? {
+                    changes.push(("ParentId", parent));
+                }
+                if value(&template, b"Material")?.is_some() {
+                    changes.push(("Material", String::new()));
+                }
+                if value(&template, b"HiddenInGame")?.is_some() {
+                    changes.push(("HiddenInGame", "0".into()));
+                }
+                cloned[0] = replace_start(&cloned[0], &changes)?;
+                events.splice(end + 1..end + 1, cloned);
+            } else {
+                // Evolve's authored map geometry is an <Object Type="Brush">
+                // with a Prefab source-mesh reference, not an invented <Object
+                // Geometry="..."/> record. Clone only a real same-layer Brush
+                // template so native Layer and renderer/collision metadata survive.
+                let source_start = match &events[start] {
+                    Event::Start(element) | Event::Empty(element) => element,
+                    _ => return Err(SceneError::Limits),
+                };
+                if value(source_start, b"Type")?
+                    .is_none_or(|value| !value.eq_ignore_ascii_case("Brush"))
+                    || value(source_start, b"Prefab")?.is_none()
+                    || events
+                        .iter()
+                        .take(end)
+                        .skip(start + 1)
+                        .any(|event| placement_tag(event) && opening(event))
+                {
+                    return Err(SceneError::Xml(
                     "Select an authored Brush placement as the source template for geometry insertion".into(),
                 ));
+                }
+                let normalized = transform.normalize()?;
+                let fmt = |parts: &[f32]| {
+                    parts
+                        .iter()
+                        .map(f32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                let mut cloned = events[start..=end].to_vec();
+                // Never carry an unrelated old mesh's explicit material override
+                // to the new Prefab. Only clear it if the selected Brush had one:
+                // a source with no Material attribute must remain that way.
+                let mut changes = vec![
+                    ("Id", new_guid.to_owned()),
+                    ("Name", name.to_owned()),
+                    ("Prefab", model.to_owned()),
+                    ("Pos", fmt(&normalized.position)),
+                    ("Rotate", fmt(&normalized.quaternion)),
+                    ("Scale", fmt(&normalized.scale)),
+                ];
+                if value(source_start, b"Material")?.is_some() {
+                    changes.push(("Material", String::new()));
+                }
+                cloned[0] = replace_start(&cloned[0], &changes)?;
+                events.splice(end + 1..end + 1, cloned);
             }
-            let normalized = transform.normalize()?;
-            let fmt = |parts: &[f32]| {
-                parts
-                    .iter()
-                    .map(f32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            };
-            let mut cloned = events[start..=end].to_vec();
-            // Never carry an unrelated old mesh's explicit material override
-            // to the new Prefab. Only clear it if the selected Brush had one:
-            // a source with no Material attribute must remain that way.
-            let mut changes = vec![
-                ("Id", new_guid.to_owned()),
-                ("Name", name.to_owned()),
-                ("Prefab", model.to_owned()),
-                ("Pos", fmt(&normalized.position)),
-                ("Rotate", fmt(&normalized.quaternion)),
-                ("Scale", fmt(&normalized.scale)),
-            ];
-            if value(source_start, b"Material")?.is_some() {
-                changes.push(("Material", String::new()));
-            }
-            cloned[0] = replace_start(&cloned[0], &changes)?;
-            events.splice(end + 1..end + 1, cloned);
         }
         LayerAuthoringEdit::Transform { guid, transform } => {
             let normalized = edit_level_transform(&original, guid, *transform)?
@@ -529,11 +664,17 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
                     .objects
                     .iter()
                     .any(|o| o.id.eq_ignore_ascii_case(new_guid))
-                || events
-                    .iter()
-                    .take(end)
-                    .skip(start + 1)
-                    .any(|e| placement_tag(e) && opening(e))
+                || {
+                    // An AreaShape's <Entities> list links other entities;
+                    // those links are not nested placements.
+                    let links = entity_references(&events)?;
+                    events
+                        .iter()
+                        .enumerate()
+                        .take(end)
+                        .skip(start + 1)
+                        .any(|(i, e)| placement_tag(e) && opening(e) && !links.contains(&i))
+                }
             {
                 return Err(SceneError::Limits);
             }
@@ -544,14 +685,13 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
                 .map(f32::to_string)
                 .collect::<Vec<_>>()
                 .join(",");
-            cloned[0] = replace_start(
-                &cloned[0],
-                &[
-                    ("Id", new_guid.to_owned()),
-                    ("Name", name.to_owned()),
-                    ("Pos", new_pos),
-                ],
-            )?;
+            let element = match &events[start] {
+                Event::Start(element) | Event::Empty(element) => element.clone(),
+                _ => return Err(SceneError::Limits),
+            };
+            let mut changes = identity(&events, &element, new_guid)?;
+            changes.extend([("Name", name.to_owned()), ("Pos", new_pos)]);
+            cloned[0] = replace_start(&cloned[0], &changes)?;
             events.splice(end + 1..end + 1, cloned);
         }
         LayerAuthoringEdit::Shape { points, .. } => {
