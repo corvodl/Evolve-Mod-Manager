@@ -175,6 +175,112 @@ fn parse_raw(source: &[u8]) -> Result<(TerrainInfo, Vec<u16>), TerrainError> {
     ))
 }
 
+/// The sample columns (or rows) a render grid of this stride keeps, in vertex
+/// order. Terrain meshes place vertex (i, j) at index `i * rows.len() + j`.
+pub fn render_positions(total: u32, stride: u32) -> Vec<u32> {
+    positions(total, stride.max(1))
+}
+
+/// Final heights (and optionally surfaces) for a rectangle of samples: what an
+/// interactive brush leaves behind, written to the file in one edit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerrainPatch {
+    /// First sample along X and Y.
+    pub x: u32,
+    pub y: u32,
+    /// Samples along X and Y.
+    pub width: u32,
+    pub height: u32,
+    /// World heights in metres, X-major: sample (x + i, y + j) is `i * height + j`.
+    pub heights: Vec<f32>,
+    /// Same order; `None` keeps a sample's surface. Heightmap.dat takes
+    /// authored LayerIds, terrain.dat SurfaceTypeIDs. Empty: no paint.
+    pub surfaces: Vec<Option<u8>>,
+}
+
+impl TerrainPatch {
+    pub(crate) fn check(&self, width: u32, height: u32) -> Result<(), TerrainError> {
+        let count = self.width as usize * self.height as usize;
+        if self.width == 0
+            || self.height == 0
+            || self.x.checked_add(self.width).is_none_or(|end| end > width)
+            || self
+                .y
+                .checked_add(self.height)
+                .is_none_or(|end| end > height)
+            || self.heights.len() != count
+            || !(self.surfaces.is_empty() || self.surfaces.len() == count)
+            || self.heights.iter().any(|h| !h.is_finite())
+        {
+            return Err(TerrainError::Limits);
+        }
+        Ok(())
+    }
+}
+
+/// Grid info, heights and the optional LayerId bitmap of a Heightmap.dat.
+pub type TerrainSamples = (TerrainInfo, Vec<f32>, Option<Vec<u8>>);
+
+/// Every Heightmap.dat sample at full resolution: world heights (X-major,
+/// `x * height + y`) and, when the file has one, the LayerId bitmap.
+pub fn decode_terrain_samples(source: &[u8]) -> Result<TerrainSamples, TerrainError> {
+    let (info, samples) = parse_raw(source)?;
+    let heights = samples
+        .iter()
+        .map(|raw| f32::from(*raw) * info.max_height / 65535.0)
+        .collect();
+    let paint = decode_terrain_paint_bytes(source)?.map(|paint| paint.ids);
+    Ok((info, heights, paint))
+}
+
+/// Write a [`TerrainPatch`] into Heightmap.dat. Heights are quantized as the
+/// file stores them; painted LayerIds must each name one authored layer.
+pub fn patch_terrain_bytes(source: &[u8], patch: &TerrainPatch) -> Result<Vec<u8>, TerrainError> {
+    let (info, _) = parse_raw(source)?;
+    patch.check(info.width, info.height)?;
+    let xml_size = usize::from(u16::from_le_bytes([source[1], source[2]]));
+    let height_offset = 3 + xml_size + 4 + SECTION.len() + 12;
+    let samples = info.width as usize * info.height as usize;
+    let paint_offset = height_offset + samples * 2 + NEXT.len() + 12;
+    let painting = patch.surfaces.iter().any(Option::is_some);
+    if painting {
+        let original = decode_terrain_paint_bytes(source)?
+            .ok_or_else(|| TerrainError::Format("Terrain has no authored LayerId bitmap".into()))?;
+        for id in patch.surfaces.iter().flatten() {
+            if original
+                .layers
+                .iter()
+                .filter(|layer| layer.id == *id)
+                .count()
+                != 1
+            {
+                return Err(TerrainError::Format(format!(
+                    "LayerId {id} must refer to exactly one authored terrain layer"
+                )));
+            }
+        }
+    }
+    let mut output = source.to_vec();
+    for i in 0..patch.width as usize {
+        for j in 0..patch.height as usize {
+            let at = i * patch.height as usize + j;
+            let index = (patch.x as usize + i) * info.height as usize + patch.y as usize + j;
+            let height = patch.heights[at].clamp(0.0, info.max_height);
+            let raw = (height * 65535.0 / info.max_height).round() as u16;
+            let offset = height_offset + index * 2;
+            output[offset..offset + 2].copy_from_slice(&raw.to_le_bytes());
+            if let Some(Some(id)) = patch.surfaces.get(at) {
+                output[paint_offset + index] = *id;
+            }
+        }
+    }
+    let (after, _) = parse_raw(&output)?;
+    if after.width != info.width || after.height != info.height {
+        return Err(TerrainError::Limits);
+    }
+    Ok(output)
+}
+
 fn positions(total: u32, stride: u32) -> Vec<u32> {
     let mut positions = (0..total).step_by(stride as usize).collect::<Vec<_>>();
     if positions.last().copied() != Some(total - 1) {
@@ -807,6 +913,41 @@ mod tests {
                 },
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn terrain_patch_writes_exact_heights_and_samples_round_trip() {
+        let source = sample_data();
+        let (info, heights, paint) = decode_terrain_samples(&source).unwrap();
+        assert_eq!((info.width, info.height, heights.len()), (16, 16, 256));
+        assert!(paint.is_none());
+        let patch = TerrainPatch {
+            x: 3,
+            y: 4,
+            width: 2,
+            height: 3,
+            heights: vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
+            surfaces: Vec::new(),
+        };
+        let edited = patch_terrain_bytes(&source, &patch).unwrap();
+        assert_eq!(edited.len(), source.len());
+        let (_, after, _) = decode_terrain_samples(&edited).unwrap();
+        // Sample (4, 6) is patch index 1 * 3 + 2.
+        assert!((after[4 * 16 + 6] - 15.0).abs() < 100.0 / 65535.0);
+        assert_eq!(after[0], heights[0]);
+        let outside = TerrainPatch {
+            x: 15,
+            ..patch.clone()
+        };
+        assert!(patch_terrain_bytes(&source, &outside).is_err());
+        let painting = TerrainPatch {
+            surfaces: vec![Some(3); 6],
+            ..patch
+        };
+        assert!(
+            patch_terrain_bytes(&source, &painting).is_err(),
+            "no paint bitmap"
         );
     }
 

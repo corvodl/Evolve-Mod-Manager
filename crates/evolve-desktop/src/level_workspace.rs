@@ -287,6 +287,10 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 .level_selected
                 .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
                 .map(|o| o.world.position),
+            brush: state.level_project.is_some()
+                && !state.level_read_only
+                && state.level_tool != super::terrain_brush::LevelTool::Select,
+            brush_ring: state.terrain_brush_ring.clone(),
             editable: state.level_project.is_some()
                 && state
                     .level_selected

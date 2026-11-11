@@ -116,6 +116,26 @@ impl Camera {
 
 /// World camera basis. The same yaw/pitch axes are used by the original
 /// renderer and the scene triangle picker.
+/// The unit world ray through a viewport point given in normalized device
+/// coordinates (-1..1, Y up), matching the renderer's projection.
+pub(super) fn view_ray(
+    camera: Camera,
+    yaw: f32,
+    pitch: f32,
+    aspect: f32,
+    zoom: f32,
+    point: [f32; 2],
+) -> Option<[f32; 3]> {
+    let (forward, right, up) = basis(yaw, pitch);
+    let t =
+        (camera.fov_degrees.clamp(25.0, 110.0).to_radians() * 0.5).tan() / zoom.clamp(0.2, 80.0);
+    let direction: [f32; 3] = std::array::from_fn(|i| {
+        forward[i] + point[0] * t * aspect * right[i] + point[1] * t * up[i]
+    });
+    let length = direction.iter().map(|v| v * v).sum::<f32>().sqrt();
+    (length > 1e-6 && length.is_finite()).then(|| direction.map(|v| v / length))
+}
+
 pub(super) fn basis(yaw: f32, pitch: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
     let (sy, cy) = yaw.to_radians().sin_cos();
     let (sp, cp) = pitch.to_radians().sin_cos();

@@ -98,7 +98,8 @@ pub use client_hook::{
 pub use compiled_terrain::{
     CompiledBrush, CompiledDecal, CompiledRoad, CompiledTerrain, CompiledVegetation, CompiledWater,
     HOLE_ID, MergedMeshInstance, decode_compiled_terrain, decode_merged_mesh_sector,
-    edit_compiled_terrain_bytes, read_compiled_terrain, read_merged_mesh_sectors,
+    edit_compiled_terrain_bytes, patch_compiled_terrain_bytes, read_compiled_terrain,
+    read_merged_mesh_sectors,
 };
 pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
 pub use dds::{
@@ -185,9 +186,10 @@ pub use signed_pak::{
 pub use skin_preview::{VerifiedCafAssembly, VerifiedCafSkin};
 pub use terrain::{
     MAX_RENDER_GRID, TerrainBrushEdit, TerrainError, TerrainInfo, TerrainLayerDefinition,
-    TerrainMesh, TerrainPaintMap, TerrainSurfaceType, TerrainTextureHeader, TerrainTextureLayer,
-    decode_terrain_bytes, decode_terrain_paint_bytes, edit_terrain_bytes, export_terrain_obj,
-    read_terrain, read_terrain_paint, read_terrain_texture_header,
+    TerrainMesh, TerrainPaintMap, TerrainPatch, TerrainSurfaceType, TerrainTextureHeader,
+    TerrainTextureLayer, decode_terrain_bytes, decode_terrain_paint_bytes, decode_terrain_samples,
+    edit_terrain_bytes, export_terrain_obj, patch_terrain_bytes, read_terrain, read_terrain_paint,
+    read_terrain_texture_header, render_positions,
 };
 pub use terrain_tiles::{
     TerrainTextureAtlas, read_terrain_rgb24_tiles, read_terrain_texture_atlas,

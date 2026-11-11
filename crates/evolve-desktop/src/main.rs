@@ -82,6 +82,7 @@ mod staged_library;
 mod standard_user_launch;
 mod storage_usage;
 mod system_health;
+mod terrain_brush;
 mod terrain_material_probe;
 // Native RGB24 source-backed output stage; UI activation awaits verified\n// per-pixel Evolve paint alpha and original multi-layer shader ordering.\n#[allow(dead_code)]\nmod terrain_rebake_project;
 mod text_asset_editor;
@@ -710,6 +711,14 @@ struct State {
     level_edit_scale: String,
     level_edit_output: String,
     level_authoring: level_authoring::Fields,
+    /// The tool bar's active tool and brush in an editable project.
+    level_tool: terrain_brush::LevelTool,
+    terrain_brush: terrain_brush::BrushSettings,
+    terrain_brush_surface: String,
+    /// The project's terrain loaded for brushing; edits live here until saved.
+    terrain_session: Option<terrain_brush::TerrainSession>,
+    /// The brush outline under the mouse.
+    terrain_brush_ring: Option<Arc<Vec<[f32; 3]>>>,
     scan_cancel: Option<Arc<AtomicBool>>,
     scan_indexed: Option<Arc<AtomicUsize>>,
     preview_cache: SharedCache,
@@ -800,6 +809,8 @@ enum ViewerTab {
 enum ProjectLevelMutation {
     Xml(evolve_core::scene_authoring::LayerAuthoringEdit),
     Terrain(evolve_core::TerrainBrushEdit),
+    /// The interactive brush's edited rectangle, written in one save.
+    TerrainPatch(evolve_core::TerrainPatch),
     Vegetation(vegetation_map::VegetationEdit),
 }
 
@@ -1986,6 +1997,29 @@ impl Operation {
                             );
                         }
                     }
+                    ProjectLevelMutation::TerrainPatch(patch) => {
+                        let lower = member.to_ascii_lowercase();
+                        if lower.ends_with("heightmap.dat") {
+                            evolve_core::patch_terrain_bytes(&original, &patch)
+                                .map_err(|e| e.to_string())?
+                        } else if lower == "terrain/terrain.dat"
+                            || lower.ends_with("/terrain/terrain.dat")
+                        {
+                            let mut checked = std::collections::BTreeSet::new();
+                            for id in patch.surfaces.iter().flatten() {
+                                if checked.insert(*id) {
+                                    level_authoring::check_compiled_surface_type(&source, *id)?;
+                                }
+                            }
+                            evolve_core::patch_compiled_terrain_bytes(&original, &patch)
+                                .map_err(|e| e.to_string())?
+                        } else {
+                            return Err(
+                                "Terrain brush must target the owning Heightmap.dat or terrain.dat"
+                                    .into(),
+                            );
+                        }
+                    }
                     ProjectLevelMutation::Vegetation(change) => {
                         if !member.to_ascii_lowercase().ends_with("vegetationmap.dat") {
                             return Err(
@@ -2683,6 +2717,25 @@ enum Message {
     LevelSaveWildlifeShape,
     LevelSculptTerrain,
     LevelPaintTerrain,
+    LevelSetTool(terrain_brush::LevelTool),
+    LevelSculptMode(terrain_brush::SculptMode),
+    LevelBrushRadius(f32),
+    LevelBrushStrength(f32),
+    LevelBrushHardness(f32),
+    LevelBrushSurface(String),
+    /// A brush stroke starts where this view ray meets the ground.
+    LevelBrushPress {
+        lower: bool,
+        origin: [f32; 3],
+        direction: [f32; 3],
+    },
+    LevelBrushDrag([f32; 3], [f32; 3]),
+    LevelBrushHover(Option<([f32; 3], [f32; 3])>),
+    LevelBrushRelease,
+    LevelBrushUndo,
+    LevelBrushRedo,
+    LevelBrushSave,
+    LevelBrushDiscard,
     LevelMoveVegetation,
     LevelScaleVegetation,
     LevelDuplicateVegetation,
@@ -3471,6 +3524,35 @@ fn selected_project_terrain_source(state: &State) -> Result<PathBuf, String> {
         return Err("Unsafe terrain source member".into());
     }
     Ok(project.workspace.join("files").join(relative))
+}
+
+/// Load the open project's terrain for the brush, once per opened map.
+fn ensure_terrain_session(state: &mut State) -> Result<(), String> {
+    if state.terrain_session.is_some() {
+        return Ok(());
+    }
+    let source = selected_project_terrain_source(state)?;
+    let compiled = state
+        .library_map
+        .as_ref()
+        .and_then(|(_, maps, index)| maps.get(*index))
+        .is_some_and(|map| map.terrain.is_none() && map.compiled_terrain.is_some());
+    let render = state
+        .terrain
+        .clone()
+        .ok_or("The map's terrain is not loaded in the viewport")?;
+    let world = state
+        .level_world_source
+        .as_ref()
+        .ok_or("The map's 3D view is still loading")?;
+    let session = terrain_brush::TerrainSession::load(
+        source,
+        compiled,
+        &render,
+        world.ground_patches.clone(),
+    )?;
+    state.terrain_session = Some(session);
+    Ok(())
 }
 
 fn track_level_dirty(
@@ -6296,6 +6378,117 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 _ => unreachable!(),
             };
             return submit_level_project_edit(state, source, edit);
+        }
+        Message::LevelSetTool(tool) => {
+            if tool != terrain_brush::LevelTool::Select {
+                if let Err(reason) = ensure_terrain_session(state) {
+                    state.status = reason;
+                    return Task::none();
+                }
+                if tool == terrain_brush::LevelTool::Paint
+                    && !state
+                        .terrain_session
+                        .as_ref()
+                        .is_some_and(|session| session.can_paint())
+                {
+                    state.status = "This map's terrain has no paint layer to edit.".into();
+                    return Task::none();
+                }
+            }
+            state.level_tool = tool;
+            state.terrain_brush_ring = None;
+        }
+        Message::LevelSculptMode(mode) => state.terrain_brush.mode = mode,
+        Message::LevelBrushRadius(value) => state.terrain_brush.radius = value.clamp(0.5, 200.0),
+        Message::LevelBrushStrength(value) => state.terrain_brush.strength = value.clamp(0.01, 1.0),
+        Message::LevelBrushHardness(value) => state.terrain_brush.hardness = value.clamp(0.0, 0.95),
+        Message::LevelBrushSurface(value) => {
+            if let Ok(id) = value.trim().parse::<u8>() {
+                state.terrain_brush.surface = id;
+            }
+            state.terrain_brush_surface = value;
+        }
+        Message::LevelBrushPress {
+            lower,
+            origin,
+            direction,
+        } => {
+            let paint = state.level_tool == terrain_brush::LevelTool::Paint;
+            if state.level_tool == terrain_brush::LevelTool::Select || (paint && lower) {
+                return Task::none();
+            }
+            if let Err(reason) = ensure_terrain_session(state) {
+                state.status = reason;
+                return Task::none();
+            }
+            let settings = state.terrain_brush;
+            if let Some(session) = state.terrain_session.as_mut()
+                && let Some(at) = session.hit(origin, direction)
+            {
+                session.begin_stroke(at, lower, paint);
+                session.dab(at, &settings);
+                state.terrain_brush_ring = Some(Arc::new(session.ring(at, settings.radius)));
+            }
+        }
+        Message::LevelBrushDrag(origin, direction) => {
+            let settings = state.terrain_brush;
+            if let Some(session) = state.terrain_session.as_mut()
+                && let Some(at) = session.hit(origin, direction)
+            {
+                session.dab(at, &settings);
+                state.terrain_brush_ring = Some(Arc::new(session.ring(at, settings.radius)));
+            }
+        }
+        Message::LevelBrushHover(ray) => {
+            let radius = state.terrain_brush.radius;
+            state.terrain_brush_ring = ray.and_then(|(origin, direction)| {
+                let session = state.terrain_session.as_ref()?;
+                let at = session.hit(origin, direction)?;
+                Some(Arc::new(session.ring(at, radius)))
+            });
+        }
+        Message::LevelBrushRelease => {
+            if let Some(session) = state.terrain_session.as_mut() {
+                session.end_stroke();
+                if session.is_dirty() {
+                    state.status =
+                        "Terrain edited in the viewport. Save Terrain writes it to the project."
+                            .into();
+                }
+            }
+        }
+        Message::LevelBrushUndo | Message::LevelBrushRedo => {
+            if let Some(session) = state.terrain_session.as_mut() {
+                let done = if matches!(message, Message::LevelBrushUndo) {
+                    session.undo()
+                } else {
+                    session.redo()
+                };
+                if !done {
+                    state.status = "No terrain stroke to undo or redo.".into();
+                }
+            }
+        }
+        Message::LevelBrushDiscard => {
+            if let Some(session) = state.terrain_session.as_mut() {
+                session.discard();
+                state.status = "Unsaved terrain strokes discarded.".into();
+            }
+        }
+        Message::LevelBrushSave => {
+            let Some(session) = state.terrain_session.as_ref() else {
+                return Task::none();
+            };
+            let Some(patch) = session.patch() else {
+                state.status = "No terrain changes to save.".into();
+                return Task::none();
+            };
+            let source = session.source.clone();
+            return submit_level_project_edit(
+                state,
+                source,
+                ProjectLevelMutation::TerrainPatch(patch),
+            );
         }
         Message::LevelSculptTerrain | Message::LevelPaintTerrain => {
             let source = match selected_project_terrain_source(state) {
@@ -14704,6 +14897,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .map(|(mesh, _)| Arc::new(mesh.clone()));
                     }
                     state.terrain = loaded.terrain.map(|(_, info)| info);
+                    // A reloaded map (including after Save Terrain) starts a fresh brush session.
+                    state.terrain_session = None;
+                    state.terrain_brush_ring = None;
                     state.diffuse = None;
                     state.normal_map = None;
                     state.emissive_map = None;
