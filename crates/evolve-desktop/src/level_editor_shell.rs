@@ -26,7 +26,7 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
             .on_press(Message::LevelSetTool(value))
     };
     let mut bar = row![
-        text("â”‚").size(15).style(design::muted),
+        text("│").size(15).style(design::muted),
         tool("Select", LevelTool::Select),
         tool("Sculpt", LevelTool::Sculpt),
         tool("Paint", LevelTool::Paint),
@@ -48,13 +48,13 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
                 .on_press(Message::LevelGizmoMode(value))
         };
         bar = bar
-            .push(text("â”‚").size(15).style(design::muted))
+            .push(text("│").size(15).style(design::muted))
             .push(gizmo("Move", Mode::Move))
             .push(gizmo("Rotate", Mode::Rotate))
             .push(gizmo("Scale", Mode::Scale));
     }
     if state.level_tool != LevelTool::Select {
-        bar = bar.push(text("â”‚").size(15).style(design::muted));
+        bar = bar.push(text("│").size(15).style(design::muted));
         if state.level_tool == LevelTool::Sculpt {
             let mode = |label: &'static str, value: SculptMode| {
                 design::button(label)
@@ -124,7 +124,7 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
                     Message::LevelVegetationDensity,
                 ))
                 .push(setting(
-                    "Size Â±",
+                    "Size ±",
                     0.0..=0.8,
                     state.vegetation_jitter,
                     0.05,
@@ -228,16 +228,16 @@ fn tool_hint(state: &State) -> &'static str {
     use crate::terrain_brush::LevelTool;
     match state.level_tool {
         LevelTool::Select => {
-            "Click select Â· G move Â· R/S rotate/scale gizmo Â· Del delete Â· Ctrl+C/V copy, paste Â· Shift+D duplicate Â· Ctrl+Z undo Â· Ctrl+S save map"
+            "Click select · G move · R/S rotate/scale gizmo · Del delete · Ctrl+C/V copy, paste · Shift+D duplicate · Ctrl+Z undo · Ctrl+S save map"
         }
         LevelTool::Sculpt => {
-            "LMB brush Â· Ctrl+LMB lower Â· Ctrl+Z undo Â· Ctrl+S save terrain Â· RMB look"
+            "LMB brush · Ctrl+LMB lower · Ctrl+Z undo · Ctrl+S save terrain · RMB look"
         }
         LevelTool::Paint => {
-            "Pick a material below Â· LMB paint Â· Ctrl+Z undo Â· Ctrl+S save terrain Â· RMB look"
+            "Pick a material below · LMB paint · Ctrl+Z undo · Ctrl+S save terrain · RMB look"
         }
         LevelTool::Vegetation => {
-            "Pick a kind below Â· LMB paint Â· Ctrl+LMB erase Â· Ctrl+Z undo Â· Ctrl+S save map Â· RMB look"
+            "Pick a kind below · LMB paint · Ctrl+LMB erase · Ctrl+Z undo · Ctrl+S save map · RMB look"
         }
     }
 }
@@ -258,7 +258,7 @@ fn map_chooser(state: &State) -> Element<'_, Message> {
     ].spacing(12);
 
     if state.busy {
-        choices = choices.push(text("Discovering or loading mapsâ€¦").size(13));
+        choices = choices.push(text("Discovering or loading maps…").size(13));
     }
     if let Some((project, maps)) = &state.level_project_choices {
         choices =
@@ -292,7 +292,7 @@ fn map_chooser(state: &State) -> Element<'_, Message> {
                 choices = choices.push(
                     design::button(text(format!(
                         "{}{}",
-                        if index == *current { "âœ“ " } else { "" },
+                        if index == *current { "✓ " } else { "" },
                         map.name
                     )))
                     .on_press_maybe((!state.busy).then_some(Message::LevelMapSelect(index)))
@@ -441,12 +441,12 @@ fn menu_content(state: &State) -> Option<Element<'_, Message>> {
         .spacing(2)
         .into(),
         "LevelHelp" => column![
-            text("WASD Â· fly relative to camera").size(12),
-            text("Q / E Â· descend / ascend").size(12),
-            text("Hold RMB and drag Â· look around").size(12),
-            text("Wheel Â· adjust field of view").size(12),
-            text("F Â· focus selection").size(12),
-            text("File â†’ Open as Modding Project to edit").size(12),
+            text("WASD · fly relative to camera").size(12),
+            text("Q / E · descend / ascend").size(12),
+            text("Hold RMB and drag · look around").size(12),
+            text("Wheel · adjust field of view").size(12),
+            text("F · focus selection").size(12),
+            text("File → Open as Modding Project to edit").size(12),
         ]
         .spacing(7)
         .into(),
@@ -479,7 +479,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             menu_button("Select", "LevelSelectMenu"),
             menu_button("Actor", "LevelActor"),
             menu_button("Help", "LevelHelp"),
-            design::button("Choose Mapâ€¦").on_press(Message::LevelShowMapChooser),
+            design::button("Choose Map…").on_press(Message::LevelShowMapChooser),
             space().width(Length::Fixed(8.0)),
             tools,
         ]

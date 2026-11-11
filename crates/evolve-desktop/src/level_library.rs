@@ -1920,7 +1920,7 @@ fn open_selected(
                     header.version,
                     header.layers.len(),
                     header.layers.iter().map(|layer| format!(
-                        "{}Ã—{} / format {} / {} bytes",
+                        "{}×{} / format {} / {} bytes",
                         layer.sector_pixels, layer.sector_pixels,
                         layer.texture_format, layer.sector_bytes,
                     )).collect::<Vec<_>>().join("; ")
@@ -1931,7 +1931,7 @@ fn open_selected(
                 )),
             },
             Some(TerrainResource::Rgb24 { paths, side }) => diagnostics.push(format!(
-                "Original map-owned baked terrain RGB24 tile grid: {side}Ã—{side} ({} verified imported raw members).",
+                "Original map-owned baked terrain RGB24 tile grid: {side}×{side} ({} verified imported raw members).",
                 paths.len()
             )),
             None => diagnostics.push(
@@ -2089,7 +2089,7 @@ fn open_selected(
                     assembled.world = std::sync::Arc::new(world);
                 }
                 diagnostics.push(format!(
-                    "Original baked terrain: decoded {} tiles ({}) into {}Ã—{} ground-color atlas. {}",
+                    "Original baked terrain: decoded {} tiles ({}) into {}×{} ground-color atlas. {}",
                     atlas.decoded_tiles,
                     if atlas.color_format == 3 { "RGB24".to_owned() }
                     else { format!("CRY format {}", atlas.color_format) },
