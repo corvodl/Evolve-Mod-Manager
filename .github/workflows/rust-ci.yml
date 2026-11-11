@@ -2,11 +2,21 @@ name: Rust core and Windows desktop checks
 on:
   push:
     branches: [main]
+    # A nightly request only changes this file; its code was already checked
+    # when the PRs it packages were merged.
+    paths-ignore:
+      - '.github/nightly-request.txt'
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# CI never runs a debugger. Skipping debug info makes Windows test builds
+# and links faster and keeps the build cache small.
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 # Superseded development commits should not consume additional Windows runners
 # while newer model-viewer fixes are already ready to validate.
@@ -23,6 +33,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs restore main's cache but do not save their own: ~1 GB PR
+          # caches would evict main's from the 10 GB repository limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Verify original Home banner and release packaging paths
         run: python3 scripts/test_home_banner_asset.py
       - name: Validate isolated Ruffle Web control and source menu scripts
@@ -89,7 +103,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-targets
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Clippy type-checks every target, so a separate `cargo check` repeated it.
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
       - name: Verify actual worker and overlay Windows manifests
