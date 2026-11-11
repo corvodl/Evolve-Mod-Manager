@@ -1,5 +1,5 @@
 # Explicit manual Nightly build request. Only code already merged into main is packaged.
-request: user-requested-after-pr203-2026-11-11
+request: user-requested-after-pr204-2026-11-11
 requested: 2026-11-11
-base-main-commit: 400521db19997aa2a7edd2a94f1f5b8001f000bd
-description: Build a Windows nightly from merged main including PR #203 (Level Editor tool bar with Select/Sculpt/Paint, mouse-driven terrain brush with raise/lower/flatten/smooth and surface painting, live ground preview, per-stroke undo, Save Terrain for Heightmap.dat and terrain.dat), PR #201 legacy-ported level loading/editing and PR #202 signed mod PAK export formats. The terrain brush has not yet been validated interactively in the running app. Preserve official signing runtime packaging, existing installer safeguards, reversible game-file swap, and unchanged original archives.
+base-main-commit: 0b0312742c936749dba528af366cfff8269014a7
+description: Build a Windows nightly from merged main including PR #204 (game assets now load in Level Editor projects made from imported level.pak snapshots; faster Rust CI that skips nightly-request pushes) and PR #203 (Level Editor tool bar with Select/Sculpt/Paint and the mouse-driven terrain brush). The terrain brush and snapshot-project asset loading have not yet been validated interactively in the running app. Preserve official signing runtime packaging, existing installer safeguards, reversible game-file swap, and unchanged original archives.
