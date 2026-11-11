@@ -1157,11 +1157,24 @@ pub fn build_project_raw(
     // The Modding dashboard uses a bounded scan for responsiveness. Never
     // trust its cached change list to build: refresh every member on a blocking
     // worker so large PAKs and newly applied GFX edits cannot be missed.
-    let parent = fs::canonicalize(projects).map_err(|e| e.to_string())?;
+    if stage.as_os_str().is_empty() {
+        return Err(super::official_stage2_tools::NO_STAGE.into());
+    }
+    let parent = fs::canonicalize(projects).map_err(|e| {
+        format!(
+            "Cannot open the Projects folder {}: {e}",
+            projects.display()
+        )
+    })?;
     if !fs::symlink_metadata(projects).is_ok_and(|m| m.file_type().is_dir()) {
         return Err("Projects path must be a real directory".into());
     }
-    let folder = fs::canonicalize(&project.workspace).map_err(|e| e.to_string())?;
+    let folder = fs::canonicalize(&project.workspace).map_err(|e| {
+        format!(
+            "Cannot open the project folder {}: {e}",
+            project.workspace.display()
+        )
+    })?;
     if !folder.starts_with(&parent) || folder == parent {
         return Err("Selected workspace is outside Projects".into());
     }
