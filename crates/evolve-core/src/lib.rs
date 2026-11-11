@@ -96,10 +96,11 @@ pub use client_hook::{
     inspect_pak_hook_pair, prepare_client_hook,
 };
 pub use compiled_terrain::{
-    CompiledBrush, CompiledDecal, CompiledRoad, CompiledTerrain, CompiledVegetation, CompiledWater,
-    HOLE_ID, MergedMeshInstance, decode_compiled_terrain, decode_merged_mesh_sector,
-    edit_compiled_terrain_bytes, patch_compiled_terrain_bytes, read_compiled_terrain,
-    read_merged_mesh_sectors,
+    CompiledBrush, CompiledDecal, CompiledPlacement, CompiledRoad, CompiledTerrain,
+    CompiledVegetation, CompiledWater, HOLE_ID, MergedMeshInstance, RecordSpan,
+    copy_compiled_placement, decode_compiled_terrain, decode_merged_mesh_sector,
+    delete_compiled_placement, edit_compiled_terrain_bytes, patch_compiled_terrain_bytes,
+    read_compiled_terrain, read_merged_mesh_sectors,
 };
 pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
 pub use dds::{

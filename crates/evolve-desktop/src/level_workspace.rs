@@ -136,7 +136,10 @@ impl canvas::Program<Message> for SceneOverview {
             // Area outlines are authored local-space polygons. Rotate by the
             // placement's world quaternion rather than displaying an invented
             // axis-aligned rectangle.
-            if obj.kind.eq_ignore_ascii_case("ZooKeeperShape") && obj.shape_points.len() >= 2 {
+            if (obj.kind.eq_ignore_ascii_case("ZooKeeperShape")
+                || obj.kind.eq_ignore_ascii_case("AreaShape"))
+                && obj.shape_points.len() >= 2
+            {
                 let q = obj.world.quaternion;
                 let mut vertices = Vec::with_capacity(obj.shape_points.len());
                 for vertex in &obj.shape_points {
@@ -291,6 +294,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 && !state.level_read_only
                 && state.level_tool != super::terrain_brush::LevelTool::Select,
             brush_ring: state.terrain_brush_ring.clone(),
+            brush_invert: state.keyboard_modifiers.control(),
             editable: state.level_project.is_some()
                 && state
                     .level_selected

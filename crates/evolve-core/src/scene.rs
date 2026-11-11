@@ -277,7 +277,11 @@ fn parse_element(
     // Only classify known Evolve gameplay entities. Other layer objects
     // retain their original tag kind so existing scene rendering is stable.
     let class = attr(e, b"EntityClass")?.unwrap_or_default();
-    let kind = if class.eq_ignore_ascii_case("CreatureSpawn")
+    let kind = if class.eq_ignore_ascii_case("AreaShape") {
+        // Gameplay areas such as a map's OutOfBounds_Shape: their polygon
+        // is read like a ZooKeeperShape's, so it can be shown and edited.
+        "AreaShape".to_owned()
+    } else if class.eq_ignore_ascii_case("CreatureSpawn")
         || class.eq_ignore_ascii_case("ZooKeeperShape")
         || attr(e, b"Type")?.as_deref() == Some("ZooKeeperShape")
     {
@@ -369,7 +373,8 @@ fn scan_wildlife_child(
                 object.populations.push(value);
             }
         }
-    } else if object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+    } else if (object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+        || object.kind.eq_ignore_ascii_case("AreaShape"))
         && e.name().as_ref().eq_ignore_ascii_case(b"Point")
         && parents
             .last()

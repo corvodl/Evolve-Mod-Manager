@@ -38,6 +38,8 @@ pub enum LayerAuthoringEdit {
         guid: String,
         new_guid: String,
         name: String,
+        /// The copy's local position; None places it 2 m along X.
+        position: Option<[f32; 3]>,
     },
     /// Remove one object only when it has no scene descendants or home areas.
     Delete { guid: String },
@@ -348,7 +350,7 @@ fn transform_target(
             }
         }
         LayerAuthoringEdit::Shape { points, .. } => {
-            if !object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+            if !polygon_area(object)
                 || points.len() != object.shape_points.len()
                 || !(3..=8192).contains(&points.len())
                 || points
@@ -387,6 +389,13 @@ fn transform_target(
         _ => (),
     }
     Ok(())
+}
+
+/// Placements whose authored `<Points>` polygon can be edited: ZooKeeper
+/// areas and gameplay AreaShapes such as a map's OutOfBounds_Shape.
+fn polygon_area(object: &PlacedObject) -> bool {
+    object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+        || object.kind.eq_ignore_ascii_case("AreaShape")
 }
 
 /// Engine-exported mission XML (a Legacy-ported map's mission_*.xml) names an
@@ -657,8 +666,14 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             }
             events.drain(start..=end);
         }
-        LayerAuthoringEdit::Duplicate { new_guid, name, .. } => {
+        LayerAuthoringEdit::Duplicate {
+            new_guid,
+            name,
+            position,
+            ..
+        } => {
             if !bounded_guid(new_guid)
+                || position.is_some_and(|p| p.iter().any(|v| !v.is_finite()))
                 || !authored_display_name(name)
                 || original
                     .objects
@@ -680,7 +695,8 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             }
             let mut cloned = events[start..=end].to_vec();
             let offset = object.local.position;
-            let new_pos = [offset[0] + 2.0, offset[1], offset[2]]
+            let new_pos = position
+                .unwrap_or([offset[0] + 2.0, offset[1], offset[2]])
                 .iter()
                 .map(f32::to_string)
                 .collect::<Vec<_>>()
@@ -695,7 +711,7 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
             events.splice(end + 1..end + 1, cloned);
         }
         LayerAuthoringEdit::Shape { points, .. } => {
-            if !object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+            if !polygon_area(object)
                 || !(3..=8192).contains(&points.len())
                 || points
                     .iter()
@@ -955,6 +971,7 @@ mod tests {
             guid: fresh.into(),
             new_guid: "{6DA3E510-0081-4321-AD45-111111111111}".into(),
             name: "New stone copy".into(),
+            position: None,
         };
         let doubled = edit_layer_bytes(text.as_bytes(), &duplicate).unwrap();
         assert_eq!(
@@ -1008,6 +1025,7 @@ mod tests {
                 guid: "first".into(),
                 new_guid: "new01".into(),
                 name: "new_rock".into(),
+                position: None,
             },
         )
         .unwrap();
@@ -1028,6 +1046,32 @@ mod tests {
                 .objects
                 .len(),
             3
+        );
+        // A paste places the copy, with every property, at its target.
+        let pasted = edit_layer_bytes(
+            XML,
+            &LayerAuthoringEdit::Duplicate {
+                guid: "first".into(),
+                new_guid: "new02".into(),
+                name: "pasted_rock".into(),
+                position: Some([40.0, 50.5, 6.25]),
+            },
+        )
+        .unwrap();
+        let scene = parse_level_scene(&[("pasted", &pasted)]).unwrap();
+        assert_eq!(scene.objects[1].local.position, [40.0, 50.5, 6.25]);
+        assert_eq!(scene.objects[1].model, scene.objects[0].model);
+        assert!(
+            edit_layer_bytes(
+                XML,
+                &LayerAuthoringEdit::Duplicate {
+                    guid: "first".into(),
+                    new_guid: "new03".into(),
+                    name: "bad".into(),
+                    position: Some([f32::NAN, 0.0, 0.0]),
+                },
+            )
+            .is_err()
         );
     }
 
@@ -1140,6 +1184,41 @@ mod tests {
     }
 
     #[test]
+    fn mission_out_of_bounds_area_polygon_can_grow() {
+        // The shape of a compiled mission's OutOfBounds_Shape: an AreaShape
+        // linking the reversed ForbiddenArea that damages players outside it.
+        let mission = br#"<Mission><Objects><Entity Name="OutOfBounds_Shape" Pos="500,600,80" EntityClass="AreaShape" EntityId="111" EntityGuid="4000000000000111"><Properties Height="85.9"/><Points><Point Pos="0,0,0"/><Point Pos="10,0,0"/><Point Pos="10,10,0"/></Points><Entities><Entity Id="379"/></Entities></Entity><Entity Name="OutOfBounds_Damage" Pos="0,0,0" EntityClass="ForbiddenArea" EntityId="379" EntityGuid="4000000000000379"><Properties bReversed="1"/></Entity></Objects></Mission>"#;
+        let scene = parse_level_scene(&[("mission", mission)]).unwrap();
+        let area = scene
+            .objects
+            .iter()
+            .find(|o| o.name == "OutOfBounds_Shape")
+            .unwrap();
+        assert_eq!(area.kind, "AreaShape");
+        assert_eq!(area.shape_points.len(), 3);
+        let grown = [[0., 0., 0.], [40., 0., 0.], [40., 40., 0.], [0., 40., 0.]];
+        let edited = edit_layer_bytes(
+            mission,
+            &LayerAuthoringEdit::Shape {
+                guid: area.id.clone(),
+                points: grown.to_vec(),
+            },
+        )
+        .unwrap();
+        let scene = parse_level_scene(&[("edited", &edited)]).unwrap();
+        let area = scene
+            .objects
+            .iter()
+            .find(|o| o.name == "OutOfBounds_Shape")
+            .unwrap();
+        assert_eq!(area.shape_points, grown);
+        let text = String::from_utf8(edited).unwrap();
+        // The damage-area link and the forbidden area itself are untouched.
+        assert!(text.contains(r#"<Entities><Entity Id="379"/></Entities>"#));
+        assert!(text.contains(r#"bReversed="1""#));
+    }
+
+    #[test]
     fn referenced_home_area_is_not_deleted() {
         assert!(
             edit_layer_bytes(
@@ -1156,7 +1235,8 @@ mod tests {
                 &LayerAuthoringEdit::Duplicate {
                     guid: "shape".into(),
                     new_guid: "spawn".into(),
-                    name: "bad".into()
+                    name: "bad".into(),
+                    position: None
                 }
             )
             .is_err()

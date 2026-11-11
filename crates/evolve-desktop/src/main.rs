@@ -719,6 +719,12 @@ struct State {
     terrain_session: Option<terrain_brush::TerrainSession>,
     /// The brush outline under the mouse.
     terrain_brush_ring: Option<Arc<Vec<[f32; 3]>>>,
+    /// Ctrl+C: the scene object id a later Ctrl+V copies.
+    level_clipboard: Option<String>,
+    /// Where the next duplicate lands (world), set by a paste.
+    level_paste_at: Option<[f32; 3]>,
+    /// The view ray under the mouse in the level viewport.
+    level_pointer_ray: Option<([f32; 3], [f32; 3])>,
     scan_cancel: Option<Arc<AtomicBool>>,
     scan_indexed: Option<Arc<AtomicUsize>>,
     preview_cache: SharedCache,
@@ -812,6 +818,10 @@ enum ProjectLevelMutation {
     Terrain(evolve_core::TerrainBrushEdit),
     /// The interactive brush's edited rectangle, written in one save.
     TerrainPatch(evolve_core::TerrainPatch),
+    /// Delete a brush or vegetation placement stored in terrain.dat.
+    CompiledDelete(evolve_core::CompiledPlacement),
+    /// Copy one to a new world position.
+    CompiledCopy(evolve_core::CompiledPlacement, [f32; 3]),
     Vegetation(vegetation_map::VegetationEdit),
 }
 
@@ -2016,6 +2026,30 @@ impl Operation {
                             );
                         }
                     }
+                    ProjectLevelMutation::CompiledDelete(placement) => {
+                        let lower = member.to_ascii_lowercase();
+                        if lower != "terrain/terrain.dat"
+                            && !lower.ends_with("/terrain/terrain.dat")
+                        {
+                            return Err(
+                                "terrain.dat placements are deleted from terrain.dat".into()
+                            );
+                        }
+                        evolve_core::delete_compiled_placement(&original, placement)
+                            .map_err(|e| e.to_string())?
+                    }
+                    ProjectLevelMutation::CompiledCopy(placement, position) => {
+                        let lower = member.to_ascii_lowercase();
+                        if lower != "terrain/terrain.dat"
+                            && !lower.ends_with("/terrain/terrain.dat")
+                        {
+                            return Err(
+                                "terrain.dat placements are copied within terrain.dat".into()
+                            );
+                        }
+                        evolve_core::copy_compiled_placement(&original, placement, position)
+                            .map_err(|e| e.to_string())?
+                    }
                     ProjectLevelMutation::TerrainPatch(patch) => {
                         let lower = member.to_ascii_lowercase();
                         if lower.ends_with("heightmap.dat") {
@@ -2807,6 +2841,14 @@ enum Message {
     LevelCameraFocus,
     LevelCameraReset,
     LevelCameraKey(window::Id, char, bool),
+    /// Delete or Backspace in the Level Editor window, not taken by a text field.
+    LevelDeleteKey(window::Id),
+    /// Ctrl+C, Ctrl+V and Shift+D in the Level Editor window.
+    LevelCopyKey(window::Id),
+    LevelPasteKey(window::Id),
+    LevelDuplicateKey(window::Id),
+    /// The view ray under the mouse moved (None: off the viewport).
+    LevelPointerRay(Option<([f32; 3], [f32; 3])>),
     LevelCameraWindowFocus(window::Id, bool),
     LevelCameraTick,
     LevelAnimationTick,
@@ -3477,6 +3519,53 @@ fn fresh_unique_authored_level_guid(
     Err("Failed to generate a unique level GUID".into())
 }
 
+/// A pasted copy's local position for a world target: the original's local
+/// position moved by the same offset (exact for unrotated, unscaled parents).
+fn paste_local_position(object: &evolve_core::PlacedObject, target: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| object.local.position[i] + target[i] - object.world.position[i])
+}
+
+/// Ground height at world XY: the brush session's (unsaved strokes included)
+/// or the on-screen terrain mesh's.
+fn level_ground_height(state: &State, x: f32, y: f32) -> Option<f32> {
+    if let Some(session) = &state.terrain_session {
+        return session.height_at(x, y);
+    }
+    let world = state.level_world_source.as_ref()?;
+    let ground = world
+        .groups
+        .first()
+        .filter(|g| g.instances.len() == 1 && g.instances[0].object_index == usize::MAX)?;
+    terrain_brush::mesh_height(&ground.mesh, state.terrain.as_ref()?, x, y)
+}
+
+/// Where a view ray meets the ground.
+fn level_ground_hit(state: &State, origin: [f32; 3], direction: [f32; 3]) -> Option<[f32; 3]> {
+    let info = state.terrain.as_ref()?;
+    let far = (info.width.max(info.height) as f32 * info.unit * 1.5).min(20_000.0);
+    terrain_brush::march(
+        |x, y| level_ground_height(state, x, y),
+        origin,
+        direction,
+        info.unit * info.stride.max(1) as f32 * 0.5,
+        far,
+    )
+}
+
+/// The terrain.dat record behind a Legacy-ported map's brush or vegetation.
+fn compiled_placement(
+    object: &evolve_core::PlacedObject,
+) -> Option<evolve_core::CompiledPlacement> {
+    let index = |prefix: &str| object.id.strip_prefix(prefix)?.parse::<usize>().ok();
+    if object.kind.eq_ignore_ascii_case("CompiledBrush") {
+        index("__compiled_brush_").map(evolve_core::CompiledPlacement::Brush)
+    } else if object.kind.eq_ignore_ascii_case("CompiledVegetation") {
+        index("__compiled_vegetation_").map(evolve_core::CompiledPlacement::Vegetation)
+    } else {
+        None
+    }
+}
+
 fn selected_project_object_source(
     state: &State,
 ) -> Result<(evolve_core::PlacedObject, PathBuf), String> {
@@ -3496,7 +3585,14 @@ fn selected_project_object_source(
         return Err("This object GUID occurs in multiple original LYR layers. Editing is disabled until its owning source can be uniquely identified.".into());
     }
     let root = project.workspace.join("files");
-    let relative = if object.kind.eq_ignore_ascii_case("Vegetation") {
+    let relative = if compiled_placement(&object).is_some() {
+        state
+            .library_map
+            .as_ref()
+            .and_then(|(_, maps, index)| maps.get(*index))
+            .and_then(|map| map.compiled_terrain.clone())
+            .ok_or("Selected map has no terrain.dat")?
+    } else if object.kind.eq_ignore_ascii_case("Vegetation") {
         state
             .library_map
             .as_ref()
@@ -6319,6 +6415,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             };
+            if let Some(placement) = compiled_placement(&object) {
+                let edit = match message {
+                    Message::LevelDeleteSelected => {
+                        state.status = format!("Deleting {} from terrain.dat…", object.name);
+                        ProjectLevelMutation::CompiledDelete(placement)
+                    }
+                    // Shift+D and Ctrl+V: a paste lands at its target, a
+                    // duplicate 2 m along X. terrain.dat stores world positions.
+                    Message::LevelDuplicateSelected => {
+                        let original = object.world.position;
+                        let position = state.level_paste_at.take().unwrap_or([
+                            original[0] + 2.0,
+                            original[1],
+                            original[2],
+                        ]);
+                        state.status = format!("Copying {} within terrain.dat…", object.name);
+                        ProjectLevelMutation::CompiledCopy(placement, position)
+                    }
+                    _ => {
+                        state.level_paste_at = None;
+                        state.status = "Placements stored in terrain.dat can be copied, pasted, duplicated and deleted; adding next to or editing them is not supported yet.".into();
+                        return Task::none();
+                    }
+                };
+                return submit_level_project_edit(state, source, edit);
+            }
             let edit = match message {
                 Message::LevelAddGeometry => {
                     if object.kind.eq_ignore_ascii_case("Vegetation") {
@@ -6388,11 +6510,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                     };
                     let name = format!("{}_copy", object.name);
+                    // A paste lands at its target; Shift+D keeps the 2 m offset.
+                    let position = state
+                        .level_paste_at
+                        .take()
+                        .map(|target| paste_local_position(&object, target));
                     ProjectLevelMutation::Xml(
                         evolve_core::scene_authoring::LayerAuthoringEdit::Duplicate {
                             guid: object.id,
                             new_guid: guid,
                             name,
+                            position,
                         },
                     )
                 }
@@ -6490,6 +6618,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if matches!(message, Message::LevelDuplicateVegetation) {
                         let mut position = object.local.position;
                         position[0] += 2.0;
+                        if let Some(target) = state.level_paste_at.take() {
+                            position = paste_local_position(&object, target);
+                        }
                         ProjectLevelMutation::Vegetation(
                             vegetation_map::VegetationEdit::Duplicate { index, position },
                         )
@@ -6564,6 +6695,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LevelBrushHover(ray) => {
+            state.level_pointer_ray = ray;
             let radius = state.terrain_brush.radius;
             state.terrain_brush_ring = ray.and_then(|(origin, direction)| {
                 let session = state.terrain_session.as_ref()?;
@@ -9782,6 +9914,99 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             // Never resume an old held movement when the window reappears.
             state.level_keys.clear();
             state.level_last_pressed_at = None;
+        }
+        Message::LevelPointerRay(ray) => state.level_pointer_ray = ray,
+        Message::LevelCopyKey(_) => {
+            if state.level_tool != terrain_brush::LevelTool::Select {
+                return Task::none();
+            }
+            let Some(object) = state
+                .level_selected
+                .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
+            else {
+                state.status = "Select an object to copy.".into();
+                return Task::none();
+            };
+            state.status = format!("Copied {}. Ctrl+V places a copy at the mouse.", object.name);
+            state.level_clipboard = Some(object.id.clone());
+        }
+        Message::LevelPasteKey(_) | Message::LevelDuplicateKey(_) => {
+            if state.level_tool != terrain_brush::LevelTool::Select
+                || state.level_project.is_none()
+                || state.level_read_only
+                || state.busy
+            {
+                return Task::none();
+            }
+            let paste = matches!(message, Message::LevelPasteKey(_));
+            if paste {
+                let Some(id) = state.level_clipboard.clone() else {
+                    state.status = "Nothing copied yet: select an object and press Ctrl+C.".into();
+                    return Task::none();
+                };
+                let Some(index) = state
+                    .level_scene
+                    .as_ref()
+                    .and_then(|scene| scene.objects.iter().position(|o| o.id == id))
+                else {
+                    state.status = "The copied object is no longer in this map.".into();
+                    state.level_clipboard = None;
+                    return Task::none();
+                };
+                // The copy lands on the ground under the mouse, keeping the
+                // original's height above its own ground.
+                let original = state.level_scene.as_ref().unwrap().objects[index]
+                    .world
+                    .position;
+                let target = state.level_pointer_ray.and_then(|(origin, direction)| {
+                    let hit = level_ground_hit(state, origin, direction)?;
+                    let lift = level_ground_height(state, original[0], original[1])
+                        .map_or(0.0, |ground| original[2] - ground);
+                    Some([hit[0], hit[1], hit[2] + lift])
+                });
+                state.level_selected = Some(index);
+                state.level_paste_at =
+                    Some(target.unwrap_or([original[0] + 2.0, original[1], original[2]]));
+            } else if state.level_selected.is_none() {
+                state.status = "Select an object to duplicate.".into();
+                return Task::none();
+            }
+            let vegetation = state
+                .level_selected
+                .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
+                .is_some_and(|o| o.kind.eq_ignore_ascii_case("Vegetation"));
+            let task = update(
+                state,
+                if vegetation {
+                    Message::LevelDuplicateVegetation
+                } else {
+                    Message::LevelDuplicateSelected
+                },
+            );
+            // A refused duplicate must not leave its target for a later one.
+            state.level_paste_at = None;
+            return task;
+        }
+        Message::LevelDeleteKey(_) => {
+            // The Select tool's keyboard delete: the same as Delete placement.
+            if state.level_tool == terrain_brush::LevelTool::Select
+                && state.level_project.is_some()
+                && !state.level_read_only
+                && state.level_selected.is_some()
+                && !state.busy
+            {
+                let selected = state
+                    .level_selected
+                    .and_then(|i| state.level_scene.as_ref()?.objects.get(i));
+                return update(
+                    state,
+                    if selected.is_some_and(|o| o.kind.eq_ignore_ascii_case("Vegetation")) {
+                        Message::LevelDeleteVegetation
+                    } else {
+                        Message::LevelDeleteSelected
+                    },
+                );
+            }
         }
         Message::LevelCameraKey(_, key, pressed) => {
             if key == 'f' && pressed {
@@ -16569,6 +16794,14 @@ impl Desktop {
                 }
             }
             Message::LevelCameraKey(id, _, _) if self.level_id != Some(id) => Task::none(),
+            Message::LevelDeleteKey(id)
+            | Message::LevelCopyKey(id)
+            | Message::LevelPasteKey(id)
+            | Message::LevelDuplicateKey(id)
+                if self.level_id != Some(id) =>
+            {
+                Task::none()
+            }
             Message::LevelCameraWindowFocus(id, _) if self.level_id != Some(id) => Task::none(),
             Message::ExportOpen => {
                 let prepare = update(&mut self.state, Message::ExportOpen);
@@ -16924,6 +17157,28 @@ impl Desktop {
             wheel,
             window::close_events().map(Message::WindowClosed),
             iced::event::listen_with(|event, status, id| match event {
+                // Editing shortcuts come before the camera's letter keys, so
+                // Shift+D duplicates rather than strafing.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    modifiers,
+                    ..
+                }) if status == iced::event::Status::Ignored
+                    && ((modifiers.control()
+                        && (value.eq_ignore_ascii_case("c")
+                            || value.eq_ignore_ascii_case("v")))
+                        || (modifiers.shift()
+                            && !modifiers.control()
+                            && value.eq_ignore_ascii_case("d"))) =>
+                {
+                    Some(if value.eq_ignore_ascii_case("d") {
+                        Message::LevelDuplicateKey(id)
+                    } else if value.eq_ignore_ascii_case("c") {
+                        Message::LevelCopyKey(id)
+                    } else {
+                        Message::LevelPasteKey(id)
+                    })
+                }
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Character(value),
                     ..
@@ -16942,6 +17197,14 @@ impl Desktop {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
                 }) => Some(Message::ViewportEscape(id)),
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key:
+                        iced::keyboard::Key::Named(
+                            iced::keyboard::key::Named::Delete
+                            | iced::keyboard::key::Named::Backspace,
+                        ),
+                    ..
+                }) if status == iced::event::Status::Ignored => Some(Message::LevelDeleteKey(id)),
                 iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                     Some(Message::ModifiersChanged(modifiers))
                 }
@@ -16980,6 +17243,55 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn copy_key_remembers_selection_and_paste_keeps_relative_offset() {
+        let object = |id: &str, kind: &str| evolve_core::PlacedObject {
+            id: id.into(),
+            parent: String::new(),
+            layer: "layers/main.lyr".into(),
+            name: "rock".into(),
+            kind: kind.into(),
+            model: "objects/rock.cgf".into(),
+            material: String::new(),
+            hidden: false,
+            local: evolve_core::Transform {
+                position: [1.0, 2.0, 3.0],
+                ..Default::default()
+            },
+            world: evolve_core::Transform {
+                position: [11.0, 12.0, 13.0],
+                ..Default::default()
+            },
+            status: String::new(),
+            populations: Vec::new(),
+            home_area: String::new(),
+            shape_points: Vec::new(),
+            wildlife: Default::default(),
+        };
+        let mut state = State {
+            level_scene: Some(Arc::new(evolve_core::LevelScene {
+                schema: 1,
+                objects: vec![
+                    object("rock-guid", "Brush"),
+                    object("__compiled_brush_4", "CompiledBrush"),
+                ],
+                diagnostics: Vec::new(),
+            })),
+            level_selected: Some(0),
+            ..Default::default()
+        };
+        let window = window::Id::unique();
+        let _ = update(&mut state, Message::LevelCopyKey(window));
+        assert_eq!(state.level_clipboard.as_deref(), Some("rock-guid"));
+        // terrain.dat placements copy too.
+        state.level_selected = Some(1);
+        let _ = update(&mut state, Message::LevelCopyKey(window));
+        assert_eq!(state.level_clipboard.as_deref(), Some("__compiled_brush_4"));
+        // A child's local position moves by the same world offset.
+        let pasted = paste_local_position(&object("x", "Brush"), [20.0, 12.0, 15.0]);
+        assert_eq!(pasted, [10.0, 2.0, 5.0]);
+    }
 
     #[test]
     fn verbose_level_report_does_not_expand_footer() {

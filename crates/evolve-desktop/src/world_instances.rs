@@ -4070,26 +4070,39 @@ impl Renderer {
     }
     /// Write queued terrain brush rows into the ground's vertex buffer. They
     /// wait in the queue until the ground group is resident.
-    fn apply_ground_patches(&mut self, queue: &wgpu::Queue, world: &World) {
+    fn apply_ground_patches(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
         let Some(ground) = world.groups.first().filter(|group| is_ground(group)) else {
             return;
         };
-        let Some(Some(gpu)) = self.groups.first() else {
+        let Some(Some(gpu)) = self.groups.first_mut() else {
             return;
         };
         let Ok(mut patches) = world.ground_patches.lock() else {
             return;
         };
-        if patches.is_empty() {
+        if patches.rows.is_empty() && patches.indices.is_none() {
             return;
         }
         let vertices = ground.mesh.positions.len();
+        // Filled or restored holes change which quads the ground draws.
+        if let Some(indices) = patches.indices.take()
+            && indices.iter().all(|index| (*index as usize) < vertices)
+            && gpu.surfaces.len() == 1
+        {
+            gpu.indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Edited ground mesh indices"),
+                contents: bytemuck::cast_slice(&indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+            gpu.surfaces[0].first = 0;
+            gpu.surfaces[0].count = indices.len() as u32;
+        }
         let stride = std::mem::size_of::<Vertex>();
         debug_assert_eq!(
             stride,
             super::terrain_brush::VERTEX_FLOATS * std::mem::size_of::<f32>()
         );
-        for patch in patches.drain(..) {
+        for patch in patches.rows.drain(..) {
             let count = patch.data.len() / super::terrain_brush::VERTEX_FLOATS;
             if patch.first_vertex as usize + count > vertices {
                 continue;
@@ -4190,7 +4203,7 @@ impl Renderer {
         } else {
             12.0
         };
-        self.apply_ground_patches(queue, world);
+        self.apply_ground_patches(device, queue, world);
         let inside = camera.is_some_and(|camera| world.locate_camera(camera.position));
         let lighting_changed = self.last_lighting_hour != hour || self.last_inside != inside;
         self.last_inside = inside;

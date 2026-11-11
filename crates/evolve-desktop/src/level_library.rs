@@ -2438,6 +2438,7 @@ mod tests {
                 guid: object.id.clone(),
                 new_guid,
                 name: format!("{}_copy", object.name),
+                position: None,
             }
         });
         // Adding geometry clones a selected Brush placement as its template;

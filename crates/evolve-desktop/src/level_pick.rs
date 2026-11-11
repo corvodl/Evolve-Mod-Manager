@@ -12,9 +12,11 @@ pub(super) struct LevelViewport {
     pub picks: Arc<Vec<PickRange>>,
     pub selected_pivot: Option<[f32; 3]>,
     pub editable: bool,
-    /// A terrain sculpt or paint tool is active: left and right drag brush
-    /// the ground; the middle button and the keyboard still fly the camera.
+    /// A terrain sculpt or paint tool is active: left-drag brushes the
+    /// ground; right and middle drag and the keyboard still move the camera.
     pub brush: bool,
+    /// Ctrl is held: a sculpt stroke lowers instead.
+    pub brush_invert: bool,
     pub brush_ring: Option<Arc<Vec<[f32; 3]>>>,
 }
 
@@ -55,14 +57,12 @@ impl LevelViewport {
         cursor: mouse::Cursor,
     ) -> Option<shader::Action<Message>> {
         match event {
-            Event::Mouse(mouse::Event::ButtonPressed(
-                button @ (mouse::Button::Left | mouse::Button::Right),
-            )) => {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let (origin, direction) = self.ray(bounds, cursor.position_in(bounds)?)?;
-                state.brushing = Some(*button);
+                state.brushing = Some(mouse::Button::Left);
                 Some(
                     shader::Action::publish(Message::LevelBrushPress {
-                        lower: *button == mouse::Button::Right,
+                        lower: self.brush_invert,
                         origin,
                         direction,
                     })
@@ -400,6 +400,14 @@ impl shader::Program<Message> for LevelViewport {
                 other => super::view_navigation::message(other),
             })
             .map(|message| shader::Action::publish(message).and_capture())
+            .or_else(|| {
+                // Track the ray under the mouse so Ctrl+V can paste there.
+                let Event::Mouse(mouse::Event::CursorMoved { .. }) = event else {
+                    return None;
+                };
+                let ray = location.and_then(|position| self.ray(bounds, position));
+                Some(shader::Action::publish(Message::LevelPointerRay(ray)))
+            })
     }
     fn draw(
         &self,
