@@ -15,6 +15,7 @@ pub mod character_equipment;
 pub mod character_folder_fbx;
 pub mod character_unified_fbx;
 pub mod client_hook;
+pub mod compiled_terrain;
 pub mod converted_glb_transfer;
 pub mod converter;
 pub mod cryxml;
@@ -93,6 +94,11 @@ pub use character_unified_fbx::{
 pub use client_hook::{
     ClientHookError, HookPairReport, PakHookPairReport, inspect_client_hook_pair,
     inspect_pak_hook_pair, prepare_client_hook,
+};
+pub use compiled_terrain::{
+    CompiledBrush, CompiledDecal, CompiledRoad, CompiledTerrain, CompiledVegetation, CompiledWater,
+    HOLE_ID, MergedMeshInstance, decode_compiled_terrain, decode_merged_mesh_sector,
+    edit_compiled_terrain_bytes, read_compiled_terrain, read_merged_mesh_sectors,
 };
 pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
 pub use dds::{

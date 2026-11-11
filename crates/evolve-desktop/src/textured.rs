@@ -126,6 +126,8 @@ pub struct Surface {
     /// World meshes only: BLENDLAYER second diffuse and blend mask.
     pub blend_layer: Option<Arc<image::RgbaImage>>,
     pub blend_mask: Option<Arc<image::RgbaImage>>,
+    /// World meshes only: Illum VERTCOLORS multiplies diffuse by vertex color.
+    pub vertex_colors: bool,
     /// Second layer normal map, bound in the emissive slot of a layer material.
     pub blend_normal: Option<Arc<image::RgbaImage>>,
     pub detail_tile: Option<[f32; 2]>,
@@ -1670,6 +1672,10 @@ impl Pipeline {
         self.hdr
             .set_source_unlit(queue, primitive.level_terrain_unlit);
         let hour = primitive.level_hour;
+        // Pick the camera's weather state before grading and lighting read it.
+        if let (Some(world), Some(camera)) = (primitive.world.as_ref(), primitive.camera) {
+            world.locate_camera(camera.position);
+        }
         let grade = primitive.world.as_ref().map(|world| {
             (
                 world.color_chart.clone(),

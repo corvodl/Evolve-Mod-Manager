@@ -732,6 +732,7 @@ mod tests {
     fn mesh() -> RenderMesh {
         RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: ModelInfo {
                 format: "synthetic".into(),
                 version: 1,

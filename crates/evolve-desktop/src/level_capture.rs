@@ -41,7 +41,51 @@ fn capture_real_map_views() {
         })
         .cloned()
         .unwrap();
-    let map = level_library::open(archive.clone(), 0).unwrap();
+    // EVOLVE_CAPTURE_PROJECT renders a Modding project made from this map's
+    // level.pak (its workspace folder) instead of the read-only import.
+    let map = match std::env::var("EVOLVE_CAPTURE_PROJECT") {
+        Ok(workspace) => {
+            let level = library
+                .archives
+                .iter()
+                .find(|pak| {
+                    let source = pak.source.to_ascii_lowercase().replace('\\', "/");
+                    pak.name.eq_ignore_ascii_case("level.pak")
+                        && source.contains("moddedevolve")
+                        && source.contains(&format!("/levels/{map_name}/"))
+                })
+                .unwrap();
+            let workspace = std::path::PathBuf::from(workspace);
+            let manifest_path = workspace.join(".evolve-pak-workspace.json");
+            let mut manifest: serde_json::Value = std::fs::read(&manifest_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_else(|| serde_json::json!({"version": 1, "entries": []}));
+            let import: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(Path::new(&level.directory).join("asset-library.json")).unwrap(),
+            )
+            .unwrap();
+            manifest["source_sha256"] = import["source_sha256"].clone();
+            std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+            let project = crate::modding_projects::ProjectRow {
+                label: "Capture".into(),
+                target: level.source.clone(),
+                source_build: level.builds.first().cloned().unwrap_or_default(),
+                status: "Draft".into(),
+                details: String::new(),
+                workspace,
+                modified: vec![],
+                changed_known: true,
+                enabled: false,
+            };
+            level_library::open_project(project, 0, Path::new(&library_root)).unwrap()
+        }
+        Err(_) => level_library::open(archive.clone(), 0).unwrap(),
+    };
+    println!(
+        "MAP {} objects",
+        map.scene.as_ref().map_or(0, |scene| scene.objects.len())
+    );
     for note in map.diagnostics.iter().filter(|note| {
         note.contains("global probe")
             || note.contains("looping particles")
@@ -58,6 +102,7 @@ fn capture_real_map_views() {
             || note.contains("sun vector")
             || note.contains("Static Sky")
             || note.contains("Terrain.Layer")
+            || note.contains("weather")
     }) {
         println!("DIAG {note}");
     }
@@ -177,9 +222,20 @@ fn capture_real_map_views() {
             number(6),
         );
         let camera = level_camera::Camera {
-            position: [x, y, ground_height(&terrain, x, y) + lift],
+            // EVOLVE_CAPTURE_ABSOLUTE: the lift field is a world height.
+            position: [
+                x,
+                y,
+                if std::env::var_os("EVOLVE_CAPTURE_ABSOLUTE").is_some() {
+                    lift
+                } else {
+                    ground_height(&terrain, x, y) + lift
+                },
+            ],
             ..Default::default()
         };
+        // Pick the weather state for this camera before grading reads it.
+        world.locate_camera(camera.position);
         hdr.set_grade(
             &device,
             &queue,

@@ -225,6 +225,42 @@ impl Fields {
     }
 }
 
+/// A compiled terrain.dat's surface IDs are the SurfaceTypes listed in the
+/// map's compiled leveldata.xml, beside the terrain folder. Refuse an ID the
+/// map does not define, naming the ones it does.
+pub(super) fn check_compiled_surface_type(terrain: &Path, id: u8) -> Result<(), String> {
+    let level = terrain
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("terrain.dat has no map folder")?;
+    let xml = std::fs::read(level.join("leveldata.xml"))
+        .map_err(|e| format!("Cannot read the map's leveldata.xml: {e}"))?;
+    let text = String::from_utf8_lossy(&xml);
+    let mut known = Vec::new();
+    for (at, _) in text.match_indices("<SurfaceType ") {
+        let head = &text[at..at + text[at..].find('>').unwrap_or(0)];
+        let attribute = |name: &str| {
+            let marker = format!(" {name}=\"");
+            let start = head.find(&marker)? + marker.len();
+            Some(&head[start..start + head[start..].find('"')?])
+        };
+        if let Some(surface) = attribute("SurfaceTypeID").and_then(|v| v.parse::<u8>().ok()) {
+            if surface == id {
+                return Ok(());
+            }
+            let name = attribute("Name").unwrap_or_default();
+            known.push(format!(
+                "{surface} {}",
+                name.rsplit('/').next().unwrap_or(name)
+            ));
+        }
+    }
+    Err(format!(
+        "SurfaceTypeID {id} is not defined in this map's leveldata.xml. Available: {}",
+        known.join(", ")
+    ))
+}
+
 /// The per-layer writer cannot see references in other project members.
 /// Require the combined loaded scene to be free of references before sending
 /// a deletion to the source-file transaction.
@@ -584,20 +620,36 @@ pub(super) fn placement_editor<'a>(
 pub(super) fn terrain_editor(state: &super::State) -> iced::Element<'_, super::Message> {
     use super::Message;
     use iced::widget::{column, row, text};
+    let map = state
+        .library_map
+        .as_ref()
+        .and_then(|(_, maps, index)| maps.get(*index));
+    // A Legacy-ported map's heightmap is its compiled terrain.dat.
+    let compiled = map.is_some_and(|map| map.terrain.is_none() && map.compiled_terrain.is_some());
     if state.level_read_only
         || state.level_project.is_none()
-        || !state
-            .library_map
-            .as_ref()
-            .and_then(|(_, maps, index)| maps.get(*index))
-            .is_some_and(|map| map.terrain.is_some())
+        || !map.is_some_and(|map| map.terrain.is_some() || map.compiled_terrain.is_some())
     {
-        return text("Terrain editing requires a Modding project with Heightmap.dat.")
-            .size(11)
-            .style(crate::design::muted)
-            .into();
+        return text(
+            "Terrain editing requires a Modding project with Heightmap.dat or terrain.dat.",
+        )
+        .size(11)
+        .style(crate::design::muted)
+        .into();
     }
     let form = &state.level_authoring;
+    let sculpt = crate::design::button(if compiled {
+        "Sculpt terrain.dat"
+    } else {
+        "Sculpt Heightmap.dat"
+    })
+    .on_press(Message::LevelSculptTerrain);
+    let paint = crate::design::button(if compiled {
+        "Paint surface type"
+    } else {
+        "Paint LayerId"
+    })
+    .on_press(Message::LevelPaintTerrain);
     column![
         text("Terrain source brush (project only)").size(13),
         row![
@@ -607,15 +659,21 @@ pub(super) fn terrain_editor(state: &super::State) -> iced::Element<'_, super::M
         ].spacing(6),
         row![
             edit_field("Height delta (world units)", &form.brush_delta_height, TextField::BrushDeltaHeight),
-            crate::design::button("Sculpt Heightmap.dat")
-                .on_press(Message::LevelSculptTerrain),
+            sculpt,
         ].spacing(6),
         row![
-            edit_field("Authored LayerId", &form.brush_layer_id, TextField::BrushLayerId),
-            crate::design::button("Paint LayerId")
-                .on_press(Message::LevelPaintTerrain),
+            edit_field(
+                if compiled { "SurfaceTypeID (leveldata.xml)" } else { "Authored LayerId" },
+                &form.brush_layer_id,
+                TextField::BrushLayerId,
+            ),
+            paint,
         ].spacing(6),
-        text("LayerId edits preserve the original baked texture atlas; native material repaint is not yet complete.")
+        text(if compiled {
+            "Painting sets the detail material, footstep and physics surface; the baked ground colour is unchanged."
+        } else {
+            "LayerId edits preserve the original baked texture atlas; native material repaint is not yet complete."
+        })
             .size(11).style(crate::design::muted),
     ].spacing(7).into()
 }

@@ -188,21 +188,33 @@ pub fn decode_terrain_bytes(source: &[u8], render_grid: u32) -> Result<TerrainMe
     if !(16..=MAX_RENDER_GRID).contains(&render_grid) {
         return Err(TerrainError::Limits);
     }
+    let height = info.height as usize;
+    let max_height = info.max_height;
+    // CryEngine stores world X as the first array dimension.
+    let at = |x: u32, y: u32| {
+        f32::from(samples[x as usize * height + y as usize]) * max_height / 65535.0
+    };
     let stride = (info.width.max(info.height) - 1)
         .div_ceil(render_grid - 1)
         .max(1);
     info.stride = stride;
+    height_grid_mesh(info, at, |_, _| false)
+}
+
+/// Build a Z-up triangle grid from per-sample heights. `hole(x, y)` removes
+/// the quad whose minimum corner is (x, y); nothing is filled in its place.
+pub(crate) fn height_grid_mesh(
+    info: TerrainInfo,
+    at: impl Fn(u32, u32) -> f32,
+    hole: impl Fn(u32, u32) -> bool,
+) -> Result<TerrainMesh, TerrainError> {
+    let stride = info.stride.max(1);
     let xs = positions(info.width, stride);
     let ys = positions(info.height, stride);
     let count = xs.len() * ys.len();
     if count > (MAX_RENDER_GRID as usize + 2).pow(2) {
         return Err(TerrainError::Limits);
     }
-    let at = |x: u32, y: u32| {
-        // CryEngine stores world X as the first array dimension.
-        let index = x as usize * info.height as usize + y as usize;
-        f32::from(samples[index]) * info.max_height / 65535.0
-    };
     let mut vertices = Vec::with_capacity(count);
     let mut normals = Vec::with_capacity(count);
     let mut uv = Vec::with_capacity(count);
@@ -228,8 +240,11 @@ pub fn decode_terrain_bytes(source: &[u8], render_grid: u32) -> Result<TerrainMe
         }
     }
     let mut indices = Vec::with_capacity((xs.len() - 1) * (ys.len() - 1) * 6);
-    for x in 0..xs.len() - 1 {
-        for y in 0..ys.len() - 1 {
+    for (x, &sample_x) in xs.iter().enumerate().take(xs.len() - 1) {
+        for (y, &sample_y) in ys.iter().enumerate().take(ys.len() - 1) {
+            if hole(sample_x, sample_y) {
+                continue;
+            }
             let a = (x * ys.len() + y) as u32;
             let b = a + ys.len() as u32;
             let c = a + 1;

@@ -75,6 +75,88 @@ fn rotate(q: [f32; 4], p: [f32; 3]) -> [f32; 3] {
         p[2] + 2.0 * (w * uv[2] + uuv[2]),
     ]
 }
+/// The whole placement element around an attribute at `offset`: an editor
+/// layer's `<Object>` or a compiled mission's `<Entity>`, through its closing
+/// tag. A compiled mission has no `<Object>` at all, so reading to the next
+/// `</Object>` there would mix in every later entity's properties.
+fn enclosing_object(text: &str, offset: usize) -> &str {
+    let before = &text[..offset];
+    let (start, close) = match (before.rfind("<Object"), before.rfind("<Entity ")) {
+        (Some(object), Some(entity)) if entity > object => (entity, "</Entity>"),
+        (Some(object), _) => (object, "</Object>"),
+        (None, Some(entity)) => (entity, "</Entity>"),
+        (None, None) => (offset, "</Object>"),
+    };
+    let rest = &text[start..];
+    let head = rest.find('>').map_or(rest.len(), |end| end + 1);
+    if rest[..head].ends_with("/>") {
+        return &rest[..head];
+    }
+    &rest[..rest.find(close).unwrap_or(rest.len())]
+}
+
+fn quaternion_product(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let [aw, ax, ay, az] = a;
+    let [bw, bx, by, bz] = b;
+    [
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ]
+}
+
+/// Compiled mission entities keyed by EntityId, for resolving ParentId.
+fn mission_entity_heads(text: &str) -> HashMap<&str, &str> {
+    text.match_indices("<Entity ")
+        .filter_map(|(start, _)| {
+            let head = &text[start..start + text[start..].find('>')?];
+            Some((xml_attribute(head, "EntityId")?, head))
+        })
+        .collect()
+}
+
+/// World position and rotation of a placement. A compiled mission child's
+/// Pos and Rotate are relative to its ParentId entity; editor layer objects
+/// and unparented entities are already in world space.
+fn world_placement(object: &str, entities: &HashMap<&str, &str>) -> Option<([f32; 3], [f32; 4])> {
+    let head = &object[..object.find('>').unwrap_or(object.len())];
+    let local = |head: &str| {
+        let position = xml_tuple(head, "Pos").filter(|pos| pos.len() == 3)?;
+        let rotation = xml_tuple(head, "Rotate")
+            .filter(|rotate| rotate.len() == 4)
+            .map_or([1.0, 0.0, 0.0, 0.0], |r| [r[0], r[1], r[2], r[3]]);
+        Some(([position[0], position[1], position[2]], rotation))
+    };
+    let (mut position, mut rotation) = local(head)?;
+    let mut parent = xml_attribute(head, "ParentId");
+    for _ in 0..32 {
+        let Some(id) = parent else {
+            return Some((position, rotation));
+        };
+        let parent_head = entities.get(id)?;
+        let (origin, turn) = local(parent_head)?;
+        let scale = xml_tuple(parent_head, "Scale")
+            .filter(|scale| scale.len() == 3)
+            .map_or([1.0; 3], |s| [s[0], s[1], s[2]]);
+        let offset = rotate(
+            turn,
+            [
+                position[0] * scale[0],
+                position[1] * scale[1],
+                position[2] * scale[2],
+            ],
+        );
+        position = [
+            origin[0] + offset[0],
+            origin[1] + offset[1],
+            origin[2] + offset[2],
+        ];
+        rotation = quaternion_product(turn, rotation);
+        parent = xml_attribute(parent_head, "ParentId");
+    }
+    None
+}
 fn unit(v: [f32; 3]) -> [f32; 3] {
     let norm = v.iter().map(|n| n * n).sum::<f32>().sqrt();
     if norm < 1e-5 {
@@ -1118,8 +1200,10 @@ pub(super) fn authored_ambient_cube(
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
         for (offset, _) in text.match_indices("EntityClass=\"EnvironmentLight\"") {
-            let object = &text[offset..];
-            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let object = enclosing_object(&text, offset);
+            if xml_attribute(object, "bActive") == Some("0") {
+                continue;
+            }
             let Some(cubemap) = xml_attribute(object, "texture_deferred_cubemap") else {
                 continue;
             };
@@ -1208,24 +1292,18 @@ pub(super) fn authored_local_probes(
     let mut pending = Vec::new();
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
+        let entities = mission_entity_heads(&text);
         for (offset, _) in text.match_indices("EntityClass=\"EnvironmentLight\"") {
-            let start = text[..offset].rfind("<Object").unwrap_or(offset);
-            let object = &text[start..];
-            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
-            let (Some(cubemap), Some(position)) = (
+            let object = enclosing_object(&text, offset);
+            let (Some(cubemap), Some((position, rotation))) = (
                 xml_attribute(object, "texture_deferred_cubemap"),
-                xml_tuple(object, "Pos").filter(|pos| pos.len() == 3),
+                world_placement(object, &entities),
             ) else {
                 continue;
             };
             if xml_attribute(object, "bActive") == Some("0") {
                 continue;
             }
-            let rotation = xml_tuple(object, "Rotate")
-                .filter(|rotate| rotate.len() == 4)
-                .map_or([1.0, 0.0, 0.0, 0.0], |rotate| {
-                    [rotate[0], rotate[1], rotate[2], rotate[3]]
-                });
             let scale = mtl_value(object, "fDiffuseMultiplier", 1.0);
             let color = xml_tuple(object, "clrDiffuse").unwrap_or_default();
             pending.push(Pending {
@@ -1381,8 +1459,7 @@ pub(super) fn authored_decals(
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
         for (offset, _) in text.match_indices(" Type=\"Decal\"") {
-            let start = text[..offset].rfind("<Object").unwrap_or(offset);
-            let object = &text[start..];
+            let object = enclosing_object(&text, offset);
             let object = &object[..object.find('>').unwrap_or(object.len())];
             let (Some(position), Some(material)) = (
                 xml_tuple(object, "Pos").filter(|pos| pos.len() == 3),
@@ -1665,9 +1742,7 @@ pub(super) fn authored_roads(
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
         for (offset, _) in text.match_indices(" Type=\"Road\"") {
-            let start = text[..offset].rfind("<Object").unwrap_or(offset);
-            let object = &text[start..];
-            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let object = enclosing_object(&text, offset);
             let head = &object[..object.find('>').unwrap_or(object.len())];
             let (Some(position), Some(material)) = (
                 xml_tuple(head, "Pos").filter(|pos| pos.len() == 3),
@@ -1734,14 +1809,126 @@ pub(super) fn authored_rain_darkening(layers: &[(String, Vec<u8>)]) -> f32 {
         .find_map(|(_, bytes)| {
             let text = String::from_utf8_lossy(bytes);
             let at = text.find("EntityClass=\"Rain\"")?;
-            let object = &text[at..];
-            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let object = enclosing_object(&text, at);
             xml_attribute(object, "fDiffuseDarkening")?
                 .parse::<f32>()
                 .ok()
         })
         .filter(|value| value.is_finite())
         .map_or(0.0, |value| value.clamp(0.0, 1.0))
+}
+
+/// One flowgraph node: its head plus, unless self-closing, its body.
+fn flow_nodes(graph: &str) -> HashMap<&str, &str> {
+    graph
+        .match_indices("<Node ")
+        .filter_map(|(at, _)| {
+            let rest = &graph[at..];
+            let head = rest.find('>')? + 1;
+            let end = if rest[..head].ends_with("/>") {
+                head
+            } else {
+                rest.find("</Node>").unwrap_or(head)
+            };
+            Some((xml_attribute(&rest[..head], "Id")?, &rest[..end]))
+        })
+        .collect()
+}
+
+/// World outlines of the mission areas that switch the client weather to
+/// `state` (Ice_Alpine's biodome is "inside"). A weather flowgraph holding a
+/// WeatherSetClientState node for the state names the AreaTrigger entities it
+/// reacts to; a trigger wired straight into a different state is that state's
+/// instead. Every AreaShape listing one of those triggers is part of the zone.
+/// Each outline comes with its bottom and top height; Height 0 is unbounded.
+pub(super) fn weather_state_areas(
+    layers: &[(String, Vec<u8>)],
+    state: &str,
+) -> Vec<(Vec<[f32; 2]>, f32, f32)> {
+    let mut areas = Vec::new();
+    for (_, bytes) in layers {
+        let text = String::from_utf8_lossy(bytes);
+        let entities = mission_entity_heads(&text);
+        let ids_by_guid = entities
+            .values()
+            .filter_map(|head| {
+                Some((
+                    xml_attribute(head, "EntityGuid")?,
+                    xml_attribute(head, "EntityId")?,
+                ))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut triggers = Vec::new();
+        for (start, _) in text.match_indices("<FlowGraph") {
+            let graph = &text[start..];
+            let graph = &graph[..graph.find("</FlowGraph>").unwrap_or(graph.len())];
+            let nodes = flow_nodes(graph);
+            let client_state = |node: &str| {
+                nodes
+                    .get(node)
+                    .filter(|body| body.contains("Class=\"TRSGame:WeatherSetClientState\""))
+                    .and_then(|body| xml_attribute(body, "ClientStateTag"))
+            };
+            if !nodes.keys().any(|id| client_state(id) == Some(state)) {
+                continue;
+            }
+            let edges = graph
+                .match_indices("<Edge ")
+                .filter_map(|(at, _)| {
+                    let head = &graph[at..at + graph[at..].find('>')?];
+                    Some((
+                        xml_attribute(head, "nodeOut")?,
+                        xml_attribute(head, "nodeIn")?,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            for (id, body) in &nodes {
+                if !body.contains("Class=\"entity:AreaTrigger\"") {
+                    continue;
+                }
+                let elsewhere = edges.iter().any(|(from, to)| {
+                    from == id && client_state(to).is_some_and(|other| other != state)
+                });
+                if let Some(entity) = xml_attribute(body, "EntityGUID_64")
+                    .and_then(|guid| ids_by_guid.get(guid))
+                    .filter(|_| !elsewhere)
+                {
+                    triggers.push(format!("<Entity Id=\"{entity}\"/>"));
+                }
+            }
+        }
+        if triggers.is_empty() {
+            continue;
+        }
+        for (offset, _) in text.match_indices("EntityClass=\"AreaShape\"") {
+            let object = enclosing_object(&text, offset);
+            if !triggers.iter().any(|link| object.contains(link.as_str())) {
+                continue;
+            }
+            let Some((origin, rotation)) = world_placement(object, &entities) else {
+                continue;
+            };
+            let height = object
+                .find("<Area ")
+                .and_then(|at| xml_attribute(&object[at..], "Height"))
+                .and_then(|height| height.parse::<f32>().ok())
+                .filter(|height| height.is_finite() && *height > 0.0);
+            let outline = object
+                .match_indices("<Point ")
+                .filter_map(|(at, _)| xml_tuple(&object[at..], "Pos"))
+                .filter(|point| point.len() == 3)
+                .map(|point| {
+                    let turned = rotate(rotation, [point[0], point[1], 0.0]);
+                    [origin[0] + turned[0], origin[1] + turned[1]]
+                })
+                .collect::<Vec<_>>();
+            if outline.len() >= 3 {
+                let top = height.map_or(f32::INFINITY, |height| origin[2] + height);
+                areas.push((outline, origin[2], top));
+            }
+        }
+    }
+    areas
 }
 
 /// One authored WaterVolume, as triangles at its world height.
@@ -1838,9 +2025,7 @@ pub(super) fn authored_water(
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
         for (offset, _) in text.match_indices(" Type=\"WaterVolume\"") {
-            let start = text[..offset].rfind("<Object").unwrap_or(offset);
-            let object = &text[start..];
-            let object = &object[..object.find("</Object>").unwrap_or(object.len())];
+            let object = enclosing_object(&text, offset);
             let Some(origin) = xml_tuple(object, "Pos").filter(|pos| pos.len() == 3) else {
                 continue;
             };
@@ -1863,75 +2048,303 @@ pub(super) fn authored_water(
                 continue;
             }
             let material = xml_attribute(object, "Material").unwrap_or_default();
-            let mtl = indexed_source(root, &build, &format!("{material}.mtl"))
-                .ok()
-                .flatten()
-                .and_then(|path| std::fs::read_to_string(path).ok())
-                .unwrap_or_default();
-            let tint = xml_tuple(&mtl, "Diffuse").unwrap_or_default();
-            let material_map = |map: &str| {
-                mtl.find(&format!("Map=\"{map}\""))
-                    .and_then(|at| xml_attribute(&mtl[at..], "File"))
-                    .and_then(|file| {
-                        let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
-                        let path =
-                            indexed_source(root, &build, &format!("{stem}.dds.0")).ok()??;
-                        evolve_core::decode_dds_rgba(&path).ok()
-                    })
-                    .map(|(_, image)| std::sync::Arc::new(image))
-            };
-            let decal = material_map("Decal").or_else(|| material_map("Custom"));
-            let gloss_map = material_map("Specular");
             let fog_color = xml_tuple(object, "FogColor").unwrap_or_default();
             let fog_scale = mtl_value(object, "FogColorMultiplier", 1.0);
-            let specular = xml_tuple(&mtl, "Specular").unwrap_or_default();
-            surfaces.push(WaterSurface {
-                triangles: triangulate(&points),
-                tint: match tint.as_slice() {
-                    [r, g, b] => [*r, *g, *b],
-                    _ => [0.06, 0.07, 0.05],
-                },
-                decal_strength: mtl_value(&mtl, "DecalStrength", 0.5),
-                tiling: [
-                    mtl_value(&mtl, "Tilling", 0.1),
-                    mtl_value(&mtl, "DetailTilling", 3.0),
-                    mtl_value(&mtl, "DecalTilling", 0.05),
-                    mtl_value(&mtl, "NormalsScale", 1.0),
-                ],
-                surface: [
-                    mtl_value(&mtl, "DetailNormalsScale", 1.0),
-                    mtl_value(&mtl, "SoftIntersectionFactor", 1.0),
-                    mtl_value(&mtl, "FoamAmount", 0.0),
-                    mtl_value(&mtl, "FoamSoftIntersectionFactor", 1.0),
-                ],
-                foam_tilling: mtl_value(&mtl, "FoamTilling", 1.0),
-                decal_falloff: mtl_value(&mtl, "DecalFalloff", 1.0),
-                reflection: mtl_value(&mtl, "RealtimeReflMul", 1.0),
-                gloss: [
-                    mtl_value(&mtl, "GlossMapTilling", 0.1),
-                    mtl_value(&mtl, "GlossMapScale", 0.5),
-                    mtl_value(&mtl, "GlossMapBias", 0.5),
-                    0.0,
-                ],
-                fog: match fog_color.as_slice() {
-                    [r, g, b] => [
-                        r * fog_scale,
-                        g * fog_scale,
-                        b * fog_scale,
-                        mtl_value(object, "FogDensity", 1.0),
-                    ],
-                    _ => [0.0, 0.0, 0.0, mtl_value(object, "FogDensity", 1.0)],
-                },
-                specular: match specular.as_slice() {
-                    [r, g, b] => [*r, *g, *b],
-                    _ => [0.1; 3],
-                },
-                decal,
-                gloss_map,
-            });
+            let density = mtl_value(object, "FogDensity", 1.0);
+            let fog = match fog_color.as_slice() {
+                [r, g, b] => [r * fog_scale, g * fog_scale, b * fog_scale, density],
+                _ => [0.0, 0.0, 0.0, density],
+            };
+            surfaces.push(water_surface(
+                root,
+                &build,
+                material,
+                triangulate(&points),
+                fog,
+            ));
         }
     }
     Ok(surfaces)
+}
+
+/// A water surface's look from its MTL, with the volume's own fog.
+fn water_surface(
+    root: &std::path::Path,
+    build: &str,
+    material: &str,
+    triangles: Vec<[f32; 3]>,
+    fog: [f32; 4],
+) -> WaterSurface {
+    let mtl = indexed_source(root, build, &format!("{material}.mtl"))
+        .ok()
+        .flatten()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let tint = xml_tuple(&mtl, "Diffuse").unwrap_or_default();
+    let material_map = |map: &str| {
+        mtl.find(&format!("Map=\"{map}\""))
+            .and_then(|at| xml_attribute(&mtl[at..], "File"))
+            .and_then(|file| {
+                let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+                let path = indexed_source(root, build, &format!("{stem}.dds.0")).ok()??;
+                evolve_core::decode_dds_rgba(&path).ok()
+            })
+            .map(|(_, image)| std::sync::Arc::new(image))
+    };
+    let specular = xml_tuple(&mtl, "Specular").unwrap_or_default();
+    WaterSurface {
+        triangles,
+        tint: match tint.as_slice() {
+            [r, g, b] => [*r, *g, *b],
+            _ => [0.06, 0.07, 0.05],
+        },
+        decal_strength: mtl_value(&mtl, "DecalStrength", 0.5),
+        tiling: [
+            mtl_value(&mtl, "Tilling", 0.1),
+            mtl_value(&mtl, "DetailTilling", 3.0),
+            mtl_value(&mtl, "DecalTilling", 0.05),
+            mtl_value(&mtl, "NormalsScale", 1.0),
+        ],
+        surface: [
+            mtl_value(&mtl, "DetailNormalsScale", 1.0),
+            mtl_value(&mtl, "SoftIntersectionFactor", 1.0),
+            mtl_value(&mtl, "FoamAmount", 0.0),
+            mtl_value(&mtl, "FoamSoftIntersectionFactor", 1.0),
+        ],
+        foam_tilling: mtl_value(&mtl, "FoamTilling", 1.0),
+        decal_falloff: mtl_value(&mtl, "DecalFalloff", 1.0),
+        reflection: mtl_value(&mtl, "RealtimeReflMul", 1.0),
+        gloss: [
+            mtl_value(&mtl, "GlossMapTilling", 0.1),
+            mtl_value(&mtl, "GlossMapScale", 0.5),
+            mtl_value(&mtl, "GlossMapBias", 0.5),
+            0.0,
+        ],
+        fog,
+        specular: match specular.as_slice() {
+            [r, g, b] => [*r, *g, *b],
+            _ => [0.1; 3],
+        },
+        decal: material_map("Decal").or_else(|| material_map("Custom")),
+        gloss_map: material_map("Specular"),
+    }
+}
+
+/// A compiled water outline as a polygon. River pieces are stored as a
+/// left/right strip (0, 1, 2, 3), which as a polygon would cross itself.
+fn water_polygon(points: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    if points.len() != 4 {
+        return points.to_vec();
+    }
+    let area = |order: [usize; 4]| {
+        (0..4)
+            .map(|i| {
+                let (a, b) = (points[order[i]], points[order[(i + 1) % 4]]);
+                a[0] * b[1] - b[0] * a[1]
+            })
+            .sum::<f32>()
+            .abs()
+    };
+    if area([0, 1, 3, 2]) > area([0, 1, 2, 3]) {
+        vec![points[0], points[1], points[3], points[2]]
+    } else {
+        points.to_vec()
+    }
+}
+
+/// Water volumes and river pieces baked into a Legacy-ported terrain.dat.
+pub(super) fn compiled_water(
+    archive: &evolve_core::ImportedPak,
+    terrain: &evolve_core::CompiledTerrain,
+    excluded_layers: &std::collections::HashSet<u16>,
+) -> Result<Vec<WaterSurface>, String> {
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    Ok(terrain
+        .water
+        .iter()
+        .filter(|water| !excluded_layers.contains(&water.layer))
+        .filter_map(|water| {
+            let material = &terrain.materials[water.material?];
+            let [r, g, b] = water.fog_color;
+            Some(water_surface(
+                root,
+                &build,
+                material,
+                triangulate(&water_polygon(&water.points)),
+                [r, g, b, water.fog_density],
+            ))
+        })
+        .collect())
+}
+
+/// Decals and roads baked into a Legacy-ported terrain.dat, as the same
+/// batches the layer readers build. The compiled mission also lists most of
+/// the decals; one already in `existing` at the same spot is not added again.
+pub(super) fn compiled_decals(
+    archive: &evolve_core::ImportedPak,
+    terrain: &evolve_core::CompiledTerrain,
+    excluded_layers: &std::collections::HashSet<u16>,
+    existing: &[DecalBatch],
+) -> Result<Vec<DecalBatch>, String> {
+    let spot = |p: [f32; 3]| p.map(|v| (v * 100.0).round() as i64);
+    let placed = existing
+        .iter()
+        .filter(|batch| !batch.road)
+        .flat_map(|batch| &batch.instances)
+        .map(|instance| spot([instance[12], instance[13], instance[14]]))
+        .collect::<std::collections::HashSet<_>>();
+    let root = std::path::Path::new(&archive.directory)
+        .parent()
+        .ok_or("Imported library unavailable")?;
+    let (build, _guard) =
+        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
+            .map_err(|e| e.to_string())?;
+    let inventory = evolve_core::imported_archive_files(archive).map_err(|e| e.to_string())?;
+    let mut materials = HashMap::<String, DecalMaterial>::new();
+    let mut surfaces = HashMap::new();
+    let mut batches = HashMap::<String, DecalBatch>::new();
+    for decal in terrain.decals.iter().filter(|decal| {
+        !excluded_layers.contains(&decal.layer) && !placed.contains(&spot(decal.position))
+    }) {
+        let Some(material) = decal.material.map(|m| terrain.materials[m].as_str()) else {
+            continue;
+        };
+        let key = material.to_ascii_lowercase();
+        let Some((image, tint, falloff, opacity, _)) = materials
+            .entry(key.clone())
+            .or_insert_with(|| load_decal_material(root, &build, material))
+            .clone()
+        else {
+            continue;
+        };
+        let [x, y, z] = decal.axes();
+        let size = decal.scale.max(0.01);
+        let [px, py, pz] = decal.position;
+        batches
+            .entry(key)
+            .or_insert_with(|| DecalBatch {
+                priority: decal.sort_priority as f32,
+                image,
+                instances: Vec::new(),
+                road: false,
+                normal: None,
+                specular: [0.0; 4],
+            })
+            .instances
+            .push([
+                x[0],
+                x[1],
+                x[2],
+                size,
+                y[0],
+                y[1],
+                y[2],
+                size,
+                z[0],
+                z[1],
+                z[2],
+                decal.depth.max(0.05),
+                px,
+                py,
+                pz,
+                falloff,
+                tint[0],
+                tint[1],
+                tint[2],
+                opacity,
+            ]);
+    }
+    for road in terrain
+        .roads
+        .iter()
+        .filter(|road| !excluded_layers.contains(&road.layer))
+    {
+        let Some(material) = road.material.map(|m| terrain.materials[m].as_str()) else {
+            continue;
+        };
+        let key = material.to_ascii_lowercase();
+        let Some((image, tint, _, decal_opacity, opacity)) = materials
+            .entry(key.clone())
+            .or_insert_with(|| load_decal_material(root, &build, material))
+            .clone()
+        else {
+            continue;
+        };
+        let (normal, specular) = surfaces
+            .entry(key.clone())
+            .or_insert_with(|| load_road_surface(root, &build, material, &inventory))
+            .clone();
+        let pieces = compiled_road_pieces(
+            &road.vertices,
+            road.texture_end,
+            [tint[0], tint[1], tint[2], decal_opacity * opacity],
+        );
+        let priority = road.sort_priority as f32;
+        batches
+            .entry(format!("{key}|{priority}"))
+            .or_insert_with(|| DecalBatch {
+                priority,
+                image,
+                instances: Vec::new(),
+                road: true,
+                normal,
+                specular,
+            })
+            .instances
+            .extend(pieces);
+    }
+    // As the layer readers return them: decals by priority, then roads.
+    let mut ordered = batches.into_values().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| a.road.cmp(&b.road).then(a.priority.total_cmp(&b.priority)));
+    Ok(ordered)
+}
+
+/// Ribbon pieces, as road_pieces makes them, from a baked left/right strip.
+fn compiled_road_pieces(vertices: &[[f32; 3]], texture_end: f32, tint: [f32; 4]) -> Vec<[f32; 20]> {
+    let sections = vertices
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| (pair[0], pair[1], mix3(pair[0], pair[1], 0.5)))
+        .collect::<Vec<_>>();
+    if sections.len() < 2 {
+        return Vec::new();
+    }
+    let mut along = vec![0.0_f32; sections.len()];
+    for i in 1..sections.len() {
+        along[i] = along[i - 1] + horizontal_distance(sections[i - 1].2, sections[i].2);
+    }
+    let total = along[sections.len() - 1].max(0.0001);
+    let corners = |i: usize| {
+        let (left, right, _) = sections[i];
+        let width = horizontal_distance(left, right).max(0.01);
+        let fade =
+            (along[i].min(total - along[i]) / width.min(total * 0.25).max(0.01)).clamp(0.0, 1.0);
+        [
+            left[0],
+            left[1],
+            left[2],
+            along[i] / total * texture_end,
+            right[0],
+            right[1],
+            right[2],
+            fade,
+        ]
+    };
+    (0..sections.len() - 1)
+        .map(|i| {
+            let mut piece = [0.0; 20];
+            piece[..8].copy_from_slice(&corners(i));
+            piece[8..16].copy_from_slice(&corners(i + 1));
+            piece[16..].copy_from_slice(&tint);
+            piece
+        })
+        .collect()
 }
 
 /// One planet or moon from Environment.xml.
@@ -2135,6 +2548,49 @@ pub(super) fn load_static_sky(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compiled_mission_entities_keep_their_own_properties_and_parent_space() {
+        // A compiled mission lists <Entity> elements with no </Object> at all.
+        // Each probe must read its own cubemap, box and world position.
+        let mission = r#"<Mission><Objects>
+          <Entity Name="host" Pos="100,0,0" Rotate="0.70710677,0,0,0.70710677" Scale="2,2,2" EntityClass="Brush" EntityId="7"/>
+          <Entity Name="probe_a" Pos="10,20,30" EntityClass="EnvironmentLight" EntityId="8">
+            <Properties texture_deferred_cubemap="a_cm.tif" BoxSizeX="5"/>
+          </Entity>
+          <Entity Name="probe_b" ParentId="7" Pos="1,0,0" EntityClass="EnvironmentLight" EntityId="9">
+            <Properties texture_deferred_cubemap="b_cm.tif" BoxSizeX="200"/>
+          </Entity>
+        </Objects></Mission>"#;
+        let entities = super::mission_entity_heads(mission);
+        let found = mission
+            .match_indices("EntityClass=\"EnvironmentLight\"")
+            .map(|(offset, _)| {
+                let object = super::enclosing_object(mission, offset);
+                let (position, _) = super::world_placement(object, &entities).unwrap();
+                (
+                    super::xml_attribute(object, "texture_deferred_cubemap").unwrap(),
+                    super::xml_attribute(object, "BoxSizeX").unwrap(),
+                    position,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(found[0].0, "a_cm.tif");
+        assert_eq!(found[0].1, "5");
+        assert_eq!(found[0].2, [10.0, 20.0, 30.0]);
+        assert_eq!(found[1].0, "b_cm.tif");
+        assert_eq!(found[1].1, "200");
+        // Parent turned 90 degrees about Z and scaled 2: local +X lands at +2 Y.
+        let [x, y, z] = found[1].2;
+        assert!((x - 100.0).abs() < 1e-4 && (y - 2.0).abs() < 1e-4 && z.abs() < 1e-4);
+        // An editor layer object still reads through its own </Object>.
+        let layer = r#"<Objects><Object Id="a" Pos="1,2,3" EntityClass="EnvironmentLight"><Properties BoxSizeX="9"/></Object><Object Id="b" BoxSizeX="1"/></Objects>"#;
+        let at = layer.find("EntityClass").unwrap();
+        assert_eq!(
+            super::xml_attribute(super::enclosing_object(layer, at), "BoxSizeX"),
+            Some("9")
+        );
+    }
+
     #[test]
     fn time_of_day_sun_rises_peaks_and_sets_on_the_authored_path() {
         let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-3);

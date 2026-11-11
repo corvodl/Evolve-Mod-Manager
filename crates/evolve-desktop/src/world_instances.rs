@@ -563,6 +563,10 @@ fn is_ground(group: &ModelGroup) -> bool {
     group.instances.len() == 1 && group.instances[0].object_index == usize::MAX
 }
 
+/// A drawn placement with no editable scene object (merged grass), distinct
+/// from `usize::MAX`, which marks the ground.
+pub(super) const NOT_SELECTABLE: usize = usize::MAX - 1;
+
 #[derive(Clone)]
 pub(super) struct ModelGroup {
     pub mesh: Arc<RenderMesh>,
@@ -584,6 +588,11 @@ pub(super) struct World {
     pub wildlife_links: Arc<Vec<([f32; 3], [f32; 3])>>,
     pub time_of_day: Option<Arc<super::level_environment::TimeOfDay>>,
     pub fog_profile: Option<super::level_environment::FogProfile>,
+    /// A weather zone with its own TimeOfDay and fog (Ice_Alpine's biodome).
+    /// Like the game's client weather state, it applies to the whole view
+    /// while the camera is inside it.
+    pub interior: Option<Arc<InteriorWeather>>,
+    camera_inside: Arc<std::sync::atomic::AtomicBool>,
     pub source_resources: super::level_environment::ResourceSummary,
     /// Signed high-pass detail overlay; painted layer composition is prepared
     /// from verified same-install sources in the blocking map-open worker.
@@ -624,10 +633,12 @@ struct Vertex {
     uv: [f32; 2],
     normal: [f32; 3],
     paint: f32,
+    /// Authored vertex color RGB; white when the mesh has none.
+    color: [f32; 3],
 }
 impl Vertex {
-    const ATTRS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
-        0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 7 => Float32
+    const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 7 => Float32, 8 => Float32x3
     ];
     fn layout<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
@@ -778,15 +789,77 @@ fn select_visible_lights(
         .collect()
 }
 
+/// A map area whose weather state replaces the map's TimeOfDay and fog.
+pub(super) struct InteriorWeather {
+    pub time_of_day: Option<Arc<super::level_environment::TimeOfDay>>,
+    pub fog_profile: Option<super::level_environment::FogProfile>,
+    /// World XY outlines with their bottom and top heights.
+    pub areas: Vec<(Vec<[f32; 2]>, f32, f32)>,
+}
+
+impl InteriorWeather {
+    pub fn contains(&self, point: [f32; 3]) -> bool {
+        self.areas.iter().any(|(outline, bottom, top)| {
+            if point[2] < *bottom || point[2] > *top || outline.len() < 3 {
+                return false;
+            }
+            let mut inside = false;
+            let mut previous = outline[outline.len() - 1];
+            for &current in outline {
+                if (current[1] > point[1]) != (previous[1] > point[1])
+                    && point[0]
+                        < (previous[0] - current[0]) * (point[1] - current[1])
+                            / (previous[1] - current[1])
+                            + current[0]
+                {
+                    inside = !inside;
+                }
+                previous = current;
+            }
+            inside
+        })
+    }
+}
+
 impl World {
+    /// Choose the weather state for a camera position; true while inside the
+    /// interior weather areas.
+    pub fn locate_camera(&self, position: [f32; 3]) -> bool {
+        let inside = self
+            .interior
+            .as_ref()
+            .is_some_and(|interior| interior.contains(position));
+        self.camera_inside.store(inside, Ordering::Relaxed);
+        inside
+    }
+
+    fn inside(&self) -> Option<&InteriorWeather> {
+        self.interior
+            .as_deref()
+            .filter(|_| self.camera_inside.load(Ordering::Relaxed))
+    }
+
+    /// The TimeOfDay for the current camera: the interior's while inside it.
+    pub fn active_time_of_day(&self) -> Option<&super::level_environment::TimeOfDay> {
+        self.inside()
+            .and_then(|interior| interior.time_of_day.as_deref())
+            .or(self.time_of_day.as_deref())
+    }
+
+    pub fn active_fog(&self) -> Option<super::level_environment::FogProfile> {
+        match self.inside() {
+            Some(interior) => interior.fog_profile.or(self.fog_profile),
+            None => self.fog_profile,
+        }
+    }
+
     /// Compute exact content identities on the import worker before the GPU
     /// viewport starts. Avoid hashing multi-megabyte source textures on the
     /// rendering thread, where it would produce the very stalls we are fixing.
     /// The map's authored shoulder, midtones, toe and whitepoint at this hour.
     pub fn film_curve(&self, hour: f32) -> [f32; 4] {
         let sample = |name: &str, default: f32| {
-            self.time_of_day
-                .as_ref()
+            self.active_time_of_day()
                 .and_then(|profile| profile.scalar(name, hour))
                 .filter(|value| value.is_finite() && *value > 0.0)
                 .unwrap_or(default)
@@ -801,8 +874,7 @@ impl World {
 
     /// The map's authored Bloom amount at this hour.
     pub fn bloom_amount(&self, hour: f32) -> f32 {
-        self.time_of_day
-            .as_ref()
+        self.active_time_of_day()
             .and_then(|profile| profile.scalar("Bloom amount", hour))
             .filter(|value| value.is_finite() && *value >= 0.0)
             .unwrap_or(1.0)
@@ -810,7 +882,7 @@ impl World {
 
     /// The map's authored scene key and exposure limits at this hour.
     pub fn eye_adaptation(&self, hour: f32) -> [f32; 4] {
-        let Some(profile) = self.time_of_day.as_ref() else {
+        let Some(profile) = self.active_time_of_day() else {
             return [0.18, 1.0, 1.0, 0.0];
         };
         let key = profile.scalar("Scene key", hour).unwrap_or(0.18).max(0.001);
@@ -823,7 +895,7 @@ impl World {
     }
 
     pub fn lighting_at(&self, hour: f32) -> super::level_lighting::Lighting {
-        self.time_of_day.as_ref().map_or_else(
+        self.active_time_of_day().map_or_else(
             || super::level_lighting::Lighting::at(hour),
             |profile| {
                 super::level_lighting::Lighting::from_original(hour, profile).with_authored_sun(
@@ -856,8 +928,7 @@ impl World {
             return [0.0; 4];
         }
         let strength = self
-            .time_of_day
-            .as_ref()
+            .active_time_of_day()
             .and_then(|profile| profile.scalar("Sun rays visibility", hour))
             .unwrap_or(0.0)
             .max(0.0);
@@ -936,7 +1007,7 @@ impl World {
         let mut closest = (f32::INFINITY, None);
         for group in &self.groups {
             for instance in &group.instances {
-                if instance.object_index == usize::MAX {
+                if instance.object_index >= NOT_SELECTABLE {
                     continue;
                 }
                 let p = instance.transform.position;
@@ -1724,6 +1795,8 @@ pub(super) struct Renderer {
     fog_uniform: wgpu::Buffer,
     height_fog_uniform: wgpu::Buffer,
     last_lighting_hour: f32,
+    /// Weather state the lighting uniforms were last written for.
+    last_inside: bool,
     sampler: wgpu::Sampler,
     terrain_sampler: wgpu::Sampler,
     empty_terrain: TerrainGpuTextures,
@@ -3443,6 +3516,7 @@ impl Renderer {
             fog_uniform,
             height_fog_uniform,
             last_lighting_hour: f32::NAN,
+            last_inside: false,
             sampler,
             terrain_sampler,
             empty_terrain,
@@ -3530,6 +3604,15 @@ impl Renderer {
                     .as_ref()
                     .and_then(|s| s.get(i))
                     .map_or(1.0, |alpha| f32::from(*alpha) / 255.0),
+                // Stored in D3D byte order (B, G, R).
+                color: model
+                    .mesh
+                    .vertex_color
+                    .as_ref()
+                    .and_then(|s| s.get(i))
+                    .map_or([1.0; 3], |[b, g, r]| {
+                        [r, g, b].map(|c| f32::from(*c) / 255.0)
+                    }),
             })
             .collect();
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -3812,7 +3895,7 @@ impl Renderer {
                     waterfall[8],
                     waterfall[9],
                     waterfall[10],
-                    0.0,
+                    if surf.vertex_colors { 1.0 } else { 0.0 },
                     detail_tile[0],
                     detail_tile[1],
                     layer[0],
@@ -4066,10 +4149,12 @@ impl Renderer {
         } else {
             12.0
         };
-        let lighting_changed = self.last_lighting_hour != hour;
+        let inside = camera.is_some_and(|camera| world.locate_camera(camera.position));
+        let lighting_changed = self.last_lighting_hour != hour || self.last_inside != inside;
+        self.last_inside = inside;
         if lighting_changed {
             let lighting =
-                world.time_of_day.as_ref().map_or_else(
+                world.active_time_of_day().map_or_else(
                     || super::level_lighting::Lighting::at(hour),
                     |profile| {
                         super::level_lighting::Lighting::from_original(hour, profile)
@@ -4083,25 +4168,24 @@ impl Renderer {
             }
             queue.write_buffer(&self.lighting_uniform, 0, bytemuck::cast_slice(&values));
             let sky = super::level_atmosphere::atmosphere_uniform(
-                world.time_of_day.as_deref(),
+                world.active_time_of_day(),
                 hour,
                 &world.sky_source,
                 world.static_sky.is_some(),
             );
             queue.write_buffer(&self.sky_uniform, 0, bytemuck::cast_slice(&sky));
             queue.write_buffer(&self.hdr_uniform, 0, bytemuck::cast_slice(&sky[7]));
-            let fog = world.fog_profile.map_or([[0.0_f32; 4]; 5], |profile| {
-                profile.gpu_uniform(world.time_of_day.as_deref(), hour)
+            let fog = world.active_fog().map_or([[0.0_f32; 4]; 5], |profile| {
+                profile.gpu_uniform(world.active_time_of_day(), hour)
             });
             queue.write_buffer(&self.fog_uniform, 0, bytemuck::cast_slice(&fog));
-            let height = world.fog_profile.map_or([[0.0_f32; 4]; 2], |profile| {
-                profile.height_preview_uniform(world.time_of_day.as_deref(), hour)
+            let height = world.active_fog().map_or([[0.0_f32; 4]; 2], |profile| {
+                profile.height_preview_uniform(world.active_time_of_day(), hour)
             });
             queue.write_buffer(&self.height_fog_uniform, 0, bytemuck::cast_slice(&height));
             let authored = |name: &str, fallback: f32| {
                 world
-                    .time_of_day
-                    .as_ref()
+                    .active_time_of_day()
                     .and_then(|profile| profile.scalar(name, hour))
                     .filter(|value| value.is_finite())
                     .unwrap_or(fallback)
@@ -5515,6 +5599,7 @@ mod tests {
     fn group_loading_priority_uses_position_not_camera_direction() {
         let dummy_mesh = Arc::new(RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: evolve_core::ModelInfo {
                 format: "test".into(),
                 version: 1,
@@ -5883,6 +5968,7 @@ mod tests {
     fn terrain_is_identified_by_nonselectable_ground_instance_not_asset_name() {
         let mesh = Arc::new(RenderMesh {
             vertex_alpha: None,
+            vertex_color: None,
             info: evolve_core::ModelInfo {
                 format: "test".into(),
                 version: 1,

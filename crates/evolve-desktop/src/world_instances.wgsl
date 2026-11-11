@@ -23,7 +23,7 @@ struct SurfaceParams {
   specular: vec4<f32>, // authored Specular color, Shininess as smoothness
   waterfall_scroll: vec4<f32>, // TillingLayer0, TillingLayer1, SpeedLayer0, SpeedLayer1
   waterfall_surface: vec4<f32>, // BumpScaleLayer0, BumpScaleLayer1, ReflectionAmount, FresnelBias
-  waterfall_blend: vec4<f32>, // AlphaBlendMul, FoamDeform, FoamMultiplier
+  waterfall_blend: vec4<f32>, // AlphaBlendMul, FoamDeform, FoamMultiplier, Illum VERTCOLORS
   detail: vec4<f32>,  // Detail tiling U and V, DetailBumpScale, DetailDiffuseScale
   layers: vec4<f32>,  // DetailGlossScale, has detail, has second layer, BlendFactor
   blend: vec4<f32>,   // BlendFalloff, BlendLayer2Tiling, BlendMaskTiling, normal in emissive slot
@@ -218,6 +218,7 @@ struct Output {
   @location(1) normal: vec3<f32>,
   @location(2) world: vec3<f32>,
   @location(3) paint: f32,
+  @location(4) color: vec3<f32>,
 }
 @vertex
 fn vs_main(
@@ -225,6 +226,7 @@ fn vs_main(
   @location(1) uv: vec2<f32>,
   @location(2) normal: vec3<f32>,
   @location(7) paint: f32,
+  @location(8) color: vec3<f32>,
   @location(3) col0: vec4<f32>,
   @location(4) col1: vec4<f32>,
   @location(5) col2: vec4<f32>,
@@ -256,6 +258,7 @@ fn vs_main(
   out.normal=transformed_normal;
   out.world=world;
   out.paint=paint;
+  out.color=color;
   return out;
 }
 // Match ordinary implicit mip LOD while clamping to the source levels that
@@ -432,6 +435,10 @@ fn shade(input:Output, use_opacity_mask:bool)->vec4<f32> {
     base=vec4<f32>(base.rgb*max(1.0+(detail_map.r*2.0-1.0)*authored.detail.w,0.0),base.a);
     detail_bend=(detail_map.ga*2.0-vec2<f32>(1.0))*authored.detail.z;
     detail_gloss=1.0+(detail_map.b*2.0-1.0)*authored.layers.x;
+  }
+  // Illum VERTCOLORS: the mesh's baked vertex color tints diffuse.
+  if (authored.waterfall_blend.w>0.5) {
+    base=vec4<f32>(base.rgb*input.color,base.a);
   }
   base=vec4<f32>(clamp(base.rgb+signed_detail,vec3<f32>(0.0),vec3<f32>(1.0))*authored.clouds.rgb*sun_shadows.control.w,base.a);
   if (use_opacity_mask) {
