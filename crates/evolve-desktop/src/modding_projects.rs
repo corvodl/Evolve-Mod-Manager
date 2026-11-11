@@ -1420,6 +1420,211 @@ pub fn build_project_raw(
     }
 }
 
+/// Standalone archive export flavors available from the Modding page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PakExportMode {
+    ChangedZz,
+    ChangedOriginal,
+    FullOriginal,
+}
+
+impl PakExportMode {
+    pub fn changed_only(self) -> bool {
+        self != Self::FullOriginal
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ChangedZz => "zz_ PAK (changed files only)",
+            Self::ChangedOriginal => "original-name PAK (changed files only)",
+            Self::FullOriginal => "complete original-name PAK",
+        }
+    }
+}
+
+/// Derive the default Save As name for a chosen format. Original-name
+/// formats must preserve the source archive's exact physical basename.
+pub fn suggested_pak_export_name(
+    project: &ProjectRow,
+    mod_name: &str,
+    mode: PakExportMode,
+) -> Result<String, String> {
+    match mode {
+        PakExportMode::ChangedZz => sparse_pak_filename(mod_name),
+        PakExportMode::ChangedOriginal | PakExportMode::FullOriginal => {
+            let name = Path::new(&project.target)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or("Selected Mod Project has no source PAK name")?;
+            super::modding_keys::signed_basename(Path::new(name))
+        }
+    }
+}
+
+/// Validate a user-friendly addon name independently of the original signed
+/// source PAK's basename. Keep the resulting archive name deterministic.
+pub(crate) fn sparse_pak_filename(input: &str) -> Result<String, String> {
+    let input = input.trim();
+    let stem = input
+        .strip_suffix(".pak")
+        .or_else(|| input.strip_suffix(".PAK"))
+        .unwrap_or(input);
+    let stem = stem.strip_prefix("zz_").unwrap_or(stem).replace(' ', "_");
+    if stem.is_empty()
+        || stem.len() > 80
+        || !stem
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(
+            "Use 1–80 ASCII letters, numbers, spaces, underscores or hyphens for a mod PAK name."
+                .into(),
+        );
+    }
+    Ok(format!("zz_{stem}.pak"))
+}
+
+/// Export a Mod Project as a separately published, correctly signed PAK.
+/// All formats reuse the complete authenticated Build Mod preflight. The
+/// changed-only formats then encode only the modified archive members.
+pub fn export_project_pak(
+    project: &ProjectRow,
+    projects: &Path,
+    stage: &Path,
+    destination: &Path,
+    mode: PakExportMode,
+) -> Result<(PathBuf, usize), String> {
+    if !destination.is_absolute() {
+        return Err("Choose an absolute output path using Save As".into());
+    }
+    let selected = destination
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("Choose a named .pak file")?;
+    if mode == PakExportMode::ChangedZz {
+        if sparse_pak_filename(selected)? != selected {
+            return Err("Custom PAK filename must be zz_[modname].pak".into());
+        }
+    } else if selected != suggested_pak_export_name(project, "", mode)? {
+        return Err(
+            "Keep the original PAK filename; choose another destination folder instead".into(),
+        );
+    }
+    if fs::symlink_metadata(destination).is_ok() {
+        return Err("Export file already exists; choose a NEW output file".into());
+    }
+    let parent = destination
+        .parent()
+        .ok_or("Export path has no parent directory")?;
+    if !fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_dir()) {
+        return Err("Choose a real existing destination folder, not a linked directory".into());
+    }
+    fs::canonicalize(parent).map_err(|e| format!("Cannot access output folder: {e}"))?;
+    let official = super::official_stage2_tools::for_stage(stage)?;
+    if mode.changed_only() && official.is_none() {
+        return Err("Changed-only export requires the authorized official Stage 2 encoder".into());
+    }
+    let (_report, signed_full, verified) = build_project_raw(project, projects, stage)?;
+    let manifest = read_json(
+        &verified.workspace.join(".evolve-pak-workspace.json"),
+        8 * 1024 * 1024,
+    )?;
+    let original_name = super::modding_keys::signed_basename(&signed_full)?;
+    let signed_name = manifest["signed_basename"]
+        .as_str()
+        .unwrap_or(&original_name);
+    if signed_name != original_name && signed_name != original_name.to_ascii_lowercase() {
+        return Err("Built archive and signed source basename disagree".into());
+    }
+    if mode != PakExportMode::ChangedZz && selected != original_name {
+        return Err("Output filename differs from verified original PAK".into());
+    }
+    let public = if let Some(ref tool) = official {
+        tool.public_key.clone()
+    } else {
+        super::modding_keys::public_key(stage)?
+    };
+    let index = evolve_core::open_verified_signed_pak(&signed_full, &public, signed_name)
+        .map_err(|e| format!("Built source signature verification failed: {e}"))?;
+    if mode.changed_only() {
+        official
+            .ok_or("Official developer encoder unavailable")?
+            .export_changed_members_pak(
+                &signed_full,
+                signed_name,
+                &verified.modified,
+                destination,
+            )?;
+        Ok((destination.to_owned(), verified.modified.len()))
+    } else {
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".full-pak-export-")
+            .tempfile_in(parent)
+            .map_err(|e| e.to_string())?;
+        let mut input = File::open(&signed_full).map_err(|e| e.to_string())?;
+        std::io::copy(&mut input, temporary.as_file_mut())
+            .map_err(|e| format!("Cannot copy complete PAK: {e}"))?;
+        evolve_core::inspect_signed_pak(temporary.path(), &public, signed_name)
+            .map_err(|e| format!("Copied PAK signature verification failed: {e}"))?;
+        if digest(&signed_full).map_err(|e| e.to_string())?
+            != digest(temporary.path()).map_err(|e| e.to_string())?
+        {
+            return Err("Full PAK copy differs from the authenticated original".into());
+        }
+        // New-file hard link refuses even a concurrent output-file creation.
+        fs::hard_link(temporary.path(), destination)
+            .map_err(|e| format!("Cannot publish full PAK without overwriting: {e}"))?;
+        Ok((destination.to_owned(), index.info.entries.len()))
+    }
+}
+
+#[cfg(test)]
+mod sparse_pak_tests {
+    use super::{PakExportMode, ProjectRow, sparse_pak_filename, suggested_pak_export_name};
+    use std::path::PathBuf;
+
+    #[test]
+    fn names_are_safe_and_portable() {
+        assert_eq!(sparse_pak_filename("My Mod").unwrap(), "zz_My_Mod.pak");
+        assert_eq!(
+            sparse_pak_filename("zz_Example.pak").unwrap(),
+            "zz_Example.pak"
+        );
+        assert_eq!(sparse_pak_filename("Test-7").unwrap(), "zz_Test-7.pak");
+        for invalid in [
+            "", "../bad", "a/b", "a\\b", "a:b", "z.other", "✨", "zz_.pak",
+        ] {
+            assert!(sparse_pak_filename(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn format_options_name_the_archives_correctly() {
+        let project = ProjectRow {
+            label: "Custom Mod".into(),
+            target: "Game/OriginalAssets.pak".into(),
+            source_build: String::new(),
+            status: "Modified".into(),
+            details: String::new(),
+            workspace: PathBuf::new(),
+            modified: vec!["Libs/edited.xml".into()],
+            changed_known: true,
+            enabled: false,
+        };
+        assert_eq!(
+            suggested_pak_export_name(&project, &project.label, PakExportMode::ChangedZz).unwrap(),
+            "zz_Custom_Mod.pak"
+        );
+        assert_eq!(
+            suggested_pak_export_name(&project, "", PakExportMode::ChangedOriginal).unwrap(),
+            "OriginalAssets.pak"
+        );
+        assert_eq!(
+            suggested_pak_export_name(&project, "", PakExportMode::FullOriginal).unwrap(),
+            "OriginalAssets.pak"
+        );
+    }
+}
+
 /// Provision only the installed PAK targeted by this enabled Mod Project.
 /// The verified setup inventory supplies the exact path and source digest;
 /// no basename-only lookup across the game is allowed.

@@ -3,7 +3,7 @@
 //! contextual and collapsed by default. Cryptographic keys are never entered.
 use super::{Message, State};
 use crate::design;
-use crate::modding_projects::ProjectRow;
+use crate::modding_projects::{PakExportMode, ProjectRow};
 use evolve_core::mod_safety::{ModKind, classify};
 use iced::widget::{column, container, row, scrollable, space, svg, text};
 use iced::{Alignment, Background, Color, Element, Fill, Length};
@@ -255,6 +255,8 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
             ))),
             design::button("Build Mod")
                 .on_press(Message::MenuCommand(Box::new(Message::ModdingBuild))),
+            design::button("Export Mod…")
+                .on_press(Message::MenuCommand(Box::new(Message::ModdingExportPak))),
         ]
         .spacing(3)
         .into(),
@@ -1383,8 +1385,35 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .spacing(8)
         .align_y(iced::Center),
         selected_actions,
+        row![
+            design::button("Export Mod…")
+                .style(design::primary)
+                .on_press_maybe(state.modding_selected.map(|_| Message::ModdingExportPak)),
+            text("Choose an export format, then Save As to any folder.")
+                .size(11)
+                .style(design::muted),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
     ]
     .spacing(10);
+    if state.modding_export_options_open && chosen.is_some() {
+        selected_content = selected_content.push(
+            column![
+                text("EXPORT FORMAT").size(12).style(design::muted),
+                design::button("zz_[modname].pak — changed files only")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingExportChoose(PakExportMode::ChangedZz)),
+                design::button("[OriginalPakName].pak — changed files only")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingExportChoose(PakExportMode::ChangedOriginal)),
+                design::button("[OriginalPakName].pak — entire original PAK")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingExportChoose(PakExportMode::FullOriginal)),
+            ]
+            .spacing(5),
+        );
+    }
     if state.modding_advanced {
         selected_content = selected_content.push(
             row![
