@@ -100,7 +100,7 @@ pub use compiled_terrain::{
     CompiledVegetation, CompiledWater, HOLE_ID, MergedMeshInstance, RecordSpan,
     copy_compiled_placement, decode_compiled_terrain, decode_merged_mesh_sector,
     delete_compiled_placement, edit_compiled_terrain_bytes, patch_compiled_terrain_bytes,
-    read_compiled_terrain, read_merged_mesh_sectors,
+    read_compiled_terrain, read_merged_mesh_sectors, transform_compiled_placements,
 };
 pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
 pub use dds::{

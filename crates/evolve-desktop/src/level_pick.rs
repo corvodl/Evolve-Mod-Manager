@@ -18,6 +18,9 @@ pub(super) struct LevelViewport {
     /// Ctrl is held: a sculpt stroke lowers instead.
     pub brush_invert: bool,
     pub brush_ring: Option<Arc<Vec<[f32; 3]>>>,
+    /// A G/R/S transform is in progress: the mouse drives it, LMB applies
+    /// and RMB cancels.
+    pub transforming: bool,
 }
 
 #[derive(Default)]
@@ -245,6 +248,21 @@ impl shader::Program<Message> for LevelViewport {
         // Initialise the existing orbit/pan gesture for subsequent mouse moves
         // even when an object is selected by this click.
         let location = cursor.position_in(bounds);
+        if self.transforming {
+            return match event {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    Some(shader::Action::publish(Message::LevelTransformConfirm).and_capture())
+                }
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                    Some(shader::Action::publish(Message::LevelTransformCancel).and_capture())
+                }
+                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    let ray = location.and_then(|position| self.ray(bounds, position));
+                    Some(shader::Action::publish(Message::LevelPointerRay(ray)).and_capture())
+                }
+                _ => None,
+            };
+        }
         if self.brush {
             if let Some(action) = self.brush_event(state, event, bounds, cursor) {
                 return Some(action);

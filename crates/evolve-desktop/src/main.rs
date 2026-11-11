@@ -49,6 +49,7 @@ mod level_library;
 mod level_lighting;
 mod level_pick;
 mod level_scene_renderer;
+mod level_transform;
 mod level_workspace;
 mod library_picker;
 mod loading_wheel;
@@ -725,6 +726,10 @@ struct State {
     level_paste_at: Option<[f32; 3]>,
     /// The view ray under the mouse in the level viewport.
     level_pointer_ray: Option<([f32; 3], [f32; 3])>,
+    /// A G/R/S move, rotate or scale in progress.
+    level_transform: Option<level_transform::ModalTransform>,
+    /// RMB is held in the Level Editor: mouse-look, and WASD/QE fly.
+    level_looking: bool,
     scan_cancel: Option<Arc<AtomicBool>>,
     scan_indexed: Option<Arc<AtomicUsize>>,
     preview_cache: SharedCache,
@@ -822,6 +827,10 @@ enum ProjectLevelMutation {
     CompiledDelete(evolve_core::CompiledPlacement),
     /// Copy one to a new world position.
     CompiledCopy(evolve_core::CompiledPlacement, [f32; 3]),
+    /// Move, rotate or scale terrain.dat placements (world transforms).
+    CompiledTransform(Vec<(evolve_core::CompiledPlacement, evolve_core::Transform)>),
+    /// Several XML edits to one layer, saved together.
+    XmlBatch(Vec<evolve_core::scene_authoring::LayerAuthoringEdit>),
     Vegetation(vegetation_map::VegetationEdit),
 }
 
@@ -2057,6 +2066,40 @@ impl Operation {
                         evolve_core::copy_compiled_placement(&original, placement, position)
                             .map_err(|e| e.to_string())?
                     }
+                    ProjectLevelMutation::CompiledTransform(edits) => {
+                        let lower = member.to_ascii_lowercase();
+                        if lower != "terrain/terrain.dat"
+                            && !lower.ends_with("/terrain/terrain.dat")
+                        {
+                            return Err(
+                                "terrain.dat placements are transformed within terrain.dat".into(),
+                            );
+                        }
+                        evolve_core::transform_compiled_placements(&original, &edits)
+                            .map_err(|e| e.to_string())?
+                    }
+                    ProjectLevelMutation::XmlBatch(edits) => {
+                        if !(member.to_ascii_lowercase().ends_with(".lyr")
+                            || member.to_ascii_lowercase().ends_with(".xml"))
+                            || edits.is_empty()
+                            || edits.len() > 512
+                            || edits.iter().any(|edit| {
+                                !matches!(
+                                    edit,
+                                    evolve_core::scene_authoring::LayerAuthoringEdit::Transform { .. }
+                                )
+                            })
+                        {
+                            return Err("A batch edit must be transforms in one LYR/XML layer".into());
+                        }
+                        let mut bytes = original.clone();
+                        for edit in &edits {
+                            bytes =
+                                evolve_core::scene_authoring::edit_native_layer_bytes(&bytes, edit)
+                                    .map_err(|e| e.to_string())?;
+                        }
+                        bytes
+                    }
                     ProjectLevelMutation::TerrainPatch(patch) => {
                         let lower = member.to_ascii_lowercase();
                         if lower.ends_with("heightmap.dat") {
@@ -2856,6 +2899,14 @@ enum Message {
     LevelDuplicateKey(window::Id),
     /// The view ray under the mouse moved (None: off the viewport).
     LevelPointerRay(Option<([f32; 3], [f32; 3])>),
+    /// RMB pressed or released in the Level Editor window.
+    LevelLookButton(window::Id, bool),
+    /// Enter in the Level Editor window, not taken by a text field.
+    LevelEnterKey(window::Id),
+    /// G, R or S: start moving, rotating or scaling the selection.
+    LevelTransformStart(level_transform::Mode),
+    LevelTransformConfirm,
+    LevelTransformCancel,
     LevelCameraWindowFocus(window::Id, bool),
     LevelCameraTick,
     LevelAnimationTick,
@@ -3420,6 +3471,162 @@ fn level_pending_edits(state: &State) -> Vec<(String, evolve_core::Transform)> {
 /// The editor is a preview unless a managed project is active. Every
 /// authoring command submits only a verified project source member to the
 /// existing backup/import transaction, never an imported PAK or library file.
+/// Start a G/R/S transform of the selected placements.
+fn start_level_transform(state: &mut State, mode: level_transform::Mode) {
+    if state.level_project.is_none()
+        || state.level_read_only
+        || state.busy
+        || state.level_tool != terrain_brush::LevelTool::Select
+    {
+        return;
+    }
+    let Some(scene) = state.level_scene.clone() else {
+        return;
+    };
+    let mut indices = state
+        .level_selection
+        .indices
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    if indices.is_empty() {
+        indices.extend(state.level_selected);
+    }
+    indices.sort_unstable();
+    if indices.is_empty() {
+        state.status = "Select a placement, then G move · R rotate · S scale.".into();
+        return;
+    }
+    let mut targets = Vec::with_capacity(indices.len());
+    for index in indices {
+        let Some(object) = scene.objects.get(index) else {
+            continue;
+        };
+        if object.kind.eq_ignore_ascii_case("Vegetation") {
+            state.status =
+                "VegetationMap.dat instances are moved with their own position fields, not G/R/S."
+                    .into();
+            return;
+        }
+        let parent = (!object.parent.is_empty())
+            .then(|| {
+                scene
+                    .objects
+                    .iter()
+                    .find(|other| other.id == object.parent)
+                    .map(|other| other.world)
+            })
+            .flatten();
+        targets.push(level_transform::Target {
+            index,
+            world: object.world,
+            parent,
+        });
+    }
+    let forward = level_camera::basis(state.yaw, state.pitch).0;
+    let operation =
+        level_transform::ModalTransform::new(mode, targets, forward, state.level_pointer_ray);
+    state.status = operation.describe();
+    state.level_transform = Some(operation);
+    refresh_level_transform_preview(state);
+}
+
+/// Show the transform in progress in the viewport and the status bar.
+fn refresh_level_transform_preview(state: &mut State) {
+    let Some(operation) = &state.level_transform else {
+        return;
+    };
+    let transforms = operation
+        .targets
+        .iter()
+        .zip(operation.results())
+        .map(|(target, world)| (target.index, world))
+        .collect();
+    state.status = operation.describe();
+    if let Some(world) = &state.level_world_source {
+        world.placement_preview.set(transforms);
+    }
+}
+
+fn clear_level_transform_preview(state: &mut State) {
+    if let Some(world) = &state.level_world_source {
+        world.placement_preview.clear();
+    }
+}
+
+/// Save a finished G/R/S transform to the project file that owns the
+/// placements. The preview stays on screen until the map reloads.
+fn confirm_level_transform(state: &mut State) -> Task<Message> {
+    let Some(operation) = state.level_transform.take() else {
+        return Task::none();
+    };
+    let locals = operation.local_results();
+    let worlds = operation.results();
+    let mut source = None;
+    let mut compiled = Vec::new();
+    let mut xml = Vec::new();
+    for ((target, local), world) in operation.targets.iter().zip(locals).zip(worlds) {
+        let (object, path) = match project_object_source(state, target.index) {
+            Ok(found) => found,
+            Err(reason) => {
+                clear_level_transform_preview(state);
+                state.status = reason;
+                return Task::none();
+            }
+        };
+        if source
+            .as_ref()
+            .is_some_and(|first: &PathBuf| *first != path)
+        {
+            clear_level_transform_preview(state);
+            state.status = "Transform placements from one file at a time: terrain.dat placements and mission or layer objects are saved separately.".into();
+            return Task::none();
+        }
+        source = Some(path);
+        if let Some(placement) = compiled_placement(&object) {
+            compiled.push((placement, world));
+        } else {
+            xml.push(
+                evolve_core::scene_authoring::LayerAuthoringEdit::Transform {
+                    guid: object.id.clone(),
+                    transform: local,
+                },
+            );
+        }
+    }
+    let Some(source) = source else {
+        clear_level_transform_preview(state);
+        return Task::none();
+    };
+    let unchanged = operation
+        .targets
+        .iter()
+        .zip(operation.results())
+        .all(|(target, world)| target.world == world);
+    if unchanged {
+        clear_level_transform_preview(state);
+        state.status = "Transform cancelled: nothing moved.".into();
+        return Task::none();
+    }
+    let change = if compiled.is_empty() {
+        ProjectLevelMutation::XmlBatch(xml)
+    } else {
+        ProjectLevelMutation::CompiledTransform(compiled)
+    };
+    let count = operation.targets.len();
+    let task = submit_level_project_edit(state, source, change);
+    if !state.busy {
+        // Refused before saving: put everything back.
+        clear_level_transform_preview(state);
+    } else {
+        state.status = format!(
+            "Saving the transform of {count} placement{}…",
+            if count == 1 { "" } else { "s" }
+        );
+    }
+    task
+}
+
 /// Reload the open project map after a saved edit or undo, reusing what did
 /// not change: decoded models and textures, GPU groups, camera and selection.
 fn reload_project_level(state: &mut State, project: modding_projects::ProjectRow) -> Task<Message> {
@@ -3593,6 +3800,17 @@ fn compiled_placement(
 fn selected_project_object_source(
     state: &State,
 ) -> Result<(evolve_core::PlacedObject, PathBuf), String> {
+    let index = state
+        .level_selected
+        .ok_or("Select an authored object first")?;
+    project_object_source(state, index)
+}
+
+/// A scene object and the project file that stores it.
+fn project_object_source(
+    state: &State,
+    index: usize,
+) -> Result<(evolve_core::PlacedObject, PathBuf), String> {
     let project = state
         .level_project
         .as_ref()
@@ -3601,8 +3819,9 @@ fn selected_project_object_source(
         return Err("Imported maps are read-only".into());
     }
     let object = state
-        .level_selected
-        .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
+        .level_scene
+        .as_ref()
+        .and_then(|scene| scene.objects.get(index))
         .cloned()
         .ok_or("Select an authored object first")?;
     if state.level_duplicate_guids.contains(&object.id) {
@@ -9628,16 +9847,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         return Task::none();
                     }
                 };
-                return submit_level_project_edit(
-                    state,
-                    source,
-                    ProjectLevelMutation::Xml(
+                // terrain.dat stores world transforms; layers store local ones.
+                let change = match compiled_placement(&object) {
+                    // They have no parent: local is world.
+                    Some(placement) => {
+                        ProjectLevelMutation::CompiledTransform(vec![(placement, transform)])
+                    }
+                    None => ProjectLevelMutation::Xml(
                         evolve_core::scene_authoring::LayerAuthoringEdit::Transform {
                             guid: object.id,
                             transform,
                         },
                     ),
-                );
+                };
+                return submit_level_project_edit(state, source, change);
             }
             if state.level_read_only {
                 state.status = "Imported levels are read-only. Use File → Open as Modding Project to create an editable copy.".into();
@@ -9947,7 +10170,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.level_keys.clear();
             state.level_last_pressed_at = None;
         }
-        Message::LevelPointerRay(ray) => state.level_pointer_ray = ray,
+        Message::LevelPointerRay(ray) => {
+            state.level_pointer_ray = ray;
+            if let Some(operation) = state.level_transform.as_mut() {
+                operation.pointer(ray);
+                refresh_level_transform_preview(state);
+            }
+        }
+        Message::LevelLookButton(_, held) => {
+            state.level_looking = held;
+            if !held {
+                state.level_keys.clear();
+            }
+        }
+        Message::LevelEnterKey(_) => {
+            if state.level_transform.is_some() {
+                return confirm_level_transform(state);
+            }
+        }
+        Message::LevelTransformStart(mode) => start_level_transform(state, mode),
+        Message::LevelTransformConfirm => return confirm_level_transform(state),
+        Message::LevelTransformCancel => {
+            if state.level_transform.take().is_some() {
+                clear_level_transform_preview(state);
+                state.status = "Transform cancelled.".into();
+            }
+        }
         Message::LevelCopyKey(_) => {
             if state.level_tool != terrain_brush::LevelTool::Select {
                 return Task::none();
@@ -10019,6 +10267,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.level_paste_at = None;
             return task;
         }
+        Message::LevelDeleteKey(_) if state.level_transform.is_some() => {
+            if let Some(operation) = state.level_transform.as_mut() {
+                operation.backspace();
+            }
+            refresh_level_transform_preview(state);
+        }
         Message::LevelDeleteKey(_) => {
             // The Select tool's keyboard delete: the same as Delete placement.
             if state.level_tool == terrain_brush::LevelTool::Select
@@ -10041,11 +10295,39 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LevelCameraKey(_, key, pressed) => {
+            if pressed && state.level_transform.is_some() && !state.level_looking {
+                if let Some(operation) = state.level_transform.as_mut() {
+                    match key {
+                        'x' => operation.toggle_axis(0),
+                        'y' => operation.toggle_axis(1),
+                        'z' => operation.toggle_axis(2),
+                        other => {
+                            operation.type_char(other);
+                        }
+                    }
+                }
+                refresh_level_transform_preview(state);
+                return Task::none();
+            }
+            if pressed && !state.level_looking {
+                let mode = match key {
+                    'g' => Some(level_transform::Mode::Move),
+                    'r' => Some(level_transform::Mode::Rotate),
+                    's' => Some(level_transform::Mode::Scale),
+                    _ => None,
+                };
+                if let Some(mode) = mode {
+                    start_level_transform(state, mode);
+                    return Task::none();
+                }
+            }
             if key == 'f' && pressed {
                 return update(state, Message::LevelCameraFocus);
             }
             if ['w', 'a', 's', 'd', 'q', 'e'].contains(&key) {
-                if pressed && state.level_window_focused {
+                // The camera flies only while RMB is held, so G/R/S and the
+                // other letters are free for editing, as in Blender.
+                if pressed && state.level_window_focused && state.level_looking {
                     state.level_keys.insert(key);
                     state.level_last_pressed_at = Some(Instant::now());
                 } else {
@@ -15800,6 +16082,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                     }
                     crash_diagnostics::record("worker_refused", &e);
+                    clear_level_transform_preview(state);
                     state.auto_play_native_caf = false;
                     state.status = format!("Operation refused: {e}");
                     if state.auto_material_pending && state.viewer_queued_preview.is_none() {
@@ -16852,7 +17135,9 @@ impl Desktop {
                 )
             }
             Message::ViewportEscape(id) => {
-                if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
+                if self.level_id == Some(id) && self.state.level_transform.is_some() {
+                    update(&mut self.state, Message::LevelTransformCancel)
+                } else if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
                     self.update(Message::ToggleLevelViewportFullscreen)
                 } else if self.viewer_id == Some(id) && self.state.viewer_viewport_fullscreen {
                     self.update(Message::ToggleViewerViewportFullscreen)
@@ -16860,7 +17145,13 @@ impl Desktop {
                     update(&mut self.state, Message::DismissMenus)
                 }
             }
-            Message::LevelCameraKey(id, _, _) if self.level_id != Some(id) => Task::none(),
+            Message::LevelCameraKey(id, _, _)
+            | Message::LevelLookButton(id, _)
+            | Message::LevelEnterKey(id)
+                if self.level_id != Some(id) =>
+            {
+                Task::none()
+            }
             Message::LevelDeleteKey(id)
             | Message::LevelCopyKey(id)
             | Message::LevelPasteKey(id)
@@ -17265,6 +17556,16 @@ impl Desktop {
                     ..
                 }) => Some(Message::ViewportEscape(id)),
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                    ..
+                }) if status == iced::event::Status::Ignored => Some(Message::LevelEnterKey(id)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                    iced::mouse::Button::Right,
+                )) => Some(Message::LevelLookButton(id, true)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Right,
+                )) => Some(Message::LevelLookButton(id, false)),
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key:
                         iced::keyboard::Key::Named(
                             iced::keyboard::key::Named::Delete
@@ -17358,6 +17659,86 @@ mod project_edit_tests {
         // A child's local position moves by the same world offset.
         let pasted = paste_local_position(&object("x", "Brush"), [20.0, 12.0, 15.0]);
         assert_eq!(pasted, [10.0, 2.0, 5.0]);
+    }
+
+    #[test]
+    fn g_r_s_keys_transform_the_selection_live_then_save_it() {
+        let rock = evolve_core::PlacedObject {
+            id: "rock-guid".into(),
+            parent: String::new(),
+            layer: "layers/main.lyr".into(),
+            name: "rock".into(),
+            kind: "Brush".into(),
+            model: "objects/rock.cgf".into(),
+            material: String::new(),
+            hidden: false,
+            local: evolve_core::Transform {
+                position: [11.0, 12.0, 13.0],
+                ..Default::default()
+            },
+            world: evolve_core::Transform {
+                position: [11.0, 12.0, 13.0],
+                ..Default::default()
+            },
+            status: String::new(),
+            populations: Vec::new(),
+            home_area: String::new(),
+            shape_points: Vec::new(),
+            wildlife: Default::default(),
+        };
+        let mut state = State {
+            level_project: Some(ProjectRow {
+                label: "Project".into(),
+                target: "level.pak".into(),
+                source_build: String::new(),
+                status: String::new(),
+                details: String::new(),
+                workspace: PathBuf::from("C:/projects/example"),
+                modified: Vec::new(),
+                changed_known: true,
+                enabled: false,
+            }),
+            level_scene: Some(Arc::new(evolve_core::LevelScene {
+                schema: 1,
+                objects: vec![rock],
+                diagnostics: Vec::new(),
+            })),
+            level_world_source: Some(Arc::new(world_instances::World::default())),
+            level_selected: Some(0),
+            level_window_focused: true,
+            ..Default::default()
+        };
+        let window = window::Id::unique();
+        let key = |state: &mut State, key: char| {
+            let _ = update(state, Message::LevelCameraKey(window, key, true));
+        };
+        // S scales, rather than flying the camera back.
+        key(&mut state, 's');
+        assert!(state.level_keys.is_empty());
+        assert_eq!(
+            state.level_transform.as_ref().map(|op| op.mode),
+            Some(level_transform::Mode::Scale)
+        );
+        let _ = update(&mut state, Message::LevelTransformCancel);
+        assert!(state.level_transform.is_none());
+        // G, X, 5: five metres along X, shown before it is saved.
+        key(&mut state, 'g');
+        key(&mut state, 'x');
+        key(&mut state, '5');
+        let moved = state.level_transform.as_ref().unwrap().results()[0].position;
+        assert_eq!(moved, [16.0, 12.0, 13.0]);
+        assert!(state.status.starts_with("Move along X"), "{}", state.status);
+        // Enter saves it to the layer that owns the placement.
+        let _ = update(&mut state, Message::LevelEnterKey(window));
+        assert!(state.level_transform.is_none());
+        assert!(state.busy, "{}", state.status);
+        // With RMB held, WASD flies the camera.
+        state.busy = false;
+        let _ = update(&mut state, Message::LevelLookButton(window, true));
+        key(&mut state, 'w');
+        assert!(state.level_keys.contains(&'w'));
+        let _ = update(&mut state, Message::LevelLookButton(window, false));
+        assert!(state.level_keys.is_empty());
     }
 
     #[test]

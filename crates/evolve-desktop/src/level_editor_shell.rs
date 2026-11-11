@@ -147,7 +147,7 @@ fn tool_hint(state: &State) -> &'static str {
     use crate::terrain_brush::LevelTool;
     match state.level_tool {
         LevelTool::Select => {
-            "Click select · Del delete · Ctrl+C/V copy, paste at mouse · Shift+D duplicate · RMB look"
+            "Click select · G move · R rotate · S scale · Del delete · Ctrl+C/V copy, paste · Shift+D duplicate · RMB look"
         }
         LevelTool::Sculpt => "LMB brush · Ctrl+LMB lower · RMB look · WASD fly",
         LevelTool::Paint => "LMB paint · RMB look · WASD fly",

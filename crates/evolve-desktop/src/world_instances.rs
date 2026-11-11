@@ -579,9 +579,41 @@ pub(super) struct Instance {
     pub object_index: usize,
     pub transform: Transform,
 }
+/// Live transforms of placements being moved, rotated or scaled, by scene
+/// object index. A world and its edited copies share one; the renderer
+/// rewrites only the affected placements, without rebuilding the scene.
+#[derive(Clone, Default)]
+pub(super) struct PlacementPreview(Arc<std::sync::Mutex<(u64, HashMap<usize, Transform>)>>);
+
+impl PlacementPreview {
+    pub fn set(&self, transforms: HashMap<usize, Transform>) {
+        if let Ok(mut preview) = self.0.lock() {
+            preview.0 += 1;
+            preview.1 = transforms;
+        }
+    }
+
+    pub fn clear(&self) {
+        if let Ok(mut preview) = self.0.lock()
+            && !preview.1.is_empty()
+        {
+            preview.0 += 1;
+            preview.1.clear();
+        }
+    }
+
+    fn snapshot(&self) -> (u64, HashMap<usize, Transform>) {
+        self.0
+            .lock()
+            .map(|preview| (preview.0, preview.1.clone()))
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Clone, Default)]
 pub(super) struct World {
     pub groups: Vec<ModelGroup>,
+    pub placement_preview: PlacementPreview,
     pub instance_count: usize,
     pub wildlife_distances: Option<evolve_core::zookeeper::SpawnDistances>,
     pub wildlife_shapes: Arc<Vec<(bool, Vec<[f32; 3]>)>>,
@@ -1954,6 +1986,9 @@ pub(super) struct Renderer {
     /// What each resident group was built from, so a new world of the same
     /// map (an edit, a moved placement) keeps the groups that did not change.
     group_sources: Vec<Option<GroupSource>>,
+    /// The placement preview generation last written, and the groups it moved.
+    preview_generation: u64,
+    preview_groups: HashSet<usize>,
     cache: TextureCache,
     source_hashes: SourceKeys,
     pending_diffuse: HashMap<TextureKey, PendingDiffuseMip>,
@@ -3675,6 +3710,8 @@ impl Renderer {
             last_full_textures: true,
             groups: Vec::new(),
             group_sources: Vec::new(),
+            preview_generation: 0,
+            preview_groups: HashSet::new(),
             cache: TextureCache::new(),
             source_hashes: SourceKeys::new(),
             pending_diffuse: HashMap::new(),
@@ -4267,6 +4304,52 @@ impl Renderer {
         }
     }
 
+    /// Write the live transforms of placements being edited into the
+    /// instance buffers of their groups, and restore groups they left.
+    fn apply_placement_preview(&mut self, queue: &wgpu::Queue, world: &World) {
+        let (generation, overrides) = world.placement_preview.snapshot();
+        if generation == self.preview_generation {
+            return;
+        }
+        self.preview_generation = generation;
+        let mut moved = HashSet::new();
+        for (idx, group) in world.groups.iter().enumerate() {
+            let affected = group
+                .instances
+                .iter()
+                .any(|instance| overrides.contains_key(&instance.object_index));
+            if !affected && !self.preview_groups.contains(&idx) {
+                continue;
+            }
+            if affected {
+                moved.insert(idx);
+            }
+            let Some(gpu) = self.groups.get(idx).and_then(Option::as_ref) else {
+                continue;
+            };
+            let placements = group
+                .instances
+                .iter()
+                .map(|instance| {
+                    InstanceGpu::from_transform(
+                        overrides
+                            .get(&instance.object_index)
+                            .copied()
+                            .unwrap_or(instance.transform),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let bytes = (placements.len() * std::mem::size_of::<InstanceGpu>()) as u64;
+            if !placements.is_empty() && bytes <= gpu.instances.size() {
+                queue.write_buffer(&gpu.instances, 0, bytemuck::cast_slice(&placements));
+            }
+        }
+        self.preview_groups = moved;
+        for stale in &self.shadow_stale {
+            stale.store(true, Ordering::Relaxed);
+        }
+    }
+
     /// Move every resident group that `world` draws from the very same
     /// sources to its new index, rewriting only its placements. Returns how
     /// many were kept; with none, the caller starts the GPU scene afresh.
@@ -4393,6 +4476,8 @@ impl Renderer {
                 self.mip_min_level.clear();
             }
             self.source_hashes = (*world.source_pixel_hashes).clone();
+            self.preview_generation = 0;
+            self.preview_groups.clear();
             self.mip_round_robin_cursor = 0;
             self.peak_gpu_bytes = 0;
             self.world_identity = key;
@@ -4434,6 +4519,7 @@ impl Renderer {
             12.0
         };
         self.apply_ground_patches(device, queue, world);
+        self.apply_placement_preview(queue, world);
         let inside = camera.is_some_and(|camera| world.locate_camera(camera.position));
         let lighting_changed = self.last_lighting_hour != hour || self.last_inside != inside;
         self.last_inside = inside;

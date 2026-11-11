@@ -286,10 +286,18 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 .level_picks
                 .clone()
                 .unwrap_or_else(|| Arc::new(Vec::new())),
+            // The axes follow a transform in progress.
             selected_pivot: state
-                .level_selected
-                .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
-                .map(|o| o.world.position),
+                .level_transform
+                .as_ref()
+                .and_then(|operation| operation.results().first().map(|t| t.position))
+                .or_else(|| {
+                    state
+                        .level_selected
+                        .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
+                        .map(|o| o.world.position)
+                }),
+            transforming: state.level_transform.is_some(),
             brush: state.level_project.is_some()
                 && !state.level_read_only
                 && state.level_tool != super::terrain_brush::LevelTool::Select,
@@ -499,20 +507,24 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             })
             .size(12)
             .style(design::muted),
+            // G move · R rotate · S scale in the viewport; or type exact
+            // values here and press Enter, which saves them.
             design::text_input("Position: x, y, z", &state.level_edit_position)
-                .on_input(Message::LevelEditPositionChanged),
+                .on_input(Message::LevelEditPositionChanged)
+                .on_submit_maybe(transform_submit(state, object)),
             design::text_input("Rotation: w, x, y, z", &state.level_edit_rotation)
-                .on_input(Message::LevelEditRotationChanged),
+                .on_input(Message::LevelEditRotationChanged)
+                .on_submit_maybe(transform_submit(state, object)),
             design::text_input("Scale: x, y, z", &state.level_edit_scale)
-                .on_input(Message::LevelEditScaleChanged),
-            design::button("Save transform to project")
-                .style(design::primary)
-                .on_press_maybe(
-                    (!state.level_read_only
-                        && state.level_project.is_some()
-                        && !object.kind.eq_ignore_ascii_case("Vegetation"))
-                    .then_some(Message::LevelApplyTransform)
-                ),
+                .on_input(Message::LevelEditScaleChanged)
+                .on_submit_maybe(transform_submit(state, object)),
+            text(if state.level_read_only || state.level_project.is_none() {
+                ""
+            } else {
+                "G move · R rotate · S scale in the view, or edit a value and press Enter"
+            })
+            .size(11)
+            .style(design::muted),
             crate::level_authoring::placement_editor(state, object),
         ]
         .spacing(6)
@@ -560,7 +572,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 )
                 .width(Length::Fixed(160.0)),
                 space().width(Fill),
-                text("RMB Look · WASD Fly · Q/E Elevate · F Focus")
+                text("Hold RMB: look, WASD fly, Q/E elevate · F focus")
                     .size(11)
                     .style(design::muted),
             ]
@@ -965,6 +977,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .width(Length::Fixed(350.0))
         .height(Fill);
     row![viewport, inspector].spacing(8).height(Fill).into()
+}
+
+/// Enter in a transform field saves it, for an editable placement.
+fn transform_submit(state: &State, object: &evolve_core::PlacedObject) -> Option<Message> {
+    (!state.level_read_only
+        && state.level_project.is_some()
+        && !object.kind.eq_ignore_ascii_case("Vegetation"))
+    .then_some(Message::LevelApplyTransform)
 }
 
 #[cfg(test)]
