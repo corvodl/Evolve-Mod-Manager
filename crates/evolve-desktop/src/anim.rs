@@ -179,7 +179,8 @@ mod tests {
         let t1 = t0 + MS * 40;
         tween.animate_to(0.0, t1, MS * 100, false);
         assert!((tween.value(t1) - 0.4).abs() < 1e-4);
-        assert_eq!(tween.duration, MS * 40);
+        // Distance scaling uses f32, so allow sub-millisecond rounding.
+        assert!(tween.duration.abs_diff(MS * 40) < Duration::from_micros(50));
         assert_eq!(tween.value(t1 + MS * 40), 0.0);
     }
 
