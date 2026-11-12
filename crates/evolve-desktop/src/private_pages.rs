@@ -175,9 +175,9 @@ fn legacy_section_label(label: &'static str, legacy: bool) -> Element<'static, M
     });
     if legacy {
         row![
-            image(image::Handle::from_bytes(
-                include_bytes!("../../../assets/legacy/legacy-menu-corner.png").to_vec(),
-            ))
+            image(crate::handles::image(include_bytes!(
+                "../../../assets/legacy/legacy-menu-corner.png"
+            )))
             .width(20)
             .height(20),
             title
@@ -312,7 +312,7 @@ fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
 }
 
 /// The release part only; the +build identifier stays available on hover.
-fn short_client_version(version: &str) -> String {
+pub(super) fn short_client_version(version: &str) -> String {
     if let Some((release, _)) = version.split_once('+')
         && !release.is_empty()
     {
@@ -605,7 +605,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     let wallpaper = state.preferences.show_home_background;
     let hero = home_surface(
         row![
-            image(image::Handle::from_bytes(include_bytes!("../../../assets/hunt.png").to_vec()))
+            image(crate::handles::image(include_bytes!("../../../assets/hunt.png")))
                 .width(64).height(64),
             column![
                 text("Evolve Mod Manager").size(24),
@@ -1727,25 +1727,6 @@ fn news_skeleton(state: &State, lines: usize) -> Element<'_, Message> {
         });
     }
     surface(column).into()
-}
-
-pub(super) fn credits() -> Element<'static, Message> {
-    scrollable(column![
-        text("Credits").size(24),
-        surface(column![
-            text("@CorvoDL on Discord").size(16),
-            text("Project by @CorvoDL").size(design::BODY).style(design::muted),
-            text("PROJECT REPOSITORY").size(design::LABEL),
-            text("github.com/corvodl/Evolve-Mod-Manager").size(design::BODY),
-            text("OFFICIAL GAME INSTALLER").size(design::LABEL),
-            text("modded-evolve.com").size(design::BODY),
-        ].spacing(10)),
-        surface(column![
-            text("Interface icons").size(16),
-            text("Private manager navigation icon design. Flaticon Uicons attribution retained in the original project.").size(design::LABEL).style(design::muted),
-        ].spacing(8)),
-        text("Install Evolve Stage 2 via modded-evolve.com before using the manager.").size(design::LABEL).style(design::muted),
-    ].spacing(12).padding(12)).height(Fill).into()
 }
 
 // --- Developer tab building blocks -----------------------------------------

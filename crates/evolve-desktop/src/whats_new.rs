@@ -420,6 +420,11 @@ pub fn open_link(url: &str) -> Result<(), String> {
     if !allowed_link(url) {
         return Err("The announcement contained an unsupported external URL".into());
     }
+    open_in_browser(url)
+}
+
+/// Opens `url` in the default browser. Callers check the address first.
+pub fn open_in_browser(url: &str) -> Result<(), String> {
     #[cfg(windows)]
     let mut command = std::process::Command::new("explorer.exe");
     #[cfg(target_os = "macos")]
@@ -430,7 +435,7 @@ pub fn open_link(url: &str) -> Result<(), String> {
         .arg(url)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("Could not open external announcement: {error}"))
+        .map_err(|error| format!("Could not open the link: {error}"))
 }
 
 #[cfg(test)]

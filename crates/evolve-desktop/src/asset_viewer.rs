@@ -1875,7 +1875,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
         ),
         tooltip(
             row![
-                svg(svg::Handle::from_memory(include_bytes!(
+                svg(crate::handles::svg(include_bytes!(
                     "../../../assets/nav/light.svg"
                 )))
                 .style(design::icon)

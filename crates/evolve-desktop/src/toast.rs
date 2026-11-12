@@ -111,13 +111,24 @@ impl Toasts {
         };
         if ok {
             if pending.announce_success || pending.started.elapsed() >= SLOW_OPERATION {
-                self.push(Kind::Success, format!("{} finished", pending.label), status);
+                self.push_with_action(
+                    Kind::Success,
+                    format!("{} finished", pending.label),
+                    status,
+                    Some(Message::ToggleActivity),
+                );
             }
         } else {
-            self.push(Kind::Error, format!("{} failed", pending.label), status);
+            self.push_with_action(
+                Kind::Error,
+                format!("{} failed", pending.label),
+                status,
+                Some(Message::ToggleActivity),
+            );
         }
     }
 
+    #[cfg(test)]
     pub fn push(&mut self, kind: Kind, title: impl Into<String>, detail: &str) {
         self.push_with_action(kind, title, detail, None);
     }
@@ -256,6 +267,15 @@ fn card<'a>(toast: &'a Toast, now: Instant, reduce_motion: bool) -> Element<'a, 
         );
     }
 
+    // Result toasts open the Activity window, where the full log is.
+    if toast.action.is_some() && kind != Kind::Update {
+        body = body.push(text("Click for details in Activity").size(11).style(
+            move |theme: &Theme| text::Style {
+                color: Some(faded(accent(theme, kind), opacity)),
+            },
+        ));
+    }
+
     // Countdown bar: a thin accent strip that shrinks as the toast ages.
     let bar = row![
         container(space().height(2))
@@ -354,6 +374,20 @@ mod tests {
         assert_eq!(toasts.items[0].title, "Building mod PAK finished");
         assert_eq!(toasts.items[1].kind, Kind::Error);
         assert_eq!(toasts.items[1].detail, "Disk full");
+    }
+
+    #[test]
+    fn result_toasts_open_activity_when_clicked() {
+        let mut toasts = Toasts::default();
+        toasts.complete(pending(true), true, "Built 3 files.");
+        toasts.complete(pending(false), false, "Disk full");
+        for id in [toasts.items[0].id, toasts.items[1].id] {
+            assert!(matches!(
+                toasts.take_action(id),
+                Some(Message::ToggleActivity)
+            ));
+        }
+        assert!(toasts.items.is_empty());
     }
 
     #[test]

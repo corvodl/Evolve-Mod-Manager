@@ -30,6 +30,8 @@ pub struct Preferences {
     /// Keep Evolve artwork and translucent Home panels on by default.
     /// Turning it off restores opaque Home surfaces, independent of theme.
     pub show_home_background: bool,
+    /// Hovering the collapsed sidebar opens it briefly (off: the button only).
+    pub sidebar_hover_peek: bool,
     pub appearance_colors: BTreeMap<String, String>,
     pub theme_presets: BTreeMap<String, BTreeMap<String, String>>,
     pub font_family: String,
@@ -55,7 +57,6 @@ pub struct Preferences {
     pub teleport_slots: Vec<TeleportSlot>,
     pub reduce_motion: bool,
     pub keep_original_snapshots: bool,
-    pub show_activity_on_tasks: bool,
     /// On by default for both portable and installed builds. Can be disabled in Advanced.
     pub crash_logging_enabled: bool,
     /// Installed EvolveGame root (bin64_SteamRetail is accepted in setup).
@@ -137,6 +138,7 @@ impl Default for Preferences {
             appearance_mode: "Dark".into(),
             ui_theme: "Modern".into(),
             show_home_background: true,
+            sidebar_hover_peek: false,
             appearance_colors: BTreeMap::new(),
             theme_presets: BTreeMap::new(),
             font_family: "Default".into(),
@@ -151,7 +153,6 @@ impl Default for Preferences {
             teleport_slots: Vec::new(),
             reduce_motion: false,
             keep_original_snapshots: false,
-            show_activity_on_tasks: true,
             crash_logging_enabled: true,
             game_installation: String::new(),
             client_executable: String::new(),
