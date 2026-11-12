@@ -183,6 +183,22 @@ pub fn help() -> svg::Handle {
     icon(r#"<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .8-1 1.5v.4M12 16.6v.1"/>"#)
 }
 
+pub fn tree() -> svg::Handle {
+    icon(r#"<path d="M12 3.5 6 12h3l-3.5 5h13L15 12h3z"/><path d="M12 17v3.5"/>"#)
+}
+
+pub fn rotate() -> svg::Handle {
+    icon(r#"<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4v4.5H15"/>"#)
+}
+
+pub fn scale() -> svg::Handle {
+    icon(r#"<rect x="3.5" y="12.5" width="8" height="8" rx="1"/><path d="M11 13 20 4M14.5 4H20v5.5"/>"#)
+}
+
+pub fn move_tool() -> svg::Handle {
+    icon(r#"<path d="M12 3v18M3 12h18"/><path d="m9 6 3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/>"#)
+}
+
 // Modding actions.
 
 pub fn pencil() -> svg::Handle {

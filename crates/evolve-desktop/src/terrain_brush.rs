@@ -16,6 +16,8 @@ pub(super) enum LevelTool {
     Select,
     Sculpt,
     Paint,
+    /// Scatter (or with Ctrl, erase) the map's vegetation.
+    Vegetation,
 }
 
 /// What a left-button sculpt stroke does; holding Ctrl always lowers.

@@ -686,9 +686,9 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 ),
                 design::button(
                     if state.kala_tubing == evolve_core::KalaTubingState::RiftDevice {
-                        "âœ“ Teleporter Â· Purple"
+                        "✓ Teleporter · Purple"
                     } else {
-                        "â—‹ Teleporter Â· Purple"
+                        "○ Teleporter · Purple"
                     }
                 )
                 .style(

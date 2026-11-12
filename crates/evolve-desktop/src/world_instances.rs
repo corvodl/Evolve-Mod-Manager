@@ -579,13 +579,138 @@ pub(super) struct Instance {
     pub object_index: usize,
     pub transform: Transform,
 }
+/// Live transforms of placements being moved, rotated or scaled, by scene
+/// object index. A world and its edited copies share one; the renderer
+/// rewrites only the affected placements, without rebuilding the scene.
+#[derive(Clone, Default)]
+pub(super) struct PlacementPreview(Arc<std::sync::Mutex<PreviewState>>);
+
+#[derive(Clone, Default)]
+struct PreviewState {
+    generation: u64,
+    transforms: HashMap<usize, Transform>,
+    /// Edited polygon vertices of area objects (local, as authored).
+    shapes: HashMap<usize, Vec<[f32; 3]>>,
+}
+
+impl PlacementPreview {
+    fn update(&self, change: impl FnOnce(&mut PreviewState)) {
+        if let Ok(mut preview) = self.0.lock() {
+            change(&mut preview);
+            preview.generation += 1;
+        }
+    }
+
+    pub fn set(&self, transforms: HashMap<usize, Transform>) {
+        self.update(|preview| preview.transforms = transforms);
+    }
+
+    /// Show an area's polygon with these vertices until cleared.
+    pub fn set_shape(&self, object_index: usize, points: Vec<[f32; 3]>) {
+        self.update(|preview| {
+            preview.shapes.insert(object_index, points);
+        });
+    }
+
+    pub fn clear_shapes(&self) {
+        if self
+            .0
+            .lock()
+            .is_ok_and(|preview| !preview.shapes.is_empty())
+        {
+            self.update(|preview| preview.shapes.clear());
+        }
+    }
+
+    pub fn clear(&self) {
+        if self
+            .0
+            .lock()
+            .is_ok_and(|preview| !preview.transforms.is_empty() || !preview.shapes.is_empty())
+        {
+            self.update(|preview| {
+                preview.transforms.clear();
+                preview.shapes.clear();
+            });
+        }
+    }
+
+    fn snapshot(&self) -> PreviewState {
+        self.0
+            .lock()
+            .map(|preview| preview.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// An area's outline: a ZooKeeper home area, or a gameplay AreaShape such as
+/// a map's out-of-bounds boundary. Kept with its object and local vertices,
+/// so a move or a vertex edit in progress redraws it.
+#[derive(Clone, Debug)]
+pub(super) struct AreaOutline {
+    pub object_index: usize,
+    pub use_terrain: bool,
+    pub boundary: bool,
+    pub world: Transform,
+    pub points: Vec<[f32; 3]>,
+}
+
+/// A spawn's line to its home area, by scene object index.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SpawnLink {
+    pub spawn: usize,
+    pub home: usize,
+    pub from: [f32; 3],
+    pub to: [f32; 3],
+}
+
+/// The local point a world transform places at `world`: the inverse of
+/// [`place`].
+pub(super) fn unplace(transform: Transform, world: [f32; 3]) -> [f32; 3] {
+    let offset: [f32; 3] = std::array::from_fn(|i| world[i] - transform.position[i]);
+    let [w, x, y, z] = transform.quaternion;
+    let rotated = place(
+        Transform {
+            position: [0.0; 3],
+            quaternion: [w, -x, -y, -z],
+            scale: [1.0; 3],
+        },
+        offset,
+    );
+    std::array::from_fn(|i| {
+        if transform.scale[i].abs() > 1e-8 {
+            rotated[i] / transform.scale[i]
+        } else {
+            rotated[i]
+        }
+    })
+}
+
+/// A local point placed by a world transform: scale, rotate, then move.
+pub(super) fn place(transform: Transform, point: [f32; 3]) -> [f32; 3] {
+    let scaled: [f32; 3] = std::array::from_fn(|i| point[i] * transform.scale[i]);
+    let [w, x, y, z] = transform.quaternion;
+    let t = [
+        2.0 * (y * scaled[2] - z * scaled[1]),
+        2.0 * (z * scaled[0] - x * scaled[2]),
+        2.0 * (x * scaled[1] - y * scaled[0]),
+    ];
+    let rotated = [
+        scaled[0] + w * t[0] + (y * t[2] - z * t[1]),
+        scaled[1] + w * t[1] + (z * t[0] - x * t[2]),
+        scaled[2] + w * t[2] + (x * t[1] - y * t[0]),
+    ];
+    std::array::from_fn(|i| transform.position[i] + rotated[i])
+}
+
 #[derive(Clone, Default)]
 pub(super) struct World {
     pub groups: Vec<ModelGroup>,
+    pub placement_preview: PlacementPreview,
     pub instance_count: usize,
     pub wildlife_distances: Option<evolve_core::zookeeper::SpawnDistances>,
-    pub wildlife_shapes: Arc<Vec<(bool, Vec<[f32; 3]>)>>,
-    pub wildlife_links: Arc<Vec<([f32; 3], [f32; 3])>>,
+    pub wildlife_shapes: Arc<Vec<AreaOutline>>,
+    pub wildlife_links: Arc<Vec<SpawnLink>>,
     pub time_of_day: Option<Arc<super::level_environment::TimeOfDay>>,
     pub fog_profile: Option<super::level_environment::FogProfile>,
     /// A weather zone with its own TimeOfDay and fog (Ice_Alpine's biodome).
@@ -943,26 +1068,43 @@ impl World {
         ]
     }
 
-    pub fn precompute_gpu_source_hashes(&mut self) {
+    /// Hash every source image for the GPU texture cache. `previous`, a world
+    /// of the same map that is still alive, supplies hashes it already has:
+    /// its images are alive too, so an equal address is the same image, and
+    /// reused images (see `level_scene_renderer::begin_decode_reuse`) are not
+    /// hashed again.
+    pub fn precompute_gpu_source_hashes_from(&mut self, previous: Option<&World>) {
+        // Only this world's own images go in the table: an address of an
+        // image that has since been freed must never carry over to a later one.
+        let known = previous.map(|previous| previous.source_pixel_hashes.clone());
         let mut hashes = SourceKeys::new();
+        let mut add = |image: &Arc<image::RgbaImage>, role: u8| {
+            let address = Arc::as_ptr(image) as usize;
+            if let Some(digest) = known.as_ref().and_then(|known| known.get(&address)) {
+                hashes.insert(address, *digest);
+            } else {
+                let _ = texture_key(Some(image), role, false, &mut hashes);
+            }
+        };
         for group in &self.groups {
             for surface in &group.surfaces {
-                for source in [
+                for image in [
                     surface.diffuse.as_ref(),
                     surface.opacity.as_ref(),
                     surface.normal.as_ref(),
                     surface.specular.as_ref(),
                     surface.gloss.as_ref(),
                     surface.emissive.as_ref(),
-                ] {
-                    if source.is_some() {
-                        let _ = texture_key(source, 0, false, &mut hashes);
-                    }
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    add(image, 0);
                 }
             }
         }
-        if let Some(ref detail) = self.terrain_detail {
-            let _ = texture_key(Some(detail), 6, false, &mut hashes);
+        if let Some(detail) = self.terrain_detail.clone() {
+            add(&detail, 6);
         }
         self.source_pixel_hashes = Arc::new(hashes);
     }
@@ -978,11 +1120,54 @@ impl World {
                 }
             }
         }
+        // Area outlines and spawn links follow their objects too.
+        next.wildlife_shapes = Arc::new(
+            self.wildlife_shapes
+                .iter()
+                .filter_map(|area| {
+                    let object = scene.objects.get(area.object_index)?;
+                    (!object.hidden).then(|| AreaOutline {
+                        world: object.world,
+                        points: object.shape_points.clone(),
+                        ..area.clone()
+                    })
+                })
+                .collect(),
+        );
+        next.wildlife_links = Arc::new(
+            self.wildlife_links
+                .iter()
+                .filter_map(|link| {
+                    let spawn = scene.objects.get(link.spawn)?;
+                    let home = scene.objects.get(link.home)?;
+                    (!spawn.hidden && !home.hidden).then_some(SpawnLink {
+                        from: spawn.world.position,
+                        to: home.world.position,
+                        ..*link
+                    })
+                })
+                .collect(),
+        );
         next
     }
 
-    /// Conservative ray/sphere picking for original world instances. It is
-    /// intentionally approximate until per-mesh BVH ray traversal is ready.
+    /// The map-wide environment the renderer uploads once.
+    fn environment(&self) -> Environment {
+        Environment {
+            light_cookies: self.light_cookies.clone(),
+            water: self.water.clone(),
+            particles: self.particles.clone(),
+            decals: self.decals.clone(),
+            local_lights: self.local_lights.clone(),
+            probe_cube: self.probe_cube.clone(),
+            static_sky: self.static_sky.clone(),
+        }
+    }
+
+    /// The placement under a viewport point: the nearest one whose visible
+    /// triangles the view ray actually hits. Bounding spheres only narrow
+    /// down candidates, so a tree's wide canopy sphere no longer catches
+    /// clicks beside it. The ground hides what is behind it.
     pub fn pick(
         &self,
         camera: level_camera::Camera,
@@ -992,37 +1177,18 @@ impl World {
         zoom: f32,
         point: [f32; 2],
     ) -> Option<usize> {
-        let (forward, right, up) = level_camera::basis(yaw, pitch);
-        let t = (camera.fov_degrees.clamp(25.0, 110.0).to_radians() * 0.5).tan()
-            / zoom.clamp(0.2, 80.0);
-        let mut direction = [
-            forward[0] + point[0] * t * aspect * right[0] + point[1] * t * up[0],
-            forward[1] + point[0] * t * aspect * right[1] + point[1] * t * up[1],
-            forward[2] + point[0] * t * aspect * right[2] + point[1] * t * up[2],
-        ];
-        let len = direction.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if len <= 1e-6 || !len.is_finite() {
-            return None;
-        }
-        for x in &mut direction {
-            *x /= len;
-        }
-        let mut closest = (f32::INFINITY, None);
-        for group in &self.groups {
+        let direction = level_camera::view_ray(camera, yaw, pitch, aspect, zoom, point)?;
+        let origin = camera.position;
+        // Candidates: placements whose bounding sphere the ray enters.
+        let mut candidates = Vec::new();
+        for (group_index, group) in self.groups.iter().enumerate() {
             for instance in &group.instances {
-                if instance.object_index >= NOT_SELECTABLE {
+                if instance.object_index == NOT_SELECTABLE {
                     continue;
                 }
-                let p = instance.transform.position;
-                let delta = [
-                    p[0] - camera.position[0],
-                    p[1] - camera.position[1],
-                    p[2] - camera.position[2],
-                ];
-                let dot = delta.iter().zip(direction).map(|(a, b)| a * b).sum::<f32>();
-                if dot < 0.0 || dot > closest.0 {
-                    continue;
-                }
+                let delta: [f32; 3] =
+                    std::array::from_fn(|i| instance.transform.position[i] - origin[i]);
+                let along = delta.iter().zip(direction).map(|(a, b)| a * b).sum::<f32>();
                 let radius = group.radius
                     * instance
                         .transform
@@ -1031,18 +1197,151 @@ impl World {
                         .copied()
                         .map(f32::abs)
                         .fold(0.0, f32::max);
-                let radial_sq = delta.iter().map(|x| x * x).sum::<f32>() - dot * dot;
-                if radial_sq <= radius * radius && radius > 0.0 {
-                    let hit = (radius * radius - radial_sq.max(0.0)).max(0.0).sqrt();
-                    let distance = (dot - hit).max(0.0);
-                    if distance < closest.0 {
-                        closest = (distance, Some(instance.object_index));
-                    }
+                if radius <= 0.0 {
+                    continue;
                 }
+                let radial_sq = delta.iter().map(|x| x * x).sum::<f32>() - along * along;
+                if radial_sq > radius * radius || along + radius < 0.0 {
+                    continue;
+                }
+                let entry = along - (radius * radius - radial_sq.max(0.0)).sqrt();
+                candidates.push((entry.max(0.0), group_index, *instance));
+            }
+        }
+        candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut closest = (f32::INFINITY, None);
+        for (entry, group_index, instance) in candidates {
+            if entry > closest.0 {
+                break;
+            }
+            let Some(distance) = ray_hits_instance(
+                &self.groups[group_index],
+                instance.transform,
+                origin,
+                direction,
+            ) else {
+                continue;
+            };
+            if distance < closest.0 {
+                // The ground blocks the view but cannot itself be selected.
+                let selectable = instance.object_index != usize::MAX;
+                closest = (distance, selectable.then_some(instance.object_index));
             }
         }
         closest.1
     }
+}
+
+/// Where a ray first meets a placed mesh's visible triangles, as a distance
+/// along the (unit) world ray.
+fn ray_hits_instance(
+    group: &ModelGroup,
+    transform: Transform,
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> Option<f32> {
+    // Bring the ray into the mesh's own space. Distances along it stay the
+    // same, as the direction is mapped without renormalizing.
+    let q = transform.quaternion;
+    let norm = q.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm < 1e-8 {
+        return None;
+    }
+    let inverse = [q[0] / norm, -q[1] / norm, -q[2] / norm, -q[3] / norm];
+    let rotate = |v: [f32; 3]| {
+        let [w, x, y, z] = inverse;
+        let t = [
+            2.0 * (y * v[2] - z * v[1]),
+            2.0 * (z * v[0] - x * v[2]),
+            2.0 * (x * v[1] - y * v[0]),
+        ];
+        [
+            v[0] + w * t[0] + (y * t[2] - z * t[1]),
+            v[1] + w * t[1] + (z * t[0] - x * t[2]),
+            v[2] + w * t[2] + (x * t[1] - y * t[0]),
+        ]
+    };
+    let unscale = |v: [f32; 3]| -> Option<[f32; 3]> {
+        let mut out = [0.0; 3];
+        for i in 0..3 {
+            if transform.scale[i].abs() < 1e-8 {
+                return None;
+            }
+            out[i] = v[i] / transform.scale[i];
+        }
+        Some(out)
+    };
+    let local_origin = unscale(rotate(std::array::from_fn(|i| {
+        origin[i] - transform.position[i]
+    })))?;
+    let local_direction = unscale(rotate(direction))?;
+    let mesh = &group.mesh;
+    let mut ranges = group
+        .surfaces
+        .iter()
+        .filter(|surface| surface.visible)
+        .map(|surface| {
+            surface.first_index as usize..(surface.first_index + surface.index_count) as usize
+        })
+        .collect::<Vec<_>>();
+    if group.surfaces.is_empty() {
+        ranges.push(0..mesh.indices.len());
+    }
+    let mut nearest: Option<f32> = None;
+    for range in ranges {
+        let range = range.start.min(mesh.indices.len())..range.end.min(mesh.indices.len());
+        for triangle in mesh.indices[range].as_chunks::<3>().0 {
+            let corner = |i: usize| mesh.positions.get(triangle[i] as usize).copied();
+            let (Some(a), Some(b), Some(c)) = (corner(0), corner(1), corner(2)) else {
+                continue;
+            };
+            if let Some(t) = ray_triangle(local_origin, local_direction, a, b, c)
+                && nearest.is_none_or(|best| t < best)
+            {
+                nearest = Some(t);
+            }
+        }
+    }
+    nearest
+}
+
+/// Möller–Trumbore: the ray parameter where it crosses a triangle, either side.
+fn ray_triangle(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    a: [f32; 3],
+    b: [f32; 3],
+    c: [f32; 3],
+) -> Option<f32> {
+    let sub = |p: [f32; 3], q: [f32; 3]| [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    let cross = |u: [f32; 3], v: [f32; 3]| {
+        [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ]
+    };
+    let dot = |u: [f32; 3], v: [f32; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    let edge1 = sub(b, a);
+    let edge2 = sub(c, a);
+    let p = cross(direction, edge2);
+    let det = dot(edge1, p);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let inverse = 1.0 / det;
+    let s = sub(origin, a);
+    let u = dot(s, p) * inverse;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = cross(s, edge1);
+    let v = dot(direction, q) * inverse;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = dot(edge2, q) * inverse;
+    (t > 0.0 && t.is_finite()).then_some(t)
 }
 
 pub(super) fn radius(mesh: &RenderMesh) -> f32 {
@@ -1222,7 +1521,7 @@ fn upload_terrain_layers(
         },
     );
     let paint_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut desc = [[0.0f32; 4]; 33];
+    let mut desc = [[0.0f32; 4]; 1 + 2 * MAX_TERRAIN_LAYERS];
     if let Some(s) = source {
         desc[0] = [pw as f32, ph as f32, s.unit, s.layers.len() as f32];
         for (index, layer) in s.layers.iter().enumerate() {
@@ -1232,7 +1531,7 @@ fn upload_terrain_layers(
                 layer.tile[1],
                 layer.strength,
             ];
-            desc[index + 17] = [
+            desc[index + 1 + MAX_TERRAIN_LAYERS] = [
                 layer.blend_factor,
                 layer.blend_falloff,
                 layer.pom_displacement,
@@ -1257,6 +1556,9 @@ fn upload_terrain_layers(
             + pw as u64 * ph as u64 * 4,
     }
 }
+
+/// Painted terrain materials the shader takes (its `SourceTerrainParams`).
+pub(super) const MAX_TERRAIN_LAYERS: usize = 32;
 
 struct GpuParticles {
     instances: wgpu::Buffer,
@@ -1296,6 +1598,158 @@ struct GpuSurface {
     _blend_mask_image: wgpu::Texture,
     _alpha_uniform: wgpu::Buffer,
 }
+/// A world's light cookies, water, effects, lights, probe and sky: what an
+/// edited copy of the same map shares, so the renderer keeps their uploads.
+struct Environment {
+    light_cookies: Arc<Vec<Option<image::RgbaImage>>>,
+    water: Arc<Vec<super::level_atmosphere::WaterSurface>>,
+    particles: Arc<Vec<super::level_atmosphere::ParticleBatch>>,
+    decals: Arc<Vec<super::level_atmosphere::DecalBatch>>,
+    local_lights: Arc<Vec<super::level_atmosphere::LocalLight>>,
+    probe_cube: Option<Arc<super::level_atmosphere::ProbeCube>>,
+    static_sky: Option<Arc<super::level_atmosphere::StaticSky>>,
+}
+
+impl Environment {
+    fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.light_cookies, &other.light_cookies)
+            && Arc::ptr_eq(&self.water, &other.water)
+            && Arc::ptr_eq(&self.particles, &other.particles)
+            && Arc::ptr_eq(&self.decals, &other.decals)
+            && Arc::ptr_eq(&self.local_lights, &other.local_lights)
+            && same_arc(self.probe_cube.as_ref(), other.probe_cube.as_ref())
+            && same_arc(self.static_sky.as_ref(), other.static_sky.as_ref())
+    }
+}
+
+/// The decoded sources a [`GpuGroup`] was built from. Holding them keeps
+/// their allocations alive, so pointer equality means the same source.
+struct GroupSource {
+    mesh: Arc<RenderMesh>,
+    surfaces: Vec<Surface>,
+    terrain_detail: Option<Arc<image::RgbaImage>>,
+    terrain_gpu: Option<Arc<super::terrain_material_probe::GpuTerrainSource>>,
+}
+
+impl GroupSource {
+    fn of(world: &World, idx: usize) -> Self {
+        let group = &world.groups[idx];
+        let ground = is_ground(group);
+        Self {
+            mesh: group.mesh.clone(),
+            surfaces: group.surfaces.clone(),
+            terrain_detail: world.terrain_detail.clone().filter(|_| ground),
+            terrain_gpu: world.terrain_gpu.clone().filter(|_| ground),
+        }
+    }
+
+    fn builds(&self, world: &World, idx: usize) -> bool {
+        let group = &world.groups[idx];
+        let ground = is_ground(group);
+        Arc::ptr_eq(&self.mesh, &group.mesh)
+            && self.surfaces.len() == group.surfaces.len()
+            && self
+                .surfaces
+                .iter()
+                .zip(&group.surfaces)
+                .all(|(a, b)| same_surface(a, b))
+            && same_arc(
+                self.terrain_detail.as_ref(),
+                world.terrain_detail.as_ref().filter(|_| ground),
+            )
+            && same_arc(
+                self.terrain_gpu.as_ref(),
+                world.terrain_gpu.as_ref().filter(|_| ground),
+            )
+    }
+}
+
+fn same_arc<T>(a: Option<&Arc<T>>, b: Option<&Arc<T>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Whether two materials draw identically: the same images (by allocation)
+/// and the same values. Every field is listed, so adding one to [`Surface`]
+/// fails to compile here until it is compared too.
+fn same_surface(a: &Surface, b: &Surface) -> bool {
+    let Surface {
+        first_index,
+        index_count,
+        visible,
+        transparent,
+        foliage_cutout,
+        distance_clouds,
+        uv_transform,
+        material_tint,
+        material_specular,
+        material_emissive,
+        emission_on_diffuse,
+        emission_alpha_mask,
+        material_shininess,
+        waterfall,
+        detail_map,
+        blend_layer,
+        blend_mask,
+        vertex_colors,
+        blend_normal,
+        detail_tile,
+        layer_params,
+        foliage_transmit,
+        layer_specular,
+        alpha_cutoff,
+        diffuse,
+        normal,
+        emissive,
+        armor_emissive,
+        emission_strength,
+        emissive_uv,
+        specular,
+        gloss,
+        opacity,
+    } = a;
+    *first_index == b.first_index
+        && *index_count == b.index_count
+        && *visible == b.visible
+        && *transparent == b.transparent
+        && *foliage_cutout == b.foliage_cutout
+        && *distance_clouds == b.distance_clouds
+        && *uv_transform == b.uv_transform
+        && *material_tint == b.material_tint
+        && *material_specular == b.material_specular
+        && *material_emissive == b.material_emissive
+        && *emission_on_diffuse == b.emission_on_diffuse
+        && *emission_alpha_mask == b.emission_alpha_mask
+        && *material_shininess == b.material_shininess
+        && *waterfall == b.waterfall
+        && *vertex_colors == b.vertex_colors
+        && *detail_tile == b.detail_tile
+        && *layer_params == b.layer_params
+        && *foliage_transmit == b.foliage_transmit
+        && *layer_specular == b.layer_specular
+        && *alpha_cutoff == b.alpha_cutoff
+        && *emission_strength == b.emission_strength
+        && format!("{emissive_uv:?}") == format!("{:?}", b.emissive_uv)
+        && [
+            (detail_map, &b.detail_map),
+            (blend_layer, &b.blend_layer),
+            (blend_mask, &b.blend_mask),
+            (blend_normal, &b.blend_normal),
+            (diffuse, &b.diffuse),
+            (normal, &b.normal),
+            (emissive, &b.emissive),
+            (armor_emissive, &b.armor_emissive),
+            (specular, &b.specular),
+            (gloss, &b.gloss),
+            (opacity, &b.opacity),
+        ]
+        .into_iter()
+        .all(|(a, b)| same_arc(a.as_ref(), b.as_ref()))
+}
+
 struct GpuGroup {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -1789,6 +2243,8 @@ pub(super) struct Renderer {
     wildlife_buffer: wgpu::Buffer,
     wildlife_count: u32,
     wildlife_last_origin: Option<[f32; 2]>,
+    /// The placement preview the wildlife overlay last drew.
+    wildlife_preview_generation: u64,
     sky_uniform: wgpu::Buffer,
     local_uniform: wgpu::Buffer,
     hdr_uniform: wgpu::Buffer,
@@ -1806,6 +2262,14 @@ pub(super) struct Renderer {
     world_identity: usize,
     last_full_textures: bool,
     groups: Vec<Option<GpuGroup>>,
+    /// The environment last uploaded; held, so its identity cannot be reused.
+    environment: Option<Environment>,
+    /// What each resident group was built from, so a new world of the same
+    /// map (an edit, a moved placement) keeps the groups that did not change.
+    group_sources: Vec<Option<GroupSource>>,
+    /// The placement preview generation last written, and the groups it moved.
+    preview_generation: u64,
+    preview_groups: HashSet<usize>,
     cache: TextureCache,
     source_hashes: SourceKeys,
     pending_diffuse: HashMap<TextureKey, PendingDiffuseMip>,
@@ -3510,6 +3974,7 @@ impl Renderer {
             wildlife_buffer,
             wildlife_count: 0,
             wildlife_last_origin: None,
+            wildlife_preview_generation: 0,
             sky_uniform,
             local_uniform,
             hdr_uniform,
@@ -3526,6 +3991,10 @@ impl Renderer {
             world_identity: 0,
             last_full_textures: true,
             groups: Vec::new(),
+            group_sources: Vec::new(),
+            environment: None,
+            preview_generation: 0,
+            preview_groups: HashSet::new(),
             cache: TextureCache::new(),
             source_hashes: SourceKeys::new(),
             pending_diffuse: HashMap::new(),
@@ -4118,6 +4587,124 @@ impl Renderer {
         }
     }
 
+    /// Write the live transforms of placements being edited into the
+    /// instance buffers of their groups, and restore groups they left.
+    fn apply_placement_preview(&mut self, queue: &wgpu::Queue, world: &World) {
+        let PreviewState {
+            generation,
+            transforms: overrides,
+            ..
+        } = world.placement_preview.snapshot();
+        if generation == self.preview_generation {
+            return;
+        }
+        self.preview_generation = generation;
+        let mut moved = HashSet::new();
+        for (idx, group) in world.groups.iter().enumerate() {
+            let affected = group
+                .instances
+                .iter()
+                .any(|instance| overrides.contains_key(&instance.object_index));
+            if !affected && !self.preview_groups.contains(&idx) {
+                continue;
+            }
+            if affected {
+                moved.insert(idx);
+            }
+            let Some(gpu) = self.groups.get(idx).and_then(Option::as_ref) else {
+                continue;
+            };
+            let placements = group
+                .instances
+                .iter()
+                .map(|instance| {
+                    InstanceGpu::from_transform(
+                        overrides
+                            .get(&instance.object_index)
+                            .copied()
+                            .unwrap_or(instance.transform),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let bytes = (placements.len() * std::mem::size_of::<InstanceGpu>()) as u64;
+            if !placements.is_empty() && bytes <= gpu.instances.size() {
+                queue.write_buffer(&gpu.instances, 0, bytemuck::cast_slice(&placements));
+            }
+        }
+        self.preview_groups = moved;
+        for stale in &self.shadow_stale {
+            stale.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Move every resident group that `world` draws from the very same
+    /// sources to its new index, rewriting only its placements. Returns how
+    /// many were kept; with none, the caller starts the GPU scene afresh.
+    fn reuse_groups(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) -> usize {
+        let mut old = std::mem::take(&mut self.groups)
+            .into_iter()
+            .zip(std::mem::take(&mut self.group_sources))
+            .map(|(gpu, source)| gpu.zip(source))
+            .collect::<Vec<_>>();
+        let mut by_mesh = HashMap::<usize, Vec<usize>>::new();
+        for (index, entry) in old.iter().enumerate() {
+            if let Some((_, source)) = entry {
+                by_mesh
+                    .entry(Arc::as_ptr(&source.mesh) as usize)
+                    .or_default()
+                    .push(index);
+            }
+        }
+        self.groups = std::iter::repeat_with(|| None)
+            .take(world.groups.len())
+            .collect();
+        self.group_sources = std::iter::repeat_with(|| None)
+            .take(world.groups.len())
+            .collect();
+        let mut kept = 0;
+        for (idx, group) in world.groups.iter().enumerate() {
+            if group.instances.is_empty() {
+                continue;
+            }
+            let Some(candidates) = by_mesh.get_mut(&(Arc::as_ptr(&group.mesh) as usize)) else {
+                continue;
+            };
+            let Some(position) = candidates.iter().position(|&index| {
+                old[index]
+                    .as_ref()
+                    .is_some_and(|(_, source)| source.builds(world, idx))
+            }) else {
+                continue;
+            };
+            let Some((mut gpu, source)) = old[candidates.swap_remove(position)].take() else {
+                continue;
+            };
+            let placements = all_group_instances(group);
+            let needed = (placements.len().max(1) * std::mem::size_of::<InstanceGpu>()) as u64;
+            if needed > gpu.instances.size() {
+                let grown = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("All persistent world-placement transforms"),
+                    size: needed,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                gpu.geometry_bytes = gpu
+                    .geometry_bytes
+                    .saturating_sub(gpu.instances.size())
+                    .saturating_add(needed);
+                gpu.instances = grown;
+            }
+            if !placements.is_empty() {
+                queue.write_buffer(&gpu.instances, 0, bytemuck::cast_slice(&placements));
+            }
+            gpu.visible = placements.len().min(u32::MAX as usize) as u32;
+            self.groups[idx] = Some(gpu);
+            self.group_sources[idx] = Some(source);
+            kept += 1;
+        }
+        kept
+    }
+
     #[allow(clippy::too_many_arguments)] // Upload needs device, queue, world and camera projection parameters.
     pub fn prepare(
         &mut self,
@@ -4140,6 +4727,8 @@ impl Renderer {
             self.wildlife_count = 0;
             self.wildlife_last_origin = None;
             self.groups.clear();
+            self.group_sources.clear();
+            self.environment = None;
             self.cache.clear();
             self.source_hashes.clear();
             self.pending_diffuse.clear();
@@ -4154,47 +4743,73 @@ impl Renderer {
         self.sky_active = world.time_of_day.is_some() || world.static_sky.is_some();
         let key = Arc::as_ptr(world) as usize;
         if key != self.world_identity || self.last_full_textures != full_textures {
-            // Drop the former GPU scene before creating any new allocations.
-            // Full decoded source assets remain on World, not in this cache.
-            self.groups = std::iter::repeat_with(|| None)
-                .take(world.groups.len())
-                .collect();
-            self.cache.clear();
+            // Keep each resident group whose mesh and materials are the very
+            // same in the new world; only its placements may differ. Anything
+            // else is dropped before creating any new allocations. Full
+            // decoded source assets remain on World, not in this cache.
+            let kept = if self.last_full_textures == full_textures {
+                self.reuse_groups(device, queue, world)
+            } else {
+                0
+            };
+            if kept == 0 {
+                self.groups = std::iter::repeat_with(|| None)
+                    .take(world.groups.len())
+                    .collect();
+                self.group_sources = std::iter::repeat_with(|| None)
+                    .take(world.groups.len())
+                    .collect();
+                self.cache.clear();
+                self.pending_diffuse.clear();
+                self.mip_min_level.clear();
+            }
             self.source_hashes = (*world.source_pixel_hashes).clone();
-            self.pending_diffuse.clear();
-            self.mip_min_level.clear();
+            self.preview_generation = 0;
+            self.preview_groups.clear();
             self.mip_round_robin_cursor = 0;
             self.peak_gpu_bytes = 0;
             self.world_identity = key;
             self.last_full_textures = full_textures;
             self.last_camera = None;
             self.shadow_groups_seen = 0;
-            self.cookie_view = upload_light_cookies(device, queue, &world.light_cookies);
-            self.update_water(device, queue, world);
-            self.update_particles(device, queue, world);
-            self.update_decals(device, queue, world);
+            // An edited copy of the same map shares its lighting, water,
+            // effects and sky: only re-upload those for a different map.
+            let environment = world.environment();
+            let new_environment = self
+                .environment
+                .as_ref()
+                .is_none_or(|previous| !previous.same(&environment));
+            self.environment = Some(environment);
+            if new_environment {
+                self.cookie_view = upload_light_cookies(device, queue, &world.light_cookies);
+                self.update_water(device, queue, world);
+                self.update_particles(device, queue, world);
+                self.update_decals(device, queue, world);
+            }
             self.ambient_cube = world.ambient_cube;
             self.surface_darkening = 1.0 - world.rain_darkening;
             self.local_probe_slots = [None; LOCAL_PROBE_SLOTS];
             self.probe_tint = world.probe_cube.as_ref().map_or([0.0; 4], |cube| {
                 [cube.tint[0], cube.tint[1], cube.tint[2], 0.0]
             });
-            self.shadow_group = shadow_bind_group(
-                device,
-                &self.shadow_sample_layout,
-                &self.shadow_uniform,
-                &self.shadow_array,
-                &self.shadow_compare,
-                &upload_probe_cube(device, queue, world.probe_cube.as_deref()),
-                &self.probe_sampler,
-                &self.local_probe_uniform,
-                &self.local_probe_view,
-            );
+            if new_environment {
+                self.shadow_group = shadow_bind_group(
+                    device,
+                    &self.shadow_sample_layout,
+                    &self.shadow_uniform,
+                    &self.shadow_array,
+                    &self.shadow_compare,
+                    &upload_probe_cube(device, queue, world.probe_cube.as_deref()),
+                    &self.probe_sampler,
+                    &self.local_probe_uniform,
+                    &self.local_probe_view,
+                );
+                self.update_sky_source(device, queue, world);
+                self.update_light_point_sources(device, world);
+                self.update_source_spotlight_beams(device, world);
+            }
             self.last_camera = None;
             self.last_lighting_hour = f32::NAN;
-            self.update_sky_source(device, queue, world);
-            self.update_light_point_sources(device, world);
-            self.update_source_spotlight_beams(device, world);
             self.wildlife_last_origin = None;
             world.gpu_progress.pending.store(1, Ordering::Relaxed);
         }
@@ -4204,6 +4819,7 @@ impl Renderer {
             12.0
         };
         self.apply_ground_patches(device, queue, world);
+        self.apply_placement_preview(queue, world);
         let inside = camera.is_some_and(|camera| world.locate_camera(camera.position));
         let lighting_changed = self.last_lighting_hour != hour || self.last_inside != inside;
         self.last_inside = inside;
@@ -4358,6 +4974,7 @@ impl Renderer {
             used_bytes =
                 used_bytes.saturating_add(gpu._terrain_source.as_ref().map_or(0, |tex| tex.bytes));
             self.groups[idx] = Some(gpu);
+            self.group_sources[idx] = Some(GroupSource::of(world, idx));
             uploaded += 1;
         }
         self.pending_diffuse = pending_diffuse;
@@ -5323,13 +5940,16 @@ impl Renderer {
             return;
         }
         let origin = [camera[0], camera[1]];
+        let preview = world.placement_preview.snapshot();
         if self
             .wildlife_last_origin
             .is_some_and(|previous| previous == origin)
+            && self.wildlife_preview_generation == preview.generation
         {
             return;
         }
         self.wildlife_last_origin = Some(origin);
+        self.wildlife_preview_generation = preview.generation;
         let terrain = world
             .groups
             .iter()
@@ -5419,21 +6039,46 @@ impl Renderer {
                 );
             }
         }
-        for (use_terrain, polygon) in world.wildlife_shapes.iter().take(1024) {
+        // Areas and links follow a move or vertex edit in progress.
+        let placed = |index: usize, fallback: Transform| {
+            preview.transforms.get(&index).copied().unwrap_or(fallback)
+        };
+        for area in world.wildlife_shapes.iter().take(1024) {
+            let transform = placed(area.object_index, area.world);
+            let polygon = preview
+                .shapes
+                .get(&area.object_index)
+                .unwrap_or(&area.points)
+                .iter()
+                .map(|point| place(transform, *point))
+                .collect::<Vec<_>>();
+            let tint = if area.boundary {
+                [0.96, 0.30, 0.30, 0.85]
+            } else {
+                [0.99, 0.67, 0.18, 0.8]
+            };
             for pair in polygon.windows(2) {
-                segment(pair[0], pair[1], [0.99, 0.67, 0.18, 0.8], *use_terrain);
+                segment(pair[0], pair[1], tint, area.use_terrain);
             }
             if polygon.len() > 2 {
                 segment(
                     *polygon.last().unwrap_or(&polygon[0]),
                     polygon[0],
-                    [0.99, 0.67, 0.18, 0.8],
-                    *use_terrain,
+                    tint,
+                    area.use_terrain,
                 );
             }
         }
-        for &(spawn, home) in world.wildlife_links.iter().take(20000) {
-            segment(spawn, home, [0.54, 0.78, 0.95, 0.52], true);
+        for link in world.wildlife_links.iter().take(20000) {
+            let from = preview
+                .transforms
+                .get(&link.spawn)
+                .map_or(link.from, |t| t.position);
+            let to = preview
+                .transforms
+                .get(&link.home)
+                .map_or(link.to, |t| t.position);
+            segment(from, to, [0.54, 0.78, 0.95, 0.52], true);
         }
         if points.is_empty() {
             self.wildlife_count = 0;
@@ -5648,6 +6293,64 @@ mod tests {
         assert!(!entry.contains("distance_fog("));
         assert!(!entry.contains("shade("));
         naga::front::wgsl::parse_str(shader).expect("terrain source shader parses");
+    }
+
+    #[test]
+    fn picking_needs_a_triangle_not_just_the_bounding_sphere() {
+        // A thin 1 m wide, 10 m tall trunk: its bounding sphere is 10 m wide.
+        let mesh = Arc::new(RenderMesh {
+            vertex_alpha: None,
+            vertex_color: None,
+            info: evolve_core::ModelInfo {
+                format: "test".into(),
+                version: 1,
+                chunk_count: 0,
+                vertex_count: 4,
+                triangle_count: 2,
+                original_uv0: true,
+                original_normals: true,
+            },
+            positions: vec![
+                [-0.5, 0.0, 0.0],
+                [0.5, 0.0, 0.0],
+                [0.5, 0.0, 10.0],
+                [-0.5, 0.0, 10.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv0: None,
+            normals: None,
+        });
+        let tree = |object_index: usize, x: f32| Instance {
+            object_index,
+            transform: Transform {
+                position: [x, 0.0, 0.0],
+                ..Transform::default()
+            },
+        };
+        let world = World {
+            groups: vec![ModelGroup {
+                radius: radius(&mesh),
+                mesh,
+                surfaces: Vec::new(),
+                instances: vec![tree(7, 0.0), tree(8, 4.0)],
+            }],
+            ..World::default()
+        };
+        // Looking along +Y from 20 m back, level with the trunks' middle.
+        let camera = level_camera::Camera {
+            position: [0.0, -20.0, 5.0],
+            speed: 10.0,
+            fov_degrees: 60.0,
+        };
+        let pick = |x: f32| {
+            // A screen point whose ray crosses y = 0 at (x, 0, 5).
+            let tangent = (30.0f32).to_radians().tan();
+            world.pick(camera, 0.0, 0.0, 1.0, 1.0, [x / (20.0 * tangent), 0.0])
+        };
+        assert_eq!(pick(0.0), Some(7));
+        assert_eq!(pick(4.1), Some(8));
+        // Beside the first trunk, though well inside its sphere: nothing.
+        assert_eq!(pick(2.0), None);
     }
 
     #[test]

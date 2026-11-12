@@ -13,17 +13,17 @@ use evolve_core::read_static_cdf_assembly_with_imported;
 use evolve_core::zookeeper::{PopulationKind, ZooKeeper};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, PlacedObject, RenderMesh, SharedImportedLookup,
-    Transform, WorldModelPart, begin_imported_lookup_session,
-    begin_imported_lookup_session_for_source, imported_archive_files,
-    imported_archive_preview_inventory, imported_library, read_world_model_parts_with_subsets,
+    Transform, begin_imported_lookup_session, begin_imported_lookup_session_for_source,
+    imported_archive_files, imported_archive_preview_inventory, imported_library,
+    read_world_model_parts_with_subsets,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 const MAX_ARCHIVES: usize = 1_024;
@@ -682,6 +682,7 @@ fn surface_batch_ranges(costs: &[u64], geometry: u64) -> Vec<std::ops::Range<usi
 
 type WorldSurfaces = (Vec<Vec<Surface>>, Vec<String>);
 
+#[derive(Clone)]
 struct DecodedMaterial {
     virtual_source: String,
     path: Result<Option<PathBuf>, String>,
@@ -690,12 +691,38 @@ struct DecodedMaterial {
 
 /// One model/material pair, resolved once on a worker thread and consumed once
 /// by the ordered assembly. Repeating this work serially dominated map loads.
+/// Meshes and textures are shared: a reload of the same map reuses them, so
+/// its GPU groups can be kept (see [`begin_decode_reuse`]).
+/// A model's source, its meshes and a note when a compiled companion was used.
+type DecodedRender = (AssetLocation, Vec<Arc<RenderMesh>>, Option<String>);
+
+#[derive(Clone)]
 struct DecodedPair {
-    render: Result<(AssetLocation, Vec<WorldModelPart>, Option<String>), Vec<String>>,
+    render: Result<DecodedRender, Vec<String>>,
     material: Option<DecodedMaterial>,
 }
 
 type DecodedPairs = HashMap<(String, String), DecodedPair>;
+
+/// Pairs decoded by the last load, kept for reloading the same map after an
+/// edit. Only level sources change in such an edit, never a model, material
+/// or texture, so an unchanged model/material pair decodes to the same result.
+static DECODE_REUSE: Mutex<Option<(String, DecodedPairs)>> = Mutex::new(None);
+
+/// Start a map load. `Some(scope)` names the project and map: a load for the
+/// same scope reuses the pairs the last one decoded. Any other load, a
+/// different scope or `None`, drops them first, so a fresh open never sees
+/// stale assets and never holds two maps' assets at once.
+pub(super) fn begin_decode_reuse(scope: Option<String>, reuse: bool) {
+    let Ok(mut cache) = DECODE_REUSE.lock() else {
+        return;
+    };
+    match (scope, cache.as_mut()) {
+        (Some(scope), Some((current, _))) if reuse && *current == scope => {}
+        (Some(scope), _) => *cache = Some((scope, DecodedPairs::new())),
+        (None, _) => *cache = None,
+    }
+}
 
 /// Decode every unique scene model and its textures on worker threads. Results
 /// are applied in authored order below, so diagnostics, budgets and group
@@ -707,14 +734,30 @@ fn decode_scene_sources(
     build: Option<&str>,
 ) -> DecodedPairs {
     let cache = PreviewCache::for_scene();
+    let reusable = DECODE_REUSE
+        .lock()
+        .ok()
+        .and_then(|cache| cache.as_ref().map(|(_, pairs)| pairs.clone()))
+        .unwrap_or_default();
     let mut unique = HashSet::new();
+    let mut reused = DecodedPairs::new();
     let pairs = scene
         .objects
         .iter()
         .filter(|object| !object.hidden && !object.model.is_empty())
         .filter(|object| unique.insert((object.model.as_str(), object.material.as_str())))
+        .filter(|object| {
+            let key = (object.model.clone(), object.material.clone());
+            match reusable.get(&key) {
+                Some(pair) => {
+                    reused.insert(key, pair.clone());
+                    false
+                }
+                None => true,
+            }
+        })
         .collect::<Vec<_>>();
-    let decoded = Mutex::new(DecodedPairs::with_capacity(pairs.len()));
+    let decoded = Mutex::new(reused);
     let next = AtomicUsize::new(0);
     let lookup = SharedImportedLookup::current();
     // Leave the interface and GPU upload threads room to stay responsive.
@@ -734,7 +777,13 @@ fn decode_scene_sources(
             });
         }
     });
-    decoded.into_inner().unwrap_or_default()
+    let decoded = decoded.into_inner().unwrap_or_default();
+    if let Ok(mut cache) = DECODE_REUSE.lock()
+        && let Some((_, kept)) = cache.as_mut()
+    {
+        kept.clone_from(&decoded);
+    }
+    decoded
 }
 
 fn decode_scene_pair(
@@ -771,19 +820,7 @@ fn decode_scene_pair(
                 evolve_core::KalaTubingState::default(),
             );
             Ok(DecodedPair {
-                render: Ok((
-                    source,
-                    vec![WorldModelPart {
-                        mesh,
-                        subsets: assembly
-                            .source_parts
-                            .iter()
-                            .map(|part| (part.first_index, part.index_count, part.material_slot))
-                            .collect(),
-                        has_subset_table: true,
-                    }],
-                    None,
-                )),
+                render: Ok((source, vec![Arc::new(mesh)], None)),
                 material: Some(DecodedMaterial {
                     virtual_source: object.model.clone(),
                     path: Ok(None),
@@ -853,7 +890,16 @@ fn decode_scene_pair(
             surfaces,
         })
     });
-    DecodedPair { render, material }
+    DecodedPair {
+        render: render.map(|(source, meshes, note)| {
+            (
+                source,
+                meshes.into_iter().map(|part| Arc::new(part.mesh)).collect(),
+                note,
+            )
+        }),
+        material,
+    }
 }
 
 /// A source-space indicator, not a reconstructed animal. CreatureSpawn
@@ -1340,8 +1386,7 @@ pub(super) fn assemble(
                 }
                 let mut indices = Vec::with_capacity(meshes.len());
                 let mut partial = false;
-                for (part_index, part) in meshes.into_iter().enumerate() {
-                    let mesh = part.mesh;
+                for (part_index, mesh) in meshes.into_iter().enumerate() {
                     let radius = world_instances::radius(&mesh);
                     let parts = per_mesh_materials
                         .get(part_index)
@@ -1357,7 +1402,7 @@ pub(super) fn assemble(
                         partial = true;
                         break;
                     }
-                    let shared = std::sync::Arc::new(mesh);
+                    let shared = mesh;
                     if batches.len() > 1 {
                         report.note(format!(
                             "Split {} into {} independent GPU material-residency groups",
@@ -1437,12 +1482,15 @@ pub(super) fn assemble(
             })
             .collect::<Vec<_>>();
         if !markers.is_empty() {
-            let mesh = wildlife_marker_mesh();
+            // One shared mesh, so a reload keeps its GPU group.
+            static MARKER: std::sync::LazyLock<Arc<RenderMesh>> =
+                std::sync::LazyLock::new(|| Arc::new(wildlife_marker_mesh()));
+            let mesh = MARKER.clone();
             let count = markers.len();
             models.push(world_instances::ModelGroup {
                 radius: world_instances::radius(&mesh),
                 surfaces: vec![neutral(0, mesh.indices.len() as u32)],
-                mesh: std::sync::Arc::new(mesh),
+                mesh,
                 instances: markers,
             });
             report.note(format!(
@@ -1501,47 +1549,59 @@ pub(super) fn assemble_wildlife(
         .ok_or("No wildlife placements could be assembled")?;
     let mut world = (*assembled.world).clone();
     world.wildlife_distances = assembled.report.spawn_distances;
+    // Home areas, and gameplay areas such as the out-of-bounds boundary.
     world.wildlife_shapes = std::sync::Arc::new(
         scene
             .objects
             .iter()
-            .filter(|object| {
+            .enumerate()
+            .filter(|(_, object)| {
                 !object.hidden
-                    && object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+                    && (object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+                        || object.kind.eq_ignore_ascii_case("AreaShape"))
                     && object.shape_points.len() >= 2
             })
             .take(1024)
-            .map(|object| {
-                (
-                    object.wildlife.use_terrain_height.unwrap_or(false),
-                    object
-                        .shape_points
-                        .iter()
-                        .map(|point| transformed(object.world, *point, false))
-                        .collect(),
-                )
+            .map(|(object_index, object)| world_instances::AreaOutline {
+                object_index,
+                use_terrain: object.wildlife.use_terrain_height.unwrap_or(false),
+                boundary: object.kind.eq_ignore_ascii_case("AreaShape"),
+                world: object.world,
+                points: object.shape_points.clone(),
             })
             .collect(),
     );
     let areas = scene
         .objects
         .iter()
-        .filter(|object| !object.hidden && object.kind.eq_ignore_ascii_case("ZooKeeperShape"))
-        .map(|object| (object.name.to_ascii_lowercase(), object.world.position))
+        .enumerate()
+        .filter(|(_, object)| !object.hidden && object.kind.eq_ignore_ascii_case("ZooKeeperShape"))
+        .map(|(index, object)| {
+            (
+                object.name.to_ascii_lowercase(),
+                (index, object.world.position),
+            )
+        })
         .collect::<HashMap<_, _>>();
     world.wildlife_links = std::sync::Arc::new(
         scene
             .objects
             .iter()
-            .filter(|object| {
+            .enumerate()
+            .filter(|(_, object)| {
                 !object.hidden
                     && object.kind.eq_ignore_ascii_case("CreatureSpawn")
                     && !object.home_area.is_empty()
             })
-            .filter_map(|spawn| {
+            .filter_map(|(spawn, object)| {
                 areas
-                    .get(&spawn.home_area.to_ascii_lowercase())
-                    .map(|home| (spawn.world.position, *home))
+                    .get(&object.home_area.to_ascii_lowercase())
+                    .map(|&(home, to)| world_instances::SpawnLink {
+                        spawn,
+                        home,
+                        from: object.world.position,
+                        to,
+                    })
             })
             .take(20000)
             .collect(),

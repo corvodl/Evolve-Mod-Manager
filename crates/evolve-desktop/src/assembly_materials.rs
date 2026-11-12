@@ -1023,6 +1023,27 @@ fn apply_effect_mesh_preview(
     warnings.push(format!("{} source diffuse-alpha and GlowAmount preview; native additive particle simulation unavailable",slot.shader));
 }
 
+/// A `%DECAL` surface (a blood pool, a scorch mark) shows only where its
+/// diffuse alpha covers it, scaled by Opacity. The colour under zero alpha is
+/// unused and, in compressed textures, often noise, so a flat Opacity over
+/// the whole quad shows that noise. None for other surfaces.
+fn decal_opacity(
+    slot: &evolve_core::MaterialSlot,
+    diffuse: Option<&Arc<image::RgbaImage>>,
+) -> Option<Arc<image::RgbaImage>> {
+    if !slot.decal {
+        return None;
+    }
+    let diffuse = diffuse?;
+    let scalar = slot.opacity.unwrap_or(1.0).clamp(0.0, 1.0);
+    let mut mask = image::RgbaImage::new(diffuse.width(), diffuse.height());
+    for (source, target) in diffuse.pixels().zip(mask.pixels_mut()) {
+        let value = (f32::from(source.0[3]) * scalar).round() as u8;
+        *target = image::Rgba([value, value, value, 255]);
+    }
+    Some(Arc::new(mask))
+}
+
 fn needs_alpha_blending(slot: &evolve_core::MaterialSlot) -> bool {
     // An explicit opacity IMAGE on a solid CryEngine material is an alpha
     // TEST, not evidence the entire body is translucent. Blend only for
@@ -1391,6 +1412,11 @@ fn load_authored_subset_surfaces(
                         surface.transparent = !surface.foliage_cutout
                             && needs_alpha_blending(leaf)
                             && surface.opacity.is_some();
+                        if let Some(mask) = decal_opacity(leaf, surface.diffuse.as_ref()) {
+                            surface.opacity = Some(mask);
+                            surface.transparent = true;
+                            surface.foliage_cutout = false;
+                        }
                         let particle_mask = authored_particle_mask(
                             leaf,
                             material,
@@ -1785,6 +1811,11 @@ pub fn load_with_progress(
             };
             surface.transparent =
                 !surface.foliage_cutout && needs_alpha_blending(leaf) && surface.opacity.is_some();
+            if let Some(mask) = decal_opacity(leaf, surface.diffuse.as_ref()) {
+                surface.opacity = Some(mask);
+                surface.transparent = true;
+                surface.foliage_cutout = false;
+            }
             let particle_mask = authored_particle_mask(
                 leaf,
                 &path,
@@ -1869,6 +1900,30 @@ pub fn armor_emission(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn decal_surfaces_take_opacity_from_diffuse_alpha() {
+        // The carcass gore pool: Illum with %DECAL and Opacity 0.65.
+        let doc = evolve_core::parse_material(
+            br#"<Material Name="Gorepool01" Shader="Illum" StringGenMask="%BUMP_MAP%DECAL%GLOSS_MAP" Opacity="0.65"><Textures><Texture Map="Diffuse" File="gore.tif"/></Textures></Material>"#,
+        )
+        .unwrap();
+        let slot = &doc.slots[0];
+        assert!(slot.decal);
+        // Noise colour under zero alpha, solid gore under full alpha.
+        let mut diffuse = image::RgbaImage::new(2, 1);
+        diffuse.put_pixel(0, 0, image::Rgba([40, 200, 30, 0]));
+        diffuse.put_pixel(1, 0, image::Rgba([120, 10, 10, 255]));
+        let mask = decal_opacity(slot, Some(&Arc::new(diffuse))).unwrap();
+        assert_eq!(mask.get_pixel(0, 0).0[0], 0);
+        assert_eq!(mask.get_pixel(1, 0).0[0], (255.0f32 * 0.65).round() as u8);
+        // An ordinary surface is unchanged.
+        let plain = evolve_core::parse_material(
+            br#"<Material Shader="Illum" StringGenMask="%BUMP_MAP" Opacity="0.65"/>"#,
+        )
+        .unwrap();
+        assert!(decal_opacity(&plain.slots[0], None).is_none());
+    }
+
     #[test]
     fn slider_reblends_loaded_surfaces_without_redecoding_or_changing_geometry() {
         let base_pixels = Arc::new(image::RgbaImage::from_pixel(
@@ -1982,6 +2037,7 @@ mod tests {
             alpha_test: None,
             glow_amount: Some(3.0),
             alpha_glow: true,
+            decal: false,
             vertex_colors: false,
             shader_gen_mask: None,
             diffuse_tint: None,
@@ -2351,6 +2407,7 @@ mod tests {
             alpha_test: None,
             glow_amount: None,
             alpha_glow: false,
+            decal: false,
             vertex_colors: false,
             shader_gen_mask: None,
             diffuse_tint: None,
@@ -3014,6 +3071,7 @@ mod tests {
             alpha_test: None,
             glow_amount: None,
             alpha_glow: false,
+            decal: false,
             vertex_colors: false,
             shader_gen_mask: None,
             diffuse_tint: None,

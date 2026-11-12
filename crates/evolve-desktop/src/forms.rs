@@ -530,6 +530,22 @@ pub fn number_field<'a, F>(
 where
     F: Fn(String) -> Message + Clone + 'a,
 {
+    number_field_submit(forms, modifiers, id, value, spec, on_change, None)
+}
+
+/// [`number_field`] whose Enter also runs `submit` after committing.
+pub fn number_field_submit<'a, F>(
+    forms: &FormState,
+    modifiers: Modifiers,
+    id: impl Into<String>,
+    value: &str,
+    spec: NumberSpec,
+    on_change: F,
+    submit: Option<Message>,
+) -> Element<'a, Message>
+where
+    F: Fn(String) -> Message + Clone + 'a,
+{
     // `text_input` copies its value, so the text needn't outlive the view.
     let id = id.into();
     let last = forms
@@ -546,7 +562,10 @@ where
     let up = stepped(spec, value, last, 1.0, modifiers);
     let down_msg = (current > spec.min).then(|| make(down));
     let up_msg = (current < spec.max).then(|| make(up));
-    let commit_msg = make(committed(spec, value, last));
+    let commit_msg = match submit {
+        Some(submit) => Message::Sequence(vec![make(committed(spec, value, last)), submit]),
+        None => make(committed(spec, value, last)),
+    };
     let input = {
         let on_change = on_change.clone();
         let id = id.clone();
@@ -588,6 +607,7 @@ where
 
 /// One number field per component of a comma-separated vector
 /// (`"1, 2, 3"`); each edit rewrites the whole vector.
+#[allow(clippy::too_many_arguments)]
 pub fn vector_fields<'a, F>(
     forms: &FormState,
     modifiers: Modifiers,
@@ -596,6 +616,7 @@ pub fn vector_fields<'a, F>(
     labels: &'static [&'static str],
     spec: NumberSpec,
     on_change: F,
+    submit: Option<Message>,
 ) -> Element<'a, Message>
 where
     F: Fn(String) -> Message + Clone + 'a,
@@ -610,7 +631,7 @@ where
         let parts_for_edit = parts.clone();
         let on_change = on_change.clone();
         let component = parts[index].clone();
-        let field = number_field(
+        let field = number_field_submit(
             forms,
             modifiers,
             format!("{id}.{index}"),
@@ -621,6 +642,7 @@ where
                 next[index] = raw;
                 on_change(next.join(", "))
             },
+            submit.clone(),
         );
         fields = fields.push(
             column![
