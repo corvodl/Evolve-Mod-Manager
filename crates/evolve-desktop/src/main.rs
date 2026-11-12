@@ -12643,8 +12643,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
         }
         Message::Form(msg) => {
-            let next = forms::update(&mut state.forms, msg);
-            return update(state, next);
+            return match forms::update(&mut state.forms, msg) {
+                Some(next) => update(state, next),
+                None => Task::none(),
+            };
         }
         Message::BrowsePath(kind) => {
             return Task::perform(

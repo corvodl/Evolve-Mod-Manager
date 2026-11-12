@@ -367,6 +367,7 @@ impl NumberSpec {
 #[derive(Debug, Default)]
 pub struct FormState {
     last_good: BTreeMap<String, f64>,
+    drafts: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -374,17 +375,63 @@ pub enum FormMsg {
     /// A number field changed: remember `value` if it parsed, then run the
     /// field's own message.
     Edit(String, Option<f64>, Box<Message>),
+    /// A bound number field's text changed: keep the draft so partial
+    /// entries like `1.` survive, and run the message if it parsed.
+    Draft(String, String, Option<Box<Message>>),
 }
 
-pub fn update(forms: &mut FormState, message: FormMsg) -> Message {
+pub fn update(forms: &mut FormState, message: FormMsg) -> Option<Message> {
     match message {
         FormMsg::Edit(id, value, next) => {
             if let Some(value) = value {
                 forms.last_good.insert(id, value);
             }
-            *next
+            Some(*next)
+        }
+        FormMsg::Draft(id, text, next) => {
+            if let Some(value) = parse_finite(&text) {
+                forms.last_good.insert(id.clone(), value);
+            }
+            forms.drafts.insert(id, text);
+            next.map(|next| *next)
         }
     }
+}
+
+/// The text a bound field shows: the draft while it still describes the
+/// current value (or is mid-entry), otherwise the value itself.
+pub fn bound_text(forms: &FormState, id: &str, value: f64, decimals: usize) -> String {
+    let tolerance = 10f64.powi(-(decimals as i32)) * 0.5 + 1e-9;
+    match forms.drafts.get(id) {
+        Some(draft)
+            if parse_finite(draft).is_none_or(|parsed| (parsed - value).abs() < tolerance) =>
+        {
+            draft.clone()
+        }
+        _ => format_number(value, decimals),
+    }
+}
+
+/// A number field bound to a numeric state value (a slider's companion).
+/// Typing keeps a draft; each in-range entry runs `on_value`.
+pub fn bound_number<'a, F>(
+    forms: &FormState,
+    modifiers: Modifiers,
+    id: &'static str,
+    value: f64,
+    spec: NumberSpec,
+    on_value: F,
+) -> Element<'a, Message>
+where
+    F: Fn(f64) -> Message + Clone + 'a,
+{
+    let text = bound_text(forms, id, value, spec.decimals);
+    number_field(forms, modifiers, id, &text, spec, move |raw: String| {
+        let parsed = parse_finite(&raw)
+            .filter(|value| (spec.min..=spec.max).contains(value))
+            .map(|value| Box::new(on_value(value)));
+        Message::Form(FormMsg::Draft(id.to_owned(), raw, parsed))
+    })
 }
 
 /// True for text that is a number or on its way to one (`-`, `1.`, `.5`).
@@ -744,6 +791,17 @@ mod tests {
         assert_eq!(format_number(2.0, 3), "2");
         assert_eq!(format_number(-0.0001, 2), "0");
         assert_eq!(format_number(7.0, 0), "7");
+    }
+
+    #[test]
+    fn bound_fields_keep_partial_drafts_until_the_value_moves() {
+        let mut forms = FormState::default();
+        let none = update(&mut forms, FormMsg::Draft("r".into(), "1.".into(), None));
+        assert!(none.is_none());
+        assert_eq!(bound_text(&forms, "r", 1.0, 1), "1.");
+        // The value changed elsewhere (a slider): the field follows it.
+        assert_eq!(bound_text(&forms, "r", 7.5, 1), "7.5");
+        assert_eq!(bound_text(&forms, "unknown", 2.0, 1), "2");
     }
 
     #[test]

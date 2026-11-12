@@ -42,6 +42,63 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Move row up", "Alt+Up"),
     ("Move row down", "Alt+Down"),
     ("Exit fullscreen", "Esc"),
+    // Level editor tools.
+    ("Select", "1"),
+    ("Sculpt", "2"),
+    ("Paint", "3"),
+    ("Raise", "Shift+1"),
+    ("Flatten", "Shift+2"),
+    ("Smooth", "Shift+3"),
+    ("Create ground", "Shift+4"),
+    ("Smaller brush", "["),
+    ("Larger brush", "]"),
+    ("Lower terrain", "Ctrl+LMB"),
+    ("Brush stroke", "LMB"),
+    ("Look around", "RMB"),
+    ("Fly", "W A S D"),
+    ("Descend / ascend", "Q / E"),
+    ("Select object", "LMB"),
+    // Developer tabs.
+    ("Network & Process", "Ctrl+1"),
+    ("Actors & Memory", "Ctrl+2"),
+    ("AI", "Ctrl+3"),
+    ("Teleport & Fly", "Ctrl+4"),
+    ("Overlay", "Ctrl+5"),
+    ("Keybinds", "Ctrl+6"),
+];
+
+/// Level editor shortcuts grouped by tool, for the cheat sheet. Every label
+/// resolves through [`shortcut_for`].
+pub const LEVEL_SHORTCUTS: &[(&str, &[&str])] = &[
+    ("Tools", &["Select", "Sculpt", "Paint", "Command palette"]),
+    (
+        "Select",
+        &[
+            "Select object",
+            "Focus selection",
+            "Delete",
+            "Copy",
+            "Paste",
+            "Duplicate",
+        ],
+    ),
+    (
+        "Sculpt and paint",
+        &[
+            "Raise",
+            "Flatten",
+            "Smooth",
+            "Create ground",
+            "Brush stroke",
+            "Lower terrain",
+            "Smaller brush",
+            "Larger brush",
+        ],
+    ),
+    (
+        "Camera",
+        &["Look around", "Fly", "Descend / ascend", "Exit fullscreen"],
+    ),
 ];
 
 /// The shortcut for an action label, if it has one.
@@ -1010,6 +1067,15 @@ mod tests {
         assert_eq!(shortcut_for("command palette"), Some("Ctrl+K"));
         assert_eq!(shortcut_for("Focus selection"), Some("F"));
         assert_eq!(shortcut_for("Unknown action"), None);
+    }
+
+    #[test]
+    fn every_listed_level_shortcut_resolves() {
+        for (_, actions) in LEVEL_SHORTCUTS {
+            for action in *actions {
+                assert!(shortcut_for(action).is_some(), "{action}");
+            }
+        }
     }
 
     #[test]

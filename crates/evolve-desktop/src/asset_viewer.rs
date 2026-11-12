@@ -113,6 +113,21 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
                 .size(design::CAPTION).style(design::muted),
         ].spacing(5).into(),
         "Textures" => column![
+            crate::chrome::menu_item(
+                if state.gallery.open { "Back to viewport" } else { "Texture gallery" },
+                Some(Message::Gallery(crate::gallery::Msg::Toggle)),
+            ),
+            crate::chrome::menu_item(
+                if state.viewer_full_textures {
+                    "Quality: Full (switch to Balanced)"
+                } else {
+                    "Quality: Balanced (switch to Full)"
+                },
+                Some(Message::ViewerFullTexturesToggled),
+            ),
+            text("Full quality has no texture budget, so GPU memory can run out; Balanced limits usage.")
+                .size(design::CAPTION)
+                .style(design::muted),
             crate::chrome::menu_item("Resolve .mtl", Some(Message::StartMaterialResolve)),
             crate::chrome::menu_item("Load diffuse", Some(Message::StartDiffuseLoad)),
             crate::chrome::menu_item("Load normal", Some(Message::StartNormalLoad)),
@@ -1832,21 +1847,9 @@ fn viewport(state: &State) -> Element<'_, Message> {
         ],
         state.preferences.reduce_motion,
     );
+    // Texture gallery and quality live in the Textures menu.
     let toolbar = row![
         dock,
-        design::button(if state.gallery.open { "Viewport" } else { "Texture gallery" })
-            .style(design::secondary)
-            .on_press(Message::Gallery(crate::gallery::Msg::Toggle)),
-        tooltip(
-            design::button(if state.viewer_full_textures {
-                "Textures: Full quality"
-            } else {
-                "Textures: Balanced"
-            })
-            .on_press(Message::ViewerFullTexturesToggled),
-            text("Full quality has no manager-imposed texture budget. GPU memory exhaustion is possible; Balanced limits usage.").size(design::LABEL),
-            tooltip::Position::Bottom,
-        ),
         tooltip(
             row![
                 svg(svg::Handle::from_memory(include_bytes!(
