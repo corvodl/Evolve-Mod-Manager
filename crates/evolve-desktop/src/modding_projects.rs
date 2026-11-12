@@ -1429,6 +1429,34 @@ pub enum PakExportMode {
 }
 
 impl PakExportMode {
+    pub const ALL: [Self; 3] = [Self::ChangedZz, Self::ChangedOriginal, Self::FullOriginal];
+
+    /// Name stored in preferences.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::ChangedZz => "ChangedZz",
+            Self::ChangedOriginal => "ChangedOriginal",
+            Self::FullOriginal => "FullOriginal",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.key() == key)
+    }
+
+    /// One line on what the format produces.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::ChangedZz => "zz_[modname].pak · changed files only, loads after the original",
+            Self::ChangedOriginal => {
+                "[OriginalPakName].pak · changed files only, replaces the original by name"
+            }
+            Self::FullOriginal => {
+                "[OriginalPakName].pak · the entire original PAK with your changes"
+            }
+        }
+    }
+
     pub fn changed_only(self) -> bool {
         self != Self::FullOriginal
     }

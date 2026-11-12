@@ -5,8 +5,9 @@ use crate::{design, developer_hotkeys, runtime_teleport};
 use iced::widget::{button, column, container, image, row, scrollable, stack, svg, text, tooltip};
 use iced::{Background, Border, Element, Fill, Length};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub(super) enum DocsSection {
+    #[default]
     GettingStarted,
     Install,
     Paths,
@@ -62,7 +63,26 @@ impl DeveloperSection {
         Self::Keybinds,
     ];
 
-    fn title(self) -> &'static str {
+    fn icon(self) -> iced::widget::svg::Handle {
+        match self {
+            Self::Network => crate::icons::network(),
+            Self::Actors => crate::icons::actors(),
+            Self::Ai => crate::icons::chip(),
+            Self::Teleport => crate::icons::teleport(),
+            Self::Overlay => crate::icons::layers(),
+            Self::Keybinds => crate::icons::keyboard(),
+        }
+    }
+
+    /// The remembered tab, Network by default.
+    fn from_title(title: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|section| section.title() == title)
+            .unwrap_or(Self::Network)
+    }
+
+    pub(super) fn title(self) -> &'static str {
         match self {
             Self::Network => "Network & Process",
             Self::Actors => "Actors & Memory",
@@ -83,7 +103,7 @@ fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Contai
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: if design::is_legacy(theme) { 1.0 } else { 12.0 }.into(),
+                radius: design::radius(theme, design::Radius::Large).into(),
             },
             ..container::Style::default()
         })
@@ -103,7 +123,7 @@ fn home_surface<'a>(
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: if design::is_legacy(theme) { 1.0 } else { 12.0 }.into(),
+                radius: design::radius(theme, design::Radius::Large).into(),
             },
             ..container::Style::default()
         }
@@ -127,7 +147,7 @@ fn home_play_surface<'a>(
                 border: Border {
                     color: design::border(theme),
                     width: 1.0,
-                    radius: if design::is_legacy(theme) { 1.0 } else { 12.0 }.into(),
+                    radius: design::radius(theme, design::Radius::Large).into(),
                 },
                 ..container::Style::default()
             }
@@ -147,7 +167,7 @@ fn legacy_section_label(label: &'static str, legacy: bool) -> Element<'static, M
             _ => label,
         }
     })
-    .size(12)
+    .size(design::LABEL)
     .style(if legacy {
         design::accent
     } else {
@@ -231,7 +251,7 @@ fn tile(name: &'static str, page: Page, wallpaper: bool) -> Element<'static, Mes
             style.border = Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: 8.0.into(),
+                radius: design::radius(theme, design::Radius::Medium).into(),
             };
         }
         if wallpaper {
@@ -278,10 +298,10 @@ fn status_value_preview(value: &str) -> String {
 fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
     let short = status_value_preview(&value);
     row![
-        text(label).size(13).width(Length::FillPortion(2)),
+        text(label).size(design::BODY).width(Length::FillPortion(2)),
         container(tooltip(
-            text(short).size(13).style(design::muted),
-            text(value).size(12),
+            text(short).size(design::BODY).style(design::muted),
+            text(value).size(design::LABEL),
             tooltip::Position::Top,
         ))
         .width(Length::FillPortion(3)),
@@ -310,18 +330,21 @@ fn client_version_card<'a>(version: Option<&str>) -> Element<'a, Message> {
     let value: Element<'a, Message> = if let Some(version) = version {
         tooltip(
             text(short_client_version(version))
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
-            text(format!("Full client version: v{version}")).size(11),
+            text(format!("Full client version: v{version}")).size(design::CAPTION),
             tooltip::Position::Top,
         )
         .into()
     } else {
-        text("Not detected").size(12).style(design::muted).into()
+        text("Not detected")
+            .size(design::LABEL)
+            .style(design::muted)
+            .into()
     };
     row![
         text("Client version")
-            .size(13)
+            .size(design::BODY)
             .width(Length::FillPortion(2)),
         container(value).width(Length::FillPortion(3)),
     ]
@@ -352,13 +375,13 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
         }
         details = details.push(
             text(format!("{}  ·  {}", post.author, post.timestamp))
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         );
         for body in [&post.content, &post.description] {
             if !body.is_empty() {
                 let excerpt: String = body.chars().take(260).collect();
-                details = details.push(text(excerpt).size(12));
+                details = details.push(text(excerpt).size(design::LABEL));
             }
         }
         if let Some(url) = post
@@ -385,22 +408,39 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
             } else if news.image_failures.contains(url) {
                 details = details.push(
                     text("Image preview unavailable")
-                        .size(11)
+                        .size(design::CAPTION)
                         .style(design::muted),
                 );
             } else {
-                details = details.push(text("Loading image…").size(11).style(design::muted));
+                details = details.push(
+                    text("Loading image…")
+                        .size(design::CAPTION)
+                        .style(design::muted),
+                );
             }
         }
+    } else if news.loading {
+        // Pulsing placeholders instead of a bare "Loading…" line.
+        let alpha = crate::ui_kit::pulse(
+            state.ui.clock(std::time::Instant::now()),
+            state.preferences.reduce_motion,
+        );
+        details = details
+            .push(crate::ui_kit::skeleton(Length::FillPortion(3), 16.0, alpha))
+            .push(crate::ui_kit::skeleton(Length::Fixed(160.0), 10.0, alpha))
+            .push(crate::ui_kit::skeleton(Fill, 11.0, alpha))
+            .push(crate::ui_kit::skeleton(Fill, 11.0, alpha))
+            .push(crate::ui_kit::skeleton(Length::FillPortion(2), 11.0, alpha));
+        preview = Some(crate::ui_kit::skeleton(
+            Length::FillPortion(3),
+            112.0,
+            alpha,
+        ));
     } else {
         details = details.push(
-            text(if news.loading {
-                "Loading the latest announcement…"
-            } else {
-                "No announcements available yet."
-            })
-            .size(12)
-            .style(design::muted),
+            text("No announcements available yet.")
+                .size(design::LABEL)
+                .style(design::muted),
         );
     }
 
@@ -548,7 +588,7 @@ fn home_launch_card<'a>(
         column![
             text(label).size(10).style(design::accent),
             text(title).size(17),
-            text(description).size(12).style(design::muted),
+            text(description).size(design::LABEL).style(design::muted),
             iced::widget::space().height(Fill),
             buttons,
         ]
@@ -572,15 +612,15 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             column![
                 text("Evolve Mod Manager").size(24),
                 text("Your workspace for CryPAK mods, original assets, model playback and level editing.")
-                    .size(13).style(design::muted),
+                    .size(design::BODY).style(design::muted),
             ].spacing(5).width(Fill),
             column![
                 text("INSTALLATION").size(10).style(design::muted),
-                text(if state.preferences.game_installation.is_empty() { "Not configured" } else { "Configured" }).size(12),
+                text(if state.preferences.game_installation.is_empty() { "Not configured" } else { "Configured" }).size(design::LABEL),
             ].spacing(4),
             column![
                 text("CLIENT").size(10).style(design::muted),
-                text(if state.preferences.client_executable.is_empty() { "Not configured" } else { "Configured" }).size(12),
+                text(if state.preferences.client_executable.is_empty() { "Not configured" } else { "Configured" }).size(design::LABEL),
             ].spacing(4),
         ].spacing(18).align_y(iced::Center), wallpaper,
     ).padding([16, 20]);
@@ -608,7 +648,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 text("ACTIVE PROJECT").size(10).style(design::accent),
                 text(project).size(17),
                 text("Continue with your selected, isolated Modding workspace.")
-                    .size(12)
+                    .size(design::LABEL)
                     .style(design::muted),
                 iced::widget::space().height(Fill),
                 row![
@@ -645,8 +685,11 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         ),
     ]
     .spacing(14);
+    let dashboard = home_bento(state);
     let tools = column![
-        text("QUICK TOOL ACCESS").size(11).style(design::muted),
+        text("QUICK TOOL ACCESS")
+            .size(design::CAPTION)
+            .style(design::muted),
         design::button("CryPAK Archive Explorer  →")
             .on_press(Message::Navigate(Page::Files))
             .width(Fill),
@@ -662,9 +705,11 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     ]
     .spacing(9)
     .width(Length::FillPortion(1));
-    scrollable(
+    let content = scrollable(
         column![
+            whats_new_intro(state),
             hero,
+            dashboard,
             launchpads,
             row![
                 container(latest_announcement(state, wallpaper)).width(Length::FillPortion(2)),
@@ -676,7 +721,157 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         .padding(24),
     )
     .width(Fill)
-    .height(Fill)
+    .height(Fill);
+    with_embers(state, content.into())
+}
+
+/// Slow embers drift up behind Home's translucent panels. Only drawn with
+/// the wallpaper on and motion allowed; the frame clock stops off Home.
+fn with_embers<'a>(state: &State, content: Element<'a, Message>) -> Element<'a, Message> {
+    if !state.preferences.show_home_background || state.preferences.reduce_motion {
+        return content;
+    }
+    iced::widget::stack![
+        iced::widget::canvas(crate::fx::Embers {
+            time: state.ui.clock(std::time::Instant::now()),
+        })
+        .width(Fill)
+        .height(Fill),
+        content,
+    ]
+    .into()
+}
+
+/// Bento dashboard: small at-a-glance tiles laid out with FillPortion.
+fn home_bento(state: &State) -> Element<'_, Message> {
+    use crate::ui_kit::{bento_tile, ticked};
+    let client = column![
+        text(state.client_version.as_deref().unwrap_or("Unknown")).size(18),
+        text(if state.preferences.client_executable.is_empty() {
+            "Client not configured"
+        } else {
+            "Installed client"
+        })
+        .size(design::CAPTION)
+        .style(design::muted),
+    ]
+    .spacing(4);
+    let enabled = state
+        .modding_projects
+        .as_ref()
+        .map(|projects| projects.iter().filter(|p| p.enabled).count())
+        .unwrap_or(0);
+    let total = state.modding_projects.as_ref().map_or(0, Vec::len);
+    let mods = column![
+        text(format!(
+            "{} enabled",
+            ticked(&state.ui, "enabled_mods", enabled as f64).round() as usize
+        ))
+        .size(18),
+        text(format!("of {total} mod project(s)"))
+            .size(design::CAPTION)
+            .style(design::muted),
+    ]
+    .spacing(4);
+    let storage_total = state
+        .storage_usage
+        .as_ref()
+        .map(|usage| usage.buckets.iter().sum::<u64>() as f64);
+    let storage = column![
+        text(storage_total.map_or_else(
+            || "Not analyzed".to_owned(),
+            |bytes| crate::ui_kit::format_bytes(ticked(&state.ui, "storage_total", bytes)),
+        ))
+        .size(18),
+        design::button(text("Analyze").size(design::CAPTION))
+            .padding([3, 8])
+            .on_press_maybe(
+                (!state.busy && !state.storage_analyzing)
+                    .then_some(Message::OpenSettingsTab(crate::settings_page::Tab::Storage),)
+            ),
+    ]
+    .spacing(4);
+    let update = column![
+        text(format!("v{}", env!("CARGO_PKG_VERSION"))).size(18),
+        text(if state.available_update.is_some() {
+            "Update available"
+        } else {
+            "Manager version"
+        })
+        .size(design::CAPTION)
+        .style(design::muted),
+    ]
+    .spacing(4);
+    row![
+        bento_tile("GAME CLIENT", client, 2),
+        bento_tile("MODS", mods, 2),
+        bento_tile("STORAGE", storage, 2),
+        bento_tile("MANAGER", update, 1),
+    ]
+    .spacing(14)
+    .height(Length::Fixed(104.0))
+    .into()
+}
+
+/// Shown once after the manager updates: highlights from this version's
+/// release notes, dismissed into `last_seen_version`.
+pub(super) fn whats_new_intro(state: &State) -> Element<'_, Message> {
+    let installed = env!("CARGO_PKG_VERSION");
+    if !super::intro_due(&state.preferences.last_seen_version, installed) {
+        return iced::widget::space().height(0).into();
+    }
+    let release = state
+        .news
+        .cache
+        .release
+        .as_ref()
+        .filter(|release| release.version.trim_start_matches('v') == installed);
+    let mut highlights = column![].spacing(4);
+    match release {
+        Some(release) if !release.notes.trim().is_empty() => {
+            highlights = highlights.push(
+                container(super::release_notes_view(state))
+                    .max_height(260.0)
+                    .clip(true),
+            );
+        }
+        Some(_) => {
+            highlights = highlights.push(
+                text("This release has no description.")
+                    .size(design::LABEL)
+                    .style(design::muted),
+            );
+        }
+        None => {
+            highlights = highlights.push(
+                text("Release notes for this version will appear in What's New.")
+                    .size(design::LABEL)
+                    .style(design::muted),
+            );
+        }
+    }
+    container(
+        column![
+            row![
+                text(format!("What's new in v{installed}"))
+                    .size(17)
+                    .width(Fill),
+                design::button("Read all")
+                    .style(design::secondary)
+                    .on_press(Message::Navigate(Page::WhatsNew)),
+                design::button("Dismiss")
+                    .style(design::primary)
+                    .on_press(Message::DismissIntro),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+            highlights,
+        ]
+        .spacing(10),
+    )
+    .padding([14, 18])
+    .width(Fill)
+    .style(|theme| design::tinted(theme, design::Tone::Info))
     .into()
 }
 
@@ -722,7 +917,7 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
                             .height(24),
                         column![
                             text(label).size(16),
-                            text(details).size(12).style(design::muted),
+                            text(details).size(design::LABEL).style(design::muted),
                         ]
                         .spacing(4),
                     ]
@@ -787,7 +982,7 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
                     if paths_selected {
                         Element::from(
                             text("Import a PAK to get started.")
-                                .size(12)
+                                .size(design::LABEL)
                                 .style(design::muted),
                         )
                     } else {
@@ -818,7 +1013,7 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
     if state.developer_unlocked && state.developer_online_mods {
         quick = quick.push(
             text("Developer online testing is armed. Server acceptance is not guaranteed.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
         );
     }
@@ -844,13 +1039,13 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
             "Launch method: {} · Change in Settings",
             state.preferences.game_launch_mode
         ))
-        .size(12)
+        .size(design::LABEL)
         .style(design::muted),
     );
     if state.preferences.game_launch_mode.contains("Direct") {
         quick = quick.push(
             text("Direct Launch is experimental and does not provide the full client session.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
         );
     }
@@ -923,6 +1118,7 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
     // below the fold; the background stays in place while cards scroll.
     let content = scrollable(
         column![
+            whats_new_intro(state),
             hero,
             home_play_surface(quick, wallpaper),
             latest_announcement(state, wallpaper),
@@ -951,6 +1147,8 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
                 ))),
                 ..container::Style::default()
             });
+        // Embers drift between the artwork and the controls.
+        let content = with_embers(state, content.into());
         stack![background, shade, content]
             .width(Fill)
             .height(Fill)
@@ -960,7 +1158,7 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
     }
 }
 
-fn docs_spec(
+pub(super) fn docs_spec(
     section: DocsSection,
 ) -> (
     &'static str,
@@ -1373,76 +1571,8 @@ fn docs_spec(
     }
 }
 
-fn docs_section(section: DocsSection, expanded: bool) -> Element<'static, Message> {
-    let (title, summary, steps) = docs_spec(section);
-    let arrow = if expanded { "▾" } else { "▸" };
-    let header = design::button(
-        row![text(arrow).size(17), text(title).size(17)]
-            .spacing(10)
-            .align_y(iced::Center),
-    )
-    .on_press(Message::ToggleDocsSection(section))
-    .width(Fill)
-    .style(design::secondary);
-    let mut content = column![header].spacing(11);
-    if expanded {
-        content = content.push(text(summary).size(13).style(design::muted));
-        for (index, (step, details)) in steps.iter().enumerate() {
-            content = content.push(
-                column![
-                    text(format!("{}  {}", index + 1, step)).size(14),
-                    text(*details).size(12).style(design::muted),
-                ]
-                .spacing(4),
-            );
-        }
-        let destination = match section {
-            DocsSection::GettingStarted
-            | DocsSection::Paths
-            | DocsSection::Updates
-            | DocsSection::Install => Some(("Open Settings", Page::Settings)),
-            DocsSection::Import | DocsSection::Browse | DocsSection::Export => {
-                Some(("Open Asset Library", Page::AssetLibrary))
-            }
-            DocsSection::Projects | DocsSection::Edit | DocsSection::Gfx => {
-                Some(("Open Modding", Page::Files))
-            }
-            DocsSection::LaunchMods | DocsSection::LaunchClean | DocsSection::Recovery => {
-                Some(("Go to Home", Page::Home))
-            }
-            DocsSection::Troubleshoot | DocsSection::Faq => None,
-        };
-        if let Some((label, page)) = destination {
-            content = content.push(design::button(label).on_press(Message::Navigate(page)));
-        }
-    }
-    surface(content).into()
-}
-
 pub(super) fn docs(state: &State) -> Element<'_, Message> {
-    let mut sections = column![
-        text("Docs").size(24),
-        row![
-            design::button("Expand all").on_press(Message::DocsExpandAll(true)),
-            design::button("Collapse all").on_press(Message::DocsExpandAll(false)),
-            design::button("Go to Settings").on_press(Message::Navigate(Page::Settings)),
-        ]
-        .spacing(8),
-        text("Getting Started").size(19),
-        docs_section(
-            DocsSection::GettingStarted,
-            state.docs_expanded.contains(&DocsSection::GettingStarted)
-        ),
-        text("How To").size(19),
-    ]
-    .spacing(11);
-    for section in DocsSection::ALL.into_iter().skip(1) {
-        sections = sections.push(docs_section(
-            section,
-            state.docs_expanded.contains(&section),
-        ));
-    }
-    scrollable(sections.padding(12)).height(Fill).into()
+    crate::docs_page::view(state)
 }
 
 pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
@@ -1471,60 +1601,56 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
                     "{}  ·  Published {}",
                     release.version, release.published_at
                 ))
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
-                text(if release.notes.is_empty() {
-                    "No release description was published.".to_owned()
+                if release.notes.is_empty() {
+                    Element::from(text("No release description was published.").size(design::BODY))
                 } else {
-                    release.notes.clone()
-                })
-                .size(13),
+                    super::release_notes_view(state)
+                },
                 design::button("View full release notes on GitHub")
                     .on_press(Message::OpenNewsLink(release.url.clone())),
             ]
             .spacing(9),
         )
         .into()
+    } else if news.loading {
+        news_skeleton(state, 4)
     } else {
-        surface(
-            text(if news.loading {
-                "Loading release notes from GitHub Releases..."
-            } else {
-                "No published release notes available yet."
-            })
-            .size(13),
-        )
-        .into()
+        surface(text("No published release notes available yet.").size(design::BODY)).into()
     };
     cards = cards.push(release_card);
     if !news.release_status.is_empty() {
-        cards = cards.push(text(&news.release_status).size(11).style(design::muted));
+        cards = cards.push(
+            text(&news.release_status)
+                .size(design::CAPTION)
+                .style(design::muted),
+        );
     }
     cards = cards.push(text("DISCORD ANNOUNCEMENTS").size(14).style(design::accent));
 
-    if news.cache.announcements.is_empty() {
-        cards = cards.push(surface(text(if news.loading {
-            "Loading Discord channel messages..."
-        } else {
-            "No Discord channel messages available. Post an update in the configured channel and verify the GitHub Pages feed."
-        }).size(13)));
+    if news.cache.announcements.is_empty() && news.loading {
+        for _ in 0..3 {
+            cards = cards.push(news_skeleton(state, 3));
+        }
+    } else if news.cache.announcements.is_empty() {
+        cards = cards.push(crate::ui_kit::empty_state(
+            Some(Page::WhatsNew.icon()),
+            "No announcements yet",
+            "Discord channel messages appear here once the GitHub Pages feed publishes them.",
+            Some(("Refresh", Message::RefreshNews)),
+        ));
     } else {
+        // Announcements read as a timeline: newest first, one dot per post.
+        let mut items = Vec::new();
         let displayable_images = crate::whats_new::image_urls(&news.cache.announcements);
         for post in news.cache.announcements.iter().take(20) {
             let mut details = column![].spacing(8);
-            if !post.title.is_empty() {
-                details = details.push(text(&post.title).size(17));
-            }
-            details = details.push(
-                text(format!("{}  ·  {}", post.author, post.timestamp))
-                    .size(12)
-                    .style(design::muted),
-            );
             if !post.content.is_empty() {
-                details = details.push(text(&post.content).size(13));
+                details = details.push(text(&post.content).size(design::BODY));
             }
             if !post.description.is_empty() {
-                details = details.push(text(&post.description).size(13));
+                details = details.push(text(&post.description).size(design::BODY));
             }
             // Never display a link to a private Discord server or open
             // attachments using Windows Explorer.
@@ -1542,20 +1668,59 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
                 } else if news.image_failures.contains(url) {
                     details = details.push(
                         text("Image preview unavailable")
-                            .size(11)
+                            .size(design::CAPTION)
                             .style(design::muted),
                     );
                 } else {
-                    details = details.push(text("Loading image…").size(11).style(design::muted));
+                    details = details.push(
+                        text("Loading image…")
+                            .size(design::CAPTION)
+                            .style(design::muted),
+                    );
                 }
             }
-            cards = cards.push(surface(details));
+            items.push(crate::ui_kit::TimelineItem {
+                title: if post.title.is_empty() {
+                    post.author.clone()
+                } else {
+                    post.title.clone()
+                },
+                meta: format!("{}  ·  {}", post.author, post.timestamp),
+                body: Some(surface(details).into()),
+                tone: None,
+            });
         }
+        cards = cards.push(crate::ui_kit::timeline(items));
     }
     if !news.discord_status.is_empty() {
-        cards = cards.push(text(&news.discord_status).size(11).style(design::muted));
+        cards = cards.push(
+            text(&news.discord_status)
+                .size(design::CAPTION)
+                .style(design::muted),
+        );
     }
     scrollable(cards.padding(12)).height(Fill).into()
+}
+
+/// Placeholder card with pulsing lines while news loads.
+fn news_skeleton(state: &State, lines: usize) -> Element<'_, Message> {
+    let alpha = crate::ui_kit::pulse(
+        state.ui.clock(std::time::Instant::now()),
+        state.preferences.reduce_motion,
+    );
+    let mut column = column![
+        crate::ui_kit::skeleton(Length::FillPortion(2), 16.0, alpha),
+        crate::ui_kit::skeleton(Length::Fixed(180.0), 10.0, alpha),
+    ]
+    .spacing(9);
+    for index in 0..lines {
+        column = column.push(if index + 1 == lines {
+            crate::ui_kit::skeleton(Length::FillPortion(3), 11.0, alpha)
+        } else {
+            crate::ui_kit::skeleton(Fill, 11.0, alpha)
+        });
+    }
+    surface(column).into()
 }
 
 pub(super) fn credits() -> Element<'static, Message> {
@@ -1563,17 +1728,17 @@ pub(super) fn credits() -> Element<'static, Message> {
         text("Credits").size(24),
         surface(column![
             text("@CorvoDL on Discord").size(16),
-            text("Project by @CorvoDL").size(13).style(design::muted),
-            text("PROJECT REPOSITORY").size(12),
-            text("github.com/corvodl/Evolve-Mod-Manager").size(13),
-            text("OFFICIAL GAME INSTALLER").size(12),
-            text("modded-evolve.com").size(13),
+            text("Project by @CorvoDL").size(design::BODY).style(design::muted),
+            text("PROJECT REPOSITORY").size(design::LABEL),
+            text("github.com/corvodl/Evolve-Mod-Manager").size(design::BODY),
+            text("OFFICIAL GAME INSTALLER").size(design::LABEL),
+            text("modded-evolve.com").size(design::BODY),
         ].spacing(10)),
         surface(column![
             text("Interface icons").size(16),
-            text("Private manager navigation icon design. Flaticon Uicons attribution retained in the original project.").size(12).style(design::muted),
+            text("Private manager navigation icon design. Flaticon Uicons attribution retained in the original project.").size(design::LABEL).style(design::muted),
         ].spacing(8)),
-        text("Install Evolve Stage 2 via modded-evolve.com before using the manager.").size(12).style(design::muted),
+        text("Install Evolve Stage 2 via modded-evolve.com before using the manager.").size(design::LABEL).style(design::muted),
     ].spacing(12).padding(12)).height(Fill).into()
 }
 
@@ -1585,7 +1750,7 @@ fn research_rows(state: &State) -> Element<'_, Message> {
         } else {
             state.runtime_research_status.as_str()
         })
-        .size(12)
+        .size(design::LABEL)
         .style(design::muted),
     ]
     .spacing(8);
@@ -1597,17 +1762,17 @@ fn research_rows(state: &State) -> Element<'_, Message> {
             "PID {} · Base 0x{:X} · Local actor ID 0x{:X}",
             report.pid, report.base, report.local_id
         ))
-        .size(12),
+        .size(design::LABEL),
     );
     body = body.push(
         text(format!(
             "Running executable SHA256: {} (fingerprint only; no hash allowlist supplied)",
             report.image_sha256
         ))
-        .size(12)
+        .size(design::LABEL)
         .style(design::muted),
     );
-    body = body.push(text(&report.slots).size(12));
+    body = body.push(text(&report.slots).size(design::LABEL));
     if let Some(perks) = &state.match_perks {
         let logged = perks
             .players
@@ -1620,19 +1785,25 @@ fn research_rows(state: &State) -> Element<'_, Message> {
                 "Verified matching roster log: {} monster slot(s) [{}]. This is logged roster evidence, not a live allocation API.",
                 logged.len(), logged.join(", ")
             ))
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
         );
     }
-    body = body.push(text("Monster resources · local actor · READ-ONLY").size(15));
-    body = body.push(text(&report.evolution_energy).size(12));
-    body = body.push(text(&report.traversal_energy).size(12));
-    body = body.push(text("Decoded with a fresh process key and verified actor/entity/movement links. Snapshot only; offline match authority and write safety are not established.").size(12).style(design::muted));
-    body = body.push(text(&report.character_gravity).size(12));
-    body = body.push(text(&report.world_gravity).size(12).style(design::muted));
-    body = body.push(text(&report.jetpack).size(12));
-    body =
-        body.push(text("Inventory · actor identity, owner and item-list bounds checked").size(15));
+    body = body.push(text("Monster resources · local actor · READ-ONLY").size(design::HEADING));
+    body = body.push(text(&report.evolution_energy).size(design::LABEL));
+    body = body.push(text(&report.traversal_energy).size(design::LABEL));
+    body = body.push(text("Decoded with a fresh process key and verified actor/entity/movement links. Snapshot only; offline match authority and write safety are not established.").size(design::LABEL).style(design::muted));
+    body = body.push(text(&report.character_gravity).size(design::LABEL));
+    body = body.push(
+        text(&report.world_gravity)
+            .size(design::LABEL)
+            .style(design::muted),
+    );
+    body = body.push(text(&report.jetpack).size(design::LABEL));
+    body = body.push(
+        text("Inventory · actor identity, owner and item-list bounds checked")
+            .size(design::HEADING),
+    );
     for inv in &report.inventory {
         let items = inv
             .item_ids
@@ -1654,18 +1825,18 @@ fn research_rows(state: &State) -> Element<'_, Message> {
                 text(format!(
                     "{} · Actor ID 0x{:X} · Inventory 0x{:X}",
                     inv.actor_name, inv.actor_id, inv.inventory_address
-                )).size(13),
+                )).size(design::BODY),
                 text(format!(
                     "Item IDs ({}, live registry IDs {}): [{}]",
                     inv.item_ids.len(), inv.registered_ids, items
-                )).size(12),
+                )).size(design::LABEL),
                 text(format!(
                     "Selected item ID 0x{:X}; previous 0x{:X}; selected in list: {}; actor mirrors match: {}",
                     inv.current, inv.previous,
                     inv.selected_in_list, inv.actor_mirrors_match
-                )).size(12),
+                )).size(design::LABEL),
                 text(format!("Loadout entries {occupied}/16 · item ID/flag: {flags}"))
-                    .size(12)
+                    .size(design::LABEL)
                     .style(design::muted),
             ]
             .spacing(5)
@@ -1675,22 +1846,27 @@ fn research_rows(state: &State) -> Element<'_, Message> {
     for err in report.inventory_errors.iter().take(16) {
         body = body.push(
             text(format!("Inventory not verified: {err}"))
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
         );
     }
-    body = body.push(text("Projectile physics research · no generic speed write").size(15));
+    body = body
+        .push(text("Projectile physics research · no generic speed write").size(design::HEADING));
     for note in &report.projectiles {
-        body = body.push(text(note).size(12).style(design::muted));
+        body = body.push(text(note).size(design::LABEL).style(design::muted));
     }
-    body.push(text(&report.feature_status).size(12).style(design::muted))
-        .into()
+    body.push(
+        text(&report.feature_status)
+            .size(design::LABEL)
+            .style(design::muted),
+    )
+    .into()
 }
 
 fn actor_rows(state: &State) -> Element<'_, Message> {
     let Some(listing) = &state.actor_listing else {
         return text("No actor snapshot. Detect Evolve and refresh actors.")
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted)
             .into();
     };
@@ -1700,7 +1876,7 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
             listing.actors.len(),
             listing.pid
         ))
-        .size(13)
+        .size(design::BODY)
     ]
     .spacing(10);
     for actor in &listing.actors {
@@ -1748,7 +1924,7 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
                         field.offset(),
                         field.kind()
                     ))
-                    .size(12)
+                    .size(design::LABEL)
                     .width(Fill),
                     value_cell,
                     iced::widget::checkbox(frozen.is_some())
@@ -1777,7 +1953,7 @@ fn match_perk_rows(state: &State) -> Element<'_, Message> {
         } else {
             state.match_perks_status.as_str()
         })
-        .size(12)
+        .size(design::LABEL)
         .style(design::muted),
     ]
     .spacing(7);
@@ -1801,9 +1977,9 @@ fn match_perk_rows(state: &State) -> Element<'_, Message> {
                         "{} · {} ({}){actor}",
                         player.class, player.display, player.character
                     ))
-                    .size(13),
+                    .size(design::BODY),
                     text(format!("{}: {perks}", player.slot))
-                        .size(12)
+                        .size(design::LABEL)
                         .style(design::muted),
                 ]
                 .spacing(4)
@@ -1824,39 +2000,57 @@ fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
     let mut rows = column![
         text("Keybind assignments").size(17),
         text(format!("{assigned}/10 shortcuts assigned. Shortcuts require the overlay and enabled actor writes for movement."))
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
-        design::button("Load suggested (F6–F12, Ctrl+F6/F7/F8)")
-            .on_press(Message::DeveloperKeybindDefaults),
+        crate::ui_kit::hold_button(
+            &state.ui,
+            "developer-keybind-defaults",
+            "Hold: reset to defaults (F6–F12, Ctrl+F6/F7/F8)",
+            Message::DeveloperKeybindDefaults,
+            true,
+            state.preferences.reduce_motion,
+        ),
         text(if assigned == 0 {
             "No shortcuts assigned yet. Click the button above or select keys below."
         } else {
             "Custom bindings are preserved unless you select Load suggested shortcuts."
         })
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
     ]
     .spacing(7);
+    let conflicts = keybind_conflicts(&state.preferences.developer_hotkeys);
     for action in developer_hotkeys::Action::ALL {
         let current =
             developer_hotkeys::Keybind(state.preferences.developer_hotkeys[action.index()]);
-        rows = rows.push(
-            row![
-                text(action.label()).width(Length::Fixed(185.0)),
-                iced::widget::pick_list(
-                    developer_hotkeys::Keybind::OPTIONS,
-                    Some(current),
-                    move |key| Message::DeveloperKeybindChanged(action, key),
-                )
-                .width(Length::Fixed(145.0)),
-            ]
-            .align_y(iced::Alignment::Center)
-            .spacing(8),
-        );
+        let caps: Element<'_, Message> = if current.0 == 0 {
+            design::caption("Disabled").into()
+        } else {
+            design::key_hint(&current.to_string())
+        };
+        let mut line = row![
+            text(action.label()).width(Length::Fixed(185.0)),
+            container(caps).width(Length::Fixed(120.0)),
+            iced::widget::pick_list(
+                developer_hotkeys::Keybind::OPTIONS,
+                Some(current),
+                move |key| Message::DeveloperKeybindChanged(action, key),
+            )
+            .width(Length::Fixed(145.0)),
+        ]
+        .align_y(iced::Alignment::Center)
+        .spacing(8);
+        if conflicts.contains(&action.index()) {
+            line = line.push(crate::ui_kit::badge(
+                crate::ui_kit::BadgeKind::Conflict,
+                "Conflict",
+            ));
+        }
+        rows = rows.push(line);
     }
     rows = rows.push(
         text(state.developer_hotkey_status.as_str())
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
     );
     rows.into()
@@ -1881,9 +2075,9 @@ fn ai_pause_controls(state: &State) -> Element<'_, Message> {
         column![
             text("Global AI pause").size(19),
             text("Experimental · For isolated testing · ai_NoUpdate Int32")
-                .size(12).style(design::muted),
+                .size(design::LABEL).style(design::muted),
             text("Enter a separately verified CVar VALUE address. A readable 0/1 alone does not prove the address is ai_NoUpdate. No automatic detection yet.")
-                .size(12).style(design::muted),
+                .size(design::LABEL).style(design::muted),
             row![
                 design::text_input("0x... or Evolve.exe+0x...", &state.ai_pause_address)
                     .on_input(Message::AiAddressChanged),
@@ -1911,7 +2105,7 @@ fn ai_pause_controls(state: &State) -> Element<'_, Message> {
                 "Read an externally verified address to enable pause; original 0 is restored on Resume."
             } else {
                 state.ai_pause_status.as_str()
-            }).size(12).style(design::muted),
+            }).size(design::LABEL).style(design::muted),
         ].spacing(8).padding(10),
     ).into()
 }
@@ -1928,7 +2122,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
     column![
             text("Teleport").size(19),
             text("Teleport & freeze · read position without arming writes; enable actor memory writes to move")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             text(if state.teleport_detect_pending {
                 "Detecting Evolve.exe before the requested action..."
@@ -1937,17 +2131,33 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             } else {
                 "Evolve.exe detected · action status and errors appear below."
             })
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
-            row![
-                design::text_input("X", &state.teleport_x)
-                    .on_input(|v| Message::TeleportXYZChanged(0, v)),
-                design::text_input("Y", &state.teleport_y)
-                    .on_input(|v| Message::TeleportXYZChanged(1, v)),
-                design::text_input("Z", &state.teleport_z)
-                    .on_input(|v| Message::TeleportXYZChanged(2, v)),
-            ]
-            .spacing(8),
+            {
+                const TELEPORT: crate::forms::NumberSpec =
+                    crate::forms::NumberSpec::new(-100_000.0, 100_000.0, 1.0, 2);
+                let axis = |label: &'static str, index: usize, value: &str| {
+                    column![
+                        text(label).size(design::CAPTION).style(design::muted),
+                        crate::forms::number_field(
+                            &state.forms,
+                            state.keyboard_modifiers,
+                            format!("teleport.{index}"),
+                            value,
+                            TELEPORT,
+                            move |v| Message::TeleportXYZChanged(index, v),
+                        ),
+                    ]
+                    .spacing(3)
+                    .width(Fill)
+                };
+                row![
+                    axis("X", 0, &state.teleport_x),
+                    axis("Y", 1, &state.teleport_y),
+                    axis("Z", 2, &state.teleport_z),
+                ]
+                .spacing(8)
+            },
             row![
                 design::button("Read position")
                     .on_press_maybe(can_read.then_some(Message::TeleportCapture(false))),
@@ -1968,7 +2178,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             } else {
                 state.teleport_status.as_str()
             })
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
             text("Coordinate freeze · hover and move horizontally in the air").size(17),
             row![
@@ -1996,7 +2206,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             ]
             .spacing(8),
             text("Fly Mode / Freeze Z · choose WASD reference before starting")
-                .size(15),
+                .size(design::HEADING),
             row![
                 design::button(if state.teleport_movement_frame
                     == runtime_teleport::MovementFrame::Actor
@@ -2025,14 +2235,14 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             ]
             .spacing(8),
             text("Freeze Z: choose Actor-facing or Camera-facing WASD before starting. Fly Mode always moves relative to camera yaw and attempts to turn the actor horizontally with the camera; looking up/down does not tilt the actor. Stop the hold to change Freeze Z's reference.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             row![
                 text("Speed").width(Length::Fixed(65.0)),
                 design::text_input("8", &state.teleport_fly_speed)
                     .on_input(Message::TeleportFlySpeedChanged)
                     .width(Length::Fixed(95.0)),
-                text("hover / fly units per second (1–40)").size(12).style(design::muted),
+                text("hover / fly units per second (1–40)").size(design::LABEL).style(design::muted),
                 design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Fly) {
                     "Flying..."
                 } else {
@@ -2049,13 +2259,13 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             } else {
                 state.teleport_hold_status.as_str()
             })
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
             text("Position-based hover/flight writes XYZ, not gravity or velocity. If the game overrides movement, the hold stops and reports the problem.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             text("Relative move · 20 units per click (world axes)")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             row![
                 text("X").width(Length::Fixed(24.0)),
@@ -2086,7 +2296,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             .spacing(8),
             text("Approximate crosshair teleport").size(17),
             text("Uses live camera direction from the player's position; no camera-origin raycast or collision test.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             row![
                 text("Distance").width(Length::Fixed(65.0)),
@@ -2110,16 +2320,25 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
 
 fn overlay_controls(state: &State) -> Element<'_, Message> {
     column![
-            iced::widget::checkbox(
-                state.teleport_overlay.is_some() || state.teleport_overlay_pending
-            )
-                .label("Show external overlay and enable shortcuts (windowed fullscreen)")
-                .on_toggle(Message::TeleportOverlayChanged),
-            iced::widget::checkbox(state.teleport_overlay_experimental)
-                .label("Experimental hooked input (Windows keyboard hook)")
-                .on_toggle(Message::TeleportOverlayExperimentalChanged),
+            {
+                let on = state.teleport_overlay.is_some() || state.teleport_overlay_pending;
+                crate::ui_kit::switch(
+                    &state.ui,
+                    "dev-overlay",
+                    "Show external overlay and enable shortcuts (windowed fullscreen)",
+                    on,
+                    Message::TeleportOverlayChanged(!on),
+                )
+            },
+            crate::ui_kit::switch(
+                &state.ui,
+                "dev-hooked-input",
+                "Experimental hooked input (Windows keyboard hook)",
+                state.teleport_overlay_experimental,
+                Message::TeleportOverlayExperimentalChanged(!state.teleport_overlay_experimental),
+            ),
             text("Experimental mode captures F6–F12 hotkeys using a Windows low-level keyboard hook while Evolve is focused. The visual overlay remains external. No game injection; exclusive fullscreen and protected input are not guaranteed.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             text(if state.teleport_overlay_experimental {
                 if state.teleport_hook_ready {
@@ -2131,7 +2350,7 @@ fn overlay_controls(state: &State) -> Element<'_, Message> {
                 }
             } else {
                 "Standard mode · Windows RegisterHotKey shortcuts."
-            }).size(12).style(design::muted),
+            }).size(design::LABEL).style(design::muted),
             text(if state.teleport_overlay_pending {
                 "Detecting running game..."
             } else if state.teleport_status.is_empty() {
@@ -2139,10 +2358,10 @@ fn overlay_controls(state: &State) -> Element<'_, Message> {
             } else {
                 state.teleport_status.as_str()
             })
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
             text("Overlay appears only over Evolve while the game is in focus. The center marker is not a raycast hit location.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
     ]
     .spacing(9)
@@ -2152,11 +2371,15 @@ fn overlay_controls(state: &State) -> Element<'_, Message> {
 fn network_controls(state: &State) -> Element<'_, Message> {
     column![
         text("Developer-only · Firewall policy")
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
-        iced::widget::checkbox(state.developer_online_mods)
-            .label("Allow modded online testing")
-            .on_toggle(Message::DeveloperOnlineMods),
+        crate::ui_kit::switch(
+            &state.ui,
+            "dev-online-mods",
+            "Allow modded online testing",
+            state.developer_online_mods,
+            Message::DeveloperOnlineMods(!state.developer_online_mods),
+        ),
         text(if state.developer_network_busy {
             "Applying network policy..."
         } else if state.developer_online_mods {
@@ -2164,14 +2387,14 @@ fn network_controls(state: &State) -> Element<'_, Message> {
         } else {
             "Offline isolation selected"
         })
-        .size(12)
+        .size(design::LABEL)
         .style(design::muted),
         text(state.developer_network_status.as_str())
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
         text("Process privileges").size(17),
         text("Manager: High · Client/Game: Medium")
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
         design::button(if state.developer_privilege_busy {
             "Inspecting process tokens..."
@@ -2182,7 +2405,7 @@ fn network_controls(state: &State) -> Element<'_, Message> {
             (!state.developer_privilege_busy).then_some(Message::DeveloperInspectProcessPrivileges)
         ),
         text(state.developer_privilege_status.as_str())
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
     ]
     .spacing(8)
@@ -2192,7 +2415,7 @@ fn network_controls(state: &State) -> Element<'_, Message> {
 fn actor_controls(state: &State) -> Element<'_, Message> {
     column![
         text("Offline memory · Validate fields before editing")
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
         design::button(if state.runtime_checking {
             "Detecting..."
@@ -2207,7 +2430,7 @@ fn actor_controls(state: &State) -> Element<'_, Message> {
                 .map(|s| s.status.as_str())
                 .unwrap_or("Not detected")
         )
-        .size(12)
+        .size(design::LABEL)
         .style(design::muted),
         text(
             state
@@ -2216,14 +2439,22 @@ fn actor_controls(state: &State) -> Element<'_, Message> {
                 .map(|s| s.executable.as_str())
                 .unwrap_or("Executable not checked")
         )
-        .size(12)
+        .size(design::LABEL)
         .style(design::muted),
-        iced::widget::checkbox(state.armor_offline_confirmed)
-            .label("Enable guided armor scanning (optional)")
-            .on_toggle(Message::ArmorOfflineChanged),
-        iced::widget::checkbox(state.live_edit_enabled)
-            .label("Enable actor memory writes / Freeze (experimental)")
-            .on_toggle(Message::LiveEditEnabled),
+        crate::ui_kit::switch(
+            &state.ui,
+            "dev-armor-scan",
+            "Enable guided armor scanning (optional)",
+            state.armor_offline_confirmed,
+            Message::ArmorOfflineChanged(!state.armor_offline_confirmed),
+        ),
+        crate::ui_kit::switch(
+            &state.ui,
+            "dev-live-edit",
+            "Enable actor memory writes / Freeze (experimental)",
+            state.live_edit_enabled,
+            Message::LiveEditEnabled(!state.live_edit_enabled),
+        ),
         design::button(if state.actor_busy {
             "Reading actors and perks..."
         } else {
@@ -2239,13 +2470,13 @@ fn actor_controls(state: &State) -> Element<'_, Message> {
             .then_some(Message::ActorRefresh)
         ),
         text(state.actor_status.as_str())
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
         match_perk_rows(state),
         research_rows(state),
         actor_rows(state),
         text("Click a value to edit it · Enter to write · Freeze holds the current value")
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
     ]
     .spacing(9)
@@ -2254,24 +2485,148 @@ fn actor_controls(state: &State) -> Element<'_, Message> {
 
 /// A collapsed section renders only its header; expensive runtime actor
 /// listings are not rebuilt until their section is opened.
-fn developer_section(state: &State, section: DeveloperSection) -> Element<'_, Message> {
-    let expanded = state.developer_sections_expanded.contains(&section);
-    let mut content = column![
-        design::button(
-            row![
-                text(if expanded { "▾" } else { "▸" }).size(18),
-                text(section.title()).size(17),
+/// A status dot for a Developer tab: green while something there is active,
+/// red when its last memory read failed.
+fn developer_tab_status(state: &State, section: DeveloperSection) -> Option<design::Tone> {
+    let failed = |text: &str| {
+        let lower = text.to_ascii_lowercase();
+        lower.contains("failed") || lower.contains("error")
+    };
+    match section {
+        DeveloperSection::Network => state.developer_online_mods.then_some(design::Tone::Warning),
+        DeveloperSection::Actors => {
+            if failed(&state.actor_status) || failed(&state.runtime_result) {
+                Some(design::Tone::Danger)
+            } else {
+                None
+            }
+        }
+        DeveloperSection::Ai => {
+            if failed(&state.ai_pause_status) {
+                Some(design::Tone::Danger)
+            } else {
+                state.ai_pause_owned.then_some(design::Tone::Success)
+            }
+        }
+        DeveloperSection::Teleport => {
+            if failed(&state.teleport_hold_status) {
+                Some(design::Tone::Danger)
+            } else {
+                state
+                    .teleport_hold_mode
+                    .is_some()
+                    .then_some(design::Tone::Success)
+            }
+        }
+        DeveloperSection::Overlay => state
+            .teleport_overlay
+            .is_some()
+            .then_some(design::Tone::Success),
+        DeveloperSection::Keybinds => {
+            let conflicts = keybind_conflicts(&state.preferences.developer_hotkeys);
+            (!conflicts.is_empty()).then_some(design::Tone::Warning)
+        }
+    }
+}
+
+fn tone_dot<'a>(tone: design::Tone) -> Element<'a, Message> {
+    container(iced::widget::space().width(8).height(8))
+        .style(move |theme: &iced::Theme| container::Style {
+            background: Some(Background::Color(design::tone_color(theme, tone))),
+            border: Border {
+                radius: 4.0.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// Actions whose key is also bound to another action (disabled keys never
+/// conflict).
+pub(super) fn keybind_conflicts(keys: &[u8]) -> std::collections::BTreeSet<usize> {
+    let mut conflicts = std::collections::BTreeSet::new();
+    for (a, key) in keys.iter().enumerate() {
+        if *key == 0 {
+            continue;
+        }
+        for (b, other) in keys.iter().enumerate().skip(a + 1) {
+            if other == key {
+                conflicts.insert(a);
+                conflicts.insert(b);
+            }
+        }
+    }
+    conflicts
+}
+
+/// "Attached to Evolve.exe · PID 1234 · Online blocked", with a copy
+/// button for the PID and the lock button.
+fn developer_header(state: &State) -> Element<'_, Message> {
+    use crate::ui_kit::{BadgeKind, badge};
+    let pid = state
+        .runtime_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.pid);
+    let mut strip = row![design::title("Developer")]
+        .spacing(10)
+        .align_y(iced::Center);
+    strip = strip.push(match pid {
+        Some(pid) => row![
+            badge(
+                BadgeKind::Enabled,
+                format!("Attached to Evolve.exe · PID {pid}")
+            ),
+            crate::ui_kit::copy_button(&state.ui, "developer-pid", pid.to_string()),
+        ]
+        .spacing(4)
+        .align_y(iced::Center),
+        None => row![badge(BadgeKind::Neutral, "Evolve.exe not detected")],
+    });
+    strip = strip.push(if state.developer_online_mods {
+        badge(BadgeKind::Conflict, "Modded online testing allowed")
+    } else {
+        badge(BadgeKind::Signed, "Online blocked")
+    });
+    strip
+        .push(iced::widget::space().width(Fill))
+        .push(crate::ui_kit::icon_button(
+            crate::icons::lock(),
+            "Lock developer area",
+            Some(Message::LockDeveloper),
+            None,
+        ))
+        .into()
+}
+
+pub(super) fn developer(state: &State) -> Element<'_, Message> {
+    if state.developer_unlocked {
+        let active = DeveloperSection::from_title(&state.preferences.developer_tab);
+        let mut tabs = column![].spacing(4).width(Length::Fixed(200.0));
+        for section in DeveloperSection::ALL {
+            let selected = section == active;
+            let mut label = row![
+                crate::icons::glyph(section.icon(), 17.0),
+                text(section.title()).size(design::BODY).width(Fill),
             ]
-            .spacing(10)
-            .align_y(iced::Center)
-        )
-        .style(design::secondary)
-        .width(Fill)
-        .on_press(Message::ToggleDeveloperSection(section)),
-    ]
-    .spacing(10);
-    if expanded {
-        let controls = match section {
+            .spacing(9)
+            .align_y(iced::Center);
+            if let Some(tone) = developer_tab_status(state, section) {
+                label = label.push(tone_dot(tone));
+            }
+            tabs = tabs.push(design::tooltip(
+                design::button(label)
+                    .width(Fill)
+                    .padding([8, 10])
+                    .style(move |theme, status| design::rail(theme, status, selected))
+                    .on_press(Message::DeveloperTab(section)),
+                section.title(),
+                crate::chrome::shortcut_for(section.title()),
+                iced::widget::tooltip::Position::Right,
+            ));
+        }
+        // Only the active tab is built, so hidden actor listings cost nothing.
+        let controls = match active {
             DeveloperSection::Network => network_controls(state),
             DeveloperSection::Actors => actor_controls(state),
             DeveloperSection::Ai => ai_pause_controls(state),
@@ -2279,55 +2634,111 @@ fn developer_section(state: &State, section: DeveloperSection) -> Element<'_, Me
             DeveloperSection::Overlay => overlay_controls(state),
             DeveloperSection::Keybinds => developer_keybind_controls(state),
         };
-        content = content.push(controls);
-    }
-    surface(content).into()
-}
-
-pub(super) fn developer(state: &State) -> Element<'_, Message> {
-    if state.developer_unlocked {
-        let mut content = column![
-            text("Developer").size(24),
-            row![
-                design::button("Expand all").on_press(Message::DeveloperExpandAll(true)),
-                design::button("Collapse all").on_press(Message::DeveloperExpandAll(false)),
-            ]
-            .spacing(8),
-        ]
-        .spacing(10);
-        for section in DeveloperSection::ALL {
-            content = content.push(developer_section(state, section));
-        }
-        content =
-            content.push(design::button("Lock developer area").on_press(Message::LockDeveloper));
-        scrollable(content.padding(12)).height(Fill).into()
-    } else {
         column![
-            text("Developer").size(24),
-            surface(
-                column![
-                    text("Password protected").size(17),
-                    design::text_input("Developer password", &state.developer_password)
-                        .secure(true)
-                        .on_input(Message::DeveloperPasswordChanged)
-                        .on_submit(Message::UnlockDeveloper),
-                    design::button("Unlock").on_press(Message::UnlockDeveloper),
-                    text(state.developer_status.as_str())
-                        .size(12)
-                        .style(design::muted),
-                ]
-                .spacing(12)
-            ),
+            developer_header(state),
+            row![
+                tabs,
+                scrollable(
+                    surface(column![design::heading(active.title()), controls].spacing(10))
+                        .padding(16)
+                )
+                .height(Fill)
+                .width(Fill),
+            ]
+            .spacing(14)
+            .height(Fill),
         ]
-        .spacing(13)
+        .spacing(12)
         .padding(12)
         .into()
+    } else {
+        let refused = state.developer_status.starts_with("Invalid")
+            || state.developer_status.contains("locked");
+        let show = state.developer_show_password;
+        let field = row![
+            crate::icons::glyph(crate::icons::lock(), 16.0),
+            iced::widget::text_input("Developer password", &state.developer_password)
+                .secure(!show)
+                .on_input(Message::DeveloperPasswordChanged)
+                .on_submit(Message::UnlockDeveloper)
+                .padding([7, 4])
+                .width(Fill)
+                .style(|theme: &iced::Theme, status| {
+                    let mut style = iced::widget::text_input::default(theme, status);
+                    style.background = Background::Color(iced::Color::TRANSPARENT);
+                    style.border = Border::default();
+                    style
+                }),
+            design::tooltip(
+                iced::widget::button(crate::icons::glyph(
+                    if show {
+                        crate::icons::eye_off()
+                    } else {
+                        crate::icons::eye()
+                    },
+                    16.0,
+                ))
+                .padding(4)
+                .style(design::text_button)
+                .on_press(Message::DeveloperShowPassword(!show)),
+                if show {
+                    "Hide password"
+                } else {
+                    "Show password"
+                },
+                None,
+                iced::widget::tooltip::Position::Top,
+            ),
+        ]
+        .spacing(8)
+        .align_y(iced::Center);
+        let mut body = column![
+            design::heading("Password protected"),
+            container(field)
+                .padding([0, 10])
+                .style(move |theme: &iced::Theme| container::Style {
+                    background: Some(Background::Color(design::field(theme))),
+                    border: Border {
+                        color: if refused {
+                            theme.palette().danger
+                        } else {
+                            design::border(theme)
+                        },
+                        width: 1.0,
+                        radius: design::radius(theme, design::Radius::Medium).into(),
+                    },
+                    ..container::Style::default()
+                }),
+            design::button("Unlock")
+                .style(design::primary)
+                .on_press_maybe((!state.developer_checking).then_some(Message::UnlockDeveloper)),
+        ]
+        .spacing(12);
+        if refused {
+            body = body.push(crate::ui_kit::callout(
+                design::Tone::Danger,
+                state.developer_status.as_str(),
+            ));
+        } else if !state.developer_status.is_empty() {
+            body = body.push(design::caption(state.developer_status.as_str()));
+        }
+        column![design::title("Developer"), surface(body).max_width(520)]
+            .spacing(13)
+            .padding(12)
+            .into()
     }
 }
 
 #[cfg(test)]
 mod home_layout_tests {
-    use super::{short_client_version, status_value_preview};
+    use super::{keybind_conflicts, short_client_version, status_value_preview};
+
+    #[test]
+    fn shared_keybinds_are_conflicts_and_disabled_keys_are_not() {
+        let conflicts = keybind_conflicts(&[3, 0, 3, 0, 5]);
+        assert_eq!(conflicts.into_iter().collect::<Vec<_>>(), vec![0, 2]);
+        assert!(keybind_conflicts(&[0, 0, 1, 2]).is_empty());
+    }
 
     #[test]
     fn compact_status_keeps_readable_path_tail_without_losing_tooltip_value() {

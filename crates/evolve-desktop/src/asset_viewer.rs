@@ -26,28 +26,55 @@ fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<
         border: Border {
             color: design::border(theme),
             width: 1.0,
-            radius: 12.0.into(),
+            radius: design::radius(theme, design::Radius::Large).into(),
         },
         ..container::Style::default()
     })
 }
 
-fn menu_action<'a>(label: &'static str) -> iced::widget::Button<'a, Message> {
-    design::button(text(label).size(13))
-        .style(design::text_button)
-        .padding([6, 11])
+const GFX_PIXELS: crate::forms::NumberSpec = crate::forms::NumberSpec::new(-8192.0, 8192.0, 1.0, 2);
+const GFX_SCALE: crate::forms::NumberSpec = crate::forms::NumberSpec::new(-1000.0, 1000.0, 1.0, 2);
+const GFX_ROTATION: crate::forms::NumberSpec = crate::forms::NumberSpec::new(-360.0, 360.0, 1.0, 2);
+
+/// A number field for one Scaleform layout value.
+fn gfx_number<'a>(
+    state: &State,
+    key: &'static str,
+    value: &str,
+    spec: crate::forms::NumberSpec,
+) -> Element<'a, Message> {
+    crate::forms::number_field(
+        &state.forms,
+        state.keyboard_modifiers,
+        format!("gfx.{key}"),
+        value,
+        spec,
+        move |v| Message::GfxLayoutValue(key, v),
+    )
 }
 
-fn strip(_state: &State) -> Element<'_, Message> {
+/// The viewer menubar. Hovering a title while a menu is open switches to it.
+fn strip(state: &State) -> Element<'_, Message> {
+    let title = |label: &'static str| {
+        crate::chrome::menu_title(
+            crate::chrome::MenuBar::Viewer,
+            label,
+            label,
+            state.viewer_menu,
+            Message::ViewerMenu(label),
+            13.0,
+            [6, 11],
+        )
+    };
     row![
-        menu_action("File").on_press(Message::ViewerMenu("File")),
-        menu_action("Edit").on_press(Message::ViewerMenu("Edit")),
-        menu_action("View").on_press(Message::ViewerMenu("View")),
-        menu_action("Model").on_press(Message::ViewerMenu("Model")),
-        menu_action("Textures").on_press(Message::ViewerMenu("Textures")),
-        menu_action("Animation").on_press(Message::ViewerMenu("Animation")),
-        menu_action("Tools").on_press(Message::ViewerMenu("Tools")),
-        menu_action("Help").on_press(Message::ViewerMenu("Help")),
+        title("File"),
+        title("Edit"),
+        title("View"),
+        title("Model"),
+        title("Textures"),
+        title("Animation"),
+        title("Tools"),
+        title("Help"),
     ]
     .spacing(3)
     .into()
@@ -56,55 +83,64 @@ fn strip(_state: &State) -> Element<'_, Message> {
 fn dropdown(state: &State) -> Option<Element<'_, Message>> {
     let content: Element<'_, Message> = match state.viewer_menu? {
         "File" => column![
-            design::button("Inspect original PAK").on_press(Message::MenuCommand(Box::new(Message::StartPakInspection))),
+            crate::chrome::menu_item("Inspect original PAK", Some(Message::StartPakInspection)),
             design::button("Export…").on_press(Message::ExportOpen),
             design::button("Export selected textures / models…").on_press(Message::ExportOpen),
-            design::button("Save viewer layout").on_press(Message::MenuCommand(Box::new(Message::ViewerSaveLayout))),
+            crate::chrome::menu_item("Save viewer layout", Some(Message::ViewerSaveLayout)),
         ].spacing(3).into(),
         "Edit" => column![
-            design::button("Open XML / Lua / TXT")
-                .on_press(Message::MenuCommand(Box::new(Message::TextEditorOpen))),
-            design::button("Save text changes")
-                .on_press(Message::MenuCommand(Box::new(Message::TextEditorSave))),
-            design::button("Edit Scaleform GFX movie…")
-                .on_press(Message::MenuCommand(Box::new(Message::GfxOpenSelected))),
-            design::button("Preferences…").on_press(Message::MenuCommand(Box::new(Message::OpenViewerPreferences))),
+            crate::chrome::menu_item("Open XML / Lua / TXT", Some(Message::TextEditorOpen)),
+            crate::chrome::menu_item("Save text changes", Some(Message::TextEditorSave)),
+            crate::chrome::menu_item("Edit Scaleform GFX movie…", Some(Message::GfxOpenSelected)),
+            crate::chrome::menu_item("Preferences…", Some(Message::OpenViewerPreferences)),
             text("Read-only library assets. Edit copies in Modding.")
-                .size(11).style(design::muted),
+                .size(design::CAPTION).style(design::muted),
         ].spacing(3).into(),
         "View" => column![
-            design::button("Toggle Explorer").on_press(Message::MenuCommand(Box::new(Message::ViewerToggleExplorer))),
-            design::button("Move Explorer").on_press(Message::MenuCommand(Box::new(Message::PreferenceExplorerSide))),
-            design::button("Reset Camera").on_press(Message::MenuCommand(Box::new(Message::ViewerResetCamera))),
-            design::button("Detach Inspector").on_press(Message::MenuCommand(Box::new(Message::OpenInspectorWindow))),
-            design::button("Inspector").on_press(Message::MenuCommand(Box::new(Message::ViewerSidebarSelect(ViewerSidebarTab::Inspector)))),
+            crate::chrome::menu_item("Toggle Explorer", Some(Message::ViewerToggleExplorer)),
+            crate::chrome::menu_item("Move Explorer", Some(Message::PreferenceExplorerSide)),
+            crate::chrome::menu_item("Reset Camera", Some(Message::ViewerResetCamera)),
+            crate::chrome::menu_item("Detach Inspector", Some(Message::OpenInspectorWindow)),
+            crate::chrome::menu_item("Inspector", Some(Message::ViewerSidebarSelect(ViewerSidebarTab::Inspector))),
         ].spacing(3).into(),
         "Model" => column![
-            design::button("Retry selected preview").on_press(Message::MenuCommand(Box::new(Message::ViewerPreviewSelected))),
-            design::button("Inspect CDF").on_press(Message::MenuCommand(Box::new(Message::StartCdfInspection))),
-            design::button("Model Options").on_press(Message::MenuCommand(Box::new(
-                Message::ViewerSidebarSelect(ViewerSidebarTab::Equipment)
-            ))),
-            design::button("Preview CDF assembly (static)").on_press(Message::MenuCommand(Box::new(Message::ViewerPreviewStaticCdf))),
+            crate::chrome::menu_item("Retry selected preview", Some(Message::ViewerPreviewSelected)),
+            crate::chrome::menu_item("Inspect CDF", Some(Message::StartCdfInspection)),
+            crate::chrome::menu_item("Model Options", Some(Message::ViewerSidebarSelect(ViewerSidebarTab::Equipment))),
+            crate::chrome::menu_item("Preview CDF assembly (static)", Some(Message::ViewerPreviewStaticCdf)),
             design::button("Export models / CDF…").on_press(Message::ExportOpen),
             text("Rigged FBX, embedded textures, original UV0 repair, and PNG dependencies are configured in File → Export.")
-                .size(11).style(design::muted),
+                .size(design::CAPTION).style(design::muted),
         ].spacing(5).into(),
         "Textures" => column![
-            design::button("Resolve .mtl").on_press(Message::MenuCommand(Box::new(Message::StartMaterialResolve))),
-            design::button("Load diffuse").on_press(Message::MenuCommand(Box::new(Message::StartDiffuseLoad))),
-            design::button("Load normal").on_press(Message::MenuCommand(Box::new(Message::StartNormalLoad))),
-            design::button("Load emissive").on_press(Message::MenuCommand(Box::new(Message::StartEmissiveLoad))),
+            crate::chrome::menu_item(
+                if state.gallery.open { "Back to viewport" } else { "Texture gallery" },
+                Some(Message::Gallery(crate::gallery::Msg::Toggle)),
+            ),
+            crate::chrome::menu_item(
+                if state.viewer_full_textures {
+                    "Quality: Full (switch to Balanced)"
+                } else {
+                    "Quality: Balanced (switch to Full)"
+                },
+                Some(Message::ViewerFullTexturesToggled),
+            ),
+            text("Full quality has no texture budget, so GPU memory can run out; Balanced limits usage.")
+                .size(design::CAPTION)
+                .style(design::muted),
+            crate::chrome::menu_item("Resolve .mtl", Some(Message::StartMaterialResolve)),
+            crate::chrome::menu_item("Load diffuse", Some(Message::StartDiffuseLoad)),
+            crate::chrome::menu_item("Load normal", Some(Message::StartNormalLoad)),
+            crate::chrome::menu_item("Load emissive", Some(Message::StartEmissiveLoad)),
         ].spacing(3).into(),
-        "Animation" => design::button("Open Animation Browser")
-            .on_press(Message::MenuCommand(Box::new(Message::ViewerSidebarAnimations(true)))).into(),
+        "Animation" => crate::chrome::menu_item("Open Animation Browser", Some(Message::ViewerSidebarAnimations(true))),
         "Tools" => column![
-            design::button("Index extracted files").on_press(Message::MenuCommand(Box::new(Message::StartScan))),
-            design::button("Inspect selected asset").on_press(Message::MenuCommand(Box::new(Message::ViewerPreviewSelected))),
-            design::button("Dependency Graph").on_press(Message::MenuCommand(Box::new(Message::StartDependencyInspection))),
+            crate::chrome::menu_item("Index extracted files", Some(Message::StartScan)),
+            crate::chrome::menu_item("Inspect selected asset", Some(Message::ViewerPreviewSelected)),
+            crate::chrome::menu_item("Dependency Graph", Some(Message::StartDependencyInspection)),
         ].spacing(3).into(),
         "Help" => text("Read-only preview. Select extracted assets in Files. Original PAK members must be extracted before preview.")
-            .size(12).into(),
+            .size(design::LABEL).into(),
         _ => return None,
     };
     Some(content)
@@ -155,7 +191,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                     "{} character-declared animations",
                     state.auto_clips.len()
                 ))
-                .size(12),
+                .size(design::LABEL),
             ]
             .spacing(8),
         ]
@@ -167,7 +203,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                     active.space.dimensions.len(),
                     active.motions.len()
                 ))
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             );
             clips = clips.push(
@@ -175,14 +211,14 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                     "{} · Source-annotated simplex preview (not engine motion extraction)",
                     active.path
                 ))
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             );
             for (axis, dimension) in active.space.dimensions.iter().enumerate() {
                 clips = clips.push(
                     row![
                         text(format!("{} {:.2}", dimension.name, active.values[axis]))
-                            .size(12)
+                            .size(design::LABEL)
                             .width(iced::Length::Fixed(160.0)),
                         slider(
                             dimension.min..=dimension.max,
@@ -199,14 +235,14 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
         if state.caf_layer.is_some() {
             clips = clips.push(
                 row![
-                    text(format!("Layer: {}", state.caf_layer_label)).size(12),
+                    text(format!("Layer: {}", state.caf_layer_label)).size(design::LABEL),
                     slider(
                         0.0..=1.0,
                         state.caf_layer_weight,
                         Message::ViewerLayerWeight
                     )
                     .width(160),
-                    text(format!("{:.0}%", state.caf_layer_weight * 100.0)).size(12),
+                    text(format!("{:.0}%", state.caf_layer_weight * 100.0)).size(design::LABEL),
                     design::button("Remove layer").on_press(Message::ViewerClearLayer),
                 ]
                 .spacing(8),
@@ -225,7 +261,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                     "AUTHORED EVENT MARKERS · {count} · {} (inspection only)",
                     state.animation_event_source
                 ))
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             );
             for event in matching
@@ -246,7 +282,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                     event.bone.chars().take(30).collect::<String>()
                 );
                 clips = clips.push(tooltip(
-                    design::button(text(label).size(11))
+                    design::button(text(label).size(design::CAPTION))
                         .on_press(Message::MotionScrub(at))
                         .style(design::text_button),
                     text(format!(
@@ -258,12 +294,14 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                         event.offset,
                         event.dir
                     ))
-                    .size(11),
+                    .size(design::CAPTION),
                     tooltip::Position::Top,
                 ));
             }
             if count > 40 {
-                clips = clips.push(text(format!("{} more authored events", count - 40)).size(11));
+                clips = clips.push(
+                    text(format!("{} more authored events", count - 40)).size(design::CAPTION),
+                );
             }
         }
         clips = clips.push(asset_viewer_sockets::dba_source_panel(state));
@@ -297,7 +335,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
             );
             clips = clips.push(
                 row![
-                    design::button(text(label).size(12))
+                    design::button(text(label).size(design::LABEL))
                         .on_press(Message::ViewerAutoClip(index))
                         .style(design::text_button)
                         .width(Fill),
@@ -317,7 +355,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
         {
             clips = clips.push(
                 text("CONVERTED GLB — SAME-RIG PLAYBACK")
-                    .size(12)
+                    .size(design::LABEL)
                     .style(design::muted),
             );
             for (index, clip) in motion.list_clips().iter().enumerate().take(64) {
@@ -325,7 +363,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                 clips = clips.push(
                     row![
                         text(format!("{} · {:.2}s", clip.name, clip.duration))
-                            .size(12)
+                            .size(design::LABEL)
                             .width(Fill),
                         design::button(if layered { "Add layer" } else { "Play base" }).on_press(
                             if layered {
@@ -347,14 +385,15 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                     .unwrap_or_else(|| "Layer".into());
                 clips = clips.push(
                     row![
-                        text(format!("GLB layer: {label}")).size(12),
+                        text(format!("GLB layer: {label}")).size(design::LABEL),
                         slider(
                             0.0..=1.0,
                             state.glb_overlay_weight,
                             Message::GlbOverlayWeight,
                         )
                         .width(160),
-                        text(format!("{:.0}%", state.glb_overlay_weight * 100.0)).size(12),
+                        text(format!("{:.0}%", state.glb_overlay_weight * 100.0))
+                            .size(design::LABEL),
                         design::button("Remove layer").on_press(Message::ClearGlbOverlay),
                     ]
                     .spacing(8)
@@ -369,7 +408,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                 } else {
                     "VERIFIED CONVERTED MOTION FILES"
                 })
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             );
             for (index, source) in state.converted_glbs.iter().enumerate().take(64) {
@@ -388,7 +427,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                 }) && !state.skeleton_path.trim().is_empty();
                 clips = clips.push(
                     row![
-                        design::button(text(name).size(12))
+                        design::button(text(name).size(design::LABEL))
                             .on_press(Message::OpenConvertedGlb(index))
                             .style(design::text_button),
                         design::button("Bind original rig").on_press_maybe(
@@ -405,9 +444,9 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
     panel(
         container(
             column![
-                text("ANIMATION BROWSER").size(15),
+                text("ANIMATION BROWSER").size(design::HEADING),
                 text("Only verified clips declared for the selected character are playable.")
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
                 content,
             ]
@@ -422,9 +461,9 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
 
 fn equipment_browser(state: &State) -> Element<'_, Message> {
     let mut entries = column![
-        text("MODEL OPTIONS").size(15),
+        text("MODEL OPTIONS").size(design::HEADING),
         text("Equipment changes affect the viewport and CDF FBX export. Stage 2 monsters also support Glow and damage blend. Original assets remain unchanged.")
-            .size(11).style(design::muted),
+            .size(design::CAPTION).style(design::muted),
     ].spacing(10);
     let monster_selected = state.equipment_source.as_ref().is_some_and(|path| {
         path.to_string_lossy()
@@ -437,7 +476,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             text(
                 "2012 original monster: optional Stage 2 Glow and damage blend are not available.",
             )
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
         );
     }
@@ -452,14 +491,14 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         );
         entries = entries.push(
             text("Optional source-verified [name]_glow_diff overlay for Stage 2 monsters. Turning Glow off removes only this alternate overlay; original materials, diffuse and authored emission remain intact.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         );
         if state.full_armor_glow {
             entries = entries.push(
                 row![
                     text(format!("Armor {:.0}%", state.armor_level * 100.0))
-                        .size(12)
+                        .size(design::LABEL)
                         .width(80),
                     slider(
                         0.0_f32..=1.0_f32,
@@ -473,7 +512,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             );
             entries = entries.push(
                 text("The game sets this glow from the monster's armor. The curve is estimated from in-game screenshots of Goliath.")
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
             );
         }
@@ -488,7 +527,8 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         if state.damage_blend_enabled {
             entries = entries.push(
                 row![
-                    text(format!("Damage intensity: {}%", state.damage_blend_percent)).size(11),
+                    text(format!("Damage intensity: {}%", state.damage_blend_percent))
+                        .size(design::CAPTION),
                     slider(
                         0..=100,
                         state.damage_blend_percent,
@@ -502,16 +542,16 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         }
         entries = entries.push(
             text("Approximates the original CryEngine BLENDLAYER using only this monster's verified Custom damage diffuse and Opacity damage-blend mask. Keeps geometry opaque and exports with Rigged + Embedded textures.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         );
     }
     if let Some(emet) = state.emet_options.as_ref() {
-        entries = entries.push(text("E.M.E.T. · FACE / EQUIPMENT").size(13));
+        entries = entries.push(text("E.M.E.T. · FACE / EQUIPMENT").size(design::BODY));
         if !emet.faces.is_empty() {
             entries = entries.push(
                 text("Face · only one original CDF expression is rendered at a time.")
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
             );
             let current = state
@@ -563,7 +603,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         } else {
             entries = entries.push(
                 text("No separately authored face attachments were found in this Emet CDF.")
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
             );
         }
@@ -572,7 +612,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 .equipment_overrides
                 .get(evolve_core::character_emet::BEACON)
                 .is_none_or(|value| value == evolve_core::character_emet::BEACON_ON);
-            entries = entries.push(text("Respawn Beacon").size(12));
+            entries = entries.push(text("Respawn Beacon").size(design::LABEL));
             entries = entries.push(
                 design::button(if visible {
                     "☑ Show Respawn Beacon"
@@ -584,12 +624,12 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         } else {
             entries = entries.push(
                 text("No attached Respawn Beacon mesh is declared in this CDF; a beacon cannot be placed at a guessed position.")
-                    .size(11).style(design::muted),
+                    .size(design::CAPTION).style(design::muted),
             );
         }
         entries = entries.push(
             text("These changes rebuild Emet's source-authored CDF assembly and are included when exporting this active CDF. No other hunter is affected.")
-                .size(11).style(design::muted),
+                .size(design::CAPTION).style(design::muted),
         );
     }
     // This is a local viewport-only choice for the original Kala 3P CDF.
@@ -600,7 +640,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             .eq_ignore_ascii_case("characters/hunters/merc_tech/tech_3p_skeleton.chr")
     });
     if kala_selected {
-        entries = entries.push(text("KALA (TECH) · ARM TUBING").size(13));
+        entries = entries.push(text("KALA (TECH) · ARM TUBING").size(design::BODY));
         entries = entries.push(
             row![
                 design::button(
@@ -646,9 +686,9 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 ),
                 design::button(
                     if state.kala_tubing == evolve_core::KalaTubingState::RiftDevice {
-                        "âœ“ Teleporter Â· Purple"
+                        "✓ Teleporter · Purple"
                     } else {
-                        "â—‹ Teleporter Â· Purple"
+                        "○ Teleporter · Purple"
                     }
                 )
                 .style(
@@ -669,7 +709,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         );
         entries = entries.push(
             text("Kala's named Glow material stays source-blue in every mode. Body's separate ALPHAGLOW highlights retain their actual diffuse RGB (which can be red); only the equipment glow follows the Banshee, Armor Reducer or Teleporter choice. Emission uses the game's alpha glow and glow pass. Original textures and FBX exports stay unchanged.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         );
     }
@@ -692,7 +732,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                     "Emissive strength: {:.2}×",
                     state.emissive_strength
                 ))
-                .size(12),
+                .size(design::LABEL),
                 slider(
                     0.0..=4.0,
                     state.emissive_strength,
@@ -706,14 +746,14 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         );
         entries = entries.push(
             text("Live viewport adjustment to authored emission and the optional Glow overlay. Original source values and exported FBX remain unchanged.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         );
     }
     if state.equipment_slots.is_empty() {
         entries = entries.push(
             text("Open a character .cdf to choose model options. Verified interchangeable left/right arms appear separately.")
-                .size(12).style(design::muted)
+                .size(design::LABEL).style(design::muted)
         );
     }
     for slot in &state.equipment_slots {
@@ -722,15 +762,15 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             .get(&slot.name)
             .map(String::as_str)
             .unwrap_or(&slot.original);
-        entries = entries.push(text(&slot.name).size(13));
+        entries = entries.push(text(&slot.name).size(design::BODY));
         let mut choices = column![].spacing(3);
         for choice in &slot.choices {
             let active = choice.binding.eq_ignore_ascii_case(current);
             choices = choices.push(
                 design::button(
                     row![
-                        text(if active { "✓" } else { "○" }).size(13),
-                        text(choice.label.as_str()).size(12).width(Fill),
+                        text(if active { "✓" } else { "○" }).size(design::BODY),
+                        text(choice.label.as_str()).size(design::LABEL).width(Fill),
                     ]
                     .spacing(8),
                 )
@@ -762,7 +802,7 @@ fn dock_tab<'a>(
     tab: ViewerSidebarTab,
     active: ViewerSidebarTab,
 ) -> Element<'a, Message> {
-    let select = design::button(text(label).size(11))
+    let select = design::button(text(label).size(design::CAPTION))
         .padding([6, 5])
         .style(if active == tab {
             design::primary
@@ -783,7 +823,7 @@ fn dock_tab<'a>(
                 .padding([5, 4])
                 .style(design::text_button)
                 .on_press(Message::ViewerSidebarClose(tab)),
-            text(format!("Close {label} tab")).size(11),
+            text(format!("Close {label} tab")).size(design::CAPTION),
             tooltip::Position::Bottom,
         ),
     ]
@@ -840,7 +880,7 @@ fn gfx_nav_section<'a>(
     label: &'static str,
     section: GfxToolsSection,
 ) -> Element<'a, Message> {
-    design::button(text(label).size(12))
+    design::button(text(label).size(design::LABEL))
         .padding([7, 9])
         .style(if state.gfx_tools_section == section {
             design::primary
@@ -863,7 +903,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
             } else {
                 "Ready"
             })
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
         ]
         .align_y(iced::Center),
@@ -887,13 +927,13 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
         match state.gfx_tools_section {
             GfxToolsSection::Preview => {
                 actions = actions
-                    .push(text("FRAME RENDERING").size(13))
+                    .push(text("FRAME RENDERING").size(design::BODY))
                     .push(
                         text(format!(
                             "{} · {}×{} · {} frame(s) · {:.1} FPS",
                             session.relative, info.width, info.height, info.frames, info.fps
                         ))
-                        .size(11),
+                        .size(design::CAPTION),
                     )
                     .push(
                         text(format!(
@@ -903,7 +943,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                             info.resources.len(),
                             info.imports.len()
                         ))
-                        .size(11)
+                        .size(design::CAPTION)
                         .style(design::muted),
                     )
                     .push(
@@ -926,10 +966,10 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                     )
                     .push(
                         text(state.gfx_status.as_str())
-                            .size(11)
+                            .size(design::CAPTION)
                             .style(design::muted),
                     )
-                    .push(text("FFDec executable").size(12))
+                    .push(text("FFDec executable").size(design::LABEL))
                     .push(
                         text_input(
                             "Path to ffdec-cli.exe or ffdec.jar",
@@ -939,7 +979,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         .padding(8),
                     )
                     .push(design::button("Choose FFDec…").on_press(Message::GfxPickBackend))
-                    .push(text("INTERACTIVE PLAYBACK").size(13))
+                    .push(text("INTERACTIVE PLAYBACK").size(design::BODY))
                     .push(
                         design::button(if state.gfx_interactive_open {
                             "Hide Ruffle controls"
@@ -954,8 +994,8 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
                     {
                         actions = actions
-                            .push(text("ORIGINAL MENU ACTIONSCRIPT").size(12))
-                            .push(text("Control the SAME running Ruffle Web preview; no restart per action. Only source-verified handlers are dispatched. Native game services remain blocked.").size(11).style(design::muted));
+                            .push(text("ORIGINAL MENU ACTIONSCRIPT").size(design::LABEL))
+                            .push(text("Control the SAME running Ruffle Web preview; no restart per action. Only source-verified handlers are dispatched. Native game services remain blocked.").size(design::CAPTION).style(design::muted));
                         use crate::gfx_interactive::PreviewPreset as MenuPreset;
                         for (label, choices) in [
                             ("MOVIE", &[MenuPreset::AsAuthored][..]),
@@ -1008,7 +1048,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         }
                     }
                     actions = actions
-                        .push(text("Live mode opens a local browser window using the bundled Ruffle Web runtime. Desktop Ruffle does not support live button commands.").size(11).style(design::muted))
+                        .push(text("Live mode opens a local browser window using the bundled Ruffle Web runtime. Desktop Ruffle does not support live button commands.").size(design::CAPTION).style(design::muted))
                         .push(
                             row![
                                 design::button("Open / focus live preview").on_press_maybe(
@@ -1035,24 +1075,24 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                     "Ruffle Web: stopped"
                                 },
                             )
-                            .size(11)
+                            .size(design::CAPTION)
                             .style(design::muted),
                         )
                         .push(
                             text(state.gfx_interactive_status.as_str())
-                                .size(11)
+                                .size(design::CAPTION)
                                 .style(design::muted),
                         );
                 }
                 actions = actions.push(
                     text("Only source-verified callbacks are offered in live playback. Browser status confirms dispatch, not native game transitions. Unsupported handlers remain unavailable until their original dependencies are traced.")
-                        .size(11).style(design::muted)
+                        .size(design::CAPTION).style(design::muted)
                 );
             }
             GfxToolsSection::Layout => {
-                actions = actions.push(text("ROOT FIRST-FRAME LAYERS").size(13))
+                actions = actions.push(text("ROOT FIRST-FRAME LAYERS").size(design::BODY))
                     .push(text("Select a layer, drag its bounds in the viewport or edit its transform, then stage the change.")
-                        .size(11).style(design::muted));
+                        .size(design::CAPTION).style(design::muted));
                 if !session.layers.is_empty() {
                     actions = actions.push(
                         design::button(if state.gfx_layout_show_raster {
@@ -1073,7 +1113,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         )
                         .push(
                             text(format!("{} original root layer(s)", session.layers.len()))
-                                .size(11)
+                                .size(design::CAPTION)
                                 .style(design::muted),
                         );
                     for (i, layer) in session.layers.iter().enumerate() {
@@ -1111,34 +1151,32 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                     "Selected depth {} / symbol {} — {}",
                                     layer.depth, layer.character, layer.reason
                                 ))
-                                .size(11)
+                                .size(design::CAPTION)
                                 .style(design::muted),
                             )
-                            .push(text("X / Y (pixels)").size(12))
+                            .push(text("X / Y (pixels)").size(design::LABEL))
                             .push(
                                 row![
-                                    text_input("X", &state.gfx_layout_x)
-                                        .on_input(|v| Message::GfxLayoutValue("x", v)),
-                                    text_input("Y", &state.gfx_layout_y)
-                                        .on_input(|v| Message::GfxLayoutValue("y", v))
+                                    gfx_number(state, "x", &state.gfx_layout_x, GFX_PIXELS),
+                                    gfx_number(state, "y", &state.gfx_layout_y, GFX_PIXELS),
                                 ]
                                 .spacing(4),
                             )
-                            .push(text("X / Y scale (%)").size(12))
+                            .push(text("X / Y scale (%)").size(design::LABEL))
                             .push(
                                 row![
-                                    text_input("X scale", &state.gfx_layout_sx)
-                                        .on_input(|v| Message::GfxLayoutValue("sx", v)),
-                                    text_input("Y scale", &state.gfx_layout_sy)
-                                        .on_input(|v| Message::GfxLayoutValue("sy", v))
+                                    gfx_number(state, "sx", &state.gfx_layout_sx, GFX_SCALE),
+                                    gfx_number(state, "sy", &state.gfx_layout_sy, GFX_SCALE),
                                 ]
                                 .spacing(4),
                             )
-                            .push(text("Rotation (degrees)").size(12))
-                            .push(
-                                text_input("Rotation", &state.gfx_layout_rotation)
-                                    .on_input(|v| Message::GfxLayoutValue("rotation", v)),
-                            )
+                            .push(text("Rotation (degrees)").size(design::LABEL))
+                            .push(gfx_number(
+                                state,
+                                "rotation",
+                                &state.gfx_layout_rotation,
+                                GFX_ROTATION,
+                            ))
                             .push(
                                 design::button(if state.gfx_layout_visible {
                                     "☑ Visible (click to hide)"
@@ -1153,28 +1191,28 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                         .then_some(Message::GfxStageLayout),
                                 ),
                             )
-                            .push(text("For static first-frame elements, toggle Hidden and Stage to remove that placement. Timeline-recreated items need a persistent ActionScript edit, such as the Featured tab.").size(11).style(design::muted));
+                            .push(text("For static first-frame elements, toggle Hidden and Stage to remove that placement. Timeline-recreated items need a persistent ActionScript edit, such as the Featured tab.").size(design::CAPTION).style(design::muted));
                     }
                 }
             }
             GfxToolsSection::Featured => {
                 actions = actions
-                    .push(text("FEATURED PROMOTION").size(13))
-                    .push(text("Edit the original main-menu promotion: title, TRY/BUY buttons, or the entire offer. Hiding/removing uses a frame guard so rotating offers cannot simply re-show it.").size(11).style(design::muted));
+                    .push(text("FEATURED PROMOTION").size(design::BODY))
+                    .push(text("Edit the original main-menu promotion: title, TRY/BUY buttons, or the entire offer. Hiding/removing uses a frame guard so rotating offers cannot simply re-show it.").size(design::CAPTION).style(design::muted));
                 if !session
                     .relative
                     .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
                 {
                     actions = actions.push(
                         text("Open Libs/UI/main_menu.gfx to edit featured promotion controls.")
-                            .size(11)
+                            .size(design::CAPTION)
                             .style(design::muted),
                     );
                 } else if session.project.is_none() {
-                    actions = actions.push(text("Open the GFX from an editable Mod Project. Asset Library movies remain read-only.").size(11).style(design::muted));
+                    actions = actions.push(text("Open the GFX from an editable Mod Project. Asset Library movies remain read-only.").size(design::CAPTION).style(design::muted));
                 } else {
                     use crate::gfx_featured_promo::{Mode, Target};
-                    actions = actions.push(text("CHOOSE TARGET").size(12));
+                    actions = actions.push(text("CHOOSE TARGET").size(design::LABEL));
                     for target in [Target::All, Target::Title, Target::Try, Target::Buy] {
                         actions = actions.push(
                             design::button(text(format!(
@@ -1190,7 +1228,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         );
                     }
                     actions = actions
-                        .push(text("PERSISTENT VISIBILITY / REMOVAL").size(12))
+                        .push(text("PERSISTENT VISIBILITY / REMOVAL").size(design::LABEL))
                         .push(row![
                             design::button("Hide every time").on_press_maybe(
                                 (!state.gfx_busy).then_some(Message::GfxFeaturedStage(Mode::Hide))
@@ -1199,8 +1237,8 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                 (!state.gfx_busy).then_some(Message::GfxFeaturedStage(Mode::Remove))
                             ),
                         ].spacing(4))
-                        .push(text("Removal hides all targeted clips on every frame and disables/removes dynamically attached controls where supported. Static timeline definitions are preserved.").size(11).style(design::muted))
-                        .push(text("RUNTIME TEXT REPLACEMENT").size(12))
+                        .push(text("Removal hides all targeted clips on every frame and disables/removes dynamically attached controls where supported. Static timeline definitions are preserved.").size(design::CAPTION).style(design::muted))
+                        .push(text("RUNTIME TEXT REPLACEMENT").size(design::LABEL))
                         .push(text_input(
                             "Enter replacement for title, TRY, or BUY…",
                             &state.gfx_featured_text,
@@ -1211,17 +1249,17 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                 && !state.gfx_featured_text.is_empty())
                                 .then_some(Message::GfxFeaturedStage(Mode::Text))
                         ))
-                        .push(text("Each action is staged in an isolated session via FFDec. Undo before changing the same target; Apply to Mod Project commits the staged GFX only after validation. In-game offline verification is still required.").size(11).style(design::muted));
+                        .push(text("Each action is staged in an isolated session via FFDec. Undo before changing the same target; Apply to Mod Project commits the staged GFX only after validation. In-game offline verification is still required.").size(design::CAPTION).style(design::muted));
                 }
             }
             GfxToolsSection::Scripts => {
                 actions = actions
-                    .push(text("SOURCE & ACTIONSCRIPT").size(13))
+                    .push(text("SOURCE & ACTIONSCRIPT").size(design::BODY))
                     .push(text(if info.script_present {
                         "Compiled ActionScript detected. FFDec exports editable scripts from the staged GFX."
                     } else {
                         "No embedded ActionScript detected in this movie."
-                    }).size(11).style(design::muted))
+                    }).size(design::CAPTION).style(design::muted))
                     .push(design::button("Export ActionScript…").on_press_maybe(
                         (!state.gfx_busy).then_some(Message::GfxAction(
                             crate::gfx_editor::Action::ExportScripts
@@ -1232,7 +1270,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                             crate::gfx_editor::Action::ImportScripts
                         ))
                     ))
-                    .push(text("DISPLAY TAG XML").size(13))
+                    .push(text("DISPLAY TAG XML").size(design::BODY))
                     .push(design::button("Export tag XML…").on_press_maybe(
                         (!state.gfx_busy).then_some(Message::GfxAction(
                             crate::gfx_editor::Action::ExportXml
@@ -1244,23 +1282,24 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         ))
                     ))
                     .push(text("Edits remain in the isolated workspace until applied to the Mod Project.")
-                        .size(11).style(design::muted));
+                        .size(design::CAPTION).style(design::muted));
             }
             GfxToolsSection::Resources => {
-                actions = actions.push(text("IMPORTS & RESOURCE IDS").size(13));
+                actions = actions.push(text("IMPORTS & RESOURCE IDS").size(design::BODY));
                 if !session.dependencies.is_empty() {
-                    actions = actions.push(text("SAME-BUILD GFX/SWF DEPENDENCIES").size(13));
+                    actions =
+                        actions.push(text("SAME-BUILD GFX/SWF DEPENDENCIES").size(design::BODY));
                     for dep in &session.dependencies {
                         actions = actions.push(
                             text(format!("{} — {}", dep.reference, dep.outcome))
-                                .size(11)
+                                .size(design::CAPTION)
                                 .style(design::muted),
                         );
                     }
                 }
                 if !info.resources.is_empty() {
-                    actions =
-                        actions.push(text("REPLACE EXISTING RESOURCE · CHARACTER ID").size(13));
+                    actions = actions
+                        .push(text("REPLACE EXISTING RESOURCE · CHARACTER ID").size(design::BODY));
                     for (index, item) in info.resources.iter().enumerate().take(80) {
                         actions = actions.push(
                             design::button(text(format!(
@@ -1279,7 +1318,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                     if info.resources.len() > 80 {
                         actions = actions.push(
                     text("Only the first 80 tags are selectable here; use full FFDec for others.")
-                        .size(11)
+                        .size(design::CAPTION)
                         .style(design::muted),
                 );
                     }
@@ -1293,7 +1332,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         .is_some_and(|resource| resource.kind == "text")
                     {
                         actions = actions
-                            .push(text("EDIT SELECTED TEXT RESOURCE").size(12))
+                            .push(text("EDIT SELECTED TEXT RESOURCE").size(design::LABEL))
                             .push(text_input("Replacement UTF-8 text", &state.gfx_resource_text)
                                 .on_input(Message::GfxResourceTextChanged)
                                 .padding(8))
@@ -1303,7 +1342,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                     && session.project.is_some())
                                     .then_some(Message::GfxResourceTextStage)
                             ))
-                            .push(text("Changes the selected original text resource by character ID through FFDec. Runtime-created ActionScript text is separate. Undo or Apply to Mod Project.").size(11).style(design::muted));
+                            .push(text("Changes the selected original text resource by character ID through FFDec. Runtime-created ActionScript text is separate. Undo or Apply to Mod Project.").size(design::CAPTION).style(design::muted));
                     }
                 }
                 if !info.imports.is_empty() {
@@ -1312,7 +1351,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                             "Imported movies (same-build assets required): {}",
                             info.imports.join(", ")
                         ))
-                        .size(11)
+                        .size(design::CAPTION)
                         .style(design::muted),
                     );
                 }
@@ -1323,16 +1362,16 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                     .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
                 {
                     actions = actions
-                        .push(text("ORIGINAL UI_DATA MENU COMMANDS").size(13))
+                        .push(text("ORIGINAL UI_DATA MENU COMMANDS").size(design::BODY))
                         .push(
                             text(session.menu_command_status.as_str())
-                                .size(11)
+                                .size(design::CAPTION)
                                 .style(design::muted),
                         );
                     if !session.menu_commands.is_empty() {
                         actions = actions.push(
                             text("These are source-defined commands, not yet native Evolve handlers. Local submenu targets can be mapped to ActionScript; external game commands stay disabled.")
-                                .size(11)
+                                .size(design::CAPTION)
                                 .style(design::muted),
                         );
                         for item in &session.menu_commands {
@@ -1342,7 +1381,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                         "{} · {} → {}",
                                         item.submenu, item.label, item.command
                                     ))
-                                    .size(11),
+                                    .size(design::CAPTION),
                                 )
                                 .push(
                                     text(format!(
@@ -1365,7 +1404,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         }
                     }
                 }
-                actions = actions.push(text("UI HIERARCHY").size(13));
+                actions = actions.push(text("UI HIERARCHY").size(design::BODY));
                 actions = actions.push(
                     design::button(if state.gfx_live_open {
                         "Close Live UI Inspector (read-only)"
@@ -1379,7 +1418,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         .push(text("LIVE UI INSPECTOR · READ-ONLY").size(14))
                         .push(
                             text(state.gfx_live_status.as_str())
-                                .size(11)
+                                .size(design::CAPTION)
                                 .style(design::muted),
                         )
                         .push(
@@ -1394,7 +1433,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                 snapshot.frame,
                                 snapshot.nodes.len()
                             ))
-                            .size(12),
+                            .size(design::LABEL),
                         );
                         for node in &snapshot.nodes {
                             let indent = "  "
@@ -1412,25 +1451,25 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                     node.height,
                                     if node.visible { "visible" } else { "hidden" },
                                 ))
-                                .size(11),
+                                .size(design::CAPTION),
                             );
                         }
                     } else {
                         actions = actions.push(text(
                     "Actual live game hierarchy capture requires a separately verified offline GFx game-thread provider. No guessed pointers, process injection, or simulated live nodes."
-                ).size(11).style(design::muted));
+                ).size(design::CAPTION).style(design::muted));
                     }
                 }
             }
             GfxToolsSection::Project => {
                 actions = actions
-                    .push(text("STAGED GFX CHANGES").size(13))
+                    .push(text("STAGED GFX CHANGES").size(design::BODY))
                     .push(text(format!(
                         "{} · {} staged edit(s) · {}",
                         if session.project.is_some() { "Mod Project" } else { "Read-only library" },
                         session.edits,
                         if session.applied { "Applied" } else { "Not applied" },
-                    )).size(11).style(design::muted))
+                    )).size(design::CAPTION).style(design::muted))
                     .push(design::button("Import compiled GFX…")
                         .on_press_maybe((!state.gfx_busy).then_some(Message::GfxPickEdited)))
                     .push(design::button("Undo last staged edit")
@@ -1445,7 +1484,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                 && session.edits > 0 && !session.applied
                         ).then_some(Message::GfxApply)))
                     .push(text("The original PAK remains unchanged. Applying keeps EditorBackups in the extracted Mod Project.")
-                        .size(11).style(design::muted));
+                        .size(design::CAPTION).style(design::muted));
             }
         }
     } else {
@@ -1456,12 +1495,12 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                 } else {
                     "Select a .gfx in Files to inspect or edit it."
                 })
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             )
             .push(
                 text(state.gfx_status.as_str())
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
             )
             .push(
@@ -1508,11 +1547,11 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
             };
         return column![
             text("GFX LAYOUT · FIRST FRAME")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             surface,
             text("Drag bounded shapes to move them; stage changes in GFX Tools → Layout.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         ]
         .spacing(8)
@@ -1532,7 +1571,7 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
         } else {
             "GFX loaded. Use GFX Tools → Preview to render a frame or open the interactive Ruffle player."
         })
-        .size(12)
+        .size(design::LABEL)
         .style(design::muted)
         .into()
     };
@@ -1554,11 +1593,25 @@ fn text_viewport(state: &State) -> Element<'_, Message> {
         "Read-only Asset Library source"
     };
     let tools = row![
-        text("TEXT EDITOR").size(15),
-        text(doc.member.as_str()).size(12).width(Fill),
-        text(if doc.dirty() { "● Unsaved" } else { "Saved" })
-            .size(12)
-            .style(design::muted),
+        text("TEXT EDITOR").size(design::HEADING),
+        if doc.editable {
+            crate::ui_kit::badge(crate::ui_kit::BadgeKind::Enabled, "Editable")
+        } else {
+            crate::ui_kit::badge(crate::ui_kit::BadgeKind::ReadOnly, "Read-only")
+        },
+        text(doc.member.as_str()).size(design::LABEL).width(Fill),
+        crate::ui_kit::copy_button(&state.ui, "text-member", doc.member.clone()),
+        {
+            let (saving, saved_at) = state.ui.save_info("text");
+            crate::ui_kit::save_status(doc.dirty(), saving, saved_at)
+        },
+        design::button(if doc.show_diff {
+            "Edit"
+        } else {
+            "Show changes"
+        })
+        .style(design::secondary)
+        .on_press(Message::TextEditorToggleDiff),
         design::button("Save")
             .style(design::primary)
             .on_press_maybe(
@@ -1581,10 +1634,20 @@ fn text_viewport(state: &State) -> Element<'_, Message> {
         text_editor(&doc.content).height(Fill)
     };
     // Iced's text editor is read-only when no on_action handler is attached.
+    let body: Element<'_, Message> = if doc.show_diff {
+        crate::diff_view::view(
+            doc.opened_text(),
+            &doc.content.text(),
+            "Original",
+            "Changed",
+        )
+    } else {
+        content.into()
+    };
     column![
         tools,
-        text(label).size(11).style(design::muted),
-        container(content)
+        text(label).size(design::CAPTION).style(design::muted),
+        container(body)
             .width(Fill)
             .height(Fill)
             .padding(9)
@@ -1602,12 +1665,15 @@ fn viewport(state: &State) -> Element<'_, Message> {
     if state.text_document.is_some() {
         return text_viewport(state);
     }
+    if state.gallery.open {
+        return crate::gallery::view(state);
+    }
     if state.gfx_active {
         return gfx_viewport(state);
     }
     let header = row![
-        text("User Perspective").size(12),
-        text(" • ").size(12),
+        text("User Perspective").size(design::LABEL),
+        text(" • ").size(design::LABEL),
         text(if state.model.is_some() {
             "GPU Model Preview"
         } else if state.texture_preview.is_some() {
@@ -1615,9 +1681,9 @@ fn viewport(state: &State) -> Element<'_, Message> {
         } else {
             "No model loaded"
         })
-        .size(12),
+        .size(design::LABEL),
         text(state.auto_resource_note.as_str())
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
         text({
             let remaining = state
@@ -1629,7 +1695,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 "GPU material streaming: ready (source DDS resolution remains separate)".to_owned()
             }
         })
-        .size(11)
+        .size(design::CAPTION)
         .style(design::muted),
     ]
     .spacing(2);
@@ -1681,25 +1747,33 @@ fn viewport(state: &State) -> Element<'_, Message> {
             .into()
         }
     } else if let Some(handle) = &state.texture_preview {
-        container(
-            image(handle.clone())
+        // With an image replacement picked, compare it against the
+        // original with a draggable split.
+        let replacement = replacement_image(state);
+        let body: Element<'_, Message> = match replacement {
+            Some(replacement) => {
+                crate::ui_kit::compare_slider(&state.ui, handle.clone(), replacement)
+            }
+            None => image(handle.clone())
                 .content_fit(iced::ContentFit::Contain)
                 .width(Fill)
-                .height(Fill),
-        )
-        .center(Fill)
-        .style(|theme| container::Style {
-            background: Some(Background::Color(design::field(theme))),
-            ..container::Style::default()
-        })
-        .into()
+                .height(Fill)
+                .into(),
+        };
+        container(body)
+            .center(Fill)
+            .style(|theme| container::Style {
+                background: Some(Background::Color(design::field(theme))),
+                ..container::Style::default()
+            })
+            .into()
     } else {
         container(
             column![
             text("3D / ASSET PREVIEW").size(19),
             text("Choose a model, CDF, or DDS from extracted files.").size(14).style(design::muted),
             text("This workspace does not invent missing character pieces, textures or animations.")
-                .size(12).style(design::muted),
+                .size(design::LABEL).style(design::muted),
             design::button("Retry selected preview").on_press(Message::ViewerPreviewSelected)
         ]
             .spacing(13)
@@ -1713,47 +1787,92 @@ fn viewport(state: &State) -> Element<'_, Message> {
         .into()
     };
 
-    let camera_icon = |glyph: &'static str, hint: &'static str, action| {
-        tooltip(
-            design::button(text(glyph).size(18))
-                .width(39)
-                .height(36)
-                .on_press(action),
-            text(hint).size(12),
-            tooltip::Position::Bottom,
-        )
-    };
-    let toolbar = row![
-        camera_icon("⌖", "Frame all", Message::ViewerResetCamera),
-        camera_icon("↑", "Front view", Message::ViewerCameraPreset("Front")),
-        camera_icon("→", "Right view", Message::ViewerCameraPreset("Right")),
-        camera_icon("⊤", "Top view", Message::ViewerCameraPreset("Top")),
-        camera_icon(
-            "◇",
-            "Isometric view",
-            Message::ViewerCameraPreset("Isometric")
-        ),
-        camera_icon(
-            if state.viewer_wireframe { "◉" } else { "▧" },
-            if state.viewer_wireframe {
-                "Shaded display"
-            } else {
-                "Wireframe display"
+    // Camera and display actions as a dock: icons grow as the cursor nears.
+    let dock = crate::ui_kit::dock(
+        &state.ui,
+        "viewer",
+        vec![
+            dock_item(
+                crate::icons::frame_all(),
+                "Frame all",
+                Message::ViewerResetCamera,
+                false,
+            ),
+            dock_item(
+                crate::icons::view_front(),
+                "Front view",
+                Message::ViewerCameraPreset("Front"),
+                false,
+            ),
+            dock_item(
+                crate::icons::view_right(),
+                "Right view",
+                Message::ViewerCameraPreset("Right"),
+                false,
+            ),
+            dock_item(
+                crate::icons::view_top(),
+                "Top view",
+                Message::ViewerCameraPreset("Top"),
+                false,
+            ),
+            dock_item(
+                crate::icons::view_iso(),
+                "Isometric view",
+                Message::ViewerCameraPreset("Isometric"),
+                false,
+            ),
+            dock_item(
+                crate::icons::zoom_out(),
+                "Zoom out",
+                Message::ViewerZoomWheel(-2.0),
+                false,
+            ),
+            dock_item(
+                crate::icons::zoom_in(),
+                "Zoom in",
+                Message::ViewerZoomWheel(2.0),
+                false,
+            ),
+        ],
+        state.preferences.reduce_motion,
+    );
+    // Shaded / Wireframe as an icon toggle pair, like the level editor's
+    // tool palette. Texture gallery and quality live in the Textures menu.
+    let display = crate::ui_kit::icon_segmented(
+        &state.ui,
+        "viewer-display",
+        vec![
+            crate::ui_kit::IconToggle {
+                icon: crate::icons::view_iso(),
+                label: "Shaded",
+                message: if state.viewer_wireframe {
+                    Message::ViewerToggleWireframe
+                } else {
+                    Message::Chrome(crate::chrome::Msg::Absorb)
+                },
             },
-            Message::ViewerToggleWireframe
+            crate::ui_kit::IconToggle {
+                icon: crate::icons::wireframe(),
+                label: "Wireframe",
+                message: if state.viewer_wireframe {
+                    Message::Chrome(crate::chrome::Msg::Absorb)
+                } else {
+                    Message::ViewerToggleWireframe
+                },
+            },
+        ],
+        usize::from(state.viewer_wireframe),
+    );
+    let toolbar = row![
+        dock,
+        display,
+        crate::ui_kit::icon_button(
+            crate::icons::fullscreen(),
+            "Fullscreen viewport",
+            Some(Message::ToggleViewerViewportFullscreen),
+            None,
         ),
-        tooltip(
-            design::button(if state.viewer_full_textures {
-                "Textures: Full quality"
-            } else {
-                "Textures: Balanced"
-            })
-            .on_press(Message::ViewerFullTexturesToggled),
-            text("Full quality has no manager-imposed texture budget. GPU memory exhaustion is possible; Balanced limits usage.").size(12),
-            tooltip::Position::Bottom,
-        ),
-        camera_icon("−", "Zoom out", Message::ViewerZoomWheel(-2.0)),
-        camera_icon("+", "Zoom in", Message::ViewerZoomWheel(2.0)),
         tooltip(
             row![
                 svg(svg::Handle::from_memory(include_bytes!(
@@ -1768,11 +1887,11 @@ fn viewport(state: &State) -> Element<'_, Message> {
                     Message::LightStrengthChanged
                 )
                 .width(Length::Fixed(136.0)),
-                text(format!("{:.1}×", state.light_strength)).size(11),
+                text(format!("{:.1}×", state.light_strength)).size(design::CAPTION),
             ]
             .align_y(iced::Center)
             .spacing(6),
-            text("Viewport light intensity (preview only)").size(12),
+            text("Viewport light intensity (preview only)").size(design::LABEL),
             tooltip::Position::Bottom,
         ),
     ]
@@ -1784,14 +1903,17 @@ fn viewport(state: &State) -> Element<'_, Message> {
     // viewport input; the remaining preview stays fully interactive.
     let preview = stack![
         main,
-        container(
+        container(design::tooltip(
             canvas(super::orientation_gizmo::OrientationGizmo {
                 yaw: state.yaw,
                 pitch: state.pitch,
             })
             .width(Length::Fixed(112.0))
             .height(Length::Fixed(112.0)),
-        )
+            "Click an axis to snap the view · drag to orbit",
+            None,
+            tooltip::Position::Left,
+        ))
         .width(Fill)
         .height(Fill)
         .align_right(Fill)
@@ -1822,7 +1944,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
         .unwrap_or(0.03)
         .max(0.03);
     let timeline = row![
-        text("Timeline").size(12),
+        text("Timeline").size(design::LABEL),
         design::button(if state.playback_loop {
             "Loop on"
         } else {
@@ -1843,8 +1965,8 @@ fn viewport(state: &State) -> Element<'_, Message> {
             Message::MotionScrub
         )
         .width(Fill),
-        text(format!("{:.2} / {:.2} s", state.motion_time, duration)).size(12),
-        text(format!("{:.1}×", state.playback_speed)).size(12),
+        text(format!("{:.2} / {:.2} s", state.motion_time, duration)).size(design::LABEL),
+        text(format!("{:.1}×", state.playback_speed)).size(design::LABEL),
         slider(
             0.1..=3.0,
             state.playback_speed.max(0.1),
@@ -1869,7 +1991,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
             };
             panel(
                 row![
-                    text(format!("{phase} · {percent}%")).size(12),
+                    text(format!("{phase} · {percent}%")).size(design::LABEL),
                     container(progress_bar(0.0..=100.0, percent as f32)).width(Fill),
                 ]
                 .spacing(12)
@@ -1881,9 +2003,11 @@ fn viewport(state: &State) -> Element<'_, Message> {
         } else {
             panel(
                 row![
-                    text("Loading original assets…").size(12),
+                    text("Loading original assets…").size(design::LABEL),
                     container(progress_bar(0.0..=100.0, 0.0)).width(Fill),
-                    text("Progress unavailable").size(11).style(design::muted),
+                    text("Progress unavailable")
+                        .size(design::CAPTION)
+                        .style(design::muted),
                 ]
                 .spacing(12)
                 .align_y(iced::Center),
@@ -1947,8 +2071,11 @@ fn file_context_actions(state: &State) -> Element<'_, Message> {
             panel(
                 column![
                     row![
-                        text("FILE ACTIONS").size(13),
-                        text(filename).size(11).style(design::muted).width(Fill),
+                        text("FILE ACTIONS").size(design::BODY),
+                        text(filename)
+                            .size(design::CAPTION)
+                            .style(design::muted)
+                            .width(Fill),
                         design::button("✕").on_press(Message::ViewerContextClose),
                     ]
                     .spacing(7),
@@ -2008,7 +2135,7 @@ fn file_context_actions(state: &State) -> Element<'_, Message> {
                         let editable = !state.viewer_from_library && !state.busy;
                         Element::from(
                             column![
-                                text("AUDIO TOOLS · FMOD").size(13),
+                                text("AUDIO TOOLS · FMOD").size(design::BODY),
                                 design::button("Inspect FMOD asset").on_press_maybe(
                                     (!state.audio_busy).then_some(Message::AudioInspect)
                                 ),
@@ -2052,7 +2179,7 @@ fn file_context_actions(state: &State) -> Element<'_, Message> {
                                         .then_some(Message::AudioImportRebuilt)
                                 ),
                                 text(state.audio_status.as_str())
-                                    .size(11)
+                                    .size(design::CAPTION)
                                     .style(design::muted),
                             ]
                             .spacing(7),
@@ -2070,7 +2197,7 @@ fn file_context_actions(state: &State) -> Element<'_, Message> {
     } else {
         Element::<Message>::from(
             text("Right-click a file for actions.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         )
     }
@@ -2087,19 +2214,19 @@ fn replacement_sheet(state: &State, index: usize) -> Element<'_, Message> {
     panel(
         column![
             row![
-                text("REPLACE PROJECT ASSET").size(13).width(Fill),
+                text("REPLACE PROJECT ASSET").size(design::BODY).width(Fill),
                 design::button("✕").on_press(Message::EditorCancelReplacement)
             ].spacing(8),
-            text(target).size(12),
+            text(target).size(design::LABEL),
             text(if texture {
                 "PNG images are converted into the original DDS format and mip layout when supported."
             } else {
                 "Choose a separate source file. The exact destination path is already selected."
-            }).size(11).style(design::muted),
+            }).size(design::CAPTION).style(design::muted),
             row![
                 design::button("Browse files…")
                     .on_press_maybe((!state.busy).then_some(Message::EditorBrowseReplacement)),
-                text("or drag a file into this window").size(11).style(design::muted)
+                text("or drag a file into this window").size(design::CAPTION).style(design::muted)
             ].spacing(8),
             design::text_input("Selected source file (optional manual path)", &state.editor_replace_source)
                 .on_input(Message::EditorReplacementChanged),
@@ -2110,9 +2237,45 @@ fn replacement_sheet(state: &State, index: usize) -> Element<'_, Message> {
                 design::button("Cancel").on_press(Message::EditorCancelReplacement),
             ].spacing(8),
             text("The extracted original is backed up and verified before replacement. Source PAKs are never modified.")
-                .size(11).style(design::muted),
+                .size(design::CAPTION).style(design::muted),
         ].spacing(8)
     ).into()
+}
+
+/// Archive member path of explorer entry `index`.
+fn entry_path(state: &State, index: usize) -> Option<&str> {
+    if let Some(inventory) = &state.inventory {
+        inventory
+            .entries
+            .get(index)
+            .map(|entry| entry.relative_path.as_str())
+    } else if let Some(pak) = &state.signed_pak {
+        pak.entries.get(index).map(|entry| entry.path.as_str())
+    } else {
+        state
+            .pak
+            .as_ref()
+            .and_then(|pak| pak.entries.get(index))
+            .map(|entry| entry.path.as_str())
+    }
+}
+
+/// `PAK › folder › … › file` for the selected file. Folder segments filter
+/// the explorer to that folder; the PAK segment clears the filter.
+fn explorer_breadcrumbs<'a>(state: &'a State, source: &str) -> Element<'a, Message> {
+    let selected = state
+        .selected
+        .or_else(|| state.file_selection.indices.iter().copied().max());
+    let path = selected
+        .and_then(|index| entry_path(state, index))
+        .unwrap_or_default();
+    let crumbs = crate::chrome::path_crumbs(
+        compact_source_name(source),
+        Message::ViewerSearchChanged(String::new()),
+        path,
+        Message::ViewerSearchChanged,
+    );
+    crate::chrome::breadcrumbs(crumbs, state.chrome.crumb_menu)
 }
 
 fn explorer(state: &State) -> Element<'_, Message> {
@@ -2126,26 +2289,33 @@ fn explorer(state: &State) -> Element<'_, Message> {
     } else {
         state.pak.as_ref().map_or(0, |pak| pak.entries.len())
     };
+    let now = std::time::Instant::now();
+    let accent = crate::forms::highlight_color(&state.preferences);
     for entry in state.viewer_rows.iter().cloned() {
-        let indent = "  ".repeat(entry.depth.min(20));
-        let title = if entry.directory {
-            format!(
-                "{indent}{} 📁 {}",
-                if state.viewer_collapsed.contains(&entry.path) && state.viewer_search.is_empty() {
-                    "▸"
-                } else {
-                    "▾"
-                },
-                entry.name
-            )
+        // Indent guides plus an eased chevron replace the old ▸/▾ glyphs.
+        let open =
+            !(state.viewer_collapsed.contains(&entry.path) && state.viewer_search.is_empty());
+        let lead: Element<'_, Message> = if entry.directory {
+            crate::ui_kit::chevron(state.ui.folder_turn(&entry.path, open, now))
         } else {
-            let label = if entry.name.to_ascii_lowercase().ends_with(".cdf") {
-                format!("◇ {} · Character assembly", entry.name)
-            } else {
-                entry.name.clone()
-            };
-            format!("{indent}  {label}")
+            iced::widget::space().width(14).into()
         };
+        let kind_icon = crate::icons::glyph(
+            if entry.directory {
+                crate::icons::folder()
+            } else {
+                crate::icons::file()
+            },
+            14.0,
+        );
+        let title = if entry.directory {
+            entry.name.clone()
+        } else if entry.name.to_ascii_lowercase().ends_with(".cdf") {
+            format!("◇ {} · Character assembly", entry.name)
+        } else {
+            entry.name.clone()
+        };
+        let depth = entry.depth;
         let action = if entry.directory {
             Message::ViewerToggleFolder(entry.path)
         } else if entry.path.starts_with("@assemblies/") {
@@ -2155,13 +2325,22 @@ fn explorer(state: &State) -> Element<'_, Message> {
         };
         let item = design::button(
             row![
-                text(title).size(12).width(Fill),
+                crate::ui_kit::indent_guides(depth),
+                lead,
+                kind_icon,
+                container(crate::forms::highlight(
+                    &title,
+                    &state.viewer_search,
+                    12.0,
+                    accent
+                ))
+                .width(Fill),
                 text(if entry.directory {
                     String::new()
                 } else {
                     format!("{} KiB", entry.bytes.div_ceil(1024))
                 })
-                .size(12)
+                .size(design::LABEL)
                 .width(90),
             ]
             .spacing(7),
@@ -2200,7 +2379,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
     if total == 0 {
         rows = rows.push(
             text("No archive or extracted folder indexed.")
-                .size(13)
+                .size(design::BODY)
                 .style(design::muted),
         );
     }
@@ -2217,33 +2396,38 @@ fn explorer(state: &State) -> Element<'_, Message> {
             column![
                 row![
                     text("FILE EXPLORER").size(16),
-                    text(format!("{total} files")).size(12)
+                    text(format!("{total} files")).size(design::LABEL)
                 ]
                 .spacing(16),
-                text("PAK / PROJECT").size(12),
+                text("PAK / PROJECT").size(design::LABEL),
                 tooltip(
-                    text(compact_source_name(source)).size(12),
-                    text(source).size(11),
+                    text(compact_source_name(source)).size(design::LABEL),
+                    text(source).size(design::CAPTION),
                     tooltip::Position::Bottom,
                 ),
-                design::text_input("Search files and folders...", &state.viewer_search)
-                    .on_input(Message::ViewerSearchChanged),
+                explorer_breadcrumbs(state, source),
+                crate::forms::search_field(
+                    "Search files and folders...",
+                    &state.viewer_search,
+                    state.viewer_match_count,
+                    Message::ViewerSearchChanged,
+                ),
                 row![
                     design::button("Preview selected").on_press(Message::ViewerPreviewSelected),
                     design::button("Index folder").on_press(Message::StartScan),
                 ]
                 .spacing(8),
                 text("Right-click a file to open actions beside it.")
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
                 text(if state.viewer_from_library {
                     "Source assets are read-only. Create a Modding project to replace them."
                 } else {
                     "Select a project file, right-click → Import over…; browse for a file or drag it into the viewer."
                 })
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
-                scrollable(rows).height(Fill),
+                crate::ui_kit::faded_scroll(&state.ui, "viewer-files", rows, state.viewer_rows.len() > 18),
                 row![
                     design::button("◀ Previous").on_press_maybe(
                         (state.viewer_page > 0).then_some(Message::ViewerPreviousPage)
@@ -2252,14 +2436,14 @@ fn explorer(state: &State) -> Element<'_, Message> {
                         "Page {} · up to 350 visible entries",
                         state.viewer_page + 1
                     ))
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
                     design::button("Next ▶")
                         .on_press_maybe(state.viewer_more_rows.then_some(Message::ViewerNextPage)),
                 ]
                 .spacing(8),
                 text("Shift: range  •  Ctrl: toggle  •  CDF: assembly definition")
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
             ]
             .spacing(9),
@@ -2304,7 +2488,7 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
                         if selected { "☑" } else { "☐" },
                         item.relative_path
                     ))
-                    .size(11),
+                    .size(design::CAPTION),
                 )
                 .on_press(Message::ExportToggleFile(index))
                 .style(design::text_button)
@@ -2346,17 +2530,17 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
             design::button("✕").on_press(Message::ExportClose),
         ].spacing(8),
         text(format!("{} selected — Ctrl/Shift selections from Files are included when opened.",
-            state.export_selected.len())).size(11).style(design::muted),
+            state.export_selected.len())).size(design::CAPTION).style(design::muted),
         design::text_input("Filter indexed models, CDFs, and DDS textures…", &state.export_filter)
             .on_input(Message::ExportFilterChanged),
         scrollable(picker).height(Length::Fixed(295.0)),
         flags,
-        text("FBX creates a character hierarchy with named original parts. Combine meshes is optional; distinct historical armatures stay separate.").size(11).style(design::muted),
+        text("FBX creates a character hierarchy with named original parts. Combine meshes is optional; distinct historical armatures stay separate.").size(design::CAPTION).style(design::muted),
         text(if state.export_embed_textures {
             "Embedded textures selected: FBX export verifies source diffuse images on every visible CDF part."
         } else {
             "CAUTION: Embedded textures is OFF. The FBX will contain geometry and UVs, but no packed character images; assign your own verified diffuse maps or enable embedding."
-        }).size(11).style(design::muted),
+        }).size(design::CAPTION).style(design::muted),
         text(if !state.equipment_overrides.is_empty() || state.full_armor_glow || state.damage_blend_percent > 0 {
             format!("Model Options: {} equipment override(s), Glow {}, damage blend {}%. Export only the active CDF with Rigged + Embedded textures.",
                 state.equipment_overrides.len(),
@@ -2364,7 +2548,7 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
                 state.damage_blend_percent)
         } else {
             "Model Options: default equipment, Glow off, damage blend off".to_owned()
-        }).size(11).style(design::muted),
+        }).size(design::CAPTION).style(design::muted),
         row![
             text(format!("Destination: {}", if state.export_parent.is_empty() { "Not selected" } else { &state.export_parent })).width(Fill),
             design::button("Browse folder…").on_press(Message::ExportBrowse("folder")),
@@ -2373,7 +2557,7 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
             .on_input(Message::ExportFolderChanged),
         if crate::blender_install::valid_blender(&state.blender_path).is_some() {
             Element::from(text(format!("Blender ready: {}", state.blender_path))
-                .size(11).style(design::muted))
+                .size(design::CAPTION).style(design::muted))
         } else {
             Element::from(row![
                 text("Blender executable not found").width(Fill),
@@ -2398,13 +2582,13 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
                     design::button("Choose another CAF…").on_press(Message::ExportBrowse("caf")),
                 ].spacing(8),
                 text("Only a CAF whose original skeleton matches this rig can be embedded; converted DBA tracks are not bound to the model.")
-                    .size(11).style(design::muted),
+                    .size(design::CAPTION).style(design::muted),
             ].spacing(4))
         } else {
-            Element::from(text("Static FBX preserves source mesh geometry and UV0.").size(11))
+            Element::from(text("Static FBX preserves source mesh geometry and UV0.").size(design::CAPTION))
         },
         text("Files: <name>/<model>.fbx · dependencies: <name>/textures/*.png and <name>/dependencies/…")
-            .size(11).style(design::muted),
+            .size(design::CAPTION).style(design::muted),
     ].spacing(12);
     // The bottom actions stay visible even when a long source path or narrow
     // display requires the settings above to scroll. File list scrolls inside.
@@ -2428,7 +2612,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     if state.viewer_viewport_fullscreen {
         return column![
             row![
-                text("Model Viewer").size(13),
+                text("Model Viewer").size(design::BODY),
                 iced::widget::space().width(Fill),
                 design::button("Exit Fullscreen (Esc)")
                     .style(design::secondary)
@@ -2450,18 +2634,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     };
     let heading = row![
         text("Asset Viewer").size(20),
-        text(readonly).size(12).style(design::muted),
-        text(format!("{} selected", state.file_selection.indices.len())).size(12),
+        text(readonly).size(design::LABEL).style(design::muted),
+        text(format!("{} selected", state.file_selection.indices.len())).size(design::LABEL),
         iced::widget::space().width(Fill),
-        design::button("Fullscreen Viewport")
-            .style(design::secondary)
-            .on_press(Message::ToggleViewerViewportFullscreen),
         text(if state.gfx_active {
             "GFX: controls in right-hand GFX Tools tab"
         } else {
             "Orbit: drag  •  Pan: Shift/right drag  •  Zoom: wheel"
         })
-        .size(11)
+        .size(design::CAPTION)
         .style(design::muted),
     ]
     .spacing(14)
@@ -2497,14 +2678,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         } else {
             state.status.as_str()
         })
-        .size(12)
+        .size(design::LABEL)
         .width(Fill),
         text(if state.viewer_from_library {
             "Asset Library originals protected  •  Preview only"
         } else {
             "Modding project workspace  •  Original PAKs preserved"
         })
-        .size(11)
+        .size(design::CAPTION)
         .style(design::muted),
     ]
     .spacing(12);
@@ -2659,7 +2840,7 @@ pub(super) fn preferences_view(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(8),
                 row![
-                    text("Lighting").size(13),
+                    text("Lighting").size(design::BODY),
                     slider(
                         0.2..=4.0,
                         state.light_strength.clamp(0.2, 4.0),
@@ -2669,7 +2850,7 @@ pub(super) fn preferences_view(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(8)
                 .align_y(iced::Center),
-                text("Full uses original DDS resolution with no manager texture cap. Requires sufficient VRAM; the GPU's maximum texture dimensions still apply. Balanced is the low-memory option.").size(12).style(design::muted),
+                text("Full uses original DDS resolution with no manager texture cap. Requires sufficient VRAM; the GPU's maximum texture dimensions still apply. Balanced is the low-memory option.").size(design::LABEL).style(design::muted),
                 design::button("Save preferences").on_press(Message::ViewerSaveLayout),
             ]
             .spacing(15),
@@ -2682,6 +2863,32 @@ pub(super) fn preferences_view(state: &State) -> Element<'_, Message> {
         .center(Fill)
         .padding(18)
         .into()
+}
+
+fn dock_item(
+    icon: svg::Handle,
+    label: &'static str,
+    message: Message,
+    active: bool,
+) -> crate::ui_kit::DockItem {
+    crate::ui_kit::DockItem {
+        icon,
+        label,
+        message: Some(message),
+        active,
+    }
+}
+
+/// The picked replacement as a displayable image (PNG/JPEG/WebP only;
+/// DDS replacements cannot be decoded by the preview widget).
+fn replacement_image(state: &State) -> Option<iced::widget::image::Handle> {
+    state.editor_replace_dialog?;
+    let path = std::path::Path::new(state.editor_replace_source.trim());
+    let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp") || !path.is_file() {
+        return None;
+    }
+    Some(iced::widget::image::Handle::from_path(path))
 }
 
 #[cfg(test)]

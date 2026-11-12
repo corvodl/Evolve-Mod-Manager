@@ -149,7 +149,7 @@ pub fn inspect(game_path: &str, stage_path: &str, projects_path: &str) -> Snapsh
             recovery,
             dumps: "WER crash dump settings are not modified or enumerated by the Rust preview."
                 .into(),
-            storage: "Disk free space and orphaned-swap cleanup are not yet implemented.".into(),
+            storage: "Free space is shown in the meters above. Orphaned-swap cleanup is not yet implemented.".into(),
         }
     }
     #[cfg(not(windows))]
@@ -161,7 +161,7 @@ pub fn inspect(game_path: &str, stage_path: &str, projects_path: &str) -> Snapsh
             environment,
             recovery,
             dumps: "Windows WER diagnostics require Windows".into(),
-            storage: "Disk space and backup cleanup are not yet implemented".into(),
+            storage: "Backup cleanup is not yet implemented".into(),
         }
     }
 }
@@ -169,6 +169,7 @@ pub fn inspect(game_path: &str, stage_path: &str, projects_path: &str) -> Snapsh
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn missing_paths_remain_read_only_and_report_not_configured() {
         let temp = tempfile::tempdir().unwrap();

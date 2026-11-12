@@ -51,6 +51,8 @@ pub struct Announcement {
 #[derive(Clone, Debug, Default)]
 pub struct NewsState {
     pub cache: Cache,
+    /// The release notes parsed as Markdown, refreshed with the cache.
+    pub release_markdown: Vec<iced::widget::markdown::Item>,
     pub loading: bool,
     pub loaded_at: Option<Instant>,
     pub release_status: String,
@@ -69,8 +71,19 @@ pub struct NewsResult {
 }
 
 impl NewsState {
+    /// Parses the release notes once, so views only render them.
+    pub fn parse_release(&mut self) {
+        self.release_markdown = self
+            .cache
+            .release
+            .as_ref()
+            .map(|release| iced::widget::markdown::parse(&release.notes).collect())
+            .unwrap_or_default();
+    }
+
     pub fn apply(&mut self, result: NewsResult) {
         self.cache = result.cache;
+        self.parse_release();
         self.loading = false;
         self.loaded_at = Some(Instant::now());
         self.release_status = result.release_status;

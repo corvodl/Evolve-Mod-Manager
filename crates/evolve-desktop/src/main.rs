@@ -3,6 +3,7 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
+mod anim;
 mod assembly_materials;
 mod asset_cache;
 mod asset_library_page;
@@ -10,14 +11,22 @@ mod asset_viewer;
 mod audio_tools;
 mod auto_resources;
 mod blender_install;
+mod chrome;
 mod client_version;
+mod color_picker;
+mod command_palette;
 mod crash_diagnostics;
 mod design;
 mod developer_auth;
 mod developer_hotkeys;
+mod diff_view;
 mod direct_runtime;
 mod discord_presence;
+mod docs_page;
 mod explorer_tree;
+mod forms;
+mod fx;
+mod gallery;
 mod gfx_bundled_tools;
 mod gfx_dependencies;
 mod gfx_editor;
@@ -34,6 +43,7 @@ mod gfx_menu_video;
 mod gfx_mode_images;
 mod gfx_tool_install;
 mod guided_modding;
+mod icons;
 mod initial_setup;
 mod launcher_bridge;
 mod level_atmosphere;
@@ -41,17 +51,22 @@ mod level_authoring;
 mod level_camera;
 #[cfg(test)]
 mod level_capture;
+mod level_draft;
 mod level_edit_history;
 mod level_editor_shell;
 mod level_effect_sources;
 mod level_environment;
+mod level_gizmo;
 mod level_library;
 mod level_lighting;
+mod level_palette;
 mod level_pick;
 mod level_scene_renderer;
+mod level_transform;
 mod level_workspace;
 mod library_picker;
 mod loading_wheel;
+mod map_chooser;
 mod menu_popup;
 mod mod_play;
 mod modding_keys;
@@ -82,12 +97,14 @@ mod staged_library;
 mod standard_user_launch;
 mod storage_usage;
 mod system_health;
+mod system_meters;
 mod terrain_brush;
 mod terrain_material_probe;
 // Native RGB24 source-backed output stage; UI activation awaits verified\n// per-pixel Evolve paint alpha and original multi-layer shader ordering.\n#[allow(dead_code)]\nmod terrain_rebake_project;
 mod text_asset_editor;
 mod textured;
 mod toast;
+mod ui_kit;
 mod updater;
 mod updater_apply;
 mod uv_preview;
@@ -333,10 +350,37 @@ impl ActiveBlendSpace {
 #[derive(Default)]
 struct State {
     toasts: toast::Toasts,
+    /// Shared component state: palette, holds, tickers, island, dock.
+    ui: ui_kit::UiState,
+    color_picker: color_picker::PickerState,
+    gallery: gallery::GalleryState,
+    /// Banners, modal, side sheet and breadcrumb state.
+    chrome: chrome::ChromeState,
+    /// Disk and memory levels from the last System Health check.
+    health_meters: Vec<system_meters::Meter>,
+    /// Cached Settings path checks, refreshed when a path changes.
+    path_checks: forms::PathChecks,
+    /// Last good value per number field.
+    forms: forms::FormState,
+    /// Level Editor map chooser: search, filters, focus and thumbnails.
+    map_chooser: map_chooser::ChooserState,
+    /// Sort orders for the library table, project list and storage legend.
+    library_sort: ui_kit::Sort,
+    modding_sort: ui_kit::Sort,
+    storage_sort: ui_kit::Sort,
+    /// Filter chips ("Category: X", "Source: Y", "Build: Z").
+    library_chips: Vec<String>,
+    library_chip_query: String,
+    library_chip_options: iced::widget::combo_box::State<String>,
+    /// Catalog fingerprint the chip options were built for.
+    library_chip_options_for: (usize, usize),
+    modding_chips: Vec<String>,
+    modding_chip_query: String,
+    modding_chip_options: iced::widget::combo_box::State<String>,
     level_viewport_fullscreen: bool,
     viewer_viewport_fullscreen: bool,
     sidebar_hovered: bool,
-    sidebar_reveal: f32,
+    sidebar_reveal: anim::Tween,
     input: String,
     output: String,
     replacements: String,
@@ -541,6 +585,8 @@ struct State {
     viewer_rows: Vec<explorer_tree::ExplorerRow>,
     viewer_page: usize,
     viewer_more_rows: bool,
+    /// Files matching the explorer search, across every page.
+    viewer_match_count: Option<usize>,
     // Latest selected asset while an earlier worker is running. Never replay
     // a stale index after the indexed source folder changes.
     viewer_queued_preview: Option<usize>,
@@ -566,7 +612,8 @@ struct State {
     viewer_load_progress: Option<Arc<AtomicUsize>>,
     viewer_from_library: bool,
     developer_password: String,
-    developer_sections_expanded: HashSet<private_pages::DeveloperSection>,
+    /// Show the developer password as plain text while typing.
+    developer_show_password: bool,
     developer_status: String,
     developer_unlocked: bool,
     /// Session-only opt-in, never restored from settings; does not modify client authentication.
@@ -648,7 +695,9 @@ struct State {
     runtime_phase3_value: String,
     runtime_signature: String,
     runtime_plan_result: String,
-    docs_expanded: HashSet<private_pages::DocsSection>,
+    /// The Docs section shown on the right.
+    docs_selected: private_pages::DocsSection,
+    docs_search: String,
     show_advanced_tools: bool,
     activity_log: Vec<String>,
     health_expanded: bool,
@@ -685,6 +734,8 @@ struct State {
     library_matches: Vec<usize>,
     dependency_graph: Option<DependencyGraph>,
     comparison: Option<AssetComparison>,
+    /// Original/modified text for the Compare tab's line diff.
+    comparison_text: Option<(String, String)>,
     compare_original: String,
     compare_modified: String,
     viewer_show_inspector: bool,
@@ -718,7 +769,18 @@ struct State {
     /// The tool bar's active tool and brush in an editable project.
     level_tool: terrain_brush::LevelTool,
     terrain_brush: terrain_brush::BrushSettings,
-    terrain_brush_surface: String,
+    /// The Paint tool's terrain materials, with previews.
+    level_surface_palette: Option<Arc<Vec<level_palette::SurfaceItem>>>,
+    /// The Vegetation tool's kinds of vegetation, the chosen one (by model)
+    /// and its brush settings.
+    level_vegetation_palette: Option<Arc<Vec<level_palette::VegetationItem>>>,
+    level_vegetation_pick: Option<String>,
+    vegetation_density: f32,
+    vegetation_jitter: f32,
+    /// The last dab of a vegetation stroke, and whether the stroke has
+    /// made its undo step yet.
+    vegetation_stroke: Option<[f32; 3]>,
+    vegetation_stroke_pushed: bool,
     /// The project's terrain loaded for brushing; edits live here until saved.
     terrain_session: Option<terrain_brush::TerrainSession>,
     /// The brush outline under the mouse.
@@ -729,6 +791,18 @@ struct State {
     level_paste_at: Option<[f32; 3]>,
     /// The view ray under the mouse in the level viewport.
     level_pointer_ray: Option<([f32; 3], [f32; 3])>,
+    /// A G/R/S move, rotate or scale in progress.
+    level_transform: Option<level_transform::ModalTransform>,
+    /// The gizmo shown on the selection.
+    level_gizmo: level_transform::Mode,
+    /// Unsaved map changes, shown live; Save Map writes them.
+    level_draft: Option<level_draft::Draft>,
+    /// A polygon vertex being dragged: its index and the height it moves at.
+    level_vertex_drag: Option<(usize, f32)>,
+    /// The dragged vertex has moved, so releasing saves the polygon.
+    level_vertex_moved: bool,
+    /// RMB is held in the Level Editor: mouse-look, and WASD/QE fly.
+    level_looking: bool,
     scan_cancel: Option<Arc<AtomicBool>>,
     scan_indexed: Option<Arc<AtomicUsize>>,
     preview_cache: SharedCache,
@@ -736,6 +810,8 @@ struct State {
     modding_selected: Option<usize>,
     modding_name_input: String,
     modding_export_options_open: bool,
+    /// The specialist single-member rebuild disclosure.
+    modding_specialist_open: bool,
     modding_added_member: String,
     mod_launch_progress: Option<Arc<AtomicUsize>>,
     mod_toggle_animations: Vec<ModToggleAnimation>,
@@ -762,24 +838,237 @@ struct State {
     modding_pending_focus: Option<PathBuf>,
 }
 
+/// Both files as UTF-8 text when they are supported text assets within the
+/// text editor's size limit; otherwise `None` (binary assets keep the hash
+/// comparison only).
+fn compare_text_pair(original: &Path, modified: &Path) -> Option<(String, String)> {
+    let read = |path: &Path| -> Option<String> {
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        if !text_asset_editor::compatible(&name) {
+            return None;
+        }
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        if !meta.is_file() || meta.len() > text_asset_editor::MAX_TEXT_BYTES {
+            return None;
+        }
+        let bytes = std::fs::read(path).ok()?;
+        if bytes.contains(&0) {
+            return None;
+        }
+        String::from_utf8(bytes).ok()
+    };
+    Some((read(original)?, read(modified)?))
+}
+
+/// The intro card shows once per update: only when a version was seen
+/// before (so fresh installs skip it) and the installed one is newer.
+fn intro_due(last_seen: &str, installed: &str) -> bool {
+    let (Ok(seen), Ok(now)) = (
+        semver::Version::parse(last_seen.trim_start_matches('v')),
+        semver::Version::parse(installed),
+    ) else {
+        return false;
+    };
+    now > seen
+}
+
+/// Release notes rendered as Markdown with the app's type scale. Links go
+/// through `OpenNewsLink`, which only opens allowed URLs.
+fn release_notes_view(state: &State) -> Element<'_, Message> {
+    let theme = design::theme(&state.preferences);
+    let mut settings = iced::widget::markdown::Settings::with_text_size(
+        design::BODY,
+        iced::widget::markdown::Style::from(&theme),
+    );
+    settings.h1_size = design::TITLE.min(20.0).into();
+    settings.h2_size = 17.0.into();
+    settings.h3_size = design::HEADING.into();
+    settings.code_size = design::LABEL.into();
+    settings.spacing = 8.0.into();
+    iced::widget::markdown::view(&state.news.release_markdown, settings).map(Message::OpenNewsLink)
+}
+
+/// `theme_presets` key holding custom colours parked by a theme preset.
+const SAVED_CUSTOM_COLOURS: &str = "Saved custom colours";
+
+/// Full 0→1 sweep of the Legacy sidebar reveal.
+const SIDEBAR_REVEAL_DURATION: Duration = Duration::from_millis(140);
+/// Full off→on travel of a mod toggle thumb.
+const MOD_TOGGLE_DURATION: Duration = Duration::from_millis(280);
+
 /// Visual-only state: the enabled preference is committed before the
 /// thumb animation begins. Never animate a failed preference write.
-const MOD_TOGGLE_FRAMES: u8 = 7;
-
 #[derive(Debug, Clone)]
 struct ModToggleAnimation {
     workspace: PathBuf,
-    from: f32,
-    to: f32,
-    frame: u8,
+    thumb: anim::Tween,
 }
 
 impl ModToggleAnimation {
-    fn position(&self) -> f32 {
-        let t = (f32::from(self.frame) / f32::from(MOD_TOGGLE_FRAMES)).clamp(0.0, 1.0);
-        let eased = t * t * (3.0 - 2.0 * t);
-        self.from + (self.to - self.from) * eased
+    fn position(&self, now: Instant) -> f32 {
+        self.thumb.value(now)
     }
+}
+
+/// True while a looping ambient effect is on screen and motion is allowed:
+/// Home embers, the border beam on busy buttons, and loading skeletons.
+fn ui_ambient_running(state: &State) -> bool {
+    if state.preferences.reduce_motion {
+        return false;
+    }
+    let embers = state.page == Some(Page::Home) && state.preferences.show_home_background;
+    let beam = footer_is_working(state)
+        && matches!(state.page, Some(Page::Files | Page::Home | Page::Settings));
+    let skeleton = news_loading(state) && matches!(state.page, Some(Page::Home | Page::WhatsNew))
+        || state.library_startup_loading && state.page == Some(Page::AssetLibrary);
+    // The Activity button's dot pulses while work runs.
+    let activity = footer_is_working(state);
+    embers || beam || skeleton || activity
+}
+
+/// Writes one bookkeeping field into the saved preferences without also
+/// saving Settings edits the user hasn't saved yet.
+fn persist_saved_field(change: impl FnOnce(&mut Preferences)) {
+    let Ok(path) = settings_path() else {
+        return;
+    };
+    // No saved file yet (or an unreadable one): don't create or replace it.
+    let Ok(mut saved) = load_from(&path) else {
+        return;
+    };
+    change(&mut saved);
+    let _ = save_to(&path, &saved);
+}
+
+/// Saves the opened map's thumbnail and puts it at the front of the
+/// chooser's recents.
+fn remember_opened_map(state: &mut State, loaded: &mut level_library::LoadedMap) {
+    let map_name = loaded.maps[loaded.index].name.clone();
+    let mut keys = vec![map_chooser::thumb_key(&loaded.archive.id, &map_name)];
+    if let Some(project) = &loaded.project {
+        keys.push(map_chooser::thumb_key(
+            &project.workspace.display().to_string(),
+            &map_name,
+        ));
+    }
+    if let Some(png) = loaded.thumbnail.take() {
+        map_chooser::save_thumb(&png, &keys);
+        let handle = image::Handle::from_bytes(png);
+        for key in keys {
+            state.map_chooser.thumbs.insert(key, handle.clone());
+        }
+    }
+    let recent = map_chooser::remember(
+        &mut state.preferences,
+        &loaded.archive.id,
+        loaded
+            .project
+            .as_ref()
+            .map_or(loaded.archive.name.as_str(), |project| {
+                project.label.as_str()
+            }),
+        &map_name,
+        loaded
+            .project
+            .as_ref()
+            .map(|project| project.workspace.as_path()),
+    );
+    let recents = state.preferences.recent_maps.clone();
+    let _ = recent;
+    persist_saved_field(move |saved| saved.recent_maps = recents);
+}
+
+/// The selected staged PAK's file name, which a rebuild output must keep.
+fn selected_staged_pak_name(state: &State) -> Option<String> {
+    let inventory = state.inventory.as_ref()?;
+    let index = state.file_selection.indices.iter().copied().max()?;
+    let entry = inventory.entries.get(index)?;
+    Path::new(&entry.relative_path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| name.to_ascii_lowercase().ends_with(".pak"))
+}
+
+/// Specialist rebuild path checks, re-run only when a value changes.
+fn sync_rebuild_checks(state: &mut State) {
+    let replacement = state.signed_replacement.clone();
+    state
+        .path_checks
+        .sync_extra("rebuild-replacement", replacement.clone(), || {
+            forms::check_existing_file(&replacement)
+        });
+    let original = selected_staged_pak_name(state);
+    let output = state.output.clone();
+    state.path_checks.sync_extra(
+        "rebuild-output",
+        format!("{output}|{}", original.clone().unwrap_or_default()),
+        || forms::check_rebuild_output(&output, original.as_deref()),
+    );
+}
+
+/// Remembers the newest announcement as seen, so the What's New count
+/// clears. Saved straight away so it survives a restart.
+fn mark_news_seen(state: &mut State) {
+    if let Some(newest) = chrome::newest_news(state)
+        && newest > state.preferences.news_seen_at
+    {
+        state.preferences.news_seen_at = newest.clone();
+        persist_saved_field(move |saved| saved.news_seen_at = newest);
+    }
+}
+
+/// News has been requested but nothing has arrived yet.
+fn news_loading(state: &State) -> bool {
+    state.news.loading
+}
+
+/// Retarget number tickers from current values. Runs after every message,
+/// so a ticker starts easing the moment its value changes.
+fn sync_tickers(state: &mut State) {
+    let now = Instant::now();
+    let reduce = state.preferences.reduce_motion;
+    if let Some(projects) = state.modding_projects.as_ref() {
+        let enabled = projects.iter().filter(|project| project.enabled).count();
+        state
+            .ui
+            .set_ticker("enabled_mods", enabled as f64, now, reduce);
+    }
+    if let Some(usage) = state.storage_usage.as_ref() {
+        let total: u64 = usage.buckets.iter().sum();
+        state
+            .ui
+            .set_ticker("storage_total", total as f64, now, reduce);
+        for (index, bytes) in usage.buckets.iter().enumerate() {
+            const KEYS: [&str; 5] = [
+                "storage_0",
+                "storage_1",
+                "storage_2",
+                "storage_3",
+                "storage_4",
+            ];
+            state.ui.set_ticker(KEYS[index], *bytes as f64, now, reduce);
+        }
+    }
+    match state.library_import_progress.as_ref() {
+        Some(progress) => {
+            let files = progress.load(std::sync::atomic::Ordering::Relaxed);
+            state
+                .ui
+                .set_ticker("import_files", files as f64, now, reduce);
+        }
+        None => state.ui.clear_ticker("import_files"),
+    }
+}
+
+/// True while any shared UI tween still needs frames.
+fn ui_animation_running(state: &State, now: Instant) -> bool {
+    state.ui.animating(now)
+        || state.chrome.animating(now)
+        || state.sidebar_reveal.is_running(now)
+        || state
+            .mod_toggle_animations
+            .iter()
+            .any(|animation| animation.thumb.is_running(now))
 }
 
 /// Docked tools all share the same resizable sidebar. Files is permanent;
@@ -814,6 +1103,13 @@ enum ViewerTab {
     Uv,
     Dependencies,
     Compare,
+}
+
+/// All of a map draft's changes to one project file.
+#[derive(Debug, Clone)]
+enum LevelFileEdit {
+    Xml(Vec<evolve_core::scene_authoring::LayerAuthoringEdit>),
+    Compiled(evolve_core::CompiledEdits),
 }
 
 #[derive(Debug, Clone)]
@@ -976,7 +1272,14 @@ enum Operation {
     DiscoverLevelMaps(evolve_core::ImportedPak),
     DiscoverProjectMaps(modding_projects::ProjectRow),
     LoadLevelWildlife(evolve_core::ImportedPak, Arc<LevelScene>),
-    OpenProjectLevel(modding_projects::ProjectRow, usize, PathBuf),
+    /// The last field is the map's current world when this reloads it after
+    /// an edit, so unchanged models and textures are reused.
+    OpenProjectLevel(
+        modding_projects::ProjectRow,
+        usize,
+        PathBuf,
+        Option<Arc<world_instances::World>>,
+    ),
     SaveProjectLevel(
         modding_projects::ProjectRow,
         PathBuf,
@@ -985,6 +1288,8 @@ enum Operation {
         PathBuf,
     ),
     SaveProjectSource(ProjectRow, PathBuf, ProjectLevelMutation, PathBuf, PathBuf),
+    /// Save a map's unsaved changes: each changed file, once.
+    SaveLevelDraft(ProjectRow, Vec<(PathBuf, LevelFileEdit)>, PathBuf),
     RestoreCommittedLevel(
         ProjectRow,
         Arc<level_edit_history::CommittedRevision>,
@@ -1097,7 +1402,8 @@ enum Completed {
     ManagedLibraryBuildRenamed(Vec<ManagedLibraryBuild>, ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
-    Comparison(AssetComparison),
+    /// Report plus both files' text when they are small UTF-8 text assets.
+    Comparison(AssetComparison, Option<Box<(String, String)>>),
     Inventory(Inventory),
     Pak(PakInventory),
     Texture(DdsInfo),
@@ -1173,6 +1479,8 @@ enum Completed {
     DirectGameStarted(u32, Vec<String>),
     InitialSetupCreated(initial_setup::InitialSetup),
     TestSetupCreated(initial_setup::InitialSetup),
+    /// A map draft was saved: the project and how many files changed.
+    LevelDraftSaved(ProjectRow, usize),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
     OfflineLauncherRestored(usize, bool),
     OfflineLauncherRecoveryWarning(String),
@@ -1353,7 +1661,14 @@ impl Operation {
                     .map_err(|e| e.to_string())
             }
             Self::CompareAssets(original, modified) => compare_assets(&original, &modified)
-                .map(Completed::Comparison)
+                .map(|report| {
+                    // Text assets also get a line diff, read here off the UI thread.
+                    let texts = (!report.identical)
+                        .then(|| compare_text_pair(&original, &modified))
+                        .flatten()
+                        .map(Box::new);
+                    Completed::Comparison(report, texts)
+                })
                 .map_err(|e| e.to_string()),
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
@@ -1904,8 +2219,8 @@ impl Operation {
                 level_scene_renderer::assemble_wildlife(&archive, &scene)
                     .map(|(world, report)| Completed::LevelWildlife(scene, world, report))
             }
-            Self::OpenProjectLevel(project, index, library_root) => {
-                level_library::open_project(project, index, &library_root)
+            Self::OpenProjectLevel(project, index, library_root, previous) => {
+                level_library::open_project(project, index, &library_root, previous)
                     .map(|map| Completed::ImportedMap(Box::new(map)))
             }
             Self::SaveProjectLevel(project, source, expected, edits, projects_root) => {
@@ -2118,6 +2433,70 @@ impl Operation {
                     saved,
                     saved.then_some(revision),
                 ))
+            }
+            Self::SaveLevelDraft(project, files, projects_root) => {
+                // Every file is edited in memory first: nothing is written
+                // unless all of them succeed.
+                let root = std::fs::canonicalize(project.workspace.join("files"))
+                    .map_err(|e| e.to_string())?;
+                let mut outputs = Vec::with_capacity(files.len());
+                for (source, edit) in files {
+                    let metadata = std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
+                    let source = std::fs::canonicalize(&source).map_err(|e| e.to_string())?;
+                    if !metadata.file_type().is_file()
+                        || metadata.len() > 192 * 1024 * 1024
+                        || !source.starts_with(&root)
+                    {
+                        return Err("Source is not a regular managed project member".into());
+                    }
+                    let member = source
+                        .strip_prefix(&root)
+                        .map_err(|_| "Level source is outside this Modding project")?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let lower = member.to_ascii_lowercase();
+                    let original = std::fs::read(&source).map_err(|e| e.to_string())?;
+                    let output = match edit {
+                        LevelFileEdit::Xml(edits) => {
+                            if !(lower.ends_with(".lyr") || lower.ends_with(".xml")) {
+                                return Err(format!("{member} is not an XML layer"));
+                            }
+                            let mut bytes = original.clone();
+                            for edit in &edits {
+                                bytes = evolve_core::scene_authoring::edit_native_layer_bytes(
+                                    &bytes, edit,
+                                )
+                                .map_err(|e| format!("{member}: {e}"))?;
+                            }
+                            bytes
+                        }
+                        LevelFileEdit::Compiled(edits) => {
+                            if lower != "terrain/terrain.dat"
+                                && !lower.ends_with("/terrain/terrain.dat")
+                            {
+                                return Err(format!("{member} is not the map's terrain.dat"));
+                            }
+                            evolve_core::apply_compiled_edits(&original, &edits)
+                                .map_err(|e| format!("{member}: {e}"))?
+                        }
+                    };
+                    outputs.push((member, original, output));
+                }
+                let mut saved = 0;
+                for (member, original, output) in outputs {
+                    if output != original
+                        && modding_projects::save_level_member_checked(
+                            &project,
+                            &projects_root,
+                            &member,
+                            &original,
+                            &output,
+                        )?
+                    {
+                        saved += 1;
+                    }
+                }
+                Ok(Completed::LevelDraftSaved(project, saved))
             }
             Self::RestoreCommittedLevel(project, revision, undo, root) => {
                 revision.apply(&project, &root, undo)?;
@@ -2659,6 +3038,39 @@ impl Operation {
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
+    /// Shared UI component events (palette, hold buttons, island, dock).
+    Ui(ui_kit::UiMsg),
+    /// Run several messages in order (palette commands that navigate first).
+    Sequence(Vec<Message>),
+    OpenSettingsTab(settings_page::Tab),
+    TextEditorToggleDiff,
+    DismissIntro,
+    Gallery(gallery::Msg),
+    Chrome(chrome::Msg),
+    Form(forms::FormMsg),
+    Map(map_chooser::Msg),
+    /// Browse for a path setting that has no dedicated picker.
+    BrowsePath(forms::PathKind),
+    BrowsedPath(forms::PathKind, Option<PathBuf>),
+    /// Move a mod within the selected profile: `(from, to)`.
+    ProfileModMove(usize, usize),
+    /// Sort a table: `(table, column)`; clicking again flips direction.
+    SortBy(&'static str, &'static str),
+    LibraryChipPicked(String),
+    LibraryChipInput(String),
+    LibraryChipRemove(usize),
+    ModdingChipPicked(String),
+    ModdingChipInput(String),
+    ModdingChipRemove(usize),
+    /// Files are being dragged over (`true`) or left (`false`) a window.
+    FilesHovered(window::Id, bool),
+    ColorPicker(color_picker::Msg),
+    /// Copy a value from a copy button: `(button id, value)`.
+    CopyToClipboard(String, String),
+    PreferenceThemePreset(&'static str),
+    PreferenceUpdateChannelSet(&'static str),
+    PreferenceAppearanceSet(&'static str),
+    PreferenceCornerStyle(&'static str),
     ToastTick(std::time::Instant),
     DismissToast(u64),
     ToastClicked(u64),
@@ -2667,7 +3079,8 @@ enum Message {
     LaunchUpdatesChecked(Vec<(UpdateChannel, Result<Option<ReleaseUpdate>, String>)>),
     ApplyLaunchUpdate(String),
     SidebarHover(bool),
-    SidebarAnimationTick,
+    /// Redraw tick for shared `anim::Tween`s; only subscribed while one runs.
+    AnimationFrame,
     LibraryPickFiles,
     LibraryPickFolder,
     LibraryUpdatePickFolder,
@@ -2770,7 +3183,29 @@ enum Message {
     ToggleLevelViewportFullscreen,
     ToggleViewerViewportFullscreen,
     ViewportEscape(window::Id),
-    LevelGizmoMove(usize, f32),
+    /// A gizmo handle was grabbed: transform along its axis (None: free).
+    LevelGizmoGrab(
+        level_transform::Mode,
+        Option<usize>,
+        Option<([f32; 3], [f32; 3])>,
+    ),
+    /// Which gizmo the Select tool shows: move, rotate or scale.
+    LevelGizmoMode(level_transform::Mode),
+    /// A polygon vertex of the selected area is dragged to the ground point
+    /// under this ray; releasing saves the polygon.
+    LevelVertexDrag(usize, Option<([f32; 3], [f32; 3])>),
+    LevelVertexRelease,
+    /// Undo or redo an unsaved map change.
+    LevelDraftUndo,
+    LevelDraftRedo,
+    /// Write the unsaved map changes to the project, then reload the map.
+    LevelSaveMap,
+    /// Drop the unsaved map changes.
+    LevelDiscardMap,
+    /// Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) and Ctrl+S in the Level Editor.
+    LevelUndoKey(window::Id),
+    LevelRedoKey(window::Id),
+    LevelSaveKey(window::Id),
     LevelSaveProjectChanges,
     LevelUndoCommitted,
     LevelRedoCommitted,
@@ -2789,7 +3224,14 @@ enum Message {
     LevelBrushRadius(f32),
     LevelBrushStrength(f32),
     LevelBrushHardness(f32),
-    LevelBrushSurface(String),
+    /// The Paint tool's materials finished loading; one was picked.
+    LevelSurfacePalette(Vec<level_palette::SurfaceItem>),
+    LevelPickSurface(u8),
+    /// The Vegetation tool's kinds (with previews); one was picked.
+    LevelVegetationPalette(Vec<level_palette::VegetationItem>),
+    LevelPickVegetation(String),
+    LevelVegetationDensity(f32),
+    LevelVegetationJitter(f32),
     /// A brush stroke starts where this view ray meets the ground.
     LevelBrushPress {
         lower: bool,
@@ -2860,6 +3302,14 @@ enum Message {
     LevelDuplicateKey(window::Id),
     /// The view ray under the mouse moved (None: off the viewport).
     LevelPointerRay(Option<([f32; 3], [f32; 3])>),
+    /// RMB pressed or released in the Level Editor window.
+    LevelLookButton(window::Id, bool),
+    /// Enter in the Level Editor window, not taken by a text field.
+    LevelEnterKey(window::Id),
+    /// G, R or S: start moving, rotating or scaling the selection.
+    LevelTransformStart(level_transform::Mode),
+    LevelTransformConfirm,
+    LevelTransformCancel,
     LevelCameraWindowFocus(window::Id, bool),
     LevelCameraTick,
     LevelAnimationTick,
@@ -3000,14 +3450,24 @@ enum Message {
     LevelExportEdits,
     ToggleAdvancedTools,
     ToggleActivity,
-    ToggleDocsSection(private_pages::DocsSection),
-    DocsExpandAll(bool),
-    ToggleDeveloperSection(private_pages::DeveloperSection),
-    DeveloperExpandAll(bool),
+    ModdingToggleSpecialist,
+    /// Browse for the specialist rebuild's replacement (`false`) or output (`true`).
+    ModdingBrowseRebuild(bool),
+    ModdingBrowsedRebuild(bool, Option<PathBuf>),
+    DocsSelect(private_pages::DocsSection),
+    DocsSearch(String),
+    /// Open search hit `n` and scroll its step into view.
+    DocsOpenResult(usize),
+    /// Show one Developer tab (remembered across sessions).
+    DeveloperTab(private_pages::DeveloperSection),
+    /// Ctrl+1–6: the Developer tab by position.
+    DeveloperTabKey(usize),
+    DeveloperShowPassword(bool),
     ClearActivity,
     ToggleSystemHealth,
     CheckSystemHealth,
     SystemHealthChecked(system_health::Snapshot),
+    SystemMetersChecked(Vec<system_meters::Meter>),
     DeveloperPasswordChanged(String),
     UnlockDeveloper,
     DeveloperChecked(bool),
@@ -3423,6 +3883,716 @@ fn level_pending_edits(state: &State) -> Vec<(String, evolve_core::Transform)> {
 /// The editor is a preview unless a managed project is active. Every
 /// authoring command submits only a verified project source member to the
 /// existing backup/import transaction, never an imported PAK or library file.
+/// Load the Paint tool's materials and their previews in the background:
+/// a terrain.dat map's SurfaceTypes, or a Heightmap.dat map's paint layers.
+fn load_surface_palette(state: &mut State) -> Task<Message> {
+    let (Some(session), Some((archive, _, _))) = (&state.terrain_session, &state.library_map)
+    else {
+        return Task::none();
+    };
+    let surfaces = if session.compiled {
+        session
+            .source
+            .parent()
+            .and_then(Path::parent)
+            .and_then(|map| std::fs::read(map.join("leveldata.xml")).ok())
+            .map(|xml| terrain_material_probe::leveldata_surfaces(&xml))
+            .unwrap_or_default()
+    } else {
+        let mut seen = std::collections::BTreeSet::new();
+        evolve_core::read_terrain_paint(&session.source)
+            .ok()
+            .flatten()
+            .map(|paint| {
+                paint
+                    .layers
+                    .into_iter()
+                    .filter(|layer| seen.insert(layer.id))
+                    .map(|layer| (layer.id, layer.name, layer.surface_type))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if surfaces.is_empty() {
+        state.level_surface_palette = Some(Arc::new(Vec::new()));
+        state.status = "This map lists no terrain materials to paint with.".into();
+        return Task::none();
+    }
+    let archive = archive.clone();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                terrain_material_probe::surface_palette(&archive, &surfaces)
+                    .into_iter()
+                    .map(|entry| level_palette::SurfaceItem {
+                        id: entry.id,
+                        name: entry.name,
+                        preview: entry.thumbnail.as_ref().map(level_palette::handle),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default()
+        },
+        Message::LevelSurfacePalette,
+    )
+}
+
+/// The map's kinds of terrain.dat vegetation, most common first. False when
+/// it has none.
+fn vegetation_palette(state: &mut State) -> bool {
+    let Some(scene) = &state.level_scene else {
+        return false;
+    };
+    let mut kinds = std::collections::BTreeMap::<&str, (usize, usize)>::new();
+    for (index, object) in scene.objects.iter().enumerate() {
+        if object.kind.eq_ignore_ascii_case("CompiledVegetation") && !object.hidden {
+            kinds.entry(object.model.as_str()).or_insert((0, index)).0 += 1;
+        }
+    }
+    if kinds.is_empty() {
+        return false;
+    }
+    let previews = state
+        .level_vegetation_palette
+        .as_ref()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| (item.model.clone(), item.preview.clone()))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut items = kinds
+        .into_iter()
+        .map(|(model, (count, origin))| level_palette::VegetationItem {
+            model: model.to_owned(),
+            name: model
+                .rsplit('/')
+                .next()
+                .unwrap_or(model)
+                .trim_end_matches(".cgf")
+                .replace('_', " "),
+            count,
+            origin,
+            preview: previews.get(model).cloned().flatten(),
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| b.count.cmp(&a.count).then(a.name.cmp(&b.name)));
+    if !state
+        .level_vegetation_pick
+        .as_ref()
+        .is_some_and(|pick| items.iter().any(|item| item.model == *pick))
+    {
+        state.level_vegetation_pick = items.first().map(|item| item.model.clone());
+    }
+    state.level_vegetation_palette = Some(Arc::new(items));
+    true
+}
+
+/// Previews of the vegetation kinds, from the textures the view already
+/// decoded, made in the background.
+fn load_vegetation_previews(state: &mut State) -> Task<Message> {
+    let (Some(palette), Some(world)) = (&state.level_vegetation_palette, &state.level_world_source)
+    else {
+        return Task::none();
+    };
+    if palette.iter().all(|item| item.preview.is_some()) {
+        return Task::none();
+    }
+    let mut images = HashMap::new();
+    for group in &world.groups {
+        let Some(diffuse) = group
+            .surfaces
+            .iter()
+            .find_map(|surface| surface.diffuse.clone())
+        else {
+            continue;
+        };
+        for item in palette.iter() {
+            if !images.contains_key(&item.model)
+                && group
+                    .instances
+                    .iter()
+                    .any(|instance| instance.object_index == item.origin)
+            {
+                images.insert(item.model.clone(), diffuse.clone());
+            }
+        }
+    }
+    let items = (**palette).clone();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                items
+                    .into_iter()
+                    .map(|mut item| {
+                        if item.preview.is_none()
+                            && let Some(image) = images.get(&item.model)
+                        {
+                            item.preview = Some(level_palette::handle(
+                                &::image::imageops::thumbnail(image.as_ref(), 64, 64),
+                            ));
+                        }
+                        item
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default()
+        },
+        Message::LevelVegetationPalette,
+    )
+}
+
+/// One dab of the vegetation brush at the ground under a ray: scatter copies
+/// of the chosen kind in the brush circle, or with `erase` remove that kind
+/// there. A stroke is one undo step.
+fn vegetation_dab(state: &mut State, origin: [f32; 3], direction: [f32; 3], erase: bool) {
+    use rand::Rng;
+    let radius = state.terrain_brush.radius;
+    let Some(at) = state
+        .terrain_session
+        .as_ref()
+        .and_then(|session| session.hit(origin, direction))
+    else {
+        return;
+    };
+    if let Some(session) = &state.terrain_session {
+        state.terrain_brush_ring = Some(Arc::new(session.ring(at, radius)));
+    }
+    // Dabs half a radius apart along a stroke.
+    if let Some(last) = state.vegetation_stroke
+        && ((at[0] - last[0]).powi(2) + (at[1] - last[1]).powi(2)).sqrt() < radius * 0.5
+    {
+        return;
+    }
+    state.vegetation_stroke = Some(at);
+    let (Some(model), Some(snapshot)) = (state.level_vegetation_pick.clone(), draft_current(state))
+    else {
+        return;
+    };
+    let inside = |position: [f32; 3]| {
+        ((position[0] - at[0]).powi(2) + (position[1] - at[1]).powi(2)).sqrt() <= radius
+    };
+    let kind = |object: &evolve_core::PlacedObject| {
+        object.kind.eq_ignore_ascii_case("CompiledVegetation")
+            && !object.hidden
+            && object.model == model
+    };
+    let (next, done) = if erase {
+        let indices = snapshot
+            .scene
+            .objects
+            .iter()
+            .enumerate()
+            .filter(|(_, object)| kind(object) && inside(object.world.position))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if indices.is_empty() {
+            return;
+        }
+        let count = indices.len();
+        (
+            level_draft::delete(&snapshot, &indices),
+            format!("Erased {count} vegetation"),
+        )
+    } else {
+        // Any remaining instance of the kind is the template.
+        let Some(template) = snapshot.scene.objects.iter().position(kind) else {
+            state.status = "No instance of that vegetation is left to copy.".into();
+            return;
+        };
+        let source = snapshot.scene.objects[template].local;
+        let mut taken = snapshot
+            .scene
+            .objects
+            .iter()
+            .map(|object| object.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut next_id = 0usize;
+        let mut rng = rand::thread_rng();
+        let mut copies = Vec::new();
+        for _ in 0..state.vegetation_density.round().max(1.0) as usize {
+            let distance = radius * rng.r#gen::<f32>().sqrt();
+            let angle = rng.r#gen::<f32>() * std::f32::consts::TAU;
+            let (x, y) = (
+                at[0] + distance * angle.cos(),
+                at[1] + distance * angle.sin(),
+            );
+            let Some(z) = level_ground_height(state, x, y) else {
+                continue;
+            };
+            // A random turn about Z on top of the template's own rotation.
+            let (s, c) = (rng.r#gen::<f32>() * std::f32::consts::PI).sin_cos();
+            let q = source.quaternion;
+            let quaternion = [
+                c * q[0] - s * q[3],
+                c * q[1] - s * q[2],
+                c * q[2] + s * q[1],
+                c * q[3] + s * q[0],
+            ];
+            let size = 1.0 + state.vegetation_jitter * (rng.r#gen::<f32>() * 2.0 - 1.0);
+            let id = loop {
+                let id = format!("__compiled_copy_{next_id}");
+                next_id += 1;
+                if taken.insert(id.clone()) {
+                    break id;
+                }
+            };
+            copies.push((
+                template,
+                id,
+                evolve_core::Transform {
+                    position: [x, y, z],
+                    quaternion,
+                    scale: source.scale.map(|v| v * size),
+                },
+            ));
+        }
+        let count = copies.len();
+        match level_draft::copy_many(&snapshot, &copies) {
+            Ok(next) => (next, format!("Painted {count} vegetation")),
+            Err(reason) => {
+                state.status = reason;
+                return;
+            }
+        }
+    };
+    if state.vegetation_stroke_pushed
+        && let Some(draft) = state.level_draft.as_mut()
+    {
+        draft.amend(next);
+        show_draft(state);
+        state.status = format!("{done} · Ctrl+Z undo · Ctrl+S save map");
+    } else {
+        state.vegetation_stroke_pushed = true;
+        apply_draft_edit(state, next, &done);
+    }
+}
+
+/// Whether the open map has unsaved changes.
+fn draft_pending(state: &State) -> bool {
+    state
+        .level_draft
+        .as_ref()
+        .is_some_and(level_draft::Draft::changed)
+}
+
+/// The map as the editor shows it now, for the next change.
+fn draft_current(state: &State) -> Option<level_draft::Snapshot> {
+    if let Some(draft) = &state.level_draft {
+        return Some(draft.current.clone());
+    }
+    Some(level_draft::Snapshot {
+        scene: state.level_scene.clone()?,
+        world: state.level_world_source.clone(),
+        origins: Arc::default(),
+        deleted: Arc::default(),
+    })
+}
+
+/// Show the draft's current snapshot: scene, world, selection and fields.
+fn show_draft(state: &mut State) {
+    let Some(draft) = &state.level_draft else {
+        return;
+    };
+    let current = draft.current.clone();
+    let count = current.scene.objects.len();
+    state.level_scene = Some(current.scene.clone());
+    state.level_world_source = current.world.clone();
+    if let Some(world) = &state.level_world_source {
+        world.placement_preview.clear();
+    }
+    refresh_wildlife_visibility(state);
+    let hidden = |index: usize| {
+        current
+            .scene
+            .objects
+            .get(index)
+            .is_none_or(|object| object.hidden)
+    };
+    state
+        .level_selection
+        .indices
+        .retain(|&index| index < count && !hidden(index));
+    if state.level_selected.is_some_and(hidden) {
+        state.level_selected = None;
+    }
+    sync_level_fields(state);
+}
+
+/// Make `next` the map's current state, undoably.
+fn apply_draft_edit(state: &mut State, next: level_draft::Snapshot, done: &str) {
+    if state.level_draft.is_none()
+        && let Some(loaded) = draft_current(state)
+    {
+        state.level_draft = Some(level_draft::Draft::new(loaded));
+    }
+    let Some(draft) = state.level_draft.as_mut() else {
+        return;
+    };
+    draft.push(next);
+    show_draft(state);
+    state.status = format!("{done} · Ctrl+Z undo · Ctrl+S save map");
+}
+
+/// Copy, delete or reshape the selection in the draft.
+fn draft_object_edit(state: &mut State, message: &Message) -> Task<Message> {
+    let (object, _) = match selected_project_object_source(state) {
+        Ok(found) => found,
+        Err(reason) => {
+            state.status = reason;
+            return Task::none();
+        }
+    };
+    let Some(index) = state.level_selected else {
+        return Task::none();
+    };
+    let Some(snapshot) = draft_current(state) else {
+        return Task::none();
+    };
+    match message {
+        Message::LevelDuplicateSelected => {
+            let id = if is_compiled_kind(&object) {
+                let taken = snapshot
+                    .scene
+                    .objects
+                    .iter()
+                    .map(|o| o.id.as_str())
+                    .collect::<std::collections::HashSet<_>>();
+                match (0..)
+                    .map(|n: usize| format!("__compiled_copy_{n}"))
+                    .find(|id| !taken.contains(id.as_str()))
+                {
+                    Some(id) => id,
+                    None => return Task::none(),
+                }
+            } else {
+                match fresh_unique_authored_level_guid(&object.id, Some(&snapshot.scene)) {
+                    Ok(id) => id,
+                    Err(reason) => {
+                        state.status = reason;
+                        return Task::none();
+                    }
+                }
+            };
+            // A paste lands at its target; Shift+D 2 m along X.
+            let target = state.level_paste_at.take().unwrap_or([
+                object.world.position[0] + 2.0,
+                object.world.position[1],
+                object.world.position[2],
+            ]);
+            let local = evolve_core::Transform {
+                position: paste_local_position(&object, target),
+                ..object.local
+            };
+            match level_draft::copy(&snapshot, index, id, local) {
+                Ok((next, copied)) => {
+                    state.level_selection.clear();
+                    state.level_selection.indices.insert(copied);
+                    state.level_selected = Some(copied);
+                    apply_draft_edit(state, next, &format!("Copied {}", object.name));
+                }
+                Err(reason) => state.status = reason,
+            }
+        }
+        Message::LevelDeleteSelected => {
+            let mut indices = state
+                .level_selection
+                .indices
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            if indices.is_empty() {
+                indices.push(index);
+            }
+            for &each in &indices {
+                let Some(object) = snapshot.scene.objects.get(each) else {
+                    continue;
+                };
+                if object.kind.eq_ignore_ascii_case("Vegetation") {
+                    state.status =
+                        "Delete VegetationMap.dat instances one at a time with Delete vegetation."
+                            .into();
+                    return Task::none();
+                }
+                if !is_compiled_kind(object)
+                    && let Err(reason) =
+                        level_authoring::validate_deletion(&snapshot.scene, &object.id)
+                {
+                    state.status = reason;
+                    return Task::none();
+                }
+            }
+            let next = level_draft::delete(&snapshot, &indices);
+            state.level_selection.clear();
+            state.level_selected = None;
+            apply_draft_edit(
+                state,
+                next,
+                &format!(
+                    "Deleted {} placement{}",
+                    indices.len(),
+                    if indices.len() == 1 { "" } else { "s" }
+                ),
+            );
+        }
+        Message::LevelSaveWildlifeShape => {
+            if !(object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+                || object.kind.eq_ignore_ascii_case("AreaShape"))
+            {
+                state.status = "Select an area to edit its polygon.".into();
+                return Task::none();
+            }
+            match state.level_authoring.points() {
+                Ok(points) => {
+                    let next = level_draft::shape(&snapshot, index, points);
+                    apply_draft_edit(state, next, &format!("Reshaped {}", object.name));
+                }
+                Err(reason) => state.status = reason,
+            }
+        }
+        _ => {}
+    }
+    Task::none()
+}
+
+/// Every unsaved change as edits to the project files that hold them.
+fn draft_file_edits(state: &State) -> Result<Vec<(PathBuf, LevelFileEdit)>, String> {
+    use evolve_core::scene_authoring::LayerAuthoringEdit;
+    let draft = state.level_draft.as_ref().ok_or("No unsaved changes")?;
+    let current = &draft.current;
+    let loaded = |id: &str| {
+        draft
+            .original
+            .scene
+            .objects
+            .iter()
+            .find(|object| object.id == id)
+    };
+    let mut files: Vec<(PathBuf, LevelFileEdit)> = Vec::new();
+    fn file(files: &mut Vec<(PathBuf, LevelFileEdit)>, path: PathBuf, compiled: bool) -> usize {
+        if let Some(at) = files.iter().position(|(p, _)| *p == path) {
+            return at;
+        }
+        files.push((
+            path,
+            if compiled {
+                LevelFileEdit::Compiled(evolve_core::CompiledEdits::default())
+            } else {
+                LevelFileEdit::Xml(Vec::new())
+            },
+        ));
+        files.len() - 1
+    }
+    for change in level_draft::changes(&draft.original, current) {
+        let index = match &change {
+            level_draft::Change::Copy { index, .. }
+            | level_draft::Change::Transform { index }
+            | level_draft::Change::Shape { index }
+            | level_draft::Change::Delete { index } => *index,
+        };
+        let (object, path) = project_object_source(state, index)?;
+        let compiled = is_compiled_kind(&object);
+        let at = file(&mut files, path, compiled);
+        let placement = |object: &evolve_core::PlacedObject| {
+            compiled_placement(object)
+                .ok_or_else(|| format!("{} is not a terrain.dat placement", object.name))
+        };
+        match (&mut files[at].1, change) {
+            (LevelFileEdit::Compiled(edits), level_draft::Change::Copy { .. }) => {
+                let root = level_draft::root_origin(current, &object.id);
+                let origin = loaded(root).ok_or("A copy's original placement is missing")?;
+                edits.copies.push((placement(origin)?, object.world));
+            }
+            (LevelFileEdit::Compiled(edits), level_draft::Change::Transform { .. }) => {
+                // A copy is written where it is now.
+                if !current.origins.contains_key(&object.id) {
+                    edits.transforms.push((placement(&object)?, object.world));
+                }
+            }
+            (LevelFileEdit::Compiled(edits), level_draft::Change::Delete { .. }) => {
+                edits.deletes.push(placement(&object)?);
+            }
+            (LevelFileEdit::Compiled(_), level_draft::Change::Shape { .. }) => {}
+            (LevelFileEdit::Xml(edits), level_draft::Change::Copy { origin, .. }) => {
+                edits.push(LayerAuthoringEdit::Duplicate {
+                    guid: origin,
+                    new_guid: object.id.clone(),
+                    name: object.name.clone(),
+                    position: Some(object.local.position),
+                });
+            }
+            (LevelFileEdit::Xml(edits), level_draft::Change::Transform { .. }) => {
+                edits.push(LayerAuthoringEdit::Transform {
+                    guid: object.id.clone(),
+                    transform: object.local,
+                });
+            }
+            (LevelFileEdit::Xml(edits), level_draft::Change::Shape { .. }) => {
+                edits.push(LayerAuthoringEdit::Shape {
+                    guid: object.id.clone(),
+                    points: object.shape_points.clone(),
+                });
+            }
+            (LevelFileEdit::Xml(edits), level_draft::Change::Delete { .. }) => {
+                edits.push(LayerAuthoringEdit::Delete {
+                    guid: object.id.clone(),
+                });
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// Start a G/R/S transform of the selected placements.
+fn start_level_transform(state: &mut State, mode: level_transform::Mode) {
+    if state.level_project.is_none()
+        || state.level_read_only
+        || state.busy
+        || state.level_tool != terrain_brush::LevelTool::Select
+    {
+        return;
+    }
+    let Some(scene) = state.level_scene.clone() else {
+        return;
+    };
+    let mut indices = state
+        .level_selection
+        .indices
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    if indices.is_empty() {
+        indices.extend(state.level_selected);
+    }
+    indices.sort_unstable();
+    if indices.is_empty() {
+        state.status = "Select a placement, then G move · R rotate · S scale.".into();
+        return;
+    }
+    let mut targets = Vec::with_capacity(indices.len());
+    for index in indices {
+        let Some(object) = scene.objects.get(index) else {
+            continue;
+        };
+        if object.kind.eq_ignore_ascii_case("Vegetation") {
+            state.status =
+                "VegetationMap.dat instances are moved with their own position fields, not G/R/S."
+                    .into();
+            return;
+        }
+        let parent = (!object.parent.is_empty())
+            .then(|| {
+                scene
+                    .objects
+                    .iter()
+                    .find(|other| other.id == object.parent)
+                    .map(|other| other.world)
+            })
+            .flatten();
+        targets.push(level_transform::Target {
+            index,
+            world: object.world,
+            parent,
+        });
+    }
+    let forward = level_camera::basis(state.yaw, state.pitch).0;
+    let operation =
+        level_transform::ModalTransform::new(mode, targets, forward, state.level_pointer_ray);
+    state.status = operation.describe();
+    state.level_transform = Some(operation);
+    refresh_level_transform_preview(state);
+}
+
+/// Show the transform in progress in the viewport and the status bar.
+fn refresh_level_transform_preview(state: &mut State) {
+    let Some(operation) = &state.level_transform else {
+        return;
+    };
+    let transforms = operation
+        .targets
+        .iter()
+        .zip(operation.results())
+        .map(|(target, world)| (target.index, world))
+        .collect();
+    state.status = operation.describe();
+    if let Some(world) = &state.level_world_source {
+        world.placement_preview.set(transforms);
+    }
+}
+
+fn clear_level_transform_preview(state: &mut State) {
+    if let Some(world) = &state.level_world_source {
+        world.placement_preview.clear();
+    }
+}
+
+/// Apply a finished G/R/S or gizmo transform to the map draft.
+fn confirm_level_transform(state: &mut State) -> Task<Message> {
+    let Some(operation) = state.level_transform.take() else {
+        return Task::none();
+    };
+    let unchanged = operation
+        .targets
+        .iter()
+        .zip(operation.results())
+        .all(|(target, world)| target.world == world);
+    if unchanged {
+        clear_level_transform_preview(state);
+        state.status = "Transform cancelled: nothing moved.".into();
+        return Task::none();
+    }
+    let edits = operation
+        .targets
+        .iter()
+        .map(|target| target.index)
+        .zip(operation.local_results())
+        .collect::<Vec<_>>();
+    let Some(snapshot) = draft_current(state) else {
+        clear_level_transform_preview(state);
+        return Task::none();
+    };
+    match level_draft::transform(&snapshot, &edits) {
+        Ok(next) => {
+            let count = edits.len();
+            let done = format!(
+                "{} {count} placement{}",
+                match operation.mode {
+                    level_transform::Mode::Move => "Moved",
+                    level_transform::Mode::Rotate => "Rotated",
+                    level_transform::Mode::Scale => "Scaled",
+                },
+                if count == 1 { "" } else { "s" }
+            );
+            apply_draft_edit(state, next, &done);
+        }
+        Err(reason) => {
+            clear_level_transform_preview(state);
+            state.status = reason;
+        }
+    }
+    Task::none()
+}
+
+/// Reload the open project map after a saved edit or undo, reusing what did
+/// not change: decoded models and textures, GPU groups, camera and selection.
+fn reload_project_level(state: &mut State, project: modding_projects::ProjectRow) -> Task<Message> {
+    let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
+    let root = PathBuf::from(&state.library_root);
+    let previous = state
+        .level_project
+        .as_ref()
+        .is_some_and(|open| open.workspace == project.workspace)
+        .then(|| state.level_world_source.clone())
+        .flatten();
+    launch(
+        state,
+        Operation::OpenProjectLevel(project, index, root, previous),
+    )
+}
+
 fn submit_level_project_edit(
     state: &mut State,
     source: PathBuf,
@@ -3436,9 +4606,14 @@ fn submit_level_project_edit(
         state.status = "Save any pending transform changes before another source edit.".into();
         return Task::none();
     }
+    if draft_pending(state) {
+        state.status = "Save the map (Ctrl+S) or undo its unsaved changes before this edit.".into();
+        return Task::none();
+    }
     let project = state.level_project.clone().unwrap();
     let projects_root = PathBuf::from(&state.preferences.projects);
     let library_root = PathBuf::from(&state.library_root);
+    state.ui.mark_saving("level");
     launch(
         state,
         Operation::SaveProjectSource(project, source, change, projects_root, library_root),
@@ -3563,6 +4738,12 @@ fn level_ground_hit(state: &State, origin: [f32; 3], direction: [f32; 3]) -> Opt
 }
 
 /// The terrain.dat record behind a Legacy-ported map's brush or vegetation.
+/// A placement stored in terrain.dat, including copies made in a draft.
+fn is_compiled_kind(object: &evolve_core::PlacedObject) -> bool {
+    object.kind.eq_ignore_ascii_case("CompiledBrush")
+        || object.kind.eq_ignore_ascii_case("CompiledVegetation")
+}
+
 fn compiled_placement(
     object: &evolve_core::PlacedObject,
 ) -> Option<evolve_core::CompiledPlacement> {
@@ -3579,6 +4760,17 @@ fn compiled_placement(
 fn selected_project_object_source(
     state: &State,
 ) -> Result<(evolve_core::PlacedObject, PathBuf), String> {
+    let index = state
+        .level_selected
+        .ok_or("Select an authored object first")?;
+    project_object_source(state, index)
+}
+
+/// A scene object and the project file that stores it.
+fn project_object_source(
+    state: &State,
+    index: usize,
+) -> Result<(evolve_core::PlacedObject, PathBuf), String> {
     let project = state
         .level_project
         .as_ref()
@@ -3587,15 +4779,16 @@ fn selected_project_object_source(
         return Err("Imported maps are read-only".into());
     }
     let object = state
-        .level_selected
-        .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
+        .level_scene
+        .as_ref()
+        .and_then(|scene| scene.objects.get(index))
         .cloned()
         .ok_or("Select an authored object first")?;
     if state.level_duplicate_guids.contains(&object.id) {
         return Err("This object GUID occurs in multiple original LYR layers. Editing is disabled until its owning source can be uniquely identified.".into());
     }
     let root = project.workspace.join("files");
-    let relative = if compiled_placement(&object).is_some() {
+    let relative = if is_compiled_kind(&object) {
         state
             .library_map
             .as_ref()
@@ -3760,6 +4953,10 @@ fn refresh_wildlife_visibility(state: &mut State) {
 }
 
 fn sync_level_fields(state: &mut State) {
+    // A new selection drops polygon edits that were never saved.
+    if let Some(source) = &state.level_world_source {
+        source.placement_preview.clear_shapes();
+    }
     let transform = state
         .level_selected
         .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
@@ -4197,9 +5394,9 @@ fn operation_label(operation: &Operation) -> &'static str {
             "Assembling level scene"
         }
         Operation::LoadLevelWildlife(..) => "Loading source-backed wildlife preview",
-        Operation::SaveProjectLevel(..) | Operation::SaveProjectSource(..) => {
-            "Saving editable level project"
-        }
+        Operation::SaveProjectLevel(..)
+        | Operation::SaveProjectSource(..)
+        | Operation::SaveLevelDraft(..) => "Saving editable level project",
         Operation::RestoreCommittedLevel(..) => "Restoring verified project revision",
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
@@ -4288,7 +5485,8 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     }
     state.busy = true;
     state.busy_operation = Some(operation_label(&operation).to_owned());
-    state.toasts
+    state
+        .toasts
         .begin(operation_label(&operation), announces_success(&operation));
     state.activity_started = Some(std::time::Instant::now());
     if !matches!(&operation, Operation::BuildStaticCdf(..)) {
@@ -4530,6 +5728,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.material_report = None;
     state.dependency_graph = None;
     state.comparison = None;
+    state.comparison_text = None;
     state.character = None;
     state.cdf_dependencies = None;
     state.diffuse = None;
@@ -4680,14 +5879,18 @@ fn check_all_updates_task() -> Task<Message> {
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
-                [UpdateChannel::Stable, UpdateChannel::Beta, UpdateChannel::Nightly]
-                    .into_iter()
-                    .map(|channel| {
-                        let result = discover_update(channel, env!("CARGO_PKG_VERSION"))
-                            .map_err(|error| error.to_string());
-                        (channel, result)
-                    })
-                    .collect::<Vec<_>>()
+                [
+                    UpdateChannel::Stable,
+                    UpdateChannel::Beta,
+                    UpdateChannel::Nightly,
+                ]
+                .into_iter()
+                .map(|channel| {
+                    let result = discover_update(channel, env!("CARGO_PKG_VERSION"))
+                        .map_err(|error| error.to_string());
+                    (channel, result)
+                })
+                .collect::<Vec<_>>()
             })
             .await
             .unwrap_or_default()
@@ -4786,6 +5989,40 @@ fn refresh_library_matches(state: &mut State) {
         state.library_matches.clear();
         return;
     };
+    // Chip options are rebuilt only when the catalog changes, so the combo
+    // box keeps its own state while typing.
+    let fingerprint = (catalog.archives.len(), catalog.builds.len());
+    if state.library_chip_options_for != fingerprint {
+        let mut options = std::collections::BTreeSet::new();
+        for archive in &catalog.archives {
+            if !archive.group.is_empty() {
+                options.insert(format!("Category: {}", archive.group));
+            }
+            if !archive.source.is_empty() {
+                options.insert(format!("Source: {}", archive.source));
+            }
+        }
+        for build in &catalog.builds {
+            options.insert(format!("Build: {build}"));
+        }
+        state.library_chip_options =
+            iced::widget::combo_box::State::new(options.into_iter().collect());
+        state.library_chip_options_for = fingerprint;
+    }
+    let chips = state.library_chips.clone();
+    let chip_match = |entry: &evolve_core::ImportedPak| {
+        chips.iter().all(|chip| {
+            if let Some(value) = chip.strip_prefix("Category: ") {
+                entry.group == value
+            } else if let Some(value) = chip.strip_prefix("Source: ") {
+                entry.source == value
+            } else if let Some(value) = chip.strip_prefix("Build: ") {
+                entry.builds.iter().any(|build| build == value)
+            } else {
+                true
+            }
+        })
+    };
     let needle = state.library_search.to_ascii_lowercase();
     let build = state
         .library_by_build
@@ -4797,6 +6034,9 @@ fn refresh_library_matches(state: &mut State) {
         .enumerate()
         .filter_map(|(i, entry)| {
             if state.library_by_build && !build.is_some_and(|label| entry.builds.contains(label)) {
+                return None;
+            }
+            if !chip_match(entry) {
                 return None;
             }
             if !needle.is_empty()
@@ -4814,6 +6054,20 @@ fn refresh_library_matches(state: &mut State) {
             Some(i)
         })
         .collect();
+    // Sorting happens here (data or column change), never per redraw.
+    if let Some((column, ascending)) = state.library_sort {
+        let archives = &catalog.archives;
+        state.library_matches.sort_by(|&a, &b| {
+            let (a, b) = (&archives[a], &archives[b]);
+            let order = match column {
+                "game" => a.source.to_lowercase().cmp(&b.source.to_lowercase()),
+                "builds" => a.builds.len().cmp(&b.builds.len()),
+                "files" => a.entries.cmp(&b.entries),
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            };
+            if ascending { order } else { order.reverse() }
+        });
+    }
 }
 
 fn refresh_viewer_rows(state: &mut State) {
@@ -4839,6 +6093,12 @@ fn refresh_viewer_rows(state: &mut State) {
     } else {
         Vec::new()
     };
+    let needle = state.viewer_search.trim().to_lowercase();
+    state.viewer_match_count = (!needle.is_empty()).then(|| {
+        rows.iter()
+            .filter(|(_, path, _)| path.to_lowercase().contains(&needle))
+            .count()
+    });
     const PAGE: usize = 350;
     let offset = state.viewer_page.saturating_mul(PAGE);
     let mut visible = explorer_tree::visible_rows_page(
@@ -4907,9 +6167,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::SidebarHover(hovered) => {
             state.sidebar_hovered = hovered;
-            if state.preferences.reduce_motion {
-                state.sidebar_reveal = if hovered { 1.0 } else { 0.0 };
-            }
+            state.sidebar_reveal = state.sidebar_reveal.with_easing(anim::Easing::EaseOut);
+            state.sidebar_reveal.animate_to(
+                if hovered { 1.0 } else { 0.0 },
+                Instant::now(),
+                SIDEBAR_REVEAL_DURATION,
+                state.preferences.reduce_motion || state.preferences.ui_theme != "Evolve Legacy",
+            );
             return Task::none();
         }
         Message::ToastTick(now) => {
@@ -4970,15 +6234,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.available_update = Some(release);
             return update(state, Message::ApplyUpdate);
         }
-        Message::SidebarAnimationTick => {
-            let target: f32 = if state.sidebar_hovered { 1.0 } else { 0.0 };
-            let delta = target - state.sidebar_reveal;
-            // Stop at exact endpoints so no timer keeps running when idle.
-            state.sidebar_reveal = if delta.abs() <= 0.12 {
-                target
-            } else {
-                (state.sidebar_reveal + delta.signum() * 0.12).clamp(0.0, 1.0)
-            };
+        Message::AnimationFrame => {
+            // Values are time-based; this only settles finished tweens so the
+            // subscription stops as soon as nothing is moving.
+            state.ui.start_clock();
+            let now = Instant::now();
+            state.sidebar_reveal.tick(now);
+            state.chrome.tick(now);
+            state
+                .mod_toggle_animations
+                .retain_mut(|animation| animation.thumb.tick(now));
             return Task::none();
         }
         Message::HomeContinueEditing | Message::HomeOpenProject => {
@@ -5031,7 +6296,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::Navigate(page) => {
+            if state.page != Some(page)
+                && state.preferences.ui_theme == "Evolve Legacy"
+                && !state.preferences.reduce_motion
+            {
+                state.ui.start_scramble(Instant::now());
+            }
             state.page = Some(page);
+            if page == Page::WhatsNew {
+                mark_news_seen(state);
+            }
             let mut tasks = Vec::new();
             if page == Page::Home {
                 tasks.push(inspect_client_version_task(
@@ -5331,21 +6605,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Some(enable),
             ) {
                 Ok(()) => {
-                    let from = state
+                    let now = Instant::now();
+                    let mut thumb = state
                         .mod_toggle_animations
                         .iter()
                         .find(|anim| anim.workspace == project.workspace)
-                        .map(ModToggleAnimation::position)
-                        .unwrap_or(if project.enabled { 1.0 } else { 0.0 });
+                        .map(|anim| anim.thumb)
+                        .unwrap_or(anim::Tween::settled(if project.enabled {
+                            1.0
+                        } else {
+                            0.0
+                        }));
+                    thumb.animate_to(
+                        if enable { 1.0 } else { 0.0 },
+                        now,
+                        MOD_TOGGLE_DURATION,
+                        state.preferences.reduce_motion,
+                    );
                     state
                         .mod_toggle_animations
                         .retain(|anim| anim.workspace != project.workspace);
-                    state.mod_toggle_animations.push(ModToggleAnimation {
-                        workspace: project.workspace.clone(),
-                        from,
-                        to: if enable { 1.0 } else { 0.0 },
-                        frame: 0,
-                    });
+                    if thumb.is_running(now) {
+                        state.mod_toggle_animations.push(ModToggleAnimation {
+                            workspace: project.workspace.clone(),
+                            thumb,
+                        });
+                    }
                     if let Some(row) = state
                         .modding_projects
                         .as_mut()
@@ -5723,7 +7008,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "No text asset is open.".into();
                 return Task::none();
             };
-            match doc.save() {
+            let saved = doc.save();
+            state.ui.mark_saved("text", saved.is_ok());
+            let doc = state.text_document.as_mut().expect("checked above");
+            match saved {
                 Ok(changed) => {
                     let member = doc.member.clone();
                     state.status = if changed {
@@ -5808,6 +7096,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.modding_export_options_open = !state.modding_export_options_open;
         }
         Message::ModdingExportChoose(mode) => {
+            if state.preferences.last_export_format != mode.key() {
+                state.preferences.last_export_format = mode.key().to_owned();
+                persist_saved_field(move |saved| saved.last_export_format = mode.key().to_owned());
+            }
+            state.modding_export_options_open = false;
             if state.busy || state.gfx_busy {
                 state.status = "Finish the current operation before exporting.".into();
                 return Task::none();
@@ -6434,6 +7727,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::OpenLevelEditorWindow => return Task::none(),
         Message::LevelShowMapChooser => {
+            if draft_pending(state) {
+                state.status = "Save the map (Ctrl+S) or discard its unsaved changes first.".into();
+                return Task::none();
+            }
             state.level_map_prompt = true;
             state.level_map_choices = None;
             state.level_project_choices = None;
@@ -6497,7 +7794,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let project = project.clone();
             return launch(
                 state,
-                Operation::OpenProjectLevel(project, index, PathBuf::from(&state.library_root)),
+                Operation::OpenProjectLevel(
+                    project,
+                    index,
+                    PathBuf::from(&state.library_root),
+                    None,
+                ),
             );
         }
         Message::LevelChooseMap(index) => {
@@ -6511,40 +7813,180 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::OpenImportedMap(archive, index));
         }
         Message::LevelToggleOverview => state.level_show_overview = !state.level_show_overview,
-        Message::LevelGizmoMove(axis, distance) => {
-            if state.level_project.is_none()
-                || axis > 2
-                || !distance.is_finite()
-                || distance.abs() > 10_000.0
-            {
+        Message::LevelGizmoGrab(mode, axis, ray) => {
+            state.level_pointer_ray = ray;
+            start_level_transform(state, mode);
+            if let (Some(axis), Some(operation)) = (axis, state.level_transform.as_mut()) {
+                operation.toggle_axis(axis);
+            }
+            refresh_level_transform_preview(state);
+        }
+        Message::LevelGizmoMode(mode) => state.level_gizmo = mode,
+        Message::LevelDraftUndo | Message::LevelDraftRedo => {
+            if state.busy {
                 return Task::none();
             }
-            let Some(object) = state
-                .level_selected
-                .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
-            else {
-                return Task::none();
-            };
-            if object.kind.eq_ignore_ascii_case("Vegetation") {
-                return Task::none();
-            }
-            let coords = state
-                .level_edit_position
-                .split(',')
-                .map(|x| x.trim().parse::<f32>())
-                .collect::<Result<Vec<_>, _>>();
-            if let Ok(mut coords) = coords
-                && coords.len() == 3
-            {
-                coords[axis] += distance;
-                state.level_edit_position = coords
-                    .iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
+            let undo = matches!(message, Message::LevelDraftUndo);
+            let moved = state
+                .level_draft
+                .as_mut()
+                .is_some_and(|draft| if undo { draft.undo() } else { draft.redo() });
+            if moved {
+                show_draft(state);
+                let left = state
+                    .level_draft
+                    .as_ref()
+                    .map_or(0, |draft| draft.undo.len());
+                state.status = format!(
+                    "{} · {left} change{} to undo",
+                    if undo { "Undone" } else { "Redone" },
+                    if left == 1 { "" } else { "s" }
+                );
+            } else {
+                state.status = format!("Nothing to {}.", if undo { "undo" } else { "redo" });
             }
         }
-        Message::LevelAuthoringChanged(key, text) => state.level_authoring.change(key, text),
+        Message::LevelDiscardMap => {
+            if let Some(draft) = state.level_draft.as_mut() {
+                while draft.undo() {}
+                show_draft(state);
+                state.level_draft = None;
+                state.status = "Unsaved map changes discarded.".into();
+            }
+        }
+        Message::LevelSaveMap => {
+            if state.busy || !draft_pending(state) {
+                return Task::none();
+            }
+            let Some(project) = state.level_project.clone() else {
+                return Task::none();
+            };
+            match draft_file_edits(state) {
+                Ok(files) if files.is_empty() => {
+                    state.level_draft = None;
+                    state.status = "Nothing to save.".into();
+                }
+                Ok(files) => {
+                    let root = PathBuf::from(&state.preferences.projects);
+                    return launch(state, Operation::SaveLevelDraft(project, files, root));
+                }
+                Err(reason) => state.status = format!("Cannot save the map: {reason}"),
+            }
+        }
+        Message::LevelUndoKey(_) | Message::LevelRedoKey(_) => {
+            let undo = matches!(message, Message::LevelUndoKey(_));
+            if state.level_transform.is_some() {
+                return update(state, Message::LevelTransformCancel);
+            }
+            let brushing = matches!(
+                state.level_tool,
+                terrain_brush::LevelTool::Sculpt | terrain_brush::LevelTool::Paint
+            ) && state.terrain_session.as_ref().is_some_and(|session| {
+                if undo {
+                    session.can_undo()
+                } else {
+                    session.can_redo()
+                }
+            });
+            return update(
+                state,
+                match (brushing, undo) {
+                    (true, true) => Message::LevelBrushUndo,
+                    (true, false) => Message::LevelBrushRedo,
+                    (false, true) => Message::LevelDraftUndo,
+                    (false, false) => Message::LevelDraftRedo,
+                },
+            );
+        }
+        Message::LevelSaveKey(_) => {
+            let terrain = matches!(
+                state.level_tool,
+                terrain_brush::LevelTool::Sculpt | terrain_brush::LevelTool::Paint
+            ) && state
+                .terrain_session
+                .as_ref()
+                .is_some_and(|session| session.is_dirty());
+            return update(
+                state,
+                if terrain {
+                    Message::LevelBrushSave
+                } else {
+                    Message::LevelSaveMap
+                },
+            );
+        }
+        Message::LevelVertexDrag(vertex, ray) => {
+            let Some((index, object)) = state.level_selected.and_then(|index| {
+                Some((
+                    index,
+                    state.level_scene.as_ref()?.objects.get(index)?.clone(),
+                ))
+            }) else {
+                return Task::none();
+            };
+            let mut points = state
+                .level_authoring
+                .points()
+                .unwrap_or_else(|_| object.shape_points.clone());
+            let Some(local) = points.get(vertex).copied() else {
+                return Task::none();
+            };
+            // The vertex slides over the horizontal plane at its own height.
+            let height = match state.level_vertex_drag {
+                Some((dragged, height)) if dragged == vertex => height,
+                _ => {
+                    let height = world_instances::place(object.world, local)[2];
+                    state.level_vertex_drag = Some((vertex, height));
+                    state.level_vertex_moved = false;
+                    height
+                }
+            };
+            let Some((origin, direction)) = ray else {
+                return Task::none();
+            };
+            if direction[2].abs() < 1e-4 {
+                return Task::none();
+            }
+            let t = (height - origin[2]) / direction[2];
+            if !(0.0..1e6).contains(&t) {
+                return Task::none();
+            }
+            let world = [
+                origin[0] + direction[0] * t,
+                origin[1] + direction[1] * t,
+                height,
+            ];
+            points[vertex] = world_instances::unplace(object.world, world);
+            state.level_authoring.set_points(&points);
+            state.level_vertex_moved = true;
+            if let Some(source) = &state.level_world_source {
+                source.placement_preview.set_shape(index, points);
+            }
+            state.status = format!(
+                "Vertex {} at {:.2}, {:.2} · release to save the polygon",
+                vertex + 1,
+                world[0],
+                world[1]
+            );
+        }
+        Message::LevelVertexRelease => {
+            state.level_vertex_drag = None;
+            if std::mem::take(&mut state.level_vertex_moved) {
+                return update(state, Message::LevelSaveWildlifeShape);
+            }
+        }
+        Message::LevelAuthoringChanged(key, text) => {
+            let polygon = matches!(key, level_authoring::TextField::Polygon);
+            state.level_authoring.change(key, text);
+            // Typed polygon vertices show in the viewport as they are edited.
+            if polygon
+                && let Some(index) = state.level_selected
+                && let Ok(points) = state.level_authoring.points()
+                && let Some(source) = &state.level_world_source
+            {
+                source.placement_preview.set_shape(index, points);
+            }
+        }
         Message::LevelAuthoringToggleEnabled => {
             if !state.level_read_only {
                 state.level_authoring.spawn_enabled = !state.level_authoring.spawn_enabled;
@@ -6565,6 +8007,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         | Message::LevelScaleVegetation
         | Message::LevelDuplicateVegetation
         | Message::LevelDeleteVegetation => {
+            if matches!(
+                message,
+                Message::LevelDuplicateSelected
+                    | Message::LevelDeleteSelected
+                    | Message::LevelSaveWildlifeShape
+            ) {
+                return draft_object_edit(state, &message);
+            }
             let (object, source) = match selected_project_object_source(state) {
                 Ok(found) => found,
                 Err(reason) => {
@@ -6592,7 +8042,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                     _ => {
                         state.level_paste_at = None;
-                        state.status = "Placements stored in terrain.dat can be copied, pasted, duplicated and deleted; adding next to or editing them is not supported yet.".into();
+                        state.status = "Placements stored in terrain.dat can be moved, rotated, scaled, copied, duplicated and deleted; adding next to them is not supported yet.".into();
                         return Task::none();
                     }
                 };
@@ -6807,18 +8257,63 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             }
+            if tool == terrain_brush::LevelTool::Vegetation && !vegetation_palette(state) {
+                state.status = "This map has no terrain.dat vegetation to paint with.".into();
+                return Task::none();
+            }
             state.level_tool = tool;
             state.terrain_brush_ring = None;
+            if state.vegetation_density < 1.0 {
+                state.vegetation_density = 6.0;
+                state.vegetation_jitter = 0.2;
+            }
+            if tool == terrain_brush::LevelTool::Paint && state.level_surface_palette.is_none() {
+                return load_surface_palette(state);
+            }
+            if tool == terrain_brush::LevelTool::Vegetation {
+                return load_vegetation_previews(state);
+            }
         }
         Message::LevelSculptMode(mode) => state.terrain_brush.mode = mode,
         Message::LevelBrushRadius(value) => state.terrain_brush.radius = value.clamp(0.5, 200.0),
         Message::LevelBrushStrength(value) => state.terrain_brush.strength = value.clamp(0.01, 1.0),
         Message::LevelBrushHardness(value) => state.terrain_brush.hardness = value.clamp(0.0, 0.95),
-        Message::LevelBrushSurface(value) => {
-            if let Ok(id) = value.trim().parse::<u8>() {
-                state.terrain_brush.surface = id;
+        Message::LevelSurfacePalette(items) => {
+            if !items
+                .iter()
+                .any(|item| item.id == state.terrain_brush.surface)
+                && let Some(first) = items.first()
+            {
+                state.terrain_brush.surface = first.id;
             }
-            state.terrain_brush_surface = value;
+            state.level_surface_palette = Some(Arc::new(items));
+        }
+        Message::LevelPickSurface(id) => state.terrain_brush.surface = id,
+        Message::LevelVegetationPalette(items) => {
+            state.level_vegetation_palette = Some(Arc::new(items));
+        }
+        Message::LevelPickVegetation(model) => state.level_vegetation_pick = Some(model),
+        Message::LevelVegetationDensity(value) => state.vegetation_density = value.clamp(1.0, 50.0),
+        Message::LevelVegetationJitter(value) => state.vegetation_jitter = value.clamp(0.0, 0.8),
+        Message::LevelBrushPress {
+            lower,
+            origin,
+            direction,
+        } if state.level_tool == terrain_brush::LevelTool::Vegetation => {
+            state.vegetation_stroke = None;
+            state.vegetation_stroke_pushed = false;
+            vegetation_dab(state, origin, direction, lower);
+        }
+        Message::LevelBrushDrag(origin, direction)
+            if state.level_tool == terrain_brush::LevelTool::Vegetation =>
+        {
+            if state.vegetation_stroke.is_some() {
+                let erase = state.keyboard_modifiers.control();
+                vegetation_dab(state, origin, direction, erase);
+            }
+        }
+        Message::LevelBrushRelease if state.level_tool == terrain_brush::LevelTool::Vegetation => {
+            state.vegetation_stroke = None;
         }
         Message::LevelBrushPress {
             lower,
@@ -6985,6 +8480,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let expected = state.level_source_sha.clone();
             let root = PathBuf::from(&state.preferences.projects);
+            state.ui.mark_saving("level");
             return launch(
                 state,
                 Operation::SaveProjectLevel(project, source, expected, edits, root),
@@ -7019,7 +8515,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.level_map_prompt = false;
             return if let Some(project) = project {
                 let root = PathBuf::from(&state.library_root);
-                launch(state, Operation::OpenProjectLevel(project, index, root))
+                launch(
+                    state,
+                    Operation::OpenProjectLevel(project, index, root, None),
+                )
             } else {
                 launch(state, Operation::OpenImportedMap(archive, index))
             };
@@ -7167,7 +8666,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let game = state.preferences.game_storage_root.clone();
             let stage = state.preferences.stage.clone();
             let projects = state.preferences.projects.clone();
-            return Task::perform(
+            let install = state.preferences.game_installation.clone();
+            let paths = [
+                ("Game drive", install),
+                ("Stage drive", stage.clone()),
+                ("GameSets drive", game.clone()),
+                ("Projects drive", projects.clone()),
+            ];
+            let meters = Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let paths: Vec<(&str, &str)> = paths
+                            .iter()
+                            .map(|(label, path)| (*label, path.as_str()))
+                            .collect();
+                        system_meters::meters(&paths)
+                    })
+                    .await
+                    .unwrap_or_default()
+                },
+                Message::SystemMetersChecked,
+            );
+            let report = Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
                         system_health::inspect(&game, &stage, &projects)
@@ -7184,36 +8704,78 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 },
                 Message::SystemHealthChecked,
             );
+            return Task::batch([report, meters]);
         }
+        Message::SystemMetersChecked(meters) => state.health_meters = meters,
         Message::SystemHealthChecked(report) => {
             state.health_report = Some(report);
             state.health_checking = false;
             state.status = "Read-only System Health check completed.".into();
         }
-        Message::ToggleDocsSection(section) => {
-            if !state.docs_expanded.insert(section) {
-                state.docs_expanded.remove(&section);
+        Message::ModdingToggleSpecialist => {
+            state.modding_specialist_open = !state.modding_specialist_open;
+        }
+        Message::ModdingBrowseRebuild(output) => {
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || native_export_picker("file"))
+                        .await
+                        .unwrap_or(None)
+                },
+                move |path| Message::ModdingBrowsedRebuild(output, path),
+            );
+        }
+        Message::ModdingBrowsedRebuild(output, Some(path)) => {
+            let value = path.display().to_string();
+            return update(
+                state,
+                if output {
+                    Message::OutputChanged(value)
+                } else {
+                    Message::SignedReplacementChanged(value)
+                },
+            );
+        }
+        Message::ModdingBrowsedRebuild(_, None) => {}
+        Message::DocsSelect(section) => {
+            state.docs_selected = section;
+            return iced::widget::operation::snap_to(
+                docs_page::scroll_id(),
+                iced::widget::operation::RelativeOffset::START,
+            );
+        }
+        Message::DocsSearch(value) => state.docs_search = value,
+        Message::DocsOpenResult(index) => {
+            let hits = docs_page::search(&state.docs_search);
+            let Some(hit) = hits.get(index) else {
+                return Task::none();
+            };
+            state.docs_selected = hit.section;
+            state.docs_search.clear();
+            // Roughly where the step sits in the section's scroll range.
+            let steps = private_pages::docs_spec(hit.section).2.len().max(1) as f32;
+            let at = hit
+                .step
+                .map_or(0.0, |step| (step as f32 / steps).clamp(0.0, 1.0));
+            return iced::widget::operation::snap_to(
+                docs_page::scroll_id(),
+                iced::widget::operation::RelativeOffset { x: 0.0, y: at },
+            );
+        }
+        Message::DeveloperTab(section) => {
+            let name = section.title().to_owned();
+            state.preferences.developer_tab = name.clone();
+            persist_saved_field(move |saved| saved.developer_tab = name);
+        }
+        Message::DeveloperTabKey(index) => {
+            if state.page == Some(Page::Developer)
+                && state.developer_unlocked
+                && let Some(section) = private_pages::DeveloperSection::ALL.get(index)
+            {
+                return update(state, Message::DeveloperTab(*section));
             }
         }
-        Message::DocsExpandAll(expand) => {
-            state.docs_expanded.clear();
-            if expand {
-                state.docs_expanded.extend(private_pages::DocsSection::ALL);
-            }
-        }
-        Message::ToggleDeveloperSection(section) => {
-            if !state.developer_sections_expanded.insert(section) {
-                state.developer_sections_expanded.remove(&section);
-            }
-        }
-        Message::DeveloperExpandAll(expand) => {
-            state.developer_sections_expanded.clear();
-            if expand {
-                state
-                    .developer_sections_expanded
-                    .extend(private_pages::DeveloperSection::ALL);
-            }
-        }
+        Message::DeveloperShowPassword(show) => state.developer_show_password = show,
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
                 state.developer_password = value;
@@ -9227,6 +10789,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         | Message::ViewerOpened
         | Message::ActivityOpened
         | Message::WindowClosed(_)
+        | Message::FilesHovered(_, _)
         | Message::FileDropped(_, _) => {}
         Message::CancelScan => {
             if let Some(cancel) = &state.scan_cancel {
@@ -9753,16 +11316,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         return Task::none();
                     }
                 };
-                return submit_level_project_edit(
-                    state,
-                    source,
-                    ProjectLevelMutation::Xml(
-                        evolve_core::scene_authoring::LayerAuthoringEdit::Transform {
-                            guid: object.id,
-                            transform,
-                        },
-                    ),
-                );
+                let _ = source;
+                let (Some(index), Some(snapshot)) = (state.level_selected, draft_current(state))
+                else {
+                    return Task::none();
+                };
+                match level_draft::transform(&snapshot, &[(index, transform)]) {
+                    Ok(next) => apply_draft_edit(state, next, &format!("Moved {}", object.name)),
+                    Err(reason) => state.status = reason,
+                }
+                return Task::none();
             }
             if state.level_read_only {
                 state.status = "Imported levels are read-only. Use File → Open as Modding Project to create an editable copy.".into();
@@ -9959,10 +11522,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::CompareOriginalChanged(path) => {
             state.compare_original = path;
             state.comparison = None;
+            state.comparison_text = None;
         }
         Message::CompareModifiedChanged(path) => {
             state.compare_modified = path;
             state.comparison = None;
+            state.comparison_text = None;
         }
         Message::StartAssetCompare => {
             if state.compare_original.is_empty() || state.compare_modified.is_empty() {
@@ -10072,7 +11637,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.level_keys.clear();
             state.level_last_pressed_at = None;
         }
-        Message::LevelPointerRay(ray) => state.level_pointer_ray = ray,
+        Message::LevelPointerRay(ray) => {
+            state.level_pointer_ray = ray;
+            if let Some(operation) = state.level_transform.as_mut() {
+                operation.pointer(ray);
+                refresh_level_transform_preview(state);
+            }
+        }
+        Message::LevelLookButton(_, held) => {
+            state.level_looking = held;
+            if !held {
+                state.level_keys.clear();
+            }
+        }
+        Message::LevelEnterKey(_) => {
+            if state.level_transform.is_some() {
+                return confirm_level_transform(state);
+            }
+        }
+        Message::LevelTransformStart(mode) => start_level_transform(state, mode),
+        Message::LevelTransformConfirm => return confirm_level_transform(state),
+        Message::LevelTransformCancel => {
+            if state.level_transform.take().is_some() {
+                clear_level_transform_preview(state);
+                state.status = "Transform cancelled.".into();
+            }
+        }
         Message::LevelCopyKey(_) => {
             if state.level_tool != terrain_brush::LevelTool::Select {
                 return Task::none();
@@ -10144,6 +11734,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.level_paste_at = None;
             return task;
         }
+        Message::LevelDeleteKey(_) if state.level_transform.is_some() => {
+            if let Some(operation) = state.level_transform.as_mut() {
+                operation.backspace();
+            }
+            refresh_level_transform_preview(state);
+        }
         Message::LevelDeleteKey(_) => {
             // The Select tool's keyboard delete: the same as Delete placement.
             if state.level_tool == terrain_brush::LevelTool::Select
@@ -10166,11 +11762,52 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LevelCameraKey(_, key, pressed) => {
+            if pressed && state.level_transform.is_some() && !state.level_looking {
+                if let Some(operation) = state.level_transform.as_mut() {
+                    match key {
+                        'x' => operation.toggle_axis(0),
+                        'y' => operation.toggle_axis(1),
+                        'z' => operation.toggle_axis(2),
+                        other => {
+                            operation.type_char(other);
+                        }
+                    }
+                }
+                refresh_level_transform_preview(state);
+                return Task::none();
+            }
+            if pressed && !state.level_looking {
+                // G grabs at once, as in Blender; R and S show the rotate or
+                // scale gizmo, which turns or scales when a handle is dragged.
+                match key {
+                    'g' => {
+                        start_level_transform(state, level_transform::Mode::Move);
+                        return Task::none();
+                    }
+                    'r' | 's' if state.level_tool == terrain_brush::LevelTool::Select => {
+                        state.level_gizmo = if key == 'r' {
+                            level_transform::Mode::Rotate
+                        } else {
+                            level_transform::Mode::Scale
+                        };
+                        return Task::none();
+                    }
+                    _ => {}
+                }
+            }
+            if pressed
+                && !state.level_looking
+                && let Some(next) = level_editor_shell::tool_key(state, key)
+            {
+                return update(state, next);
+            }
             if key == 'f' && pressed {
                 return update(state, Message::LevelCameraFocus);
             }
             if ['w', 'a', 's', 'd', 'q', 'e'].contains(&key) {
-                if pressed && state.level_window_focused {
+                // The camera flies only while RMB is held, so G/R/S and the
+                // other letters are free for editing, as in Blender.
+                if pressed && state.level_window_focused && state.level_looking {
                     state.level_keys.insert(key);
                     state.level_last_pressed_at = Some(Instant::now());
                 } else {
@@ -10379,9 +12016,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Err(error) => state.status = error,
         },
         Message::ViewerToggleFolder(path) => {
-            if !state.viewer_collapsed.insert(path.clone()) {
+            let opened = !state.viewer_collapsed.insert(path.clone());
+            if opened {
                 state.viewer_collapsed.remove(&path);
             }
+            let reduce = state.preferences.reduce_motion;
+            state.ui.turn_folder(&path, opened, Instant::now(), reduce);
             state.viewer_context_index = None;
             state.viewer_page = 0;
             refresh_viewer_rows(state);
@@ -12149,6 +13789,198 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             persist_preferences(state);
         }
+        Message::PreferenceThemePreset(name) => {
+            if state.preferences.ui_theme != "Modern" {
+                return Task::none();
+            }
+            let prefs = &mut state.preferences;
+            if name == "Saved custom colours" {
+                if let Some(saved) = prefs.theme_presets.get(SAVED_CUSTOM_COLOURS).cloned() {
+                    prefs.appearance_colors = saved;
+                    prefs.theme_preset.clear();
+                }
+            } else if name == "Default" {
+                prefs.theme_preset.clear();
+                prefs.corner_style = "Rounded".into();
+            } else if let Some(preset) = design::theme_preset(name) {
+                // Park any hand-picked colours so the preset is visible and
+                // they can be restored from the "Saved custom colours" card.
+                if !prefs.appearance_colors.is_empty() {
+                    let saved = std::mem::take(&mut prefs.appearance_colors);
+                    prefs
+                        .theme_presets
+                        .insert(SAVED_CUSTOM_COLOURS.into(), saved);
+                }
+                prefs.theme_preset = preset.name.into();
+                prefs.corner_style = preset.corners.into();
+            } else {
+                return Task::none();
+            }
+            persist_preferences(state);
+            state.settings_status = format!("Theme preset applied: {name}");
+        }
+        Message::PreferenceUpdateChannelSet(channel) => {
+            let prefs = &mut state.preferences;
+            prefs.experimental_updates = channel == "Beta";
+            prefs.nightly_updates = channel == "Nightly";
+            state.available_update = None;
+            persist_preferences(state);
+        }
+        Message::PreferenceAppearanceSet(mode) => {
+            if matches!(mode, "Dark" | "Light") && state.preferences.ui_theme == "Modern" {
+                state.preferences.appearance_mode = mode.into();
+                persist_preferences(state);
+            }
+        }
+        Message::PreferenceCornerStyle(style) => {
+            if matches!(style, "Sharp" | "Rounded" | "Soft") {
+                state.preferences.corner_style = style.into();
+                persist_preferences(state);
+                state.settings_status = format!("Corner style: {style}");
+            }
+        }
+        Message::OpenSettingsTab(tab) => {
+            let task = update(state, Message::Navigate(Page::Settings));
+            state.settings_tab = tab;
+            return task;
+        }
+        Message::CopyToClipboard(id, value) => {
+            state.ui.mark_copied(id);
+            return iced::clipboard::write(value);
+        }
+        Message::ColorPicker(msg) => {
+            if color_picker::update(state, msg) {
+                persist_preferences(state);
+            }
+        }
+        Message::SortBy(table, column) => match table {
+            "library" => {
+                state.library_sort = ui_kit::next_sort(state.library_sort, column);
+                refresh_library_matches(state);
+            }
+            "modding" => state.modding_sort = ui_kit::next_sort(state.modding_sort, column),
+            "storage" => state.storage_sort = ui_kit::next_sort(state.storage_sort, column),
+            _ => {}
+        },
+        Message::LibraryChipPicked(chip) => {
+            if !state.library_chips.contains(&chip) {
+                state.library_chips.push(chip);
+            }
+            state.library_chip_query.clear();
+            state.library_page = 0;
+            refresh_library_matches(state);
+        }
+        Message::LibraryChipInput(value) => {
+            // A second empty input means Backspace in an empty field.
+            if value.is_empty() && state.library_chip_query.is_empty() {
+                state.library_chips.pop();
+                refresh_library_matches(state);
+            }
+            state.library_chip_query = value;
+        }
+        Message::LibraryChipRemove(index) => {
+            if index < state.library_chips.len() {
+                state.library_chips.remove(index);
+                refresh_library_matches(state);
+            }
+        }
+        Message::ModdingChipPicked(chip) => {
+            if !state.modding_chips.contains(&chip) {
+                state.modding_chips.push(chip);
+            }
+            state.modding_chip_query.clear();
+            state.modding_page = 0;
+        }
+        Message::ModdingChipInput(value) => {
+            if value.is_empty() && state.modding_chip_query.is_empty() {
+                state.modding_chips.pop();
+            }
+            state.modding_chip_query = value;
+        }
+        Message::ModdingChipRemove(index) => {
+            if index < state.modding_chips.len() {
+                state.modding_chips.remove(index);
+            }
+        }
+        Message::ProfileModMove(from, to) => {
+            let stage = PathBuf::from(&state.preferences.stage);
+            let Some(mod_id) = state
+                .profile_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.profiles.iter().find(|p| p.id == state.profile_id))
+                .and_then(|profile| profile.mods.get(from))
+                .map(|item| item.id.clone())
+            else {
+                return Task::none();
+            };
+            // A small JSON rewrite; the catalog is re-read to show the
+            // persisted order rather than an optimistic one.
+            match evolve_core::reorder_profile_mod(&stage, &state.profile_id, &mod_id, to)
+                .and_then(|()| evolve_core::list_mod_profiles(&stage))
+            {
+                Ok(catalog) => {
+                    state.profile_catalog = Some(catalog);
+                    state.profile_feedback = "Profile order saved.".into();
+                }
+                Err(error) => state.profile_feedback = format!("Could not reorder: {error}"),
+            }
+        }
+        Message::Gallery(msg) => return gallery::update(state, msg),
+        Message::Map(msg) => return map_chooser::update(state, msg),
+        Message::Chrome(msg) => {
+            return match chrome::update(state, msg) {
+                Some(next) => update(state, next),
+                None => Task::none(),
+            };
+        }
+        Message::Form(msg) => {
+            return match forms::update(&mut state.forms, msg) {
+                Some(next) => update(state, next),
+                None => Task::none(),
+            };
+        }
+        Message::BrowsePath(kind) => {
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        native_export_picker(if kind.folder() { "folder" } else { "file" })
+                    })
+                    .await
+                    .unwrap_or(None)
+                },
+                move |selection| Message::BrowsedPath(kind, selection),
+            );
+        }
+        Message::BrowsedPath(kind, Some(path)) => {
+            return update(state, kind.set(path.to_string_lossy().into_owned()));
+        }
+        Message::BrowsedPath(_, None) => {}
+        Message::DismissIntro => {
+            let version: String = env!("CARGO_PKG_VERSION").into();
+            state.preferences.last_seen_version = version.clone();
+            persist_saved_field(move |saved| saved.last_seen_version = version);
+        }
+        Message::TextEditorToggleDiff => {
+            if let Some(doc) = state.text_document.as_mut() {
+                doc.show_diff = !doc.show_diff;
+            }
+        }
+        // Routed by `Desktop::update`; reaching here means a direct call
+        // (tests), so handle the parts that need no window access.
+        Message::Ui(msg) => {
+            let reduce = state.preferences.reduce_motion;
+            if let Some(next) = ui_kit::update(&mut state.ui, msg, reduce) {
+                return update(state, next);
+            }
+        }
+        Message::Sequence(messages) => {
+            return Task::batch(
+                messages
+                    .into_iter()
+                    .map(|next| update(state, next))
+                    .collect::<Vec<_>>(),
+            );
+        }
         Message::PreferenceAccentPreset(preset) => {
             if settings::apply_accent_preset(&mut state.preferences, preset) {
                 persist_preferences(state);
@@ -12529,6 +14361,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             state.active_play = Some(kind);
+            if kind == play_dialog::Kind::Modded && !state.preferences.played_with_mods {
+                state.preferences.played_with_mods = true;
+                persist_saved_field(|saved| saved.played_with_mods = true);
+            }
             state.play_notice = Some(play_dialog::Notice::preparing(kind));
             let test_mode = state.preferences.play_through_test_client;
             // The separate Test Client owns its game's startup. Never use the
@@ -12739,6 +14575,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::NewsLoaded(result) => match result {
             Ok(news) => {
                 state.news.apply(news);
+                if state.page == Some(Page::WhatsNew) {
+                    mark_news_seen(state);
+                }
                 if matches!(state.page, Some(Page::Home | Page::WhatsNew)) {
                     return start_news_images(state);
                 }
@@ -13320,12 +15159,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .motion_tick
                 .map(|last| now.saturating_duration_since(last));
             state.motion_tick = state.playing.then_some(now);
-            for animation in &mut state.mod_toggle_animations {
-                animation.frame = animation.frame.saturating_add(1);
-            }
-            state
-                .mod_toggle_animations
-                .retain(|animation| animation.frame < MOD_TOGGLE_FRAMES);
             if state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
                 surfaces.iter().any(|surface| surface.emissive_uv.is_some())
             }) {
@@ -13833,6 +15666,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::Finished(result) => {
+            // A failed worker ends any in-flight save without a new timestamp.
+            if result.is_err() {
+                state.ui.mark_saved("level", false);
+            }
             let launch_notice = state.active_play.take().map(|kind| {
                 match &result {
                     Err(error) => play_dialog::Notice::finished(
@@ -13947,6 +15784,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         usage.files
                     );
                     state.storage_usage = Some(usage);
+                    let reduce = state.preferences.reduce_motion;
+                    state.ui.sweep_ring(Instant::now(), reduce);
                 }
                 Ok(Completed::Dependencies(graph)) => {
                     state.status = format!(
@@ -13958,7 +15797,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.dependency_graph = Some(graph);
                     state.viewer_tab = ViewerTab::Dependencies;
                 }
-                Ok(Completed::Comparison(report)) => {
+                Ok(Completed::Comparison(report, texts)) => {
+                    state.comparison_text = texts.map(|pair| *pair);
                     state.status = if report.identical {
                         "Original and modified files are byte-for-byte identical.".into()
                     } else {
@@ -14069,6 +15909,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                 }
                 Ok(Completed::Projects(projects)) => {
+                    state.modding_chip_options = iced::widget::combo_box::State::new(
+                        modding_page::modding_chip_options(&projects),
+                    );
                     let focus = state.modding_pending_focus.take();
                     let previous = focus
                         .clone()
@@ -14093,7 +15936,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .cloned()
                         {
                             let root = PathBuf::from(&state.library_root);
-                            return launch(state, Operation::OpenProjectLevel(project, 0, root));
+                            return launch(
+                                state,
+                                Operation::OpenProjectLevel(project, 0, root, None),
+                            );
                         }
                     }
                     state.modding_name_input = state
@@ -14257,6 +16103,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.input = inventory.root.clone();
                     state.viewer_search.clear();
                     state.inventory = Some(inventory);
+                    state.gallery.reset();
                     state.file_selection.clear();
                     state.pak = None;
                     state.signed_pak = None;
@@ -14273,6 +16120,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         inventory.entries.len()
                     );
                     state.inventory = Some(inventory);
+                    state.gallery.reset();
                     state.pak = None;
                     state.signed_pak = None;
                     state.texture = None;
@@ -15180,7 +17028,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .as_ref()
                         .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
+                Ok(Completed::LevelDraftSaved(project, saved)) => {
+                    state.level_draft = None;
+                    state.status = format!(
+                        "Map saved: {saved} file{} written. Reloading…",
+                        if saved == 1 { "" } else { "s" }
+                    );
+                    return reload_project_level(state, project);
+                }
                 Ok(Completed::ProjectLevelSaved(project, saved, revision)) => {
+                    state.ui.mark_saved("level", true);
                     if let Some(revision) = revision {
                         state.level_committed_redo.clear();
                         state.level_committed_undo.push_back(revision);
@@ -15201,9 +17058,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     } else {
                         "Project level matches its original bytes.".into()
                     };
-                    let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
-                    let root = PathBuf::from(&state.library_root);
-                    return launch(state, Operation::OpenProjectLevel(project, index, root));
+                    return reload_project_level(state, project);
                 }
                 Ok(Completed::ProjectLevelHistoryApplied(project, revision, undo)) => {
                     if undo {
@@ -15237,19 +17092,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Committed project edit reapplied."
                     }
                     .into();
-                    let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
-                    let root = PathBuf::from(&state.library_root);
-                    return launch(state, Operation::OpenProjectLevel(project, index, root));
+                    return reload_project_level(state, project);
                 }
                 Ok(Completed::LevelMaps(archive, maps)) => {
+                    // A recent map opens straight away once its archive lists it.
+                    let next = map_chooser::take_pending(state, &maps, false);
                     state.level_map_choices = Some((archive, maps));
                     state.level_project_choices = None;
                     state.level_map_prompt = true;
+                    if let Some(next) = next {
+                        return update(state, next);
+                    }
                 }
                 Ok(Completed::ProjectMaps(project, maps)) => {
+                    let next = map_chooser::take_pending(state, &maps, true);
                     state.level_project_choices = Some((project, maps));
                     state.level_map_choices = None;
                     state.level_map_prompt = true;
+                    if let Some(next) = next {
+                        return update(state, next);
+                    }
                 }
                 Ok(Completed::LevelWildlife(scene, wildlife, report)) => {
                     if state
@@ -15272,6 +17134,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .map(|group| group.instances.len())
                             .sum();
                         state.level_world_source = Some(Arc::new(merged));
+                        if let Some(draft) = state.level_draft.as_mut() {
+                            draft.current.world = state.level_world_source.clone();
+                        }
                         state.level_wildlife_resolved = true;
                         state.level_spawn_distances = report.spawn_distances;
                         state
@@ -15291,7 +17156,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_map_prompt = false;
                     state.level_map_choices = None;
                     state.level_project_choices = None;
-                    let loaded = *loaded;
+                    let mut loaded = *loaded;
+                    remember_opened_map(state, &mut loaded);
+                    state.level_draft = None;
+                    state.level_surface_palette = None;
+                    state.level_vegetation_palette = None;
                     let same_project_and_map = state
                         .level_project
                         .as_ref()
@@ -15310,12 +17179,35 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.level_committed_undo.clear();
                         state.level_committed_redo.clear();
                     }
+                    // A reload after an edit keeps the view: camera, panels and
+                    // the selection (by object ID, as indices may shift).
+                    let keep_view = loaded.reloaded && same_project_and_map;
+                    let id_of = |index: usize| {
+                        state
+                            .level_scene
+                            .as_ref()
+                            .and_then(|scene| scene.objects.get(index))
+                            .map(|object| object.id.clone())
+                    };
+                    let kept_selection = keep_view.then(|| {
+                        (
+                            state.level_selected.and_then(id_of),
+                            state
+                                .level_selection
+                                .indices
+                                .iter()
+                                .filter_map(|&index| id_of(index))
+                                .collect::<Vec<_>>(),
+                        )
+                    });
                     state.level_wildlife_resolved = false;
                     state.level_spawn_distances = None;
                     state.level_diagnostics = loaded.diagnostics.clone();
-                    state.level_show_overview = false;
                     state.level_show_wildlife = false;
-                    state.level_sidebar_tab = LevelSidebarTab::Actors;
+                    if !keep_view {
+                        state.level_show_overview = false;
+                        state.level_sidebar_tab = LevelSidebarTab::Actors;
+                    }
                     let map_name = loaded.maps[loaded.index].name.clone();
                     state.input = loaded
                         .source
@@ -15367,6 +17259,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_redo.clear();
                     state.level_selection.clear();
                     state.level_selected = None;
+                    if let Some((primary, ids)) = kept_selection
+                        && let Some(scene) = state.level_scene.as_ref()
+                    {
+                        let index_of = |id: &str| scene.objects.iter().position(|o| o.id == id);
+                        state.level_selection.indices =
+                            ids.iter().filter_map(|id| index_of(id)).collect();
+                        state.level_selected = primary.as_deref().and_then(index_of);
+                        state.level_selection.anchor = state.level_selected;
+                    }
                     if let Some(assembled) = loaded.full_scene {
                         state.level_time_of_day = assembled
                             .world
@@ -15413,18 +17314,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         },
                         state.level_diagnostics.len(),
                     );
-                    // Keep the manager on its originating workspace.
-                    state.level_zoom = 1.0;
-                    state.yaw = -30.0;
-                    state.pitch = 32.0;
-                    state.zoom = 1.0;
-                    state.pan_x = 0.0;
-                    state.pan_y = 0.0;
-                    state.level_keys.clear();
-                    state.level_camera = state
-                        .model
-                        .as_ref()
-                        .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
+                    if keep_view {
+                        state.status = "Edit saved; only what changed was reloaded.".into();
+                    } else {
+                        // Keep the manager on its originating workspace.
+                        state.level_zoom = 1.0;
+                        state.yaw = -30.0;
+                        state.pitch = 32.0;
+                        state.zoom = 1.0;
+                        state.pan_x = 0.0;
+                        state.pan_y = 0.0;
+                        state.level_keys.clear();
+                        state.level_camera = state
+                            .model
+                            .as_ref()
+                            .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
+                    }
                 }
                 Ok(Completed::Level(scene, source, hash)) => {
                     state.library_map = None;
@@ -15639,6 +17544,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.signed_pak = Some(info);
                     state.pak = None;
                     state.inventory = None;
+                    state.gallery.reset();
                     state.selected = None;
                     state.file_selection.clear();
                     refresh_viewer_rows(state);
@@ -15879,6 +17785,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                     }
                     crash_diagnostics::record("worker_refused", &e);
+                    clear_level_transform_preview(state);
                     state.auto_play_native_caf = false;
                     state.status = format!("Operation refused: {e}");
                     if state.auto_material_pending && state.viewer_queued_preview.is_none() {
@@ -15979,8 +17886,9 @@ fn view(state: &State) -> Element<'_, Message> {
     // Modern navigation keeps labels visible: no hover-dependent page names
     // or viewport shift. Legacy retains its original expanding icon rail.
     let legacy_nav = state.preferences.ui_theme == "Evolve Legacy";
+    let sidebar_reveal = state.sidebar_reveal.value(Instant::now());
     let labels_visible = !legacy_nav
-        || state.sidebar_reveal >= 0.88
+        || sidebar_reveal >= 0.88
         || state.preferences.reduce_motion && state.sidebar_hovered;
     let navigation = Page::ALL.into_iter().fold(
         column![].spacing(if legacy_nav { 7 } else { 4 }),
@@ -15999,22 +17907,36 @@ fn view(state: &State) -> Element<'_, Message> {
             if !legacy_nav {
                 contents = contents.push(indicator);
             }
-            contents = contents.push(
+            let icon_size = if legacy_nav { 20.0 } else { 18.0 };
+            contents = contents.push(chrome::badge_icon(
                 svg(item.icon())
                     .style(design::icon)
-                    .width(if legacy_nav { 20 } else { 18 })
-                    .height(if legacy_nav { 20 } else { 18 }),
-            );
+                    .width(icon_size)
+                    .height(icon_size),
+                icon_size,
+                chrome::nav_indicator(state, item),
+                1.0,
+            ));
             if labels_visible {
                 contents = contents.push(text(item.title()).size(if legacy_nav { 13 } else { 14 }));
             }
             let nav = design::button(contents)
                 .width(Fill)
                 .height(if legacy_nav { 40 } else { 36 })
-                .padding(if legacy_nav { [8, 11] } else { [8, 12] })
+                .padding(if legacy_nav { [5, 7] } else { [5, 8] })
                 .style(move |theme, status| design::rail(theme, status, active))
                 .on_press(Message::Navigate(item));
-            items.push(nav)
+            // The collapsed Legacy rail shows icons only, so name them.
+            if labels_visible {
+                items.push(nav)
+            } else {
+                items.push(design::tooltip(
+                    nav,
+                    item.title(),
+                    None,
+                    iced::widget::tooltip::Position::Right,
+                ))
+            }
         },
     );
     // Asset Viewer and Level Editor are independent native windows, not manager pages.
@@ -16037,14 +17959,22 @@ fn view(state: &State) -> Element<'_, Message> {
         if labels_visible {
             contents = contents.push(text(label).size(if legacy_nav { 13 } else { 14 }));
         }
-        navigation = navigation.push(
-            design::button(contents)
-                .width(Fill)
-                .height(if legacy_nav { 40 } else { 36 })
-                .padding(if legacy_nav { [8, 11] } else { [8, 12] })
-                .style(|theme, status| design::rail(theme, status, false))
-                .on_press(message),
-        );
+        let launcher = design::button(contents)
+            .width(Fill)
+            .height(if legacy_nav { 40 } else { 36 })
+            .padding(if legacy_nav { [8, 11] } else { [8, 12] })
+            .style(|theme, status| design::rail(theme, status, false))
+            .on_press(message);
+        navigation = navigation.push(if labels_visible {
+            Element::from(launcher)
+        } else {
+            design::tooltip(
+                launcher,
+                label,
+                None,
+                iced::widget::tooltip::Position::Right,
+            )
+        });
     }
     let play_mods_icon = svg(svg::Handle::from_memory(
         include_bytes!("../../../assets/nav/play-mods.svg").to_vec(),
@@ -16070,12 +18000,15 @@ fn view(state: &State) -> Element<'_, Message> {
             },
         ));
     }
-    settings_row = settings_row.push(
+    settings_row = settings_row.push(chrome::badge_icon(
         svg(Page::Settings.icon())
             .style(design::icon)
             .width(20)
             .height(20),
-    );
+        20.0,
+        chrome::nav_indicator(state, Page::Settings),
+        1.0,
+    ));
     if labels_visible {
         play_mods_row = play_mods_row.push(
             text(if legacy_nav {
@@ -16095,21 +18028,37 @@ fn view(state: &State) -> Element<'_, Message> {
         );
         settings_row = settings_row.push(text("Settings").size(if legacy_nav { 13 } else { 14 }));
     }
+    let rail_tip = |button: iced::widget::Button<'static, Message>, label: &'static str| {
+        if labels_visible {
+            Element::from(button)
+        } else {
+            design::tooltip(button, label, None, iced::widget::tooltip::Position::Right)
+        }
+    };
     let lower = column![
-        design::button(play_mods_row)
-            .width(Fill)
-            .height(if legacy_nav { 40 } else { 36 })
-            .on_press(Message::PlayWithMods),
-        design::button(play_clean_row)
-            .width(Fill)
-            .height(if legacy_nav { 40 } else { 36 })
-            .on_press(Message::PlayWithoutMods),
-        design::button(settings_row)
-            .width(Fill)
-            .height(if legacy_nav { 43 } else { 36 })
-            .padding(if legacy_nav { [10, 10] } else { [8, 12] })
-            .style(move |theme, status| design::rail(theme, status, page == Page::Settings))
-            .on_press(Message::Navigate(Page::Settings)),
+        rail_tip(
+            design::button(play_mods_row)
+                .width(Fill)
+                .height(if legacy_nav { 40 } else { 36 })
+                .on_press(Message::PlayWithMods),
+            "Play with Mods",
+        ),
+        rail_tip(
+            design::button(play_clean_row)
+                .width(Fill)
+                .height(if legacy_nav { 40 } else { 36 })
+                .on_press(Message::PlayWithoutMods),
+            "Play without mods",
+        ),
+        rail_tip(
+            design::button(settings_row)
+                .width(Fill)
+                .height(if legacy_nav { 43 } else { 36 })
+                .padding(if legacy_nav { [10, 10] } else { [8, 12] })
+                .style(move |theme, status| design::rail(theme, status, page == Page::Settings))
+                .on_press(Message::Navigate(Page::Settings)),
+            "Settings",
+        ),
     ]
     .spacing(if legacy_nav { 5 } else { 4 });
     let mut sidebar_content = column![].spacing(if legacy_nav { 8 } else { 16 });
@@ -16126,7 +18075,7 @@ fn view(state: &State) -> Element<'_, Message> {
             .padding(if legacy_nav { [12, 9] } else { [16, 12] }),
     )
     .width(Length::Fixed(if legacy_nav {
-        sidebar_width(state.sidebar_reveal)
+        sidebar_width(sidebar_reveal)
     } else {
         240.0
     }))
@@ -16161,21 +18110,37 @@ fn view(state: &State) -> Element<'_, Message> {
                     ))
                     .width(23)
                     .height(23),
-                    text(page.title()).size(20)
+                    // Legacy titles resolve from random glyphs on page change.
+                    text(state.ui.scrambled(page.title(), Instant::now())).size(20)
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
             )
         } else {
-            Element::<Message>::from(text(page.title()).size(28))
+            Element::<Message>::from(design::title(page.title()))
         },
         space().width(Fill),
         design::button("Help")
             .on_press(Message::Navigate(Page::Docs))
             .style(design::secondary),
-        design::button("Activity")
+        design::tooltip(
+            design::button(if footer_is_working(state) {
+                // A pulsing dot while work runs.
+                let pulse = (state.ui.clock(Instant::now()) * 3.5).sin() * 0.5 + 0.5;
+                Element::from(
+                    row![text("Activity"), design::indicator_dot(None, pulse)]
+                        .spacing(7)
+                        .align_y(iced::Center),
+                )
+            } else {
+                Element::from(text("Activity"))
+            })
             .on_press(Message::ToggleActivity)
             .style(design::secondary),
+            "Activity log and running work",
+            None,
+            iced::widget::tooltip::Position::Bottom,
+        ),
     ]
     .spacing(16)
     .align_y(iced::Center);
@@ -16546,19 +18511,55 @@ fn view(state: &State) -> Element<'_, Message> {
     } else {
         container(column![]).into()
     };
-    let footer_progress = work_progress::footer(state);
+    // Status island: current operation + elapsed time; hovering expands it
+    // into the latest activity entries.
+    let working = footer_is_working(state);
+    let footer_progress = ui_kit::status_island(
+        work_progress::snapshot(state).map_or_else(
+            || "Ready".to_owned(),
+            |snap| match snap.percent {
+                Some(percent) => format!("{} · {percent}%", snap.label),
+                None => snap.label,
+            },
+        ),
+        working
+            .then(|| state.activity_started.map(|start| start.elapsed()))
+            .flatten(),
+        state.loading_wheel_frame,
+        working,
+    );
+    let island_panel = ui_kit::island_panel(
+        &state.ui,
+        state
+            .activity_log
+            .iter()
+            .rev()
+            .take(6)
+            .map(|line| compact_footer_status(line))
+            .collect(),
+    );
+    let banners: Element<'_, Message> =
+        chrome::banner_strip(state).unwrap_or_else(|| column![].into());
     let body = column![
         headline,
+        banners,
         tools,
         workspace,
         row![
             text(compact_footer_status(&state.status))
                 .size(12)
                 .width(Fill),
+            ui_kit::copy_button(&state.ui, "status", state.status.clone()),
             footer_progress,
-            text(format!("v{}", env!("CARGO_PKG_VERSION")))
-                .size(12)
-                .style(design::muted),
+            text(if state.preferences.ui_theme == "Evolve Legacy" {
+                state
+                    .ui
+                    .scrambled(&format!("v{}", env!("CARGO_PKG_VERSION")), Instant::now())
+            } else {
+                format!("v{}", env!("CARGO_PKG_VERSION"))
+            })
+            .size(12)
+            .style(design::muted),
         ]
         .spacing(12)
         .align_y(iced::Alignment::Center)
@@ -16569,10 +18570,30 @@ fn view(state: &State) -> Element<'_, Message> {
     .width(Fill)
     .height(Fill);
     // Activity is detached so it never steals space from the working page.
-    container(row![sidebar, body].height(Fill))
+    let body = chrome::sheet_overlay(body.into(), state);
+    let page: Element<'_, Message> = container(row![sidebar, body].height(Fill))
         .width(Fill)
         .height(Fill)
-        .into()
+        .into();
+    match island_panel {
+        // The expanded island floats above the footer instead of resizing it.
+        Some(panel) => iced::widget::stack![
+            page,
+            container(panel)
+                .width(Fill)
+                .height(Fill)
+                .align_right(Fill)
+                .align_bottom(Fill)
+                .padding(iced::Padding {
+                    top: 0.0,
+                    right: 70.0,
+                    bottom: 44.0,
+                    left: 0.0,
+                }),
+        ]
+        .into(),
+        None => page,
+    }
 }
 
 /// Keep the application status bar a small, single-line summary even if
@@ -16602,7 +18623,6 @@ fn compact_footer_status(status: &str) -> String {
 
 fn initial_state() -> State {
     let mut result = State {
-        docs_expanded: HashSet::from([private_pages::DocsSection::GettingStarted]),
         yaw: orientation_gizmo::FRONT_YAW,
         zoom: 1.0,
         playback_speed: 1.0,
@@ -16645,6 +18665,13 @@ fn initial_state() -> State {
                 result.pitch = saved.saved_pitch;
                 result.zoom = saved.saved_zoom;
                 result.preferences = saved;
+                // Fresh installs (and installs from before the intro card)
+                // start from the current version, so only later updates
+                // show "What's new in this version".
+                if result.preferences.last_seen_version.is_empty() {
+                    result.preferences.last_seen_version = env!("CARGO_PKG_VERSION").into();
+                    let _ = save_to(&path, &result.preferences);
+                }
             }
             Err(error) => {
                 result.settings_status = format!(
@@ -16720,6 +18747,7 @@ fn initial_state() -> State {
     // FFDec or Ruffle executable selected in settings takes precedence.
     gfx_bundled_tools::detect_bundled(&mut result.preferences);
     result.news.cache = whats_new::cached_on_start();
+    result.news.parse_release();
     result.library_root = result.preferences.asset_library_root.clone();
     result.assets_root = result.library_root.clone();
     if let Ok(executable) = std::env::current_exe()
@@ -16909,6 +18937,18 @@ impl Desktop {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.route(message);
+        sync_tickers(&mut self.state);
+        // Both only touch the disk when a path changes or work finishes.
+        self.state
+            .path_checks
+            .sync(&self.state.preferences, self.state.busy);
+        chrome::sync(&mut self.state);
+        sync_rebuild_checks(&mut self.state);
+        task
+    }
+
+    fn route(&mut self, message: Message) -> Task<Message> {
         if matches!(
             message,
             Message::DiscordPresenceTick
@@ -16921,6 +18961,102 @@ impl Desktop {
             return task;
         }
         match message {
+            // The page under an open modal ignores global shortcuts.
+            Message::Ui(
+                ui_kit::UiMsg::Palette(_)
+                | ui_kit::UiMsg::ReorderKey(_)
+                | ui_kit::UiMsg::CompareNudge(_),
+            )
+            | Message::LevelDeleteKey(_)
+            | Message::LevelCopyKey(_)
+            | Message::LevelPasteKey(_)
+            | Message::LevelDuplicateKey(_)
+                if self.state.chrome.modal.is_some() =>
+            {
+                Task::none()
+            }
+            // Arrow keys and Enter move through the map chooser's cards.
+            Message::Ui(ui_kit::UiMsg::Palette(command_palette::Msg::Move(delta)))
+                if self.state.level_map_prompt && !self.state.ui.palette.open =>
+            {
+                map_chooser::update(&mut self.state, map_chooser::Msg::MoveRow(delta))
+            }
+            Message::Ui(ui_kit::UiMsg::CompareNudge(delta))
+                if self.state.level_map_prompt
+                    && self.state.gallery.lightbox.is_none()
+                    && self.state.ui.compare_split.is_none() =>
+            {
+                map_chooser::update(
+                    &mut self.state,
+                    map_chooser::Msg::Move(if delta < 0.0 { -1 } else { 1 }),
+                )
+            }
+            Message::Chrome(chrome::Msg::Enter)
+                if self.state.chrome.modal.is_none()
+                    && self.state.page == Some(Page::Docs)
+                    && !self.state.docs_search.trim().is_empty() =>
+            {
+                self.update(Message::DocsOpenResult(0))
+            }
+            Message::Chrome(chrome::Msg::Enter)
+                if self.state.chrome.modal.is_none()
+                    && self.state.level_map_prompt
+                    && self.state.map_chooser.focus.is_some() =>
+            {
+                map_chooser::update(&mut self.state, map_chooser::Msg::OpenFocused)
+            }
+            Message::LevelShowMapChooser => {
+                let shown = update(&mut self.state, Message::LevelShowMapChooser);
+                Task::batch([shown, map_chooser::ensure_thumbs(&mut self.state)])
+            }
+            Message::Ui(ui_kit::UiMsg::Palette(msg)) => {
+                // Ctrl+K from a secondary window brings the main window up.
+                let raise =
+                    matches!(msg, command_palette::Msg::Toggle) && !self.state.ui.palette.open;
+                let (task, next) = command_palette::update(&mut self.state, msg);
+                let mut tasks = vec![task];
+                if raise {
+                    tasks.push(window::gain_focus(self.main_id));
+                }
+                if let Some(next) = next {
+                    tasks.push(self.update(next));
+                }
+                Task::batch(tasks)
+            }
+            Message::Ui(ui_kit::UiMsg::CompareNudge(delta))
+                if self.state.gallery.lightbox.is_some() =>
+            {
+                gallery::update(
+                    &mut self.state,
+                    gallery::Msg::Step(if delta < 0.0 { -1 } else { 1 }),
+                )
+            }
+            Message::Ui(ui_kit::UiMsg::Popover(Some(id))) => {
+                self.state.ui.popover = Some(id);
+                iced::widget::operation::focus(ui_kit::popover_input_id(id))
+            }
+            Message::Ui(msg) => {
+                let reduce = self.state.preferences.reduce_motion;
+                match ui_kit::update(&mut self.state.ui, msg, reduce) {
+                    Some(next) => self.update(next),
+                    None => Task::none(),
+                }
+            }
+            Message::Sequence(messages) => Task::batch(
+                messages
+                    .into_iter()
+                    .map(|next| self.update(next))
+                    .collect::<Vec<_>>(),
+            ),
+            Message::AnimationFrame => {
+                let task = update(&mut self.state, Message::AnimationFrame);
+                // A completed hold-to-confirm fires its action here so it is
+                // routed exactly like a normal button press.
+                match self.state.ui.frame(Instant::now()) {
+                    Some(action) => Task::batch([task, self.update(action)]),
+                    None => task,
+                }
+            }
             Message::MenuCommand(inner) => {
                 self.state.viewer_menu = None;
                 self.state.modding_menu = None;
@@ -16928,17 +19064,12 @@ impl Desktop {
                 self.update(*inner)
             }
             Message::OpenViewer => self.open_viewer(),
-            Message::Navigate(Page::Levels) => {
+            Message::Navigate(Page::Levels) | Message::OpenLevelEditorWindow => {
                 self.state.level_map_prompt = true;
                 self.state.level_map_choices = None;
                 self.state.level_project_choices = None;
-                self.open_level_editor()
-            }
-            Message::OpenLevelEditorWindow => {
-                self.state.level_map_prompt = true;
-                self.state.level_map_choices = None;
-                self.state.level_project_choices = None;
-                self.open_level_editor()
+                let thumbs = map_chooser::ensure_thumbs(&mut self.state);
+                Task::batch([self.open_level_editor(), thumbs])
             }
             Message::ToggleLevelViewportFullscreen => {
                 let Some(id) = self.level_id else {
@@ -16969,15 +19100,48 @@ impl Desktop {
                 )
             }
             Message::ViewportEscape(id) => {
-                if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
+                // Esc closes the topmost transient layer first: the modal,
+                // palette, popover, lightbox, then the side sheet.
+                let closed_layer = self.state.chrome.modal.take().is_some()
+                    || std::mem::take(&mut self.state.ui.palette.open)
+                    || self.state.ui.popover.take().is_some()
+                    || self.state.gallery.lightbox.take().is_some();
+                let menus_open = self.state.library_menu.is_some()
+                    || self.state.viewer_menu.is_some()
+                    || self.state.modding_menu.is_some();
+                // The map thumbnail lightbox is the level window's top layer.
+                let closed_layer = closed_layer || self.state.map_chooser.lightbox.take().is_some();
+                if closed_layer {
+                    Task::none()
+                } else if self.level_id == Some(id)
+                    && self.state.level_map_prompt
+                    && (self.state.level_scene.is_some() || self.state.library_map.is_some())
+                {
+                    update(&mut self.state, Message::LevelDismissMapChooser)
+                } else if id == self.main_id && self.state.chrome.sheet_floating() {
+                    self.update(chrome::msg(chrome::Msg::CloseSheet))
+                } else if self.level_id == Some(id) && self.state.level_transform.is_some() {
+                    update(&mut self.state, Message::LevelTransformCancel)
+                } else if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
                     self.update(Message::ToggleLevelViewportFullscreen)
                 } else if self.viewer_id == Some(id) && self.state.viewer_viewport_fullscreen {
                     self.update(Message::ToggleViewerViewportFullscreen)
+                } else if !menus_open && let Some(clear) = self.search_clear(id) {
+                    self.update(clear)
                 } else {
                     update(&mut self.state, Message::DismissMenus)
                 }
             }
-            Message::LevelCameraKey(id, _, _) if self.level_id != Some(id) => Task::none(),
+            Message::LevelCameraKey(id, _, _)
+            | Message::LevelLookButton(id, _)
+            | Message::LevelEnterKey(id)
+            | Message::LevelUndoKey(id)
+            | Message::LevelRedoKey(id)
+            | Message::LevelSaveKey(id)
+                if self.level_id != Some(id) =>
+            {
+                Task::none()
+            }
             Message::LevelDeleteKey(id)
             | Message::LevelCopyKey(id)
             | Message::LevelPasteKey(id)
@@ -17033,7 +19197,16 @@ impl Desktop {
             Message::ActivityOpened => Task::none(),
             Message::InspectorOpened => Task::none(),
             Message::ViewerOpened => Task::none(),
+            Message::FilesHovered(id, hovering) => {
+                self.state.ui.drop_target = if hovering {
+                    Some(id)
+                } else {
+                    self.state.ui.drop_target.filter(|target| *target != id)
+                };
+                Task::none()
+            }
             Message::FileDropped(id, path) => {
+                self.state.ui.drop_target = None;
                 if (self.viewer_id == Some(id) || self.inspector_id == Some(id))
                     && self.state.viewer_from_library
                 {
@@ -17177,16 +19350,84 @@ impl Desktop {
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
         let content = self.window_contents(id);
+        let content = if self.state.ui.drop_target == Some(id) {
+            let (label, refused) = self.drop_description(id);
+            ui_kit::drop_zone(content, label, refused)
+        } else {
+            content
+        };
         // Completion toasts follow the user into the windows where
         // long-running work is started; small dialogs stay uncluttered.
         if id == self.main_id || self.viewer_id == Some(id) || self.level_id == Some(id) {
-            toast::overlay(
+            let content = toast::overlay(
                 content,
                 &self.state.toasts,
                 self.state.preferences.reduce_motion,
-            )
+            );
+            if id == self.main_id {
+                let content = chrome::modal_overlay(content, &self.state);
+                command_palette::overlay(content, &self.state)
+            } else if self.viewer_id == Some(id) {
+                gallery::lightbox(&self.state, content)
+            } else {
+                content
+            }
         } else {
             content
+        }
+    }
+
+    /// The message that clears the search box Esc applies to in window
+    /// `id`, if that search has text.
+    fn search_clear(&self, id: window::Id) -> Option<Message> {
+        let state = &self.state;
+        if self.viewer_id == Some(id) {
+            return (!state.viewer_search.is_empty())
+                .then(|| Message::ViewerSearchChanged(String::new()));
+        }
+        if id != self.main_id {
+            return None;
+        }
+        match state.page {
+            Some(Page::AssetLibrary) if !state.library_search.is_empty() => {
+                Some(Message::LibrarySearchChanged(String::new()))
+            }
+            Some(Page::Files) if !state.modding_filter.is_empty() => {
+                Some(Message::ModdingFilterChanged(String::new()))
+            }
+            Some(Page::Files) if !state.search.is_empty() => {
+                Some(Message::SearchChanged(String::new()))
+            }
+            _ => None,
+        }
+    }
+
+    /// What dropping files on window `id` will do, mirroring `FileDropped`.
+    fn drop_description(&self, id: window::Id) -> (String, bool) {
+        let viewer = self.viewer_id == Some(id) || self.inspector_id == Some(id);
+        if viewer && self.state.viewer_from_library {
+            return (
+                "Asset Library originals are read-only — drop files in Modding instead".into(),
+                true,
+            );
+        }
+        if self.state.editor_replace_dialog.is_some() {
+            return ("Drop to use as the replacement source".into(), false);
+        }
+        let project = self
+            .state
+            .modding_selected
+            .and_then(|index| self.state.modding_projects.as_ref()?.get(index))
+            .map(|project| project.label.clone());
+        match project {
+            Some(label) if self.state.page == Some(Page::Files) => (
+                format!("Drop to inspect alongside {label} — a folder scans, a file opens"),
+                false,
+            ),
+            _ => (
+                "Drop a folder to scan it, or a DDS, PAK or model file to open it".into(),
+                false,
+            ),
         }
     }
 
@@ -17258,21 +19499,18 @@ impl Desktop {
                 .iter()
                 .any(|surface| surface.visible && surface.emissive_uv.is_some())
         }) && matches!(self.state.page.as_ref(), Some(Page::Models));
-        let playback = if self.state.playing
-            || animate_decal
-            || !self.state.mod_toggle_animations.is_empty()
-        {
+        let playback = if self.state.playing || animate_decal {
             iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
         } else {
             Subscription::none()
         };
-        let sidebar_animation = if self.state.preferences.ui_theme == "Evolve Legacy"
-            && !self.state.preferences.reduce_motion
-            && (self.state.sidebar_reveal - if self.state.sidebar_hovered { 1.0 } else { 0.0 })
-                .abs()
-                > 0.001
-        {
-            iced::time::every(Duration::from_millis(16)).map(|_| Message::SidebarAnimationTick)
+        let now = Instant::now();
+        let sidebar_animation = if ui_animation_running(&self.state, now) {
+            iced::time::every(anim::FRAME).map(|_| Message::AnimationFrame)
+        } else if ui_ambient_running(&self.state) {
+            // Looping effects (embers, border beam, skeleton pulse) only
+            // need ~30 fps and stop as soon as they leave the screen.
+            iced::time::every(anim::AMBIENT_FRAME).map(|_| Message::AnimationFrame)
         } else {
             Subscription::none()
         };
@@ -17390,6 +19628,85 @@ impl Desktop {
             wheel,
             window::close_events().map(Message::WindowClosed),
             iced::event::listen_with(|event, status, id| match event {
+                // Ctrl+K opens the command palette from any window, even
+                // while a text field has focus.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    modifiers,
+                    ..
+                }) if modifiers.control() && value.eq_ignore_ascii_case("k") => Some(Message::Ui(
+                    ui_kit::UiMsg::Palette(command_palette::Msg::Toggle),
+                )),
+                // Ctrl+1–6 switch Developer tabs.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    modifiers,
+                    ..
+                }) if modifiers.control()
+                    && !modifiers.alt()
+                    && value.len() == 1
+                    && ("1"..="6").contains(&value.as_str()) =>
+                {
+                    value
+                        .parse::<usize>()
+                        .ok()
+                        .map(|n| Message::DeveloperTabKey(n - 1))
+                }
+                // Enter outside a text field confirms an open modal.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                    ..
+                }) if status == iced::event::Status::Ignored => {
+                    Some(Message::Chrome(chrome::Msg::Enter))
+                }
+                // Left/Right nudge an open image comparison split.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key:
+                        iced::keyboard::Key::Named(
+                            named @ (iced::keyboard::key::Named::ArrowLeft
+                            | iced::keyboard::key::Named::ArrowRight),
+                        ),
+                    ..
+                }) if status == iced::event::Status::Ignored => {
+                    Some(Message::Ui(ui_kit::UiMsg::CompareNudge(
+                        if named == iced::keyboard::key::Named::ArrowLeft {
+                            -0.02
+                        } else {
+                            0.02
+                        },
+                    )))
+                }
+                // Alt+↑/↓ moves the focused row of a reorder list.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key:
+                        iced::keyboard::Key::Named(
+                            named @ (iced::keyboard::key::Named::ArrowUp
+                            | iced::keyboard::key::Named::ArrowDown),
+                        ),
+                    modifiers,
+                    ..
+                }) if modifiers.alt() => Some(Message::Ui(ui_kit::UiMsg::ReorderKey(
+                    if named == iced::keyboard::key::Named::ArrowUp {
+                        -1
+                    } else {
+                        1
+                    },
+                ))),
+                // Palette navigation; ignored by the palette while closed.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key:
+                        iced::keyboard::Key::Named(
+                            named @ (iced::keyboard::key::Named::ArrowUp
+                            | iced::keyboard::key::Named::ArrowDown),
+                        ),
+                    ..
+                }) => Some(Message::Ui(ui_kit::UiMsg::Palette(
+                    command_palette::Msg::Move(if named == iced::keyboard::key::Named::ArrowUp {
+                        -1
+                    } else {
+                        1
+                    }),
+                ))),
                 // Editing shortcuts come before the camera's letter keys, so
                 // Shift+D duplicates rather than strafing.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -17398,18 +19715,22 @@ impl Desktop {
                     ..
                 }) if status == iced::event::Status::Ignored
                     && ((modifiers.control()
-                        && (value.eq_ignore_ascii_case("c")
-                            || value.eq_ignore_ascii_case("v")))
+                        && ["c", "v", "z", "y", "s"]
+                            .iter()
+                            .any(|key| value.eq_ignore_ascii_case(key)))
                         || (modifiers.shift()
                             && !modifiers.control()
                             && value.eq_ignore_ascii_case("d"))) =>
                 {
-                    Some(if value.eq_ignore_ascii_case("d") {
-                        Message::LevelDuplicateKey(id)
-                    } else if value.eq_ignore_ascii_case("c") {
-                        Message::LevelCopyKey(id)
-                    } else {
-                        Message::LevelPasteKey(id)
+                    let key = value.to_ascii_lowercase();
+                    Some(match key.as_str() {
+                        "d" => Message::LevelDuplicateKey(id),
+                        "c" => Message::LevelCopyKey(id),
+                        "v" => Message::LevelPasteKey(id),
+                        "z" if modifiers.shift() => Message::LevelRedoKey(id),
+                        "z" => Message::LevelUndoKey(id),
+                        "y" => Message::LevelRedoKey(id),
+                        _ => Message::LevelSaveKey(id),
                     })
                 }
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -17431,6 +19752,16 @@ impl Desktop {
                     ..
                 }) => Some(Message::ViewportEscape(id)),
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                    ..
+                }) if status == iced::event::Status::Ignored => Some(Message::LevelEnterKey(id)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                    iced::mouse::Button::Right,
+                )) => Some(Message::LevelLookButton(id, true)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Right,
+                )) => Some(Message::LevelLookButton(id, false)),
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key:
                         iced::keyboard::Key::Named(
                             iced::keyboard::key::Named::Delete
@@ -17449,6 +19780,12 @@ impl Desktop {
                 }
                 iced::Event::Window(window::Event::FileDropped(path)) => {
                     Some(Message::FileDropped(id, path))
+                }
+                iced::Event::Window(window::Event::FileHovered(_)) => {
+                    Some(Message::FilesHovered(id, true))
+                }
+                iced::Event::Window(window::Event::FilesHoveredLeft) => {
+                    Some(Message::FilesHovered(id, false))
                 }
                 _ => None,
             }),
@@ -17524,6 +19861,167 @@ mod project_edit_tests {
         // A child's local position moves by the same world offset.
         let pasted = paste_local_position(&object("x", "Brush"), [20.0, 12.0, 15.0]);
         assert_eq!(pasted, [10.0, 2.0, 5.0]);
+    }
+
+    #[test]
+    fn dragging_an_area_vertex_edits_its_polygon_then_saves_it() {
+        // An area at (100, 0, 5), turned a quarter about Z, with local points.
+        let quarter = std::f32::consts::FRAC_1_SQRT_2;
+        let area = evolve_core::PlacedObject {
+            id: "area-guid".into(),
+            parent: String::new(),
+            layer: "mission_mission0.xml".into(),
+            name: "OutOfBounds_Shape".into(),
+            kind: "AreaShape".into(),
+            model: String::new(),
+            material: String::new(),
+            hidden: false,
+            local: evolve_core::Transform::default(),
+            world: evolve_core::Transform {
+                position: [100.0, 0.0, 5.0],
+                quaternion: [quarter, 0.0, 0.0, quarter],
+                scale: [1.0; 3],
+            },
+            status: String::new(),
+            populations: Vec::new(),
+            home_area: String::new(),
+            shape_points: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]],
+            wildlife: Default::default(),
+        };
+        let mut state = State {
+            level_project: Some(ProjectRow {
+                label: "Project".into(),
+                target: "level.pak".into(),
+                source_build: String::new(),
+                status: String::new(),
+                details: String::new(),
+                workspace: PathBuf::from("C:/projects/example"),
+                modified: Vec::new(),
+                changed_known: true,
+                enabled: false,
+            }),
+            level_scene: Some(Arc::new(evolve_core::LevelScene {
+                schema: 1,
+                objects: vec![area],
+                diagnostics: Vec::new(),
+            })),
+            level_world_source: Some(Arc::new(world_instances::World::default())),
+            level_selected: Some(0),
+            ..Default::default()
+        };
+        sync_level_fields(&mut state);
+        // Straight down onto the ground at (90, 20): local (20, 10, 0) once
+        // the quarter turn is undone.
+        let down = |x: f32, y: f32| Some(([x, y, 50.0], [0.0, 0.0, -1.0]));
+        let _ = update(&mut state, Message::LevelVertexDrag(1, down(100.0, 10.0)));
+        let _ = update(&mut state, Message::LevelVertexDrag(1, down(90.0, 20.0)));
+        let points = state.level_authoring.points().unwrap();
+        assert!((points[1][0] - 20.0).abs() < 1e-3, "{points:?}");
+        assert!((points[1][1] - 10.0).abs() < 1e-3, "{points:?}");
+        assert!(points[1][2].abs() < 1e-3, "{points:?}");
+        assert_eq!(points[0], [0.0, 0.0, 0.0]);
+        // Releasing applies it to the map draft, undoably; Ctrl+S saves.
+        let _ = update(&mut state, Message::LevelVertexRelease);
+        assert!(draft_pending(&state));
+        let shape = |state: &State| state.level_scene.as_ref().unwrap().objects[0].shape_points[1];
+        assert!((shape(&state)[0] - 20.0).abs() < 1e-3);
+        let window = window::Id::unique();
+        let _ = update(&mut state, Message::LevelUndoKey(window));
+        assert_eq!(shape(&state), [10.0, 0.0, 0.0]);
+        assert!(!draft_pending(&state));
+        let _ = update(&mut state, Message::LevelRedoKey(window));
+        assert!((shape(&state)[0] - 20.0).abs() < 1e-3);
+        let _ = update(&mut state, Message::LevelSaveKey(window));
+        assert!(state.busy, "{}", state.status);
+    }
+
+    #[test]
+    fn g_r_s_keys_transform_the_selection_live_then_save_it() {
+        let rock = evolve_core::PlacedObject {
+            id: "rock-guid".into(),
+            parent: String::new(),
+            layer: "layers/main.lyr".into(),
+            name: "rock".into(),
+            kind: "Brush".into(),
+            model: "objects/rock.cgf".into(),
+            material: String::new(),
+            hidden: false,
+            local: evolve_core::Transform {
+                position: [11.0, 12.0, 13.0],
+                ..Default::default()
+            },
+            world: evolve_core::Transform {
+                position: [11.0, 12.0, 13.0],
+                ..Default::default()
+            },
+            status: String::new(),
+            populations: Vec::new(),
+            home_area: String::new(),
+            shape_points: Vec::new(),
+            wildlife: Default::default(),
+        };
+        let mut state = State {
+            level_project: Some(ProjectRow {
+                label: "Project".into(),
+                target: "level.pak".into(),
+                source_build: String::new(),
+                status: String::new(),
+                details: String::new(),
+                workspace: PathBuf::from("C:/projects/example"),
+                modified: Vec::new(),
+                changed_known: true,
+                enabled: false,
+            }),
+            level_scene: Some(Arc::new(evolve_core::LevelScene {
+                schema: 1,
+                objects: vec![rock],
+                diagnostics: Vec::new(),
+            })),
+            level_world_source: Some(Arc::new(world_instances::World::default())),
+            level_selected: Some(0),
+            level_window_focused: true,
+            ..Default::default()
+        };
+        let window = window::Id::unique();
+        let key = |state: &mut State, key: char| {
+            let _ = update(state, Message::LevelCameraKey(window, key, true));
+        };
+        // S shows the scale gizmo, rather than flying the camera back.
+        key(&mut state, 's');
+        assert!(state.level_keys.is_empty());
+        assert!(state.level_transform.is_none());
+        assert_eq!(state.level_gizmo, level_transform::Mode::Scale);
+        // G, X, 5: five metres along X, shown before it is saved.
+        key(&mut state, 'g');
+        key(&mut state, 'x');
+        key(&mut state, '5');
+        let moved = state.level_transform.as_ref().unwrap().results()[0].position;
+        assert_eq!(moved, [16.0, 12.0, 13.0]);
+        assert!(state.status.starts_with("Move along X"), "{}", state.status);
+        // Enter applies it to the map at once; Ctrl+Z and Ctrl+Y step
+        // through it, and Ctrl+S saves it to the layer that owns it.
+        let _ = update(&mut state, Message::LevelEnterKey(window));
+        assert!(state.level_transform.is_none());
+        let at = |state: &State| {
+            state.level_scene.as_ref().unwrap().objects[0]
+                .world
+                .position
+        };
+        assert_eq!(at(&state), [16.0, 12.0, 13.0]);
+        assert!(!state.busy);
+        let _ = update(&mut state, Message::LevelUndoKey(window));
+        assert_eq!(at(&state), [11.0, 12.0, 13.0]);
+        let _ = update(&mut state, Message::LevelRedoKey(window));
+        assert_eq!(at(&state), [16.0, 12.0, 13.0]);
+        let _ = update(&mut state, Message::LevelSaveKey(window));
+        assert!(state.busy, "{}", state.status);
+        // With RMB held, WASD flies the camera.
+        state.busy = false;
+        let _ = update(&mut state, Message::LevelLookButton(window, true));
+        key(&mut state, 'w');
+        assert!(state.level_keys.contains(&'w'));
+        let _ = update(&mut state, Message::LevelLookButton(window, false));
+        assert!(state.level_keys.is_empty());
     }
 
     #[test]
@@ -17626,21 +20124,26 @@ mod project_edit_tests {
 
     #[test]
     fn mod_toggle_thumb_eases_without_changing_persisted_enable_state() {
+        let t0 = Instant::now();
         let mut animation = ModToggleAnimation {
             workspace: PathBuf::from("test-mod"),
-            from: 0.0,
-            to: 1.0,
-            frame: 0,
+            thumb: anim::Tween::settled(0.0),
         };
-        assert_eq!(animation.position(), 0.0);
-        animation.frame = 3;
-        assert!(animation.position() > 0.0 && animation.position() < 1.0);
-        animation.frame = MOD_TOGGLE_FRAMES;
-        assert_eq!(animation.position(), 1.0);
-        animation.from = 1.0;
-        animation.to = 0.0;
-        animation.frame = MOD_TOGGLE_FRAMES;
-        assert_eq!(animation.position(), 0.0);
+        animation
+            .thumb
+            .animate_to(1.0, t0, MOD_TOGGLE_DURATION, false);
+        assert_eq!(animation.position(t0), 0.0);
+        let mid = animation.position(t0 + MOD_TOGGLE_DURATION / 2);
+        assert!(mid > 0.0 && mid < 1.0);
+        let end = t0 + MOD_TOGGLE_DURATION;
+        assert_eq!(animation.position(end), 1.0);
+        animation
+            .thumb
+            .animate_to(0.0, end, MOD_TOGGLE_DURATION, false);
+        assert_eq!(animation.position(end + MOD_TOGGLE_DURATION), 0.0);
+        let mut reduced = anim::Tween::settled(0.0);
+        reduced.animate_to(1.0, t0, MOD_TOGGLE_DURATION, true);
+        assert!(!reduced.is_running(t0));
     }
 
     #[test]
@@ -18906,25 +21409,24 @@ mod project_edit_tests {
     }
 
     #[test]
-    fn docs_sections_can_expand_and_collapse_independently() {
+    fn docs_open_on_getting_started_and_search_jumps_to_a_section() {
         let mut state = initial_state();
-        assert!(
-            state
-                .docs_expanded
-                .contains(&private_pages::DocsSection::GettingStarted)
-        );
-        let section = private_pages::DocsSection::Projects;
-        let _ = update(&mut state, Message::ToggleDocsSection(section));
-        assert!(state.docs_expanded.contains(&section));
-        let _ = update(&mut state, Message::ToggleDocsSection(section));
-        assert!(!state.docs_expanded.contains(&section));
-        let _ = update(&mut state, Message::DocsExpandAll(true));
         assert_eq!(
-            state.docs_expanded.len(),
-            private_pages::DocsSection::ALL.len()
+            state.docs_selected,
+            private_pages::DocsSection::GettingStarted
         );
-        let _ = update(&mut state, Message::DocsExpandAll(false));
-        assert!(state.docs_expanded.is_empty());
+        let _ = update(
+            &mut state,
+            Message::DocsSelect(private_pages::DocsSection::Projects),
+        );
+        assert_eq!(state.docs_selected, private_pages::DocsSection::Projects);
+        let _ = update(
+            &mut state,
+            Message::DocsSearch("ModdedEvolveLauncher".into()),
+        );
+        let _ = update(&mut state, Message::DocsOpenResult(0));
+        assert!(state.docs_search.is_empty());
+        assert_ne!(state.docs_selected, private_pages::DocsSection::Projects);
     }
 
     #[test]

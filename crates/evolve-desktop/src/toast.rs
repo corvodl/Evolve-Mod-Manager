@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use iced::widget::{column, container, mouse_area, row, space, stack, text};
 use iced::{Background, Border, Color, Element, Fill, Theme};
 
-use crate::{Message, design};
+use crate::{Message, anim, design};
 
 const MAX_VISIBLE: usize = 4;
 const SUCCESS_LIFETIME: Duration = Duration::from_secs(6);
@@ -58,8 +58,10 @@ impl Toast {
         }
         let age = self.age(now);
         let remaining = self.lifetime.saturating_sub(age);
-        let fade_in = (age.as_secs_f32() / FADE_IN.as_secs_f32()).min(1.0);
-        let fade_out = (remaining.as_secs_f32() / FADE_OUT.as_secs_f32()).min(1.0);
+        // Shared curves from `anim` so toasts move like the rest of the UI.
+        let fade_in = anim::Easing::EaseOut.apply(age.as_secs_f32() / FADE_IN.as_secs_f32());
+        let fade_out =
+            anim::Easing::EaseInOut.apply(remaining.as_secs_f32() / FADE_OUT.as_secs_f32());
         fade_in.min(fade_out).clamp(0.0, 1.0)
     }
 
@@ -214,16 +216,15 @@ fn card<'a>(toast: &'a Toast, now: Instant, reduce_motion: bool) -> Element<'a, 
     let kind = toast.kind;
     let remaining = toast.remaining_fraction(now);
 
-    let marker = container(space().width(8).height(8)).style(move |theme: &Theme| {
-        container::Style {
+    let marker =
+        container(space().width(8).height(8)).style(move |theme: &Theme| container::Style {
             background: Some(Background::Color(faded(accent(theme, kind), opacity))),
             border: Border {
-                radius: if design::is_legacy(theme) { 0.0 } else { 4.0 }.into(),
+                radius: design::radius(theme, design::Radius::Small).into(),
                 ..Border::default()
             },
             ..container::Style::default()
-        }
-    });
+        });
     let title = text(&toast.title)
         .size(14)
         .style(move |theme: &Theme| text::Style {
@@ -265,33 +266,28 @@ fn card<'a>(toast: &'a Toast, now: Instant, reduce_motion: bool) -> Element<'a, 
                 background: Some(Background::Color(faded(accent(theme, kind), opacity * 0.8))),
                 ..container::Style::default()
             }),
-        space()
-            .height(2)
-            .width(iced::Length::FillPortion(
-                (((1.0 - remaining) * 1000.0) as u16).max(1)
-            )),
+        space().height(2).width(iced::Length::FillPortion(
+            (((1.0 - remaining) * 1000.0) as u16).max(1)
+        )),
     ];
     body = body.push(bar);
 
     let card = container(body)
         .padding([10, 12])
         .width(340)
-        .style(move |theme: &Theme| {
-            let legacy = design::is_legacy(theme);
-            container::Style {
-                background: Some(Background::Color(faded(design::surface(theme), opacity))),
-                border: Border {
-                    color: faded(accent(theme, kind), opacity * 0.7),
-                    width: 1.0,
-                    radius: if legacy { 1.0 } else { 10.0 }.into(),
-                },
-                shadow: iced::Shadow {
-                    color: faded(Color::from_rgba(0.0, 0.0, 0.0, 0.35), opacity),
-                    offset: iced::Vector::new(0.0, 4.0),
-                    blur_radius: 14.0,
-                },
-                ..container::Style::default()
-            }
+        .style(move |theme: &Theme| container::Style {
+            background: Some(Background::Color(faded(design::surface(theme), opacity))),
+            border: Border {
+                color: faded(accent(theme, kind), opacity * 0.7),
+                width: 1.0,
+                radius: design::radius(theme, design::Radius::Large).into(),
+            },
+            shadow: iced::Shadow {
+                color: faded(Color::from_rgba(0.0, 0.0, 0.0, 0.35), opacity),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 14.0,
+            },
+            ..container::Style::default()
         });
     if toast.action.is_some() {
         // The close button captures its own press, so only clicks on the

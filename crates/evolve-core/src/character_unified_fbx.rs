@@ -1991,6 +1991,7 @@ mod tests {
             alpha_test: None,
             glow_amount: None,
             alpha_glow: false,
+            decal: false,
             vertex_colors: false,
             shader_gen_mask: None,
             diffuse_tint: None,
