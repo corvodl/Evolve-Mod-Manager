@@ -516,7 +516,7 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
             .mod_toggle_animations
             .iter()
             .find(|anim| anim.workspace == record.workspace)
-            .map(super::ModToggleAnimation::position)
+            .map(|anim| anim.position(std::time::Instant::now()))
             .unwrap_or(if record.enabled { 1.0 } else { 0.0 });
         rows = rows.push(
             container(

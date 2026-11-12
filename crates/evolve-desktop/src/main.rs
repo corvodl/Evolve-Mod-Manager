@@ -3,6 +3,7 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
+mod anim;
 mod assembly_materials;
 mod asset_cache;
 mod asset_library_page;
@@ -334,7 +335,7 @@ struct State {
     level_viewport_fullscreen: bool,
     viewer_viewport_fullscreen: bool,
     sidebar_hovered: bool,
-    sidebar_reveal: f32,
+    sidebar_reveal: anim::Tween,
     input: String,
     output: String,
     replacements: String,
@@ -758,24 +759,32 @@ struct State {
     modding_pending_focus: Option<PathBuf>,
 }
 
+/// Full 0→1 sweep of the Legacy sidebar reveal.
+const SIDEBAR_REVEAL_DURATION: Duration = Duration::from_millis(140);
+/// Full off→on travel of a mod toggle thumb.
+const MOD_TOGGLE_DURATION: Duration = Duration::from_millis(280);
+
 /// Visual-only state: the enabled preference is committed before the
 /// thumb animation begins. Never animate a failed preference write.
-const MOD_TOGGLE_FRAMES: u8 = 7;
-
 #[derive(Debug, Clone)]
 struct ModToggleAnimation {
     workspace: PathBuf,
-    from: f32,
-    to: f32,
-    frame: u8,
+    thumb: anim::Tween,
 }
 
 impl ModToggleAnimation {
-    fn position(&self) -> f32 {
-        let t = (f32::from(self.frame) / f32::from(MOD_TOGGLE_FRAMES)).clamp(0.0, 1.0);
-        let eased = t * t * (3.0 - 2.0 * t);
-        self.from + (self.to - self.from) * eased
+    fn position(&self, now: Instant) -> f32 {
+        self.thumb.value(now)
     }
+}
+
+/// True while any shared UI tween still needs frames.
+fn ui_animation_running(state: &State, now: Instant) -> bool {
+    state.sidebar_reveal.is_running(now)
+        || state
+            .mod_toggle_animations
+            .iter()
+            .any(|animation| animation.thumb.is_running(now))
 }
 
 /// Docked tools all share the same resizable sidebar. Files is permanent;
@@ -2656,7 +2665,8 @@ impl Operation {
 enum Message {
     Navigate(Page),
     SidebarHover(bool),
-    SidebarAnimationTick,
+    /// Redraw tick for shared `anim::Tween`s; only subscribed while one runs.
+    AnimationFrame,
     LibraryPickFiles,
     LibraryPickFolder,
     LibraryUpdatePickFolder,
@@ -4808,20 +4818,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::SidebarHover(hovered) => {
             state.sidebar_hovered = hovered;
-            if state.preferences.reduce_motion {
-                state.sidebar_reveal = if hovered { 1.0 } else { 0.0 };
-            }
+            state.sidebar_reveal = state.sidebar_reveal.with_easing(anim::Easing::EaseOut);
+            state.sidebar_reveal.animate_to(
+                if hovered { 1.0 } else { 0.0 },
+                Instant::now(),
+                SIDEBAR_REVEAL_DURATION,
+                state.preferences.reduce_motion
+                    || state.preferences.ui_theme != "Evolve Legacy",
+            );
             return Task::none();
         }
-        Message::SidebarAnimationTick => {
-            let target: f32 = if state.sidebar_hovered { 1.0 } else { 0.0 };
-            let delta = target - state.sidebar_reveal;
-            // Stop at exact endpoints so no timer keeps running when idle.
-            state.sidebar_reveal = if delta.abs() <= 0.12 {
-                target
-            } else {
-                (state.sidebar_reveal + delta.signum() * 0.12).clamp(0.0, 1.0)
-            };
+        Message::AnimationFrame => {
+            // Values are time-based; this only settles finished tweens so the
+            // subscription stops as soon as nothing is moving.
+            let now = Instant::now();
+            state.sidebar_reveal.tick(now);
+            state
+                .mod_toggle_animations
+                .retain_mut(|animation| animation.thumb.tick(now));
             return Task::none();
         }
         Message::HomeContinueEditing | Message::HomeOpenProject => {
@@ -5174,21 +5188,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Some(enable),
             ) {
                 Ok(()) => {
-                    let from = state
+                    let now = Instant::now();
+                    let mut thumb = state
                         .mod_toggle_animations
                         .iter()
                         .find(|anim| anim.workspace == project.workspace)
-                        .map(ModToggleAnimation::position)
-                        .unwrap_or(if project.enabled { 1.0 } else { 0.0 });
+                        .map(|anim| anim.thumb)
+                        .unwrap_or(anim::Tween::settled(if project.enabled {
+                            1.0
+                        } else {
+                            0.0
+                        }));
+                    thumb.animate_to(
+                        if enable { 1.0 } else { 0.0 },
+                        now,
+                        MOD_TOGGLE_DURATION,
+                        state.preferences.reduce_motion,
+                    );
                     state
                         .mod_toggle_animations
                         .retain(|anim| anim.workspace != project.workspace);
-                    state.mod_toggle_animations.push(ModToggleAnimation {
-                        workspace: project.workspace.clone(),
-                        from,
-                        to: if enable { 1.0 } else { 0.0 },
-                        frame: 0,
-                    });
+                    if thumb.is_running(now) {
+                        state.mod_toggle_animations.push(ModToggleAnimation {
+                            workspace: project.workspace.clone(),
+                            thumb,
+                        });
+                    }
                     if let Some(row) = state
                         .modding_projects
                         .as_mut()
@@ -13174,12 +13199,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .motion_tick
                 .map(|last| now.saturating_duration_since(last));
             state.motion_tick = state.playing.then_some(now);
-            for animation in &mut state.mod_toggle_animations {
-                animation.frame = animation.frame.saturating_add(1);
-            }
-            state
-                .mod_toggle_animations
-                .retain(|animation| animation.frame < MOD_TOGGLE_FRAMES);
             if state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
                 surfaces.iter().any(|surface| surface.emissive_uv.is_some())
             }) {
@@ -15795,8 +15814,9 @@ fn view(state: &State) -> Element<'_, Message> {
     // Modern navigation keeps labels visible: no hover-dependent page names
     // or viewport shift. Legacy retains its original expanding icon rail.
     let legacy_nav = state.preferences.ui_theme == "Evolve Legacy";
+    let sidebar_reveal = state.sidebar_reveal.value(Instant::now());
     let labels_visible = !legacy_nav
-        || state.sidebar_reveal >= 0.88
+        || sidebar_reveal >= 0.88
         || state.preferences.reduce_motion && state.sidebar_hovered;
     let navigation = Page::ALL.into_iter().fold(
         column![].spacing(if legacy_nav { 7 } else { 4 }),
@@ -15942,7 +15962,7 @@ fn view(state: &State) -> Element<'_, Message> {
             .padding(if legacy_nav { [12, 9] } else { [16, 12] }),
     )
     .width(Length::Fixed(if legacy_nav {
-        sidebar_width(state.sidebar_reveal)
+        sidebar_width(sidebar_reveal)
     } else {
         240.0
     }))
@@ -17033,21 +17053,13 @@ impl Desktop {
                 .iter()
                 .any(|surface| surface.visible && surface.emissive_uv.is_some())
         }) && matches!(self.state.page.as_ref(), Some(Page::Models));
-        let playback = if self.state.playing
-            || animate_decal
-            || !self.state.mod_toggle_animations.is_empty()
-        {
+        let playback = if self.state.playing || animate_decal {
             iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
         } else {
             Subscription::none()
         };
-        let sidebar_animation = if self.state.preferences.ui_theme == "Evolve Legacy"
-            && !self.state.preferences.reduce_motion
-            && (self.state.sidebar_reveal - if self.state.sidebar_hovered { 1.0 } else { 0.0 })
-                .abs()
-                > 0.001
-        {
-            iced::time::every(Duration::from_millis(16)).map(|_| Message::SidebarAnimationTick)
+        let sidebar_animation = if ui_animation_running(&self.state, Instant::now()) {
+            iced::time::every(anim::FRAME).map(|_| Message::AnimationFrame)
         } else {
             Subscription::none()
         };
@@ -17393,21 +17405,22 @@ mod project_edit_tests {
 
     #[test]
     fn mod_toggle_thumb_eases_without_changing_persisted_enable_state() {
+        let t0 = Instant::now();
         let mut animation = ModToggleAnimation {
             workspace: PathBuf::from("test-mod"),
-            from: 0.0,
-            to: 1.0,
-            frame: 0,
+            thumb: anim::Tween::settled(0.0),
         };
-        assert_eq!(animation.position(), 0.0);
-        animation.frame = 3;
-        assert!(animation.position() > 0.0 && animation.position() < 1.0);
-        animation.frame = MOD_TOGGLE_FRAMES;
-        assert_eq!(animation.position(), 1.0);
-        animation.from = 1.0;
-        animation.to = 0.0;
-        animation.frame = MOD_TOGGLE_FRAMES;
-        assert_eq!(animation.position(), 0.0);
+        animation.thumb.animate_to(1.0, t0, MOD_TOGGLE_DURATION, false);
+        assert_eq!(animation.position(t0), 0.0);
+        let mid = animation.position(t0 + MOD_TOGGLE_DURATION / 2);
+        assert!(mid > 0.0 && mid < 1.0);
+        let end = t0 + MOD_TOGGLE_DURATION;
+        assert_eq!(animation.position(end), 1.0);
+        animation.thumb.animate_to(0.0, end, MOD_TOGGLE_DURATION, false);
+        assert_eq!(animation.position(end + MOD_TOGGLE_DURATION), 0.0);
+        let mut reduced = anim::Tween::settled(0.0);
+        reduced.animate_to(1.0, t0, MOD_TOGGLE_DURATION, true);
+        assert!(!reduced.is_running(t0));
     }
 
     #[test]
