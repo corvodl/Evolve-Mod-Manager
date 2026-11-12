@@ -978,7 +978,7 @@ fn sheet_contents(state: &State, sheet: Sheet) -> (String, Element<'_, Message>)
                 );
             };
             (
-                archive.name.clone(),
+                crate::level_archive::display_title(archive),
                 column![
                     field("GROUP", archive.group.clone()),
                     field("DESCRIPTION", archive.description.clone()),

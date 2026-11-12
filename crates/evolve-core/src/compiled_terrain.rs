@@ -1,5 +1,5 @@
-//! Read-only decoding of the engine-compiled `terrain/terrain.dat` (version
-//! 25) shipped in Stage 2 `Game/Levels/<map>/level.pak`.
+//! Decoding of engine-compiled `terrain/terrain.dat` from Stage 2 (version 25)
+//! and read-only preview of the 2012 Xbox 360 export (version 24).
 //!
 //! Maps ported from Legacy ship no editor `Heightmap.dat`, `VegetationMap.dat`
 //! or brush layers; their heightmap, brushes and vegetation exist only here.
@@ -10,19 +10,24 @@
 //! record matches a `VegetationMap.dat` instance's position, model and scale.
 //!
 //! File layout (little endian):
-//! - header: version u8 (25), 3 flag bytes, file size u32, heightmap size in
+//! - header: version u8 (24 or 25), 3 flag bytes, file size u32, heightmap size in
 //!   units, unit size (m), sector size (m), sector table size, Z ratio, ocean level
-//! - vegetation groups: count, then 352-byte records (256-byte CGF path + params)
+//! - vegetation groups: count, then 352-byte records in v25 or 336 in v24
+//!   (256-byte CGF path + params)
 //! - brush CGF table and material table: count, then 256-byte names
 //! - terrain quadtree, depth first: 44-byte node header (version 7, AABB,
 //!   height offset, range, sample side, palette size), side² u16 samples
 //!   (X-major; height = offset + (raw >> 4) × 0.05 m, raw & 15 = surface,
 //!   15 = hole), five geometry-error floats, the padded surface palette, then
 //!   four children until the node is one sector
-//! - object octree, depth first: 32-byte node header (version 5, child mask,
+//! - object octree, depth first: 32-byte node header (version 5 in v25,
+//!   version 3 in v24, child mask,
 //!   AABB, object block size), the block's render-node records, then children.
 //!   Every record starts with its type, an AABB and the layer id (u16 at +28).
-//!   Two record types come in two sizes, so a block is framed as the only
+//!   v24's brush kind 1 / vegetation kind 2 use 100 / 60 bytes respectively;
+//!   v25's brush kind 26 / vegetation kind 2 use 104 / 64 bytes. Other v24
+//!   record kinds are skipped with diagnostics, never guessed. Two v25
+//!   record types come in two sizes, so a block is framed as the only
 //!   sequence of record sizes that ends exactly at the block end.
 //!
 //! Decals (0x07), roads (0x0B) and water volumes (0x19) were matched against
@@ -65,6 +70,9 @@ const RECORD_SIZES: &[(u32, &[usize])] = &[
     (0x16, &[108, 92]),
     (BRUSH, &[104]),
 ];
+// The Xbox 360 v24 octree predates Stage 2's four-byte vegetation extension
+// and uses render-node kind 1 for its 100-byte brushes.
+const V24_RECORD_SIZES: &[(u32, &[usize])] = &[(1, &[100]), (2, &[60])];
 const MERGED_MAGIC: u32 = 0xCAFE_BAB6;
 const MERGED_CELL: f32 = 16.0;
 const MAX_MERGED_INSTANCES: usize = 4_000_000;
@@ -233,6 +241,15 @@ fn format(message: impl Into<String>) -> TerrainError {
     TerrainError::Format(message.into())
 }
 
+fn require_editable(terrain: &CompiledTerrain) -> Result<(), TerrainError> {
+    if terrain.version != COMPILED_TERRAIN_VERSION {
+        return Err(format(
+            "2012 compiled terrain v24 is read-only; editing requires v25",
+        ));
+    }
+    Ok(())
+}
+
 pub fn read_compiled_terrain(path: &Path) -> Result<CompiledTerrain, TerrainError> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() || meta.len() > MAX_FILE as u64 {
@@ -246,7 +263,7 @@ pub fn decode_compiled_terrain(data: &[u8]) -> Result<CompiledTerrain, TerrainEr
         return Err(TerrainError::Limits);
     }
     let r = Reader { data };
-    if data[0] != COMPILED_TERRAIN_VERSION {
+    if !matches!(data[0], 24 | COMPILED_TERRAIN_VERSION) {
         return Err(format(format!(
             "unsupported compiled terrain version {}",
             data[0]
@@ -273,7 +290,11 @@ pub fn decode_compiled_terrain(data: &[u8]) -> Result<CompiledTerrain, TerrainEr
     {
         return Err(TerrainError::Limits);
     }
-    let (vegetation_groups, at) = r.table(32, 352)?;
+    // The 2012 X360 export (v24) stores 336-byte vegetation prototypes;
+    // Stage 2 v25 adds another 16 bytes per prototype. Both retain the
+    // 256-byte model/material names following that table.
+    let vegetation_stride = if data[0] == 24 { 336 } else { 352 };
+    let (vegetation_groups, at) = r.table(32, vegetation_stride)?;
     let (models, at) = r.table(at, 256)?;
     let (materials, at) = r.table(at, 256)?;
 
@@ -415,9 +436,10 @@ fn octree_node(
     if depth > MAX_OCTREE_DEPTH {
         return Err(TerrainError::Limits);
     }
-    if r.u16(at)? != 5 {
+    let expected = if out.version == 24 { 3 } else { 5 };
+    if r.u16(at)? != expected {
         return Err(format(format!(
-            "object octree node version at {at} is not 5"
+            "object octree node version at {at} is not {expected}"
         )));
     }
     let mask = r.u16(at + 2)?;
@@ -438,11 +460,16 @@ fn octree_node(
 }
 
 /// Every size the record at `at` may have; empty for an unknown type.
-fn record_sizes(r: &Reader<'_>, at: usize, end: usize) -> Vec<usize> {
+fn record_sizes(r: &Reader<'_>, at: usize, end: usize, version: u8) -> Vec<usize> {
     let Ok(kind) = r.u32(at) else {
         return Vec::new();
     };
-    if let Some((_, sizes)) = RECORD_SIZES.iter().find(|(k, _)| *k == kind) {
+    let fixed = if version == 24 {
+        V24_RECORD_SIZES
+    } else {
+        RECORD_SIZES
+    };
+    if let Some((_, sizes)) = fixed.iter().find(|(k, _)| *k == kind) {
         return sizes.to_vec();
     }
     // A count read past the block only rules this size out.
@@ -463,13 +490,13 @@ fn record_sizes(r: &Reader<'_>, at: usize, end: usize) -> Vec<usize> {
 
 /// Record offsets of a block: a sequence of record sizes ending exactly at
 /// `end`, found breadth first over the alternatives.
-fn frame_block(r: &Reader<'_>, start: usize, end: usize) -> Option<Vec<usize>> {
+fn frame_block(r: &Reader<'_>, start: usize, end: usize, version: u8) -> Option<Vec<usize>> {
     let mut previous = std::collections::HashMap::from([(start, start)]);
     let mut frontier = vec![start];
     while !frontier.is_empty() && !previous.contains_key(&end) {
         let mut next = Vec::new();
         for at in frontier {
-            for size in record_sizes(r, at, end) {
+            for size in record_sizes(r, at, end, version) {
                 let to = at + size;
                 if size > 0 && to <= end && !previous.contains_key(&to) {
                     previous.insert(to, at);
@@ -510,7 +537,7 @@ fn object_block(
     if start == end {
         return Ok(());
     }
-    let Some(offsets) = frame_block(r, start, end) else {
+    let Some(offsets) = frame_block(r, start, end, out.version) else {
         out.skipped_blocks += 1;
         return Ok(());
     };
@@ -525,8 +552,10 @@ fn object_block(
         let kind = r.u32(at)?;
         let layer = r.u16(at + 28)?;
         match kind {
-            BRUSH => {
-                let model = r.u16(at + 36)? as usize;
+            BRUSH | 1
+                if (out.version == 24 && kind == 1) || (out.version != 24 && kind == BRUSH) =>
+            {
+                let model = r.u16(at + if out.version == 24 { 32 } else { 36 })? as usize;
                 let mut matrix = [0f32; 12];
                 for (index, value) in matrix.iter_mut().enumerate() {
                     *value = r.f32(at + 40 + index * 4)?;
@@ -605,7 +634,7 @@ fn object_block(
                 let group = r.u16(at + 36)? as usize;
                 let position = [r.f32(at + 40)?, r.f32(at + 44)?, r.f32(at + 48)?];
                 let scale = r.f32(at + 52)?;
-                let angles = r.bytes(at + 57, 3)?;
+                let angles = r.bytes(at + if out.version == 24 { 56 } else { 57 }, 3)?;
                 if group < out.vegetation_groups.len()
                     && position.iter().all(|v| v.is_finite())
                     && scale.is_finite()
@@ -646,6 +675,7 @@ pub fn delete_compiled_placement(
     placement: CompiledPlacement,
 ) -> Result<Vec<u8>, TerrainError> {
     let terrain = decode_compiled_terrain(source)?;
+    require_editable(&terrain)?;
     let span = match placement {
         CompiledPlacement::Brush(index) => terrain.brush_records.get(index),
         CompiledPlacement::Vegetation(index) => terrain.vegetation_records.get(index),
@@ -697,6 +727,7 @@ pub fn copy_compiled_placement(
     position: [f32; 3],
 ) -> Result<Vec<u8>, TerrainError> {
     let terrain = decode_compiled_terrain(source)?;
+    require_editable(&terrain)?;
     let span = match placement {
         CompiledPlacement::Brush(index) => terrain.brush_records.get(index),
         CompiledPlacement::Vegetation(index) => terrain.vegetation_records.get(index),
@@ -940,6 +971,7 @@ pub fn apply_compiled_edits(source: &[u8], edits: &CompiledEdits) -> Result<Vec<
         return Err(TerrainError::Limits);
     }
     let terrain = decode_compiled_terrain(source)?;
+    require_editable(&terrain)?;
     let r = Reader { data: source };
     let root = terrain.object_octree;
     let cube_of = |node: usize| -> [f32; 6] {
@@ -1487,6 +1519,7 @@ pub fn patch_compiled_terrain_bytes(
     patch: &crate::terrain::TerrainPatch,
 ) -> Result<Vec<u8>, TerrainError> {
     let terrain = decode_compiled_terrain(source)?;
+    require_editable(&terrain)?;
     let side = terrain.units as usize + 1;
     patch.check(side as u32, side as u32)?;
     if patch.surfaces.iter().flatten().any(|id| *id >= 127) {
@@ -1555,6 +1588,7 @@ pub fn edit_compiled_terrain_bytes(
         | TerrainBrushEdit::Paint { x, y, radius, .. } => (x, y, radius),
     };
     let terrain = decode_compiled_terrain(source)?;
+    require_editable(&terrain)?;
     let side = terrain.units as usize + 1;
     let (cx, cy, radius) = (x as usize, y as usize, radius as usize);
     if cx >= side || cy >= side || radius > 128 {
@@ -1862,6 +1896,43 @@ mod tests {
         let size = d.len() as u32;
         d[4..8].copy_from_slice(&size.to_le_bytes());
         d
+    }
+
+    #[test]
+    fn reads_2012_v24_prototype_table_without_stage2_padding() {
+        let mut source = fixture();
+        source[0] = 24;
+        source.drain(32 + 4 + 256 + 80..32 + 4 + 256 + 96);
+        let node = source.len() - (32 + 104 + 64);
+        source[node] = 3;
+        let brush = node + 32;
+        source[brush..brush + 4].copy_from_slice(&1u32.to_le_bytes());
+        source[brush + 32..brush + 34].copy_from_slice(&0u16.to_le_bytes());
+        source.drain(brush + 100..brush + 104);
+        let vegetation = brush + 100;
+        source.drain(vegetation + 60..vegetation + 64);
+        source[node + 28..node + 32].copy_from_slice(&160u32.to_le_bytes());
+        let size = source.len() as u32;
+        source[4..8].copy_from_slice(&size.to_le_bytes());
+        let terrain = decode_compiled_terrain(&source).unwrap();
+        assert_eq!(terrain.version, 24);
+        assert_eq!(terrain.models, ["objects/natural/rocks/rock.cgf"]);
+        assert_eq!(terrain.vegetation_groups, ["objects/natural/trees/fir.cgf"]);
+        assert_eq!(terrain.brushes.len(), 1);
+        assert_eq!(terrain.vegetation.len(), 1);
+        assert_eq!(terrain.skipped_blocks, 0);
+        assert!(delete_compiled_placement(&source, CompiledPlacement::Brush(0)).is_err());
+    }
+
+    #[test]
+    fn optional_owned_2012_terrain_is_decodable() {
+        let Ok(path) = std::env::var("EVOLVE_2012_TERRAIN_FIXTURE") else {
+            return;
+        };
+        let terrain = read_compiled_terrain(Path::new(&path)).unwrap();
+        assert_eq!(terrain.version, 24);
+        assert!(terrain.units > 0);
+        assert!(!terrain.mesh().unwrap().vertices.is_empty());
     }
 
     #[test]

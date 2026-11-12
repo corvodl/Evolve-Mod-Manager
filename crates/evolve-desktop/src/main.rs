@@ -49,6 +49,7 @@ mod handles;
 mod icons;
 mod initial_setup;
 mod launcher_bridge;
+mod level_archive;
 mod level_atmosphere;
 mod level_authoring;
 mod level_camera;
@@ -70,6 +71,7 @@ mod level_workspace;
 mod library_picker;
 mod loading_wheel;
 mod map_chooser;
+mod map_preview;
 mod menu_popup;
 mod mod_play;
 mod modding_keys;
@@ -289,6 +291,10 @@ fn animate_sidebar(state: &mut State) {
 fn sidebar_width(reveal: f32) -> f32 {
     SIDEBAR_COLLAPSED_WIDTH
         + (SIDEBAR_EXPANDED_WIDTH - SIDEBAR_COLLAPSED_WIDTH) * reveal.clamp(0.0, 1.0)
+}
+
+fn rail_exit_closes_hover(reveal: f32) -> bool {
+    reveal <= 0.001
 }
 
 /// Right-hand Level Editor workspace. Actor editing is the default; verbose
@@ -1000,15 +1006,14 @@ fn remember_opened_map(state: &mut State, loaded: &mut level_library::LoadedMap)
             state.map_chooser.thumbs.insert(key, handle.clone());
         }
     }
+    let archive_label = loaded.project.as_ref().map_or_else(
+        || level_archive::display_title(&loaded.archive),
+        |project| project.label.clone(),
+    );
     let recent = map_chooser::remember(
         &mut state.preferences,
         &loaded.archive.id,
-        loaded
-            .project
-            .as_ref()
-            .map_or(loaded.archive.name.as_str(), |project| {
-                project.label.as_str()
-            }),
+        &archive_label,
         &map_name,
         loaded
             .project
@@ -3133,6 +3138,7 @@ enum Message {
     LaunchUpdatesChecked(Vec<(UpdateChannel, Result<Option<ReleaseUpdate>, String>)>),
     ApplyLaunchUpdate(String),
     SidebarHover(bool),
+    SidebarRailHover(bool),
     SidebarToggle,
     SidebarClose,
     PreferenceSidebarPeek,
@@ -6180,7 +6186,9 @@ fn refresh_library_matches(state: &mut State) {
                 "game" => a.source.to_lowercase().cmp(&b.source.to_lowercase()),
                 "builds" => a.builds.len().cmp(&b.builds.len()),
                 "files" => a.entries.cmp(&b.entries),
-                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                _ => level_archive::display_title(a)
+                    .to_lowercase()
+                    .cmp(&level_archive::display_title(b).to_lowercase()),
             };
             if ascending { order } else { order.reverse() }
         });
@@ -6283,8 +6291,24 @@ fn send_dev_bind(state: &mut State, action: developer_hotkeys::Action) {
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::SidebarHover(hovered) => {
+            if state.sidebar_hovered == hovered {
+                return Task::none();
+            }
             state.sidebar_hovered = hovered;
             animate_sidebar(state);
+            return Task::none();
+        }
+        Message::SidebarRailHover(hovered) => {
+            // The expanding panel replaces the rail's hit target. Its enter/
+            // exit events own hover until it has fully closed; treating the
+            // covered rail's exit as a real leave caused open/close jitter.
+            if !hovered && !rail_exit_closes_hover(state.sidebar_reveal.value(Instant::now())) {
+                return Task::none();
+            }
+            if state.sidebar_hovered != hovered {
+                state.sidebar_hovered = hovered;
+                animate_sidebar(state);
+            }
             return Task::none();
         }
         Message::SidebarToggle => {
@@ -7869,6 +7893,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Finish the current operation before opening a map.".into();
                 return Task::none();
             }
+            if level_archive::is_terrain_texture_pak(&archive) {
+                state.status =
+                    "TerrainTexture.pak holds baked terrain color tiles, not a level.".into();
+                return Task::none();
+            }
             state.level_map_prompt = true;
             state.level_map_choices = None;
             return launch(state, Operation::DiscoverLevelMaps(archive));
@@ -7908,6 +7937,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             if state.busy {
+                return Task::none();
+            }
+            if !level_archive::offers_as_map(&archive) {
+                state.status =
+                    "That PAK is not a level archive; open a map-owned level.pak.".into();
                 return Task::none();
             }
             state.level_map_prompt = true;
@@ -8694,7 +8728,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .as_ref()
                         .and_then(|c| c.archives.get(index))
                         .cloned()
-                    && level_library::likely_level_pak(&archive)
+                    && level_archive::offers_as_map(&archive)
                     && !state.busy
                 {
                     state.level_map_prompt = true;
@@ -11885,12 +11919,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelCameraReset => {
             state.yaw = -30.0;
-            state.pitch = 32.0;
+            state.pitch = -32.0;
             state.zoom = 1.0;
             state.level_keys.clear();
             state.level_camera = state
-                .model
+                .level_world
                 .as_ref()
+                .and_then(|world| {
+                    world.groups.iter().find(|group| {
+                        group.instances.len() == 1 && group.instances[0].object_index == usize::MAX
+                    })
+                })
+                .map(|group| group.mesh.as_ref())
+                .or(state.model.as_deref())
                 .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
         }
         Message::LevelCameraWindowFocus(_, focused) => {
@@ -17290,6 +17331,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     // manager on its originating workspace.
                     state.zoom = 1.0;
                     state.level_keys.clear();
+                    state.yaw = -30.0;
+                    state.pitch = -32.0;
                     state.level_camera = state
                         .model
                         .as_ref()
@@ -17559,6 +17602,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .as_ref()
                             .map(|(mesh, _)| Arc::new(mesh.clone()));
                     }
+                    let initial_ground_camera = if keep_view {
+                        None
+                    } else {
+                        loaded
+                            .terrain
+                            .as_ref()
+                            .map(|(mesh, _)| level_camera::Camera::frame(mesh, -30.0, -32.0))
+                    };
                     state.terrain = loaded.terrain.map(|(_, info)| info);
                     // A reloaded map (including after Save Terrain) starts a fresh brush session.
                     state.terrain_session = None;
@@ -17587,15 +17638,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         // Keep the manager on its originating workspace.
                         state.level_zoom = 1.0;
                         state.yaw = -30.0;
-                        state.pitch = 32.0;
+                        state.pitch = -32.0;
                         state.zoom = 1.0;
                         state.pan_x = 0.0;
                         state.pan_y = 0.0;
                         state.level_keys.clear();
-                        state.level_camera = state
-                            .model
-                            .as_ref()
-                            .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
+                        state.level_camera = initial_ground_camera.or_else(|| {
+                            state
+                                .level_world
+                                .as_ref()
+                                .and_then(|world| {
+                                    world.groups.iter().find(|group| {
+                                        group.instances.len() == 1
+                                            && group.instances[0].object_index == usize::MAX
+                                    })
+                                })
+                                .map(|group| group.mesh.as_ref())
+                                .or(state.model.as_deref())
+                                .map(|mesh| {
+                                    level_camera::Camera::frame(mesh, state.yaw, state.pitch)
+                                })
+                        });
                     }
                 }
                 Ok(Completed::Level(scene, source, hash)) => {
@@ -18174,8 +18237,8 @@ fn modern_shell<'a>(
             .height(Fill)
             .style(sidebar_surface),
     )
-    .on_enter(Message::SidebarHover(true))
-    .on_exit(Message::SidebarHover(false));
+    .on_enter(Message::SidebarRailHover(true))
+    .on_exit(Message::SidebarRailHover(false));
     let base = container(row![rail, body].height(Fill))
         .width(Fill)
         .height(Fill);
@@ -18184,18 +18247,22 @@ fn modern_shell<'a>(
     }
     let width = SIDEBAR_COLLAPSED_WIDTH + (SIDEBAR_PANEL_WIDTH - SIDEBAR_COLLAPSED_WIDTH) * reveal;
     let panel = mouse_area(
-        container(modern_nav(state, page, reveal >= 0.6))
-            .width(Length::Fixed(width))
-            .height(Fill)
-            .clip(true)
-            .style(move |theme: &iced::Theme| container::Style {
-                shadow: iced::Shadow {
-                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4 * reveal),
-                    offset: iced::Vector::new(6.0, 0.0),
-                    blur_radius: 24.0,
-                },
-                ..sidebar_surface(theme)
-            }),
+        container(
+            container(modern_nav(state, page, reveal >= 0.6))
+                .width(Length::Fixed(width))
+                .height(Fill)
+                .clip(true)
+                .style(move |theme: &iced::Theme| container::Style {
+                    shadow: iced::Shadow {
+                        color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4 * reveal),
+                        offset: iced::Vector::new(6.0, 0.0),
+                        blur_radius: 24.0,
+                    },
+                    ..sidebar_surface(theme)
+                }),
+        )
+        .width(Length::Fixed(SIDEBAR_PANEL_WIDTH))
+        .height(Fill),
     )
     .on_enter(Message::SidebarHover(true))
     .on_exit(Message::SidebarHover(false));
@@ -19593,7 +19660,11 @@ impl Desktop {
             }
             Message::LevelShowMapChooser => {
                 let shown = update(&mut self.state, Message::LevelShowMapChooser);
-                Task::batch([shown, map_chooser::ensure_thumbs(&mut self.state)])
+                Task::batch([
+                    shown,
+                    map_chooser::ensure_thumbs(&mut self.state),
+                    map_chooser::refresh_index(&mut self.state),
+                ])
             }
             Message::Ui(ui_kit::UiMsg::Palette(msg)) => {
                 // Ctrl+K from a secondary window brings the main window up.
@@ -19655,7 +19726,11 @@ impl Desktop {
                 self.state.level_map_choices = None;
                 self.state.level_project_choices = None;
                 let thumbs = map_chooser::ensure_thumbs(&mut self.state);
-                Task::batch([self.open_level_editor(), thumbs])
+                Task::batch([
+                    self.open_level_editor(),
+                    thumbs,
+                    map_chooser::refresh_index(&mut self.state),
+                ])
             }
             Message::ToggleLevelViewportFullscreen => {
                 let Some(id) = self.level_id else {
@@ -19906,6 +19981,7 @@ impl Desktop {
                 let project_scan_done = self.state.modding_open_editor_when_scanned
                     && matches!(&message, Message::Finished(Ok(Completed::Inventory(_))));
                 let finished = matches!(&message, Message::Finished(_));
+                let indexed_library = matches!(&message, Message::StartupLibraryIndexed(_, _));
                 let finished_ok = matches!(&message, Message::Finished(Ok(_)));
                 // Take the pending toast before `update`: a completion may
                 // immediately launch a follow-up operation of its own.
@@ -19934,6 +20010,11 @@ impl Desktop {
                 let was_settings_updates = self.state.page == Some(Page::Settings)
                     && self.state.settings_tab == settings_page::Tab::Updates;
                 let command = update(&mut self.state, message);
+                let indexing = if (finished || indexed_library) && self.state.level_map_prompt {
+                    map_chooser::ensure_index(&mut self.state)
+                } else {
+                    Task::none()
+                };
                 // A clicked update toast may live in the viewer or level
                 // window; bring the main window forward to show Settings.
                 let command = if !was_settings_updates
@@ -19968,13 +20049,13 @@ impl Desktop {
                 let notice = self.open_play_notice();
                 if opens_level && self.level_id.is_none() {
                     let open = self.open_level_editor();
-                    Task::batch([command, open, notice])
+                    Task::batch([command, indexing, open, notice])
                 } else if opens_model && self.viewer_id.is_none() {
                     let open = self.open_viewer();
                     self.state.viewer_from_library = launched_from_library;
-                    Task::batch([command, open, notice])
+                    Task::batch([command, indexing, open, notice])
                 } else {
-                    Task::batch([command, notice])
+                    Task::batch([command, indexing, notice])
                 }
             }
         }
@@ -20467,6 +20548,13 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn expanding_sidebar_does_not_treat_covered_rail_as_a_hover_exit() {
+        assert!(rail_exit_closes_hover(0.0));
+        assert!(!rail_exit_closes_hover(0.1));
+        assert!(!rail_exit_closes_hover(1.0));
+    }
 
     #[test]
     fn copy_key_remembers_selection_and_paste_keeps_relative_offset() {

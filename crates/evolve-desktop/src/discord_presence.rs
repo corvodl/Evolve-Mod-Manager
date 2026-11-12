@@ -82,7 +82,7 @@ impl Config {
             Page::AssetLibrary => state
                 .library_selected
                 .and_then(|index| state.library_catalog.as_ref()?.archives.get(index))
-                .map(|archive| archive.name.clone()),
+                .map(crate::level_archive::display_title),
             Page::Files => state
                 .modding_selected
                 .and_then(|index| state.modding_projects.as_ref()?.get(index))

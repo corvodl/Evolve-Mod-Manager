@@ -43,33 +43,10 @@ fn header_cell(label: &'static str, width: u16) -> Element<'static, Message> {
 }
 
 // Human-scale labels in the main table; original paths are always available
-// under Details. On Windows Path::parent is not reliable for C:\\ paths when
-// tests run on Linux, so normalize only for display and comparison.
-fn source_label(source: &str) -> String {
-    let normalized = source.replace('\\', "/");
-    let pieces = normalized
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    if let Some(game) = pieces
-        .iter()
-        .rposition(|part| part.eq_ignore_ascii_case("game"))
-        && game >= 1
-    {
-        let parent = pieces[game - 1];
-        if parent.to_ascii_lowercase().starts_with("build_") && game >= 2 {
-            return format!("{} / {parent}", pieces[game - 2]);
-        }
-        return parent.to_owned();
-    }
-    pieces
-        .iter()
-        .rev()
-        .nth(1)
-        .or_else(|| pieces.last())
-        .copied()
-        .unwrap_or("Unknown source")
-        .to_owned()
+// under Details. The source location logic lives in `level_archive` so the
+// Level Editor's map chooser can label archives the same way.
+fn archive_title(archive: &evolve_core::ImportedPak) -> String {
+    crate::level_archive::display_title(archive)
 }
 
 fn archive_build_label(archive: &evolve_core::ImportedPak) -> String {
@@ -151,8 +128,8 @@ fn browser_rows(state: &State) -> Vec<BrowserRow> {
                 continue;
             }
             let first = &catalog.archives[members[0]];
-            let label = first.name.clone();
-            let source = source_label(&first.source);
+            let label = archive_title(first);
+            let source = crate::level_archive::source_label(&first.source);
             let expanded = !state.library_search.trim().is_empty()
                 || state.library_expanded_sources.contains(&source_key);
             result.push(BrowserRow::SourceGroup {
@@ -248,9 +225,10 @@ fn archive_row<'a>(
     accent: iced::Color,
 ) -> Element<'a, Message> {
     use crate::ui_kit::{BadgeKind, badge, icon_button};
+    let title = archive_title(archive);
     let mut name_line = row![
         crate::icons::glyph(category_icon(&archive.group), 14.0),
-        crate::forms::highlight(archive.name.as_str(), &state.library_search, 13.0, accent),
+        crate::forms::highlight(title.as_str(), &state.library_search, 13.0, accent),
     ]
     .spacing(6)
     .align_y(iced::Center);
@@ -282,7 +260,7 @@ fn archive_row<'a>(
         ]
         .spacing(2)
         .width(Length::FillPortion(6)),
-        text(source_label(&archive.source))
+        text(crate::level_archive::source_label(&archive.source))
             .size(design::LABEL)
             .width(Length::FillPortion(4)),
         container(builds).width(Length::FillPortion(3)),
@@ -302,7 +280,7 @@ fn archive_row<'a>(
             None,
         )]
         .spacing(4);
-        if crate::level_library::likely_level_pak(archive) {
+        if crate::level_archive::offers_as_map(archive) {
             actions = actions.push(icon_button(
                 crate::icons::map(),
                 "Open in Level Editor",
@@ -416,7 +394,7 @@ pub(super) fn menu_commands(
     let level = state
         .library_selected
         .and_then(|index| state.library_catalog.as_ref()?.archives.get(index))
-        .is_some_and(crate::level_library::likely_level_pak);
+        .is_some_and(crate::level_archive::offers_as_map);
     vec![
         (
             "File",
@@ -1121,7 +1099,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             });
         }
         crumbs.push(crate::chrome::Crumb {
-            label: archive.name.clone(),
+            label: archive_title(archive),
             message: None,
         });
         layout = layout.push(crate::chrome::breadcrumbs(crumbs, state.chrome.crumb_menu));
@@ -1466,6 +1444,7 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
 #[cfg(test)]
 mod browser_tests {
     use super::*;
+    use crate::level_archive::source_label;
 
     fn archive(id: &str, group: &str, name: &str, source: &str) -> evolve_core::ImportedPak {
         evolve_core::ImportedPak {
@@ -1578,5 +1557,51 @@ mod browser_tests {
         state.library_search = "tutorial".to_owned();
         assert_eq!(visible_archive_indices(&state), vec![3]);
         assert_eq!(state.library_catalog.as_ref().unwrap().archives.len(), 4);
+    }
+
+    /// 2012 maps import as `level.pak` and `terraintexture.pak` siblings. Only
+    /// the level PAK is offered to the Level Editor, and it is titled by its
+    /// owner folder instead of the generic filename.
+    #[test]
+    fn map_owned_2012_archives_offer_only_the_level_pak() {
+        let items = vec![
+            archive(
+                "level",
+                "Levels",
+                "level.pak",
+                "C:\\Games\\2012 Evolve\\build_3\\Game\\Levels\\Forest_Rapids\\level.pak",
+            ),
+            archive(
+                "terrain",
+                "Levels",
+                "terraintexture.pak",
+                "C:\\Games\\2012 Evolve\\build_3\\Game\\Levels\\Forest_Rapids\\terraintexture.pak",
+            ),
+        ];
+        let mut state = State {
+            library_catalog: Some(evolve_core::ImportedLibrary {
+                root: "/library".to_owned(),
+                archives: items,
+                builds: vec!["Stage 2".to_owned()],
+                total_bytes: 600,
+                ignored: 0,
+            }),
+            library_matches: vec![0, 1],
+            ..State::default()
+        };
+        let level_action = |state: &State| {
+            menu_commands(state)
+                .into_iter()
+                .find(|(_, label, ..)| *label == "Open in Level Editor")
+                .and_then(|(_, _, action, ..)| action)
+        };
+        state.library_selected = Some(0);
+        assert!(level_action(&state).is_some());
+        state.library_selected = Some(1);
+        assert!(level_action(&state).is_none());
+        assert_eq!(
+            archive_title(&state.library_catalog.as_ref().unwrap().archives[0]),
+            "Forest_Rapids"
+        );
     }
 }
