@@ -83,7 +83,7 @@ fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Contai
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: if design::is_legacy(theme) { 1.0 } else { 12.0 }.into(),
+                radius: design::radius(theme, design::Radius::Large).into(),
             },
             ..container::Style::default()
         })
@@ -103,7 +103,7 @@ fn home_surface<'a>(
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: if design::is_legacy(theme) { 1.0 } else { 12.0 }.into(),
+                radius: design::radius(theme, design::Radius::Large).into(),
             },
             ..container::Style::default()
         }
@@ -127,7 +127,7 @@ fn home_play_surface<'a>(
                 border: Border {
                     color: design::border(theme),
                     width: 1.0,
-                    radius: if design::is_legacy(theme) { 1.0 } else { 12.0 }.into(),
+                    radius: design::radius(theme, design::Radius::Large).into(),
                 },
                 ..container::Style::default()
             }
@@ -231,7 +231,7 @@ fn tile(name: &'static str, page: Page, wallpaper: bool) -> Element<'static, Mes
             style.border = Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: 8.0.into(),
+                radius: design::radius(theme, design::Radius::Medium).into(),
             };
         }
         if wallpaper {

@@ -35,6 +35,8 @@ rsa = { version = "0.9", features = ["pem"] }
 flate2 = "1"
 quick-xml = "0.38"
 bcdec_rs = "0.2.1"
+# Line diffs for the original ↔ changed text asset comparison view.
+similar = "2"
 
 [build-dependencies]
 winres = "0.1"

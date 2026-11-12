@@ -23,11 +23,20 @@ pub struct Document {
     pub projects_root: PathBuf,
     original: Vec<u8>,
     saved: String,
+    /// Text as it was when opened; the diff view compares against this.
+    opened: String,
+    /// Show the side-by-side original ↔ changed diff instead of the editor.
+    pub show_diff: bool,
 }
 
 impl Document {
     pub fn dirty(&self) -> bool {
         self.content.text() != self.saved
+    }
+
+    /// The text this document had when it was opened (the original).
+    pub fn opened_text(&self) -> &str {
+        &self.opened
     }
 
     pub fn open(
@@ -68,7 +77,9 @@ impl Document {
             project: if editable { project } else { None },
             projects_root,
             original: raw,
+            opened: saved.clone(),
             saved,
+            show_diff: false,
         })
     }
 

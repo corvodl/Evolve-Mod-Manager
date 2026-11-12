@@ -4,6 +4,7 @@
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
 mod anim;
+mod command_palette;
 mod assembly_materials;
 mod asset_cache;
 mod asset_library_page;
@@ -14,11 +15,14 @@ mod blender_install;
 mod client_version;
 mod crash_diagnostics;
 mod design;
+mod diff_view;
 mod developer_auth;
 mod developer_hotkeys;
 mod direct_runtime;
 mod discord_presence;
 mod explorer_tree;
+mod fx;
+mod icons;
 mod gfx_bundled_tools;
 mod gfx_dependencies;
 mod gfx_editor;
@@ -88,6 +92,8 @@ mod terrain_material_probe;
 // Native RGB24 source-backed output stage; UI activation awaits verified\n// per-pixel Evolve paint alpha and original multi-layer shader ordering.\n#[allow(dead_code)]\nmod terrain_rebake_project;
 mod text_asset_editor;
 mod textured;
+mod toast;
+mod ui_kit;
 mod updater;
 mod updater_apply;
 mod uv_preview;
@@ -332,6 +338,9 @@ impl ActiveBlendSpace {
 
 #[derive(Default)]
 struct State {
+    toasts: toast::Toasts,
+    /// Shared component state: palette, holds, tickers, island, dock.
+    ui: ui_kit::UiState,
     level_viewport_fullscreen: bool,
     viewer_viewport_fullscreen: bool,
     sidebar_hovered: bool,
@@ -531,6 +540,8 @@ struct State {
     update_worker_failure: Option<String>,
     retry_update_after_check: bool,
     available_update: Option<ReleaseUpdate>,
+    /// Newer releases on every channel, found by the launch check.
+    launch_updates: Vec<ReleaseUpdate>,
     news: whats_new::NewsState,
     client_version: Option<String>,
     startup_update_checked: bool,
@@ -759,6 +770,9 @@ struct State {
     modding_pending_focus: Option<PathBuf>,
 }
 
+/// `theme_presets` key holding custom colours parked by a theme preset.
+const SAVED_CUSTOM_COLOURS: &str = "Saved custom colours";
+
 /// Full 0→1 sweep of the Legacy sidebar reveal.
 const SIDEBAR_REVEAL_DURATION: Duration = Duration::from_millis(140);
 /// Full off→on travel of a mod toggle thumb.
@@ -778,9 +792,62 @@ impl ModToggleAnimation {
     }
 }
 
+/// True while a looping ambient effect is on screen and motion is allowed:
+/// Home embers, the border beam on busy buttons, and loading skeletons.
+fn ui_ambient_running(state: &State) -> bool {
+    if state.preferences.reduce_motion {
+        return false;
+    }
+    let embers = state.page == Some(Page::Home) && state.preferences.show_home_background;
+    let beam = footer_is_working(state)
+        && matches!(state.page, Some(Page::Files | Page::Home | Page::Settings));
+    let skeleton = news_loading(state)
+        && matches!(state.page, Some(Page::Home | Page::WhatsNew))
+        || state.library_startup_loading && state.page == Some(Page::AssetLibrary);
+    embers || beam || skeleton
+}
+
+/// News has been requested but nothing has arrived yet.
+fn news_loading(state: &State) -> bool {
+    state.news.loading
+}
+
+/// Retarget number tickers from current values. Runs after every message,
+/// so a ticker starts easing the moment its value changes.
+fn sync_tickers(state: &mut State) {
+    let now = Instant::now();
+    let reduce = state.preferences.reduce_motion;
+    if let Some(projects) = state.modding_projects.as_ref() {
+        let enabled = projects.iter().filter(|project| project.enabled).count();
+        state.ui.set_ticker("enabled_mods", enabled as f64, now, reduce);
+    }
+    if let Some(usage) = state.storage_usage.as_ref() {
+        let total: u64 = usage.buckets.iter().sum();
+        state.ui.set_ticker("storage_total", total as f64, now, reduce);
+        for (index, bytes) in usage.buckets.iter().enumerate() {
+            const KEYS: [&str; 5] = [
+                "storage_0",
+                "storage_1",
+                "storage_2",
+                "storage_3",
+                "storage_4",
+            ];
+            state.ui.set_ticker(KEYS[index], *bytes as f64, now, reduce);
+        }
+    }
+    match state.library_import_progress.as_ref() {
+        Some(progress) => {
+            let files = progress.load(std::sync::atomic::Ordering::Relaxed);
+            state.ui.set_ticker("import_files", files as f64, now, reduce);
+        }
+        None => state.ui.clear_ticker("import_files"),
+    }
+}
+
 /// True while any shared UI tween still needs frames.
 fn ui_animation_running(state: &State, now: Instant) -> bool {
-    state.sidebar_reveal.is_running(now)
+    state.ui.animating(now)
+        || state.sidebar_reveal.is_running(now)
         || state
             .mod_toggle_animations
             .iter()
@@ -2664,6 +2731,21 @@ impl Operation {
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
+    /// Shared UI component events (palette, hold buttons, island, dock).
+    Ui(ui_kit::UiMsg),
+    /// Run several messages in order (palette commands that navigate first).
+    Sequence(Vec<Message>),
+    OpenSettingsTab(settings_page::Tab),
+    TextEditorToggleDiff,
+    PreferenceThemePreset(&'static str),
+    PreferenceCornerStyle(&'static str),
+    ToastTick(std::time::Instant),
+    DismissToast(u64),
+    ToastClicked(u64),
+    OpenUpdatesSettings,
+    CheckAllUpdatesOnLaunch,
+    LaunchUpdatesChecked(Vec<(UpdateChannel, Result<Option<ReleaseUpdate>, String>)>),
+    ApplyLaunchUpdate(String),
     SidebarHover(bool),
     /// Redraw tick for shared `anim::Tween`s; only subscribed while one runs.
     AnimationFrame,
@@ -3165,7 +3247,6 @@ enum Message {
     OpenCrashLogs,
     OpenCrashLogsFolder,
     PreferenceUpdateChannel,
-    PreferenceAutoUpdates,
     PreferenceStage(String),
     PreferenceGameStorage(String),
     SettingsToggleAdvancedPaths,
@@ -3439,6 +3520,7 @@ fn submit_level_project_edit(
     let project = state.level_project.clone().unwrap();
     let projects_root = PathBuf::from(&state.preferences.projects);
     let library_root = PathBuf::from(&state.library_root);
+    state.ui.mark_saving("level");
     launch(
         state,
         Operation::SaveProjectSource(project, source, change, projects_root, library_root),
@@ -4235,12 +4317,61 @@ fn operation_label(operation: &Operation) -> &'static str {
     }
 }
 
+/// User actions whose successful completion deserves a toast even when
+/// quick. Background loads and inspections stay quiet unless they fail or
+/// take long enough that the user was likely waiting on them.
+fn announces_success(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::BuildRawProject(..)
+            | Operation::RebuildPak(..)
+            | Operation::StageBuiltOfflineTest(..)
+            | Operation::ImportRawProjectMember(..)
+            | Operation::RestoreRawProjectMember(..)
+            | Operation::UnpackRawProject(..)
+            | Operation::ExtractPak(..)
+            | Operation::ImportSignedLibraryPlan(..)
+            | Operation::ApplyLibraryBuildUpdates(..)
+            | Operation::RemoveManagedLibraryBuild(..)
+            | Operation::RenameManagedLibraryBuild(..)
+            | Operation::CreateProjectFromLibrary(..)
+            | Operation::AnalyzeStorage(..)
+            | Operation::RiggedGlb(..)
+            | Operation::RiggedFbx(..)
+            | Operation::ExportBundle(..)
+            | Operation::ConvertMotion(..)
+            | Operation::SaveProjectLevel(..)
+            | Operation::ExportEditedLevel(..)
+            | Operation::ExtractSignedPak(..)
+            | Operation::ResignSignedPak(..)
+            | Operation::RebuildSignedPak(..)
+            | Operation::PrepareClientHook(..)
+            | Operation::CreateInitialSetup(..)
+            | Operation::CreateTestSetup(..)
+            | Operation::RestoreExistingOfflineLauncher(..)
+            | Operation::ExportLevelGlb(..)
+            | Operation::ExportLevelFbx(..)
+            | Operation::StageInit(..)
+            | Operation::StageImport(..)
+            | Operation::StageApply(..)
+            | Operation::StageRestore(..)
+            | Operation::CreateProfile(..)
+            | Operation::AddProfileMod(..)
+            | Operation::ApplyProfile(..)
+            | Operation::RecoverProfile(..)
+            | Operation::ExportPng(..)
+            | Operation::CompileDds(..)
+    )
+}
+
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     if state.busy {
         return Task::none();
     }
     state.busy = true;
     state.busy_operation = Some(operation_label(&operation).to_owned());
+    state.toasts
+        .begin(operation_label(&operation), announces_success(&operation));
     state.activity_started = Some(std::time::Instant::now());
     if !matches!(&operation, Operation::BuildStaticCdf(..)) {
         state.viewer_load_progress = None;
@@ -4607,6 +4738,46 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
     )
 }
 
+fn selected_update_channel(preferences: &settings::Preferences) -> UpdateChannel {
+    if preferences.nightly_updates {
+        UpdateChannel::Nightly
+    } else if preferences.experimental_updates {
+        UpdateChannel::Beta
+    } else {
+        UpdateChannel::Stable
+    }
+}
+
+fn channel_name(channel: UpdateChannel) -> &'static str {
+    match channel {
+        UpdateChannel::Stable => "Stable",
+        UpdateChannel::Beta => "Beta",
+        UpdateChannel::Nightly => "Nightly",
+    }
+}
+
+/// Launch-time check of every channel, so users hear about Stable, Beta
+/// and Nightly releases regardless of the channel they follow.
+fn check_all_updates_task() -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                [UpdateChannel::Stable, UpdateChannel::Beta, UpdateChannel::Nightly]
+                    .into_iter()
+                    .map(|channel| {
+                        let result = discover_update(channel, env!("CARGO_PKG_VERSION"))
+                            .map_err(|error| error.to_string());
+                        (channel, result)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default()
+        },
+        Message::LaunchUpdatesChecked,
+    )
+}
+
 fn start_news_images(state: &mut State) -> Task<Message> {
     if state.news.images_loading {
         return Task::none();
@@ -4828,9 +4999,68 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
             return Task::none();
         }
+        Message::ToastTick(now) => {
+            state.toasts.tick(now);
+            return Task::none();
+        }
+        Message::DismissToast(id) => {
+            state.toasts.dismiss(id);
+            return Task::none();
+        }
+        Message::ToastClicked(id) => {
+            if let Some(action) = state.toasts.take_action(id) {
+                return update(state, action);
+            }
+            return Task::none();
+        }
+        Message::OpenUpdatesSettings => {
+            let task = update(state, Message::Navigate(Page::Settings));
+            state.settings_tab = settings_page::Tab::Updates;
+            return task;
+        }
+        Message::CheckAllUpdatesOnLaunch => {
+            state.startup_update_checked = true;
+            state.update_status = "Checking public GitHub Releases for verified updates...".into();
+            return check_all_updates_task();
+        }
+        Message::LaunchUpdatesChecked(results) => {
+            let selected = selected_update_channel(&state.preferences);
+            state.launch_updates.clear();
+            let mut follow_up = Task::none();
+            for (channel, result) in results {
+                if channel == selected {
+                    // The selected channel keeps driving the existing
+                    // status line and "Update to ... and restart" button.
+                    state.available_update = None;
+                    follow_up = update(state, Message::UpdateChecked(result.clone()));
+                }
+                if let Ok(Some(release)) = result {
+                    state.toasts.push_update(
+                        channel_name(channel),
+                        &release.version,
+                        Message::OpenUpdatesSettings,
+                    );
+                    state.launch_updates.push(release);
+                }
+            }
+            return follow_up;
+        }
+        Message::ApplyLaunchUpdate(version) => {
+            let Some(release) = state
+                .launch_updates
+                .iter()
+                .find(|release| release.version == version)
+                .cloned()
+            else {
+                return Task::none();
+            };
+            state.available_update = Some(release);
+            return update(state, Message::ApplyUpdate);
+        }
         Message::AnimationFrame => {
             // Values are time-based; this only settles finished tweens so the
             // subscription stops as soon as nothing is moving.
+            state.ui.start_clock();
             let now = Instant::now();
             state.sidebar_reveal.tick(now);
             state
@@ -5591,7 +5821,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "No text asset is open.".into();
                 return Task::none();
             };
-            match doc.save() {
+            let saved = doc.save();
+            state.ui.mark_saved("text", saved.is_ok());
+            let doc = state.text_document.as_mut().expect("checked above");
+            match saved {
                 Ok(changed) => {
                     let member = doc.member.clone();
                     state.status = if changed {
@@ -6853,6 +7086,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let expected = state.level_source_sha.clone();
             let root = PathBuf::from(&state.preferences.projects);
+            state.ui.mark_saving("level");
             return launch(
                 state,
                 Operation::SaveProjectLevel(project, source, expected, edits, root),
@@ -12017,6 +12251,67 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             persist_preferences(state);
         }
+        Message::PreferenceThemePreset(name) => {
+            if state.preferences.ui_theme != "Modern" {
+                return Task::none();
+            }
+            let prefs = &mut state.preferences;
+            if name == "Saved custom colours" {
+                if let Some(saved) = prefs.theme_presets.get(SAVED_CUSTOM_COLOURS).cloned() {
+                    prefs.appearance_colors = saved;
+                    prefs.theme_preset.clear();
+                }
+            } else if name == "Default" {
+                prefs.theme_preset.clear();
+                prefs.corner_style = "Rounded".into();
+            } else if let Some(preset) = design::theme_preset(name) {
+                // Park any hand-picked colours so the preset is visible and
+                // they can be restored from the "Saved custom colours" card.
+                if !prefs.appearance_colors.is_empty() {
+                    let saved = std::mem::take(&mut prefs.appearance_colors);
+                    prefs.theme_presets.insert(SAVED_CUSTOM_COLOURS.into(), saved);
+                }
+                prefs.theme_preset = preset.name.into();
+                prefs.corner_style = preset.corners.into();
+            } else {
+                return Task::none();
+            }
+            persist_preferences(state);
+            state.settings_status = format!("Theme preset applied: {name}");
+        }
+        Message::PreferenceCornerStyle(style) => {
+            if matches!(style, "Sharp" | "Rounded" | "Soft") {
+                state.preferences.corner_style = style.into();
+                persist_preferences(state);
+                state.settings_status = format!("Corner style: {style}");
+            }
+        }
+        Message::OpenSettingsTab(tab) => {
+            let task = update(state, Message::Navigate(Page::Settings));
+            state.settings_tab = tab;
+            return task;
+        }
+        Message::TextEditorToggleDiff => {
+            if let Some(doc) = state.text_document.as_mut() {
+                doc.show_diff = !doc.show_diff;
+            }
+        }
+        // Routed by `Desktop::update`; reaching here means a direct call
+        // (tests), so handle the parts that need no window access.
+        Message::Ui(msg) => {
+            let reduce = state.preferences.reduce_motion;
+            if let Some(next) = ui_kit::update(&mut state.ui, msg, reduce) {
+                return update(state, next);
+            }
+        }
+        Message::Sequence(messages) => {
+            return Task::batch(
+                messages
+                    .into_iter()
+                    .map(|next| update(state, next))
+                    .collect::<Vec<_>>(),
+            );
+        }
         Message::PreferenceAccentPreset(preset) => {
             if settings::apply_accent_preset(&mut state.preferences, preset) {
                 persist_preferences(state);
@@ -12121,10 +12416,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.preferences.experimental_updates = true;
             }
             state.available_update = None;
-            persist_preferences(state);
-        }
-        Message::PreferenceAutoUpdates => {
-            state.preferences.automatic_update_checks = !state.preferences.automatic_update_checks;
             persist_preferences(state);
         }
         Message::SettingsToggleAdvancedPaths => {
@@ -12595,14 +12886,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.startup_update_checked = true;
             state.update_status = "Checking public GitHub Releases for verified updates...".into();
             state.available_update = None;
-            let channel = if state.preferences.nightly_updates {
-                UpdateChannel::Nightly
-            } else if state.preferences.experimental_updates {
-                UpdateChannel::Beta
-            } else {
-                UpdateChannel::Stable
-            };
-            return check_updates_task(channel);
+            return check_updates_task(selected_update_channel(&state.preferences));
         }
         Message::ClientVersionChecked(path, version) => {
             if state.preferences.client_executable == path {
@@ -13706,6 +13990,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::Finished(result) => {
+            // A failed worker ends any in-flight save without a new timestamp.
+            if result.is_err() {
+                state.ui.mark_saved("level", false);
+            }
             let launch_notice = state.active_play.take().map(|kind| {
                 match &result {
                     Err(error) => play_dialog::Notice::finished(
@@ -15054,6 +15342,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
                 Ok(Completed::ProjectLevelSaved(project, saved, revision)) => {
+                    state.ui.mark_saved("level", true);
                     if let Some(revision) = revision {
                         state.level_committed_redo.clear();
                         state.level_committed_undo.push_back(revision);
@@ -15807,6 +16096,44 @@ fn download_action(state: &State) -> Element<'_, Message> {
     } else {
         text("Choose Stable, Beta or Nightly and check for a newer verified release.").into()
     }
+}
+
+/// Releases on other channels found by the launch check, each installable
+/// without changing the channel the user follows.
+fn launch_update_actions(state: &State) -> Element<'_, Message> {
+    let selected = state
+        .available_update
+        .as_ref()
+        .map(|release| release.version.as_str());
+    state
+        .launch_updates
+        .iter()
+        .filter(|release| Some(release.version.as_str()) != selected)
+        .fold(column![].spacing(8), |list, release| {
+            let button = design::button(text(format!(
+                "Install {} {} and restart",
+                channel_name(release.channel),
+                release.version
+            )))
+            .on_press_maybe(
+                (!state.busy).then(|| Message::ApplyLaunchUpdate(release.version.clone())),
+            );
+            list.push(
+                row![
+                    text(format!(
+                        "{} update {} is also available.",
+                        channel_name(release.channel),
+                        release.version
+                    ))
+                    .size(12)
+                    .width(Fill),
+                    button,
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            )
+        })
+        .into()
 }
 
 fn view(state: &State) -> Element<'_, Message> {
@@ -16745,6 +17072,12 @@ impl Desktop {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.route(message);
+        sync_tickers(&mut self.state);
+        task
+    }
+
+    fn route(&mut self, message: Message) -> Task<Message> {
         if matches!(
             message,
             Message::DiscordPresenceTick
@@ -16757,6 +17090,39 @@ impl Desktop {
             return task;
         }
         match message {
+            Message::Ui(ui_kit::UiMsg::Palette(msg)) => {
+                // Ctrl+K from a secondary window brings the main window up.
+                let raise = matches!(msg, command_palette::Msg::Toggle)
+                    && !self.state.ui.palette.open;
+                let (task, next) = command_palette::update(&mut self.state, msg);
+                let mut tasks = vec![task];
+                if raise {
+                    tasks.push(window::gain_focus(self.main_id));
+                }
+                if let Some(next) = next {
+                    tasks.push(self.update(next));
+                }
+                Task::batch(tasks)
+            }
+            Message::Ui(msg) => {
+                let reduce = self.state.preferences.reduce_motion;
+                match ui_kit::update(&mut self.state.ui, msg, reduce) {
+                    Some(next) => self.update(next),
+                    None => Task::none(),
+                }
+            }
+            Message::Sequence(messages) => {
+                Task::batch(messages.into_iter().map(|next| self.update(next)).collect::<Vec<_>>())
+            }
+            Message::AnimationFrame => {
+                let task = update(&mut self.state, Message::AnimationFrame);
+                // A completed hold-to-confirm fires its action here so it is
+                // routed exactly like a normal button press.
+                match self.state.ui.frame(Instant::now()) {
+                    Some(action) => Task::batch([task, self.update(action)]),
+                    None => task,
+                }
+            }
             Message::MenuCommand(inner) => {
                 self.state.viewer_menu = None;
                 self.state.modding_menu = None;
@@ -16805,7 +17171,10 @@ impl Desktop {
                 )
             }
             Message::ViewportEscape(id) => {
-                if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
+                if self.state.ui.palette.open {
+                    self.state.ui.palette.open = false;
+                    Task::none()
+                } else if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
                     self.update(Message::ToggleLevelViewportFullscreen)
                 } else if self.viewer_id == Some(id) && self.state.viewer_viewport_fullscreen {
                     self.update(Message::ToggleViewerViewportFullscreen)
@@ -16929,6 +17298,14 @@ impl Desktop {
                 let project_scan_done = self.state.modding_open_editor_when_scanned
                     && matches!(&message, Message::Finished(Ok(Completed::Inventory(_))));
                 let finished = matches!(&message, Message::Finished(_));
+                let finished_ok = matches!(&message, Message::Finished(Ok(_)));
+                // Take the pending toast before `update`: a completion may
+                // immediately launch a follow-up operation of its own.
+                let finished_toast = if finished {
+                    self.state.toasts.pending.take()
+                } else {
+                    None
+                };
                 let opens_level = matches!(
                     &message,
                     Message::Finished(Ok(Completed::LevelMaps(_, _)
@@ -16946,7 +17323,25 @@ impl Desktop {
                 let launched_from_library = self.state.page == Some(Page::AssetLibrary);
                 let before = self.state.status.clone();
                 let was_busy = self.state.busy;
+                let was_settings_updates = self.state.page == Some(Page::Settings)
+                    && self.state.settings_tab == settings_page::Tab::Updates;
                 let command = update(&mut self.state, message);
+                // A clicked update toast may live in the viewer or level
+                // window; bring the main window forward to show Settings.
+                let command = if !was_settings_updates
+                    && self.state.page == Some(Page::Settings)
+                    && self.state.settings_tab == settings_page::Tab::Updates
+                {
+                    Task::batch([command, window::gain_focus(self.main_id)])
+                } else {
+                    command
+                };
+                if finished {
+                    let status = self.state.status.clone();
+                    self.state
+                        .toasts
+                        .complete(finished_toast, finished_ok, &status);
+                }
                 if self.state.status != before || self.state.busy != was_busy {
                     let note = if self.state.busy { "RUNNING" } else { "STATUS" };
                     let item = format!("{note}: {}", self.state.status);
@@ -16986,6 +17381,26 @@ impl Desktop {
     }
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
+        let content = self.window_contents(id);
+        // Completion toasts follow the user into the windows where
+        // long-running work is started; small dialogs stay uncluttered.
+        if id == self.main_id || self.viewer_id == Some(id) || self.level_id == Some(id) {
+            let content = toast::overlay(
+                content,
+                &self.state.toasts,
+                self.state.preferences.reduce_motion,
+            );
+            if id == self.main_id {
+                command_palette::overlay(content, &self.state)
+            } else {
+                content
+            }
+        } else {
+            content
+        }
+    }
+
+    fn window_contents(&self, id: window::Id) -> Element<'_, Message> {
         if self.export_id == Some(id) {
             asset_viewer::export_dialog(&self.state)
         } else if self.level_id == Some(id) {
@@ -17058,8 +17473,13 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let sidebar_animation = if ui_animation_running(&self.state, Instant::now()) {
+        let now = Instant::now();
+        let sidebar_animation = if ui_animation_running(&self.state, now) {
             iced::time::every(anim::FRAME).map(|_| Message::AnimationFrame)
+        } else if ui_ambient_running(&self.state) {
+            // Looping effects (embers, border beam, skeleton pulse) only
+            // need ~30 fps and stop as soon as they leave the screen.
+            iced::time::every(anim::AMBIENT_FRAME).map(|_| Message::AnimationFrame)
         } else {
             Subscription::none()
         };
@@ -17088,10 +17508,9 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let startup = if self.state.preferences.automatic_update_checks
-            && !self.state.startup_update_checked
-        {
-            iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckUpdates)
+        // Every launch checks all update channels once.
+        let startup = if !self.state.startup_update_checked {
+            iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckAllUpdatesOnLaunch)
         } else {
             Subscription::none()
         };
@@ -17152,8 +17571,17 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let toast_tick = if self.state.toasts.is_empty() {
+            Subscription::none()
+        } else {
+            iced::time::every(toast::Toasts::tick_interval(
+                self.state.preferences.reduce_motion,
+            ))
+            .map(Message::ToastTick)
+        };
         Subscription::batch([
             iced::time::every(Duration::from_secs(8)).map(|_| Message::DiscordPresenceTick),
+            toast_tick,
             dev_overlay_input,
             actor_freeze,
             news_poll,
@@ -17169,6 +17597,28 @@ impl Desktop {
             wheel,
             window::close_events().map(Message::WindowClosed),
             iced::event::listen_with(|event, status, id| match event {
+                // Ctrl+K opens the command palette from any window, even
+                // while a text field has focus.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    modifiers,
+                    ..
+                }) if modifiers.control() && value.eq_ignore_ascii_case("k") => Some(Message::Ui(
+                    ui_kit::UiMsg::Palette(command_palette::Msg::Toggle),
+                )),
+                // Palette navigation; ignored by the palette while closed.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key:
+                        iced::keyboard::Key::Named(
+                            named @ (iced::keyboard::key::Named::ArrowUp
+                            | iced::keyboard::key::Named::ArrowDown),
+                        ),
+                    ..
+                }) => Some(Message::Ui(ui_kit::UiMsg::Palette(
+                    command_palette::Msg::Move(
+                        if named == iced::keyboard::key::Named::ArrowUp { -1 } else { 1 },
+                    ),
+                ))),
                 // Editing shortcuts come before the camera's letter keys, so
                 // Shift+D duplicates rather than strafing.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {

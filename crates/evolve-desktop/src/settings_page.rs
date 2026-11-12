@@ -295,7 +295,7 @@ fn storage(state: &State) -> Element<'_, Message> {
             text("Mod Data Location").size(12),
             container(text(root).size(12)).width(Fill).padding(9).style(|theme| container::Style {
                 background: Some(Background::Color(Color::from_rgb8(31, 31, 37))),
-                border: Border { color: design::border(theme), width: 1.0, radius: 5.0.into() },
+                border: Border { color: design::border(theme), width: 1.0, radius: design::radius(theme, design::Radius::Small).into() },
                 ..container::Style::default()
             }),
             design::button("Change…").on_press(Message::SettingsToggleAdvancedPaths).style(design::secondary)
@@ -450,7 +450,7 @@ pub enum Tab {
 }
 
 impl Tab {
-    const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Appearance,
         Self::Storage,
         Self::Integration,
@@ -458,7 +458,7 @@ impl Tab {
         Self::SystemHealth,
         Self::Advanced,
     ];
-    fn title(self) -> &'static str {
+    pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
             Self::Storage => "Storage",
@@ -543,9 +543,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             row![
                 design::button("Check for Updates").on_press(Message::CheckUpdates).style(design::primary),
                 design::button(text(format!("Channel: {}", if state.preferences.nightly_updates { "Nightly" } else if state.preferences.experimental_updates { "Beta" } else { "Stable" }))).on_press(Message::PreferenceUpdateChannel).style(design::secondary),
-                design::button(text(format!("Auto-check: {}", if state.preferences.automatic_update_checks { "On" } else { "Off" }))).on_press(Message::PreferenceAutoUpdates).style(design::secondary)
             ].spacing(8),
-            text("Beta and Nightly builds are prereleases.").size(11).style(design::muted),
+            text("Beta and Nightly builds are prereleases. Every channel is checked automatically when the manager starts.").size(11).style(design::muted),
             text(state.update_status.as_str()).size(12).style(design::muted),
             if let Some(error) = &state.update_worker_failure {
                 text(format!(
@@ -563,6 +562,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .style(design::secondary)
             },
             super::download_action(state),
+            super::launch_update_actions(state),
             text("Updates are downloaded, SHA-256 verified and installed when you select Update and restart. Portable downloads remain portable; your game files and preferences are preserved.").size(12).style(design::muted),
         ].spacing(8)),
         ].spacing(12).into(),

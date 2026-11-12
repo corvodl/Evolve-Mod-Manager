@@ -26,7 +26,7 @@ fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<
         border: Border {
             color: design::border(theme),
             width: 1.0,
-            radius: 12.0.into(),
+            radius: design::radius(theme, design::Radius::Large).into(),
         },
         ..container::Style::default()
     })
@@ -1556,9 +1556,13 @@ fn text_viewport(state: &State) -> Element<'_, Message> {
     let tools = row![
         text("TEXT EDITOR").size(15),
         text(doc.member.as_str()).size(12).width(Fill),
-        text(if doc.dirty() { "● Unsaved" } else { "Saved" })
-            .size(12)
-            .style(design::muted),
+        {
+            let (saving, saved_at) = state.ui.save_info("text");
+            crate::ui_kit::save_status(doc.dirty(), saving, saved_at)
+        },
+        design::button(if doc.show_diff { "Edit" } else { "Show changes" })
+            .style(design::secondary)
+            .on_press(Message::TextEditorToggleDiff),
         design::button("Save")
             .style(design::primary)
             .on_press_maybe(
@@ -1581,10 +1585,20 @@ fn text_viewport(state: &State) -> Element<'_, Message> {
         text_editor(&doc.content).height(Fill)
     };
     // Iced's text editor is read-only when no on_action handler is attached.
+    let body: Element<'_, Message> = if doc.show_diff {
+        crate::diff_view::view(
+            doc.opened_text(),
+            &doc.content.text(),
+            "Original",
+            "Changed",
+        )
+    } else {
+        content.into()
+    };
     column![
         tools,
         text(label).size(11).style(design::muted),
-        container(content)
+        container(body)
             .width(Fill)
             .height(Fill)
             .padding(9)
@@ -1713,35 +1727,29 @@ fn viewport(state: &State) -> Element<'_, Message> {
         .into()
     };
 
-    let camera_icon = |glyph: &'static str, hint: &'static str, action| {
-        tooltip(
-            design::button(text(glyph).size(18))
-                .width(39)
-                .height(36)
-                .on_press(action),
-            text(hint).size(12),
-            tooltip::Position::Bottom,
-        )
-    };
+    // Camera and display actions as a dock: icons grow as the cursor nears.
+    let dock = crate::ui_kit::dock(
+        &state.ui,
+        "viewer",
+        vec![
+            dock_item(crate::icons::frame_all(), "Frame all", Message::ViewerResetCamera, false),
+            dock_item(crate::icons::view_front(), "Front view", Message::ViewerCameraPreset("Front"), false),
+            dock_item(crate::icons::view_right(), "Right view", Message::ViewerCameraPreset("Right"), false),
+            dock_item(crate::icons::view_top(), "Top view", Message::ViewerCameraPreset("Top"), false),
+            dock_item(crate::icons::view_iso(), "Isometric view", Message::ViewerCameraPreset("Isometric"), false),
+            dock_item(
+                crate::icons::wireframe(),
+                if state.viewer_wireframe { "Shaded display" } else { "Wireframe display" },
+                Message::ViewerToggleWireframe,
+                state.viewer_wireframe,
+            ),
+            dock_item(crate::icons::zoom_out(), "Zoom out", Message::ViewerZoomWheel(-2.0), false),
+            dock_item(crate::icons::zoom_in(), "Zoom in", Message::ViewerZoomWheel(2.0), false),
+        ],
+        state.preferences.reduce_motion,
+    );
     let toolbar = row![
-        camera_icon("⌖", "Frame all", Message::ViewerResetCamera),
-        camera_icon("↑", "Front view", Message::ViewerCameraPreset("Front")),
-        camera_icon("→", "Right view", Message::ViewerCameraPreset("Right")),
-        camera_icon("⊤", "Top view", Message::ViewerCameraPreset("Top")),
-        camera_icon(
-            "◇",
-            "Isometric view",
-            Message::ViewerCameraPreset("Isometric")
-        ),
-        camera_icon(
-            if state.viewer_wireframe { "◉" } else { "▧" },
-            if state.viewer_wireframe {
-                "Shaded display"
-            } else {
-                "Wireframe display"
-            },
-            Message::ViewerToggleWireframe
-        ),
+        dock,
         tooltip(
             design::button(if state.viewer_full_textures {
                 "Textures: Full quality"
@@ -1752,8 +1760,6 @@ fn viewport(state: &State) -> Element<'_, Message> {
             text("Full quality has no manager-imposed texture budget. GPU memory exhaustion is possible; Balanced limits usage.").size(12),
             tooltip::Position::Bottom,
         ),
-        camera_icon("−", "Zoom out", Message::ViewerZoomWheel(-2.0)),
-        camera_icon("+", "Zoom in", Message::ViewerZoomWheel(2.0)),
         tooltip(
             row![
                 svg(svg::Handle::from_memory(include_bytes!(
@@ -2711,5 +2717,19 @@ mod tests {
         );
         assert!(compact_source_name(&"x".repeat(140)).chars().count() <= 100);
         assert_eq!(compact_source_name(""), "No source selected");
+    }
+}
+
+fn dock_item(
+    icon: svg::Handle,
+    label: &'static str,
+    message: Message,
+    active: bool,
+) -> crate::ui_kit::DockItem {
+    crate::ui_kit::DockItem {
+        icon,
+        label,
+        message: Some(message),
+        active,
     }
 }

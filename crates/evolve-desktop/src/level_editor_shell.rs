@@ -165,6 +165,51 @@ fn tool_bar(state: &State) -> Element<'_, Message> {
         .into()
 }
 
+/// Camera and view actions as a dock that magnifies icons near the cursor.
+fn viewport_dock(state: &State) -> Element<'_, Message> {
+    use crate::icons;
+    use crate::ui_kit::{DockItem, dock};
+    let item = |icon, label, message, active| DockItem {
+        icon,
+        label,
+        message: Some(message),
+        active,
+    };
+    dock(
+        &state.ui,
+        "level",
+        vec![
+            item(icons::view_iso(), "Perspective", Message::ViewerCameraPreset("Isometric"), false),
+            item(icons::view_top(), "Top", Message::ViewerCameraPreset("Top"), false),
+            item(icons::view_front(), "Front", Message::ViewerCameraPreset("Front"), false),
+            item(
+                icons::overview(),
+                if state.level_show_overview { "Hide 2D overview" } else { "2D overview" },
+                Message::LevelToggleOverview,
+                state.level_show_overview,
+            ),
+            item(icons::focus(), "Focus selection", Message::LevelCameraFocus, false),
+            item(icons::reset(), "Reset view", Message::LevelCameraReset, false),
+            item(icons::fullscreen(), "Fullscreen viewport", Message::ToggleLevelViewportFullscreen, false),
+        ],
+        state.preferences.reduce_motion,
+    )
+}
+
+/// Unsaved • Saving… • Saved 12 s ago for the editable level project.
+fn level_save_status(state: &State) -> Element<'_, Message> {
+    if state.level_project.is_none() || state.level_read_only {
+        return space().width(0).into();
+    }
+    let dirty = state.level_dirty_count != 0
+        || state
+            .terrain_session
+            .as_ref()
+            .is_some_and(|session| session.is_dirty());
+    let (saving, saved_at) = state.ui.save_info("level");
+    crate::ui_kit::save_status(dirty, saving, saved_at)
+}
+
 fn command<'a>(caption: &'static str, msg: Message) -> iced::widget::Button<'a, Message> {
     button(text(caption).size(12))
         .style(design::text_button)
@@ -391,33 +436,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let toolbar = container(
         row![
             text("VIEWPORT").size(11).style(design::accent),
-            button("Perspective")
-                .style(design::secondary)
-                .on_press(Message::ViewerCameraPreset("Isometric")),
-            button("Top")
-                .style(design::secondary)
-                .on_press(Message::ViewerCameraPreset("Top")),
-            button("Front")
-                .style(design::secondary)
-                .on_press(Message::ViewerCameraPreset("Front")),
-            text("│").size(15).style(design::muted),
-            design::button(if state.level_show_overview {
-                "Hide Overview"
-            } else {
-                "2D Overview"
-            })
-            .style(design::secondary)
-            .on_press(Message::LevelToggleOverview),
-            design::button("Focus Selection")
-                .style(design::secondary)
-                .on_press(Message::LevelCameraFocus),
-            design::button("Reset View")
-                .style(design::secondary)
-                .on_press(Message::LevelCameraReset),
-            design::button("Fullscreen Viewport")
-                .style(design::secondary)
-                .on_press(Message::ToggleLevelViewportFullscreen),
+            viewport_dock(state),
             space().width(Fill),
+            level_save_status(state),
             text(if state.level_read_only {
                 "SOURCE: READ ONLY"
             } else {

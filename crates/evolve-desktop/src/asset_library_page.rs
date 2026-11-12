@@ -16,7 +16,7 @@ fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Containe
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: 12.0.into(),
+                radius: design::radius(theme, design::Radius::Large).into(),
             },
             ..container::Style::default()
         })
@@ -794,7 +794,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: 8.0.into(),
+                radius: design::radius(theme, design::Radius::Medium).into(),
             },
             ..container::Style::default()
         });

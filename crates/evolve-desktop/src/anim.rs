@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 /// Frame interval to subscribe to while any tween is running.
 pub const FRAME: Duration = Duration::from_millis(16);
+/// Frame interval for looping ambient effects (embers, beam, skeletons).
+pub const AMBIENT_FRAME: Duration = Duration::from_millis(33);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Easing {
