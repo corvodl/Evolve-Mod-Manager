@@ -174,10 +174,16 @@ pub fn commands(state: &State) -> Vec<Command> {
     }
     if let Some(catalog) = state.library_catalog.as_ref() {
         for (index, archive) in catalog.archives.iter().take(MAX_ARCHIVES).enumerate() {
+            let title = crate::level_archive::display_title(archive);
+            let detail = if title == archive.name {
+                archive.group.clone()
+            } else {
+                format!("{} · {}", archive.group, archive.name)
+            };
             list.push(command(
                 "Library",
-                archive.name.clone(),
-                archive.group.clone(),
+                title,
+                detail,
                 Message::Sequence(vec![
                     Message::Navigate(Page::AssetLibrary),
                     Message::LibrarySelect(index),

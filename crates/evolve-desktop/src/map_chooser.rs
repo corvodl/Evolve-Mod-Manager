@@ -304,14 +304,14 @@ pub fn cards(state: &State) -> Vec<Card> {
         }
         if let Some(catalog) = &state.library_catalog {
             for (index, archive) in catalog.archives.iter().enumerate() {
-                if !crate::level_library::likely_level_pak(archive) {
+                if !crate::level_archive::offers_as_map(archive) {
                     continue;
                 }
                 let thumb_prefix = thumb_key(&archive.id, "");
                 cards.push(Card {
                     section: "Imported archives",
-                    title: archive.name.clone(),
-                    subtitle: archive.builds.join(", "),
+                    title: crate::level_archive::display_title(archive),
+                    subtitle: crate::level_archive::display_subtitle(archive),
                     badges: vec![(BadgeKind::ReadOnly, "Read-only".into())],
                     thumb: state
                         .map_chooser
@@ -591,7 +591,7 @@ fn breadcrumbs(state: &State) -> Option<Element<'_, Message>> {
     let source = if let Some((project, _)) = &state.level_project_choices {
         project.label.clone()
     } else if let Some((archive, _)) = &state.level_map_choices {
-        archive.name.clone()
+        crate::level_archive::display_title(archive)
     } else {
         return None;
     };
@@ -799,5 +799,48 @@ mod tests {
         };
         let labels: Vec<_> = map_badges(&map).into_iter().map(|(_, l)| l).collect();
         assert_eq!(labels, ["Legacy-ported", "Terrain", "2 layers"]);
+    }
+
+    /// A 2012 map folder imports level.pak beside terraintexture.pak. Only the
+    /// level PAK is offered, titled by its owner folder.
+    #[test]
+    fn imported_archive_cards_skip_terrain_texture_and_use_the_owner_folder() {
+        let archive = |id: &str, name: &str, source: &str| evolve_core::ImportedPak {
+            id: id.into(),
+            name: name.into(),
+            source: source.into(),
+            directory: format!("/library/{id}"),
+            group: "Levels".into(),
+            description: String::new(),
+            entries: 1,
+            extracted_bytes: 1,
+            warnings: 0,
+            builds: vec!["Stage 2".into()],
+        };
+        let state = State {
+            library_catalog: Some(evolve_core::ImportedLibrary {
+                root: "/library".into(),
+                archives: vec![
+                    archive(
+                        "level",
+                        "level.pak",
+                        "C:/Games/2012 Evolve/build_3/Game/Levels/Forest_Rapids/level.pak",
+                    ),
+                    archive(
+                        "terrain",
+                        "terraintexture.pak",
+                        "C:/Games/2012 Evolve/build_3/Game/Levels/Forest_Rapids/terraintexture.pak",
+                    ),
+                ],
+                builds: vec!["Stage 2".into()],
+                total_bytes: 2,
+                ignored: 0,
+            }),
+            ..State::default()
+        };
+        let cards = cards(&state);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].title, "Forest_Rapids");
+        assert!(cards[0].subtitle.contains("level.pak"));
     }
 }

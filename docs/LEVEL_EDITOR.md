@@ -1,5 +1,23 @@
 # Imported Level Editor — PR #130 (experimental)
 
+## 2012 Xbox 360 map archives
+
+Import `Game/Levels/<map>/level.pak` to open that map. The Asset Library and
+map chooser show `<map>` as the level name and expose the original source path,
+including `level.pak`, to distinguish identically named maps across builds.
+`terraintexture.pak` beside it contains baked terrain colors; it remains an
+importable dependency but is not a level and cannot be opened as one. Import
+the other same-build Game and streaming PAKs to make original geometry and
+materials available to the read-only scene preview.
+
+The existing root `mission_mission0.xml` placement parser can open 2012 map
+entities. **This is not full 2012 rendering support:** this build's compiled
+`terrain/terrain.dat` is version 24, while the current terrain/brush/vegetation
+decoder only accepts version 25. Terrain geometry, its baked color tiles,
+particle simulation, Xbox 360 shaders and native lighting still require
+separate format and rendering work. The editor reports unsupported sources
+rather than substituting assets from another build.
+
 ## How to open
 
 1. Import your original Evolve level PAKs and their dependency PAKs into Asset Library.

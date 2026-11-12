@@ -174,6 +174,11 @@ pub fn describe_archive(filename: &str) -> (String, String) {
     if stem.starts_with("animations") {
         return ("Animations".into(), readable(stem));
     }
+    // A 2012 map archive is the generic `level.pak` inside Game/Levels/<map>/.
+    // The owner folder is resolved from the source path where lists show it.
+    if stem == "level" {
+        return ("Levels".into(), "Level".into());
+    }
     if stem.starts_with("levels") || stem.contains("terrain") {
         return ("Levels".into(), readable(stem));
     }
@@ -1414,6 +1419,10 @@ mod tests {
         assert_eq!(group, "Hunters • Merc Emet");
         assert_eq!(description, "Merc Emet Textures");
         assert_eq!(describe_archive("animationsdba.pak").0, "Animations");
+        // 2012 maps are the generic level.pak inside Game/Levels/<map>/.
+        let (group, description) = describe_archive("level.pak");
+        assert_eq!(group, "Levels");
+        assert_eq!(description, "Level");
     }
     #[test]
     fn incremental_build_labels_include_distinct_game_roots() {
