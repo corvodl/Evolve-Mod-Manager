@@ -45,6 +45,8 @@ pub struct Preferences {
     pub news_seen_at: String,
     /// The last few maps opened in the Level Editor, newest first.
     pub recent_maps: Vec<RecentMap>,
+    /// The Developer page tab shown last.
+    pub developer_tab: String,
     pub reduce_motion: bool,
     pub keep_original_snapshots: bool,
     pub show_activity_on_tasks: bool,
@@ -137,6 +139,7 @@ impl Default for Preferences {
             last_seen_version: String::new(),
             news_seen_at: String::new(),
             recent_maps: Vec::new(),
+            developer_tab: String::new(),
             reduce_motion: false,
             keep_original_snapshots: false,
             show_activity_on_tasks: true,
@@ -352,6 +355,9 @@ impl Preferences {
             self.news_seen_at.clear();
         }
         self.recent_maps.truncate(5);
+        if self.developer_tab.len() > 64 {
+            self.developer_tab.clear();
+        }
         self.recent_maps.retain(|recent| {
             recent.map.len() <= 200
                 && recent.archive_id.len() <= 200

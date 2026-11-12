@@ -72,9 +72,9 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     // Developer tabs.
     ("Network & Process", "Ctrl+1"),
     ("Actors & Memory", "Ctrl+2"),
-    ("AI", "Ctrl+3"),
+    ("AI Controls", "Ctrl+3"),
     ("Teleport & Fly", "Ctrl+4"),
-    ("Overlay", "Ctrl+5"),
+    ("External Overlay", "Ctrl+5"),
     ("Keybinds", "Ctrl+6"),
 ];
 

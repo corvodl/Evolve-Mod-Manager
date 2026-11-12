@@ -611,7 +611,8 @@ struct State {
     viewer_load_progress: Option<Arc<AtomicUsize>>,
     viewer_from_library: bool,
     developer_password: String,
-    developer_sections_expanded: HashSet<private_pages::DeveloperSection>,
+    /// Show the developer password as plain text while typing.
+    developer_show_password: bool,
     developer_status: String,
     developer_unlocked: bool,
     /// Session-only opt-in, never restored from settings; does not modify client authentication.
@@ -3412,8 +3413,11 @@ enum Message {
     ToggleActivity,
     ToggleDocsSection(private_pages::DocsSection),
     DocsExpandAll(bool),
-    ToggleDeveloperSection(private_pages::DeveloperSection),
-    DeveloperExpandAll(bool),
+    /// Show one Developer tab (remembered across sessions).
+    DeveloperTab(private_pages::DeveloperSection),
+    /// Ctrl+1–6: the Developer tab by position.
+    DeveloperTabKey(usize),
+    DeveloperShowPassword(bool),
     ClearActivity,
     ToggleSystemHealth,
     CheckSystemHealth,
@@ -8669,19 +8673,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.docs_expanded.extend(private_pages::DocsSection::ALL);
             }
         }
-        Message::ToggleDeveloperSection(section) => {
-            if !state.developer_sections_expanded.insert(section) {
-                state.developer_sections_expanded.remove(&section);
+        Message::DeveloperTab(section) => {
+            let name = section.title().to_owned();
+            state.preferences.developer_tab = name.clone();
+            persist_saved_field(move |saved| saved.developer_tab = name);
+        }
+        Message::DeveloperTabKey(index) => {
+            if state.page == Some(Page::Developer)
+                && state.developer_unlocked
+                && let Some(section) = private_pages::DeveloperSection::ALL.get(index)
+            {
+                return update(state, Message::DeveloperTab(*section));
             }
         }
-        Message::DeveloperExpandAll(expand) => {
-            state.developer_sections_expanded.clear();
-            if expand {
-                state
-                    .developer_sections_expanded
-                    .extend(private_pages::DeveloperSection::ALL);
-            }
-        }
+        Message::DeveloperShowPassword(show) => state.developer_show_password = show,
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
                 state.developer_password = value;
@@ -19531,6 +19536,21 @@ impl Desktop {
                 }) if modifiers.control() && value.eq_ignore_ascii_case("k") => Some(Message::Ui(
                     ui_kit::UiMsg::Palette(command_palette::Msg::Toggle),
                 )),
+                // Ctrl+1–6 switch Developer tabs.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    modifiers,
+                    ..
+                }) if modifiers.control()
+                    && !modifiers.alt()
+                    && value.len() == 1
+                    && ("1"..="6").contains(&value.as_str()) =>
+                {
+                    value
+                        .parse::<usize>()
+                        .ok()
+                        .map(|n| Message::DeveloperTabKey(n - 1))
+                }
                 // Enter outside a text field confirms an open modal.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
