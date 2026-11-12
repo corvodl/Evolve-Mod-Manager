@@ -1875,7 +1875,25 @@ fn open_selected(
                 .flatten()
         })
     });
-    let terrain_pak = if let Some(cover) = compiled_cover {
+    let supported_cover = compiled_cover.and_then(|cover| {
+        match read_terrain_texture_header(&cover) {
+            Ok(header) if header.layers.first().is_some_and(|layer| {
+                matches!(layer.texture_format, 2 | 22 | 23 | 24 | 25 | 27)
+            }) => Some(cover),
+            Ok(header) => {
+                diagnostics.push(format!(
+                    "Original terrain/cover.ctc color format {} is not supported; checking the same map's terraintexture.pak RGB24 tiles.",
+                    header.layers.first().map_or(0, |layer| layer.texture_format)
+                ));
+                None
+            }
+            Err(error) => {
+                diagnostics.push(format!("Original terrain/cover.ctc unsupported: {error}"));
+                None
+            }
+        }
+    });
+    let terrain_pak = if let Some(cover) = supported_cover {
         Ok(Some(TerrainResource::Cry(cover)))
     } else if has_terrain {
         terrain_resource(

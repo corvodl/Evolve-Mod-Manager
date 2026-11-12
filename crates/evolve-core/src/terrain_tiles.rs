@@ -390,6 +390,29 @@ mod tests {
     }
 
     #[test]
+    fn optional_owned_2012_compiled_cover_is_decodable() {
+        let Ok(path) = std::env::var("EVOLVE_2012_COVER_FIXTURE") else {
+            return;
+        };
+        let atlas = read_terrain_texture_atlas(std::path::Path::new(&path)).unwrap();
+        assert!(atlas.decoded_tiles > 0);
+        assert!(!atlas.incomplete);
+    }
+
+    #[test]
+    fn optional_owned_2012_rgb24_tiles_are_decodable() {
+        let Ok(folder) = std::env::var("EVOLVE_2012_TILES_DIR") else {
+            return;
+        };
+        let folder = std::path::Path::new(&folder);
+        let tiles = ["tile0_0.raw", "tile1_0.raw", "tile0_1.raw", "tile1_1.raw"]
+            .map(|name| folder.join(name));
+        let atlas = read_terrain_rgb24_tiles(&tiles, 2).unwrap();
+        assert_eq!(atlas.decoded_tiles, 4);
+        assert_eq!(atlas.image.width(), 1024);
+    }
+
+    #[test]
     fn rgb24_raw_tile_interior_axes_match_cry_sector_mapping() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tile0_0.raw");

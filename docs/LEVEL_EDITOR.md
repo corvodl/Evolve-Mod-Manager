@@ -10,13 +10,16 @@ importable dependency but is not a level and cannot be opened as one. Import
 the other same-build Game and streaming PAKs to make original geometry and
 materials available to the read-only scene preview.
 
-The existing root `mission_mission0.xml` placement parser can open 2012 map
-entities. **This is not full 2012 rendering support:** this build's compiled
-`terrain/terrain.dat` is version 24, while the current terrain/brush/vegetation
-decoder only accepts version 25. Terrain geometry, its baked color tiles,
-particle simulation, Xbox 360 shaders and native lighting still require
-separate format and rendering work. The editor reports unsupported sources
-rather than substituting assets from another build.
+The root `mission_mission0.xml` placement parser opens 2012 map entities. The
+read-only compiled-terrain importer recognizes the 2012 version-24 heightmap,
+brush and vegetation layouts separately from Stage 2 version 25. Baked color
+uses `terrain/cover.ctc` when its color format can be decoded; maps with an
+unsupported cover color format can use their own imported sibling
+`terraintexture.pak` RGB24 tile grid instead. The other same-build PAKs supply
+object geometry and textures. Version-24 compiled terrain edits are blocked;
+this is a source-backed viewport preview, **not** Xbox 360 shader, particle,
+lighting or rendering parity. Unsupported octree record types remain diagnosed
+rather than substituted with unrelated assets.
 
 ## How to open
 
