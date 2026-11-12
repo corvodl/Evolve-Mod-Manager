@@ -156,6 +156,8 @@ pub enum Sheet {
     Pak(usize),
     /// The model inspector, without detaching a window.
     Inspector,
+    /// Import PAKs into the Asset Library.
+    Import,
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +191,7 @@ pub enum MenuBar {
     Level,
     Viewer,
     Modding,
+    Library,
 }
 
 #[derive(Debug, Default)]
@@ -295,6 +298,9 @@ pub fn update(state: &mut State, message: Msg) -> Option<Message> {
             state.chrome.sheet_reveal = state.chrome.sheet_reveal.with_easing(Easing::EaseOut);
         }
         Msg::CloseSheet => {
+            if state.chrome.sheet == Some(Sheet::Import) {
+                state.library_show_configuration = false;
+            }
             state.chrome.sheet_pinned = false;
             state
                 .chrome
@@ -319,6 +325,9 @@ pub fn update(state: &mut State, message: Msg) -> Option<Message> {
             }
             MenuBar::Modding if state.modding_menu.is_some_and(|open| open != menu) => {
                 state.modding_menu = Some(menu);
+            }
+            MenuBar::Library if state.library_menu.is_some_and(|open| open != menu) => {
+                state.library_menu = Some(menu);
             }
             _ => {}
         },
@@ -811,8 +820,19 @@ pub fn modal_overlay<'a>(base: Element<'a, Message>, state: &'a State) -> Elemen
         .spacing(14),
     )
     .padding(20)
-    .max_width(460)
-    .style(|theme: &Theme| container::Style {
+    .max_width(460);
+    dialog(base, card.into(), msg(Msg::Absorb))
+}
+
+/// The modal frame shared by confirmations and larger dialogs (Manage
+/// builds): a dimmed backdrop that swallows the page's input and a centred
+/// card. `outside` runs when the backdrop is clicked.
+pub fn dialog<'a>(
+    base: Element<'a, Message>,
+    card: Element<'a, Message>,
+    outside: Message,
+) -> Element<'a, Message> {
+    let card = container(card).style(|theme: &Theme| container::Style {
         background: Some(Background::Color(design::surface(theme))),
         border: Border {
             color: design::border(theme),
@@ -833,7 +853,7 @@ pub fn modal_overlay<'a>(base: Element<'a, Message>, state: &'a State) -> Elemen
             .height(Fill)
             .style(scrim(0.5)),
     )
-    .on_press(msg(Msg::Absorb))
+    .on_press(outside)
     .interaction(iced::mouse::Interaction::Idle);
     stack![base, backdrop, container(card).center(Fill).padding(24)].into()
 }
@@ -943,6 +963,10 @@ fn sheet_contents(state: &State, sheet: Sheet) -> (String, Element<'_, Message>)
             )
         }
         Sheet::Inspector => ("Inspector".into(), crate::viewer_inspector::view(state)),
+        Sheet::Import => (
+            "Import PAKs".into(),
+            crate::asset_library_page::import_sheet(state),
+        ),
     }
 }
 
@@ -1059,6 +1083,97 @@ pub fn menu_title<'a>(
         .on_press(on_press);
     mouse_area(title)
         .on_enter(msg(Msg::MenuHover(bar, id)))
+        .into()
+}
+
+/// A menubar whose open menu is drawn directly under its title, wherever
+/// the title ends up (no hand-measured offsets).
+pub fn menubar<'a>(
+    bar: MenuBar,
+    titles: &[&'static str],
+    open: Option<&'static str>,
+    on_open: fn(&'static str) -> Message,
+    menu: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let mut menu = menu;
+    let mut row = row![].spacing(3).align_y(Alignment::Center);
+    for title in titles {
+        let trigger = menu_title(bar, title, title, open, on_open(title), 13.0, [6, 11]);
+        let popup = if open == Some(*title) {
+            menu.take().map(menu_panel)
+        } else {
+            None
+        };
+        row = row.push(crate::anchored::anchored(
+            trigger,
+            popup,
+            Message::DismissMenus,
+        ));
+    }
+    row.into()
+}
+
+/// The card a menu's entries sit in.
+pub fn menu_panel<'a>(items: Element<'a, Message>) -> Element<'a, Message> {
+    container(scrollable(items).height(Length::Shrink))
+        .padding(4)
+        .width(Length::Fixed(290.0))
+        .max_height(440)
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(design::field(theme))),
+            border: Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: design::radius(theme, design::Radius::Small).into(),
+            },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 14.0,
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A menu entry that can show a radio check, and a reason when disabled.
+pub fn menu_entry<'a>(
+    label: &'a str,
+    action: Option<Message>,
+    checked: Option<bool>,
+    reason: Option<&'a str>,
+) -> Element<'a, Message> {
+    let enabled = action.is_some();
+    let mut line = row![].spacing(8).align_y(Alignment::Center);
+    if let Some(checked) = checked {
+        line = line.push(
+            container(if checked {
+                Element::from(icons::glyph(icons::check(), 13.0))
+            } else {
+                space().width(13).into()
+            })
+            .width(14),
+        );
+    }
+    line = line.push(
+        column![text(label)
+            .size(design::LABEL)
+            .style(move |theme: &Theme| text::Style {
+                color: (!enabled).then(|| design::with_alpha(theme.palette().text, 0.4)),
+            })]
+        .push((!enabled).then_some(()).and(reason).map(|reason| {
+            text(reason).size(design::CAPTION).style(design::muted)
+        }))
+        .width(Fill),
+    );
+    if let Some(shortcut) = shortcut_for(label) {
+        line = line.push(design::key_hint(shortcut));
+    }
+    button(line)
+        .padding([6, 12])
+        .width(Fill)
+        .style(design::text_button)
+        .on_press_maybe(action.map(|action| Message::MenuCommand(Box::new(action))))
         .into()
 }
 

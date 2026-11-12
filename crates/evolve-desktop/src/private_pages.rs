@@ -311,14 +311,12 @@ fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
     .into()
 }
 
-/// The long +build identifier remains available on hover, but never
-/// dominates the narrow At a Glance column.
+/// The release part only; the +build identifier stays available on hover.
 fn short_client_version(version: &str) -> String {
-    if let Some((release, build)) = version.split_once('+') {
-        let prefix: String = build.chars().take(8).collect();
-        if !release.is_empty() && !prefix.is_empty() {
-            return format!("v{release} · {prefix}");
-        }
+    if let Some((release, _)) = version.split_once('+')
+        && !release.is_empty()
+    {
+        return format!("v{release}");
     }
     if version.chars().count() > 28 {
         return format!("v{}…", version.chars().take(24).collect::<String>());
@@ -746,7 +744,15 @@ fn with_embers<'a>(state: &State, content: Element<'a, Message>) -> Element<'a, 
 fn home_bento(state: &State) -> Element<'_, Message> {
     use crate::ui_kit::{bento_tile, ticked};
     let client = column![
-        text(state.client_version.as_deref().unwrap_or("Unknown")).size(18),
+        match state.client_version.as_deref() {
+            Some(version) => design::tooltip(
+                text(short_client_version(version)).size(18),
+                format!("Full client version: v{version}"),
+                None,
+                iced::widget::tooltip::Position::Bottom,
+            ),
+            None => text("Unknown").size(18).into(),
+        },
         text(if state.preferences.client_executable.is_empty() {
             "Client not configured"
         } else {
@@ -2755,7 +2761,7 @@ mod home_layout_tests {
     fn client_build_is_short_but_release_is_preserved() {
         assert_eq!(
             short_client_version("0.1.95+b45fa23dbded9764d99cd3e021ba40fb8e6d3a93"),
-            "v0.1.95 · b45fa23d"
+            "v0.1.95"
         );
         assert_eq!(short_client_version("1.2.3"), "v1.2.3");
     }

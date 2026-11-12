@@ -3,6 +3,7 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
+mod anchored;
 mod anim;
 mod assembly_materials;
 mod asset_cache;
@@ -711,7 +712,6 @@ struct State {
     library_update_plan: Option<LibraryBuildUpdatePlan>,
     library_manage_builds_open: bool,
     library_managed_builds: Vec<ManagedLibraryBuild>,
-    library_delete_build_confirm: Option<String>,
     library_rename_build: Option<String>,
     library_rename_value: String,
     library_import_scanning: bool,
@@ -725,7 +725,13 @@ struct State {
     library_flat_list: bool,
     library_expanded_categories: HashSet<String>,
     library_expanded_sources: HashSet<String>,
-    library_expanded_details: HashSet<String>,
+    /// The archive row under the cursor (shows its icon actions).
+    library_hover: Option<usize>,
+    /// Rows per Asset Library page (50 / 110 / 250).
+    library_page_size: usize,
+    /// Filter of the build update's change list ("New", "Changed", …).
+    library_update_filter: Option<&'static str>,
+    library_update_help: bool,
     library_build_index: usize,
     library_page: usize,
     settings_tab: settings_page::Tab,
@@ -3090,8 +3096,6 @@ enum Message {
     LibraryManageBuildsToggle,
     LibraryManageBuildsRefresh,
     LibraryManagedBuildsLoaded(Result<Vec<ManagedLibraryBuild>, String>),
-    LibraryDeleteBuildConfirm(String),
-    LibraryDeleteBuildCancel,
     LibraryDeleteBuildNow(String),
     LibraryRenameBuildBegin(String),
     LibraryRenameBuildValue(String),
@@ -3165,8 +3169,13 @@ enum Message {
     LibrarySetFlat(bool),
     LibraryToggleCategory(String),
     LibraryToggleSource(String),
-    LibraryToggleDetails(String),
-    LibraryNextBuild,
+    LibraryHoverRow(Option<usize>),
+    LibrarySelectBuild(usize),
+    LibraryExpandAll(bool),
+    LibraryClearSelection,
+    LibraryPageSize(usize),
+    LibraryUpdateFilter(Option<&'static str>),
+    LibraryUpdateHelp,
     LibrarySelect(usize),
     LibraryOpenMap(usize),
     LevelMapSelect(usize),
@@ -7226,8 +7235,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LibraryManageBuildsToggle => {
             state.library_manage_builds_open = !state.library_manage_builds_open;
-            state.library_delete_build_confirm = None;
-            state.library_rename_build = None;
+                        state.library_rename_build = None;
             if !state.library_manage_builds_open {
                 return Task::none();
             }
@@ -7237,8 +7245,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.busy || state.library_import_scanning || !state.library_manage_builds_open {
                 return Task::none();
             }
-            state.library_delete_build_confirm = None;
-            let root = PathBuf::from(&state.library_root);
+                        let root = PathBuf::from(&state.library_root);
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || managed_library_builds(&root))
@@ -7274,8 +7281,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     build.display_name.clone()
                 };
                 state.library_rename_build = Some(id);
-                state.library_delete_build_confirm = None;
-            }
+                            }
         }
         Message::LibraryRenameBuildValue(value) => state.library_rename_value = value,
         Message::LibraryRenameBuildCancel => {
@@ -7319,24 +7325,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
-        Message::LibraryDeleteBuildConfirm(id) => {
-            if !state.busy
-                && state
-                    .library_managed_builds
-                    .iter()
-                    .any(|build| build.id == id)
-            {
-                state.library_delete_build_confirm = Some(id);
-            }
-        }
-        Message::LibraryDeleteBuildCancel => {
-            state.library_delete_build_confirm = None;
-        }
         Message::LibraryDeleteBuildNow(id) => {
-            if state.busy
-                || state.library_import_scanning
-                || state.library_delete_build_confirm.as_deref() != Some(id.as_str())
-            {
+            // Hold-to-confirm (or the reduce-motion second click) is the
+            // confirmation; there is no separate confirm step.
+            if state.busy || state.library_import_scanning {
                 return Task::none();
             }
             let Some(build) = state
@@ -7348,8 +7340,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Refresh managed builds before deletion.".into();
                 return Task::none();
             };
-            state.library_delete_build_confirm = None;
-            state.library_update_plan = None;
+                        state.library_update_plan = None;
             return launch(
                 state,
                 Operation::RemoveManagedLibraryBuild(
@@ -7578,7 +7569,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
         }
         Message::LibraryToggleConfiguration => {
+            // Import lives in the side sheet so the table stays put.
             state.library_show_configuration = !state.library_show_configuration;
+            state.library_menu = None;
+            let sheet = if state.library_show_configuration {
+                chrome::Msg::OpenSheet(chrome::Sheet::Import)
+            } else {
+                chrome::Msg::CloseSheet
+            };
+            return update(state, Message::Chrome(sheet));
         }
         Message::OpenLibrarySettings => {
             state.settings_tab = settings_page::Tab::Storage;
@@ -7693,21 +7692,46 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.library_page = 0;
         }
-        Message::LibraryToggleDetails(id) => {
-            if !state.library_expanded_details.insert(id.clone()) {
-                state.library_expanded_details.remove(&id);
-            }
-        }
-        Message::LibraryNextBuild => {
+        Message::LibrarySelectBuild(index) => {
+            state.ui.popover = None;
             if let Some(catalog) = &state.library_catalog
-                && !catalog.builds.is_empty()
+                && index < catalog.builds.len()
             {
-                state.library_build_index = (state.library_build_index + 1) % catalog.builds.len();
+                state.library_build_index = index;
                 state.library_selected = None;
                 state.library_page = 0;
                 refresh_library_matches(state);
             }
         }
+        Message::LibraryHoverRow(row) => state.library_hover = row,
+        Message::LibraryExpandAll(expand) => {
+            state.library_expanded_categories.clear();
+            state.library_expanded_sources.clear();
+            if expand && let Some(catalog) = &state.library_catalog {
+                for archive in &catalog.archives {
+                    state
+                        .library_expanded_categories
+                        .insert(archive.group.to_ascii_lowercase());
+                    state.library_expanded_sources.insert(format!(
+                        "{}|{}",
+                        archive.name.to_ascii_lowercase(),
+                        archive.source.replace('\\', "/").to_ascii_lowercase()
+                    ));
+                }
+            }
+        }
+        Message::LibraryClearSelection => {
+            state.library_selection.indices.clear();
+            state.library_selected = None;
+        }
+        Message::LibraryPageSize(size) => {
+            if asset_library_page::PAGE_SIZES.contains(&size) {
+                state.library_page_size = size;
+                state.library_page = 0;
+            }
+        }
+        Message::LibraryUpdateFilter(filter) => state.library_update_filter = filter,
+        Message::LibraryUpdateHelp => state.library_update_help = !state.library_update_help,
         Message::LibraryOpenMap(index) => {
             let Some(archive) = state
                 .library_catalog
@@ -15980,8 +16004,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         report.failed_cleanup.len()
                     );
                     state.library_managed_builds = builds;
-                    state.library_delete_build_confirm = None;
-                    state.library_catalog = Some(catalog);
+                                        state.library_catalog = Some(catalog);
                     state.library_selection.clear();
                     state.library_selected = None;
                     state.library_page = 0;
@@ -18623,6 +18646,7 @@ fn compact_footer_status(status: &str) -> String {
 
 fn initial_state() -> State {
     let mut result = State {
+        library_page_size: 110,
         yaw: orientation_gizmo::FRONT_YAW,
         zoom: 1.0,
         playback_speed: 1.0,
@@ -19224,6 +19248,28 @@ impl Desktop {
                     self.state.ui.drop_target.filter(|target| *target != id)
                 };
                 Task::none()
+            }
+            Message::FileDropped(id, path)
+                if id == self.main_id && self.state.chrome.sheet == Some(chrome::Sheet::Import) =>
+            {
+                self.state.ui.drop_target = None;
+                if path.is_dir() {
+                    update(
+                        &mut self.state,
+                        Message::LibraryUpdateFolderPicked(Ok(Some(vec![path]))),
+                    )
+                } else if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("pak"))
+                {
+                    update(
+                        &mut self.state,
+                        Message::LibrarySourcesPicked(Ok(Some(vec![path]))),
+                    )
+                } else {
+                    self.state.status = "Only .pak files or a game folder can be imported.".into();
+                    Task::none()
+                }
             }
             Message::FileDropped(id, path) => {
                 self.state.ui.drop_target = None;
