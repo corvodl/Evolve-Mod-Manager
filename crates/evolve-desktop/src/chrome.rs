@@ -1156,14 +1156,19 @@ pub fn menu_entry<'a>(
         );
     }
     line = line.push(
-        column![text(label)
-            .size(design::LABEL)
-            .style(move |theme: &Theme| text::Style {
-                color: (!enabled).then(|| design::with_alpha(theme.palette().text, 0.4)),
-            })]
-        .push((!enabled).then_some(()).and(reason).map(|reason| {
-            text(reason).size(design::CAPTION).style(design::muted)
-        }))
+        column![
+            text(label)
+                .size(design::LABEL)
+                .style(move |theme: &Theme| text::Style {
+                    color: (!enabled).then(|| design::with_alpha(theme.palette().text, 0.4)),
+                })
+        ]
+        .push(
+            (!enabled)
+                .then_some(())
+                .and(reason)
+                .map(|reason| text(reason).size(design::CAPTION).style(design::muted)),
+        )
         .width(Fill),
     );
     if let Some(shortcut) = shortcut_for(label) {

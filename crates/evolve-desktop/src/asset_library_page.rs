@@ -162,7 +162,11 @@ fn browser_rows(state: &State) -> Vec<BrowserRow> {
                 count: members.len(),
             });
             if expanded {
-                result.extend(members.into_iter().map(|index| BrowserRow::Archive(index, 2)));
+                result.extend(
+                    members
+                        .into_iter()
+                        .map(|index| BrowserRow::Archive(index, 2)),
+                );
             }
         }
     }
@@ -255,13 +259,18 @@ fn archive_row<'a>(
     }
     let builds: Element<'a, Message> = if archive.builds.len() > 1 {
         design::tooltip(
-            badge(BadgeKind::Neutral, format!("{} builds", archive.builds.len())),
+            badge(
+                BadgeKind::Neutral,
+                format!("{} builds", archive.builds.len()),
+            ),
             archive.builds.join("\n"),
             None,
             iced::widget::tooltip::Position::Top,
         )
     } else {
-        text(archive_build_label(archive)).size(design::LABEL).into()
+        text(archive_build_label(archive))
+            .size(design::LABEL)
+            .into()
     };
     let content = row![
         crate::ui_kit::indent_guides(depth),
@@ -371,7 +380,11 @@ fn browser_group_row<'a>(
         crate::ui_kit::indent_guides(depth),
         crate::ui_kit::chevron(turn),
         text(label)
-            .size(if depth == 0 { design::BODY } else { design::LABEL })
+            .size(if depth == 0 {
+                design::BODY
+            } else {
+                design::LABEL
+            })
             .width(Fill),
         crate::ui_kit::badge(crate::ui_kit::BadgeKind::Neutral, count),
     ]
@@ -405,8 +418,20 @@ pub(super) fn menu_commands(
         .and_then(|index| state.library_catalog.as_ref()?.archives.get(index))
         .is_some_and(crate::level_library::likely_level_pak);
     vec![
-        ("File", "Refresh catalog", Some(Message::LibraryRefresh), None, None),
-        ("File", "Import PAKs…", Some(Message::LibraryToggleConfiguration), None, None),
+        (
+            "File",
+            "Refresh catalog",
+            Some(Message::LibraryRefresh),
+            None,
+            None,
+        ),
+        (
+            "File",
+            "Import PAKs…",
+            Some(Message::LibraryToggleConfiguration),
+            None,
+            None,
+        ),
         (
             "File",
             "Export files and assemblies…",
@@ -421,7 +446,13 @@ pub(super) fn menu_commands(
             None,
             None,
         ),
-        ("File", "Storage settings", Some(Message::OpenLibrarySettings), None, None),
+        (
+            "File",
+            "Storage settings",
+            Some(Message::OpenLibrarySettings),
+            None,
+            None,
+        ),
         (
             "View",
             "By Category",
@@ -443,8 +474,20 @@ pub(super) fn menu_commands(
             Some(state.library_flat_list),
             None,
         ),
-        ("View", "Expand all groups", Some(Message::LibraryExpandAll(true)), None, None),
-        ("View", "Collapse all groups", Some(Message::LibraryExpandAll(false)), None, None),
+        (
+            "View",
+            "Expand all groups",
+            Some(Message::LibraryExpandAll(true)),
+            None,
+            None,
+        ),
+        (
+            "View",
+            "Collapse all groups",
+            Some(Message::LibraryExpandAll(false)),
+            None,
+            None,
+        ),
         (
             "Tools",
             "Manage game builds…",
@@ -476,7 +519,13 @@ pub(super) fn menu_commands(
             None,
             no_pak,
         ),
-        ("Tools", "Open Modding", Some(Message::Navigate(Page::Files)), None, None),
+        (
+            "Tools",
+            "Open Modding",
+            Some(Message::Navigate(Page::Files)),
+            None,
+            None,
+        ),
     ]
 }
 
@@ -504,8 +553,12 @@ fn build_dropdown(state: &State) -> Element<'_, Message> {
     let current = builds.get(state.library_build_index);
     let trigger = design::button(
         row![
-            text(current.map_or("No build snapshots".to_owned(), |name| format!("Build: {name}")))
-                .size(design::LABEL),
+            text(
+                current.map_or("No build snapshots".to_owned(), |name| format!(
+                    "Build: {name}"
+                ))
+            )
+            .size(design::LABEL),
             crate::icons::glyph(crate::icons::chevron_down(), 13.0),
         ]
         .spacing(6)
@@ -811,10 +864,9 @@ fn update_review(
             );
         }
     }
-    let done = state
-        .library_import_progress
-        .as_ref()
-        .map_or(0, |counter| counter.load(std::sync::atomic::Ordering::Relaxed));
+    let done = state.library_import_progress.as_ref().map_or(0, |counter| {
+        counter.load(std::sync::atomic::Ordering::Relaxed)
+    });
     let mut body = column![
         row![
             design::heading("Update imported build"),
@@ -866,15 +918,17 @@ fn update_review(
             .align_y(iced::Center),
         )
     } else {
-        design::button(text(if plan.changed.is_empty() && plan.removed.is_empty() {
-            "Register current build snapshot".to_owned()
-        } else {
-            format!(
-                "Apply update · {} new or changed, {} removed",
-                plan.changed.len(),
-                plan.removed.len()
-            )
-        }))
+        design::button(text(
+            if plan.changed.is_empty() && plan.removed.is_empty() {
+                "Register current build snapshot".to_owned()
+            } else {
+                format!(
+                    "Apply update · {} new or changed, {} removed",
+                    plan.changed.len(),
+                    plan.removed.len()
+                )
+            },
+        ))
         .style(design::primary)
         .on_press_maybe(
             (!state.busy && !state.library_import_scanning).then_some(Message::LibraryUpdateStart),
@@ -901,7 +955,11 @@ fn selection_bar(state: &State) -> Option<Element<'_, Message>> {
         text(format!("{count} selected")).size(design::BODY),
         text("·").style(design::muted),
         action(crate::icons::eye(), "Preview", Message::LibraryPreview),
-        action(crate::icons::plus(), "New project", Message::LibraryMakeModProject),
+        action(
+            crate::icons::plus(),
+            "New project",
+            Message::LibraryMakeModProject
+        ),
         action(crate::icons::export(), "Export", Message::LibraryExport),
         crate::ui_kit::icon_label_button(crate::icons::close(), "Clear")
             .style(design::text_button)
@@ -969,8 +1027,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .spacing(6)
     .align_y(iced::Center);
     let mut layout = column![
-        row![design::title("Asset Library"), space().width(Length::Fixed(18.0)), menubar]
-            .align_y(iced::Center),
+        row![
+            design::title("Asset Library"),
+            space().width(Length::Fixed(18.0)),
+            menubar
+        ]
+        .align_y(iced::Center),
         toolbar,
     ]
     .spacing(12);
@@ -1217,7 +1279,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             iced::widget::tooltip::Position::Top,
         ));
     }
-    let mut sizes = row![design::caption("Rows")].spacing(3).align_y(iced::Center);
+    let mut sizes = row![design::caption("Rows")]
+        .spacing(3)
+        .align_y(iced::Center);
     for size in PAGE_SIZES {
         let active = per_page == size;
         sizes = sizes.push(

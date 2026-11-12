@@ -151,13 +151,10 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for Anchored<'a, 
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let mut children = tree.children.iter_mut();
         let base_tree = children.next()?;
-        let base = self.base.as_widget_mut().overlay(
-            base_tree,
-            layout,
-            renderer,
-            viewport,
-            translation,
-        );
+        let base =
+            self.base
+                .as_widget_mut()
+                .overlay(base_tree, layout, renderer, viewport, translation);
         let bounds = layout.bounds();
         let popup = match (&mut self.popup, children.next()) {
             (Some(popup), Some(popup_tree)) => Some(overlay::Element::new(Box::new(Popup {

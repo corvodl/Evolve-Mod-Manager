@@ -136,7 +136,12 @@ pub fn commands(state: &State) -> Vec<Command> {
     // Everything in the Asset Library menus, while it's available.
     for (menu, label, action, _, _) in crate::asset_library_page::menu_commands(state) {
         if let Some(message) = action {
-            list.push(command("Asset Library", label, format!("Asset Library › {menu}"), message));
+            list.push(command(
+                "Asset Library",
+                label,
+                format!("Asset Library › {menu}"),
+                message,
+            ));
         }
     }
     // Everything in the Modding menus, while it's available.
