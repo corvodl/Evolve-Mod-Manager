@@ -1248,6 +1248,116 @@ pub fn segmented<'a>(
         .into()
 }
 
+/// One tab of a [`segmented_tabs`] row.
+pub struct TabItem<'a> {
+    pub icon: svg::Handle,
+    pub label: &'a str,
+    /// A status dot after the label.
+    pub dot: Option<Tone>,
+    pub message: Message,
+}
+
+/// Segmented tabs with an icon and optional status dot per tab, sharing
+/// [`segmented`]'s sliding highlight.
+pub fn segmented_tabs<'a>(
+    ui_state: &UiState,
+    id: &'static str,
+    items: Vec<TabItem<'a>>,
+    selected: usize,
+    width: f32,
+) -> Element<'a, Message> {
+    const UNIT: f32 = 1000.0;
+    let count = items.len().max(1);
+    let position = ui_state
+        .segment_position(id, selected, Instant::now())
+        .clamp(0.0, (count - 1) as f32);
+    let left = (position * UNIT) as u16;
+    let right = (((count - 1) as f32 - position) * UNIT) as u16;
+    let mut track = row![].height(Fill);
+    if left > 0 {
+        track = track.push(space().width(Length::FillPortion(left)));
+    }
+    track = track.push(
+        container(space())
+            .width(Length::FillPortion(UNIT as u16))
+            .height(Fill)
+            .style(|theme: &Theme| container::Style {
+                background: Some(Background::Color(theme.palette().primary)),
+                border: Border {
+                    radius: design::radius(theme, Radius::Medium).into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            }),
+    );
+    if right > 0 {
+        track = track.push(space().width(Length::FillPortion(right)));
+    }
+    let mut buttons = row![].height(Fill);
+    for (index, item) in items.into_iter().enumerate() {
+        let active = index == selected;
+        let ink = move |theme: &Theme| {
+            if active {
+                theme.extended_palette().primary.base.text
+            } else {
+                theme.palette().text
+            }
+        };
+        let mut content = row![
+            svg(item.icon)
+                .width(15)
+                .height(15)
+                .style(move |theme: &Theme, _| svg::Style {
+                    color: Some(ink(theme)),
+                }),
+            text(item.label)
+                .size(12)
+                .style(move |theme: &Theme| text::Style {
+                    color: Some(ink(theme)),
+                }),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        if let Some(tone) = item.dot {
+            content = content.push(
+                container(space().width(7).height(7)).style(move |theme: &Theme| {
+                    container::Style {
+                        background: Some(Background::Color(design::tone_color(theme, tone))),
+                        border: Border {
+                            radius: 4.0.into(),
+                            color: theme.palette().background,
+                            width: 1.0,
+                        },
+                        ..container::Style::default()
+                    }
+                }),
+            );
+        }
+        buttons = buttons.push(
+            iced::widget::button(container(content).center_x(Fill).center_y(Fill))
+                .width(Length::FillPortion(1))
+                .height(Fill)
+                .padding(0)
+                .style(|_, _| iced::widget::button::Style::default())
+                .on_press(ui(UiMsg::Segment(id, index, Box::new(item.message)))),
+        );
+    }
+    container(iced::widget::stack![track, buttons])
+        .padding(3)
+        .height(36)
+        .width(Length::Fixed(width * count as f32))
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(design::field(theme))),
+            border: Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: design::radius(theme, Radius::Medium).into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
 /// One button of an [`icon_segmented`] group.
 pub struct IconToggle {
     pub icon: svg::Handle,

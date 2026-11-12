@@ -828,10 +828,17 @@ pub(super) fn whats_new_intro(state: &State) -> Element<'_, Message> {
         .filter(|release| release.version.trim_start_matches('v') == installed);
     let mut highlights = column![].spacing(4);
     match release {
-        Some(release) => {
-            for line in super::release_highlights(&release.notes, 5) {
-                highlights = highlights.push(text(format!("•  {line}")).size(design::LABEL));
-            }
+        Some(release) if !release.notes.trim().is_empty() => {
+            highlights = highlights.push(
+                container(super::release_notes_view(state)).max_height(260.0).clip(true),
+            );
+        }
+        Some(_) => {
+            highlights = highlights.push(
+                text("This release has no description.")
+                    .size(design::LABEL)
+                    .style(design::muted),
+            );
         }
         None => {
             highlights = highlights.push(
@@ -1594,12 +1601,11 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
                 ))
                 .size(design::LABEL)
                 .style(design::muted),
-                text(if release.notes.is_empty() {
-                    "No release description was published.".to_owned()
+                if release.notes.is_empty() {
+                    Element::from(text("No release description was published.").size(design::BODY))
                 } else {
-                    release.notes.clone()
-                })
-                .size(design::BODY),
+                    super::release_notes_view(state)
+                },
                 design::button("View full release notes on GitHub")
                     .on_press(Message::OpenNewsLink(release.url.clone())),
             ]

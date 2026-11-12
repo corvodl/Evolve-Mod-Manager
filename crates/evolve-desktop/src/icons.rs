@@ -49,20 +49,6 @@ pub fn zoom_out() -> svg::Handle {
     icon(r#"<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2M8 11h6"/>"#)
 }
 
-pub fn overview() -> svg::Handle {
-    icon(r#"<path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3zM9 3v15M15 6v15"/>"#)
-}
-
-pub fn focus() -> svg::Handle {
-    icon(
-        r#"<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>"#,
-    )
-}
-
-pub fn reset() -> svg::Handle {
-    icon(r#"<path d="M4 4v6h6"/><path d="M5.5 15a7.5 7.5 0 1 0 1.7-8L4 10"/>"#)
-}
-
 pub fn fullscreen() -> svg::Handle {
     icon(r#"<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>"#)
 }
@@ -221,16 +207,8 @@ pub fn refresh() -> svg::Handle {
     icon(r#"<path d="M19.5 5v5h-5"/><path d="M19 10a7.5 7.5 0 1 0 .4 5"/>"#)
 }
 
-pub fn archive() -> svg::Handle {
-    icon(r#"<rect x="3.5" y="4.5" width="17" height="4" rx="1"/><path d="M5 8.5v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-10M10 12.5h4"/>"#)
-}
-
 pub fn unpack() -> svg::Handle {
     icon(r#"<path d="M3.5 9.5 12 5l8.5 4.5L12 14z"/><path d="M3.5 9.5v7L12 21l8.5-4.5v-7M12 14v7"/>"#)
-}
-
-pub fn select_all() -> svg::Handle {
-    icon(r#"<rect x="4" y="4" width="16" height="16" rx="2"/><path d="m8.5 12 2.5 2.5 4.5-5"/>"#)
 }
 
 pub fn chevron_left() -> svg::Handle {
@@ -299,14 +277,6 @@ pub fn pulse() -> svg::Handle {
 
 pub fn sliders() -> svg::Handle {
     icon(r#"<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>"#)
-}
-
-pub fn book() -> svg::Handle {
-    icon(r#"<path d="M4.5 5.5c2.5-1 5-1 7.5.5 2.5-1.5 5-1.5 7.5-.5v13c-2.5-1-5-1-7.5.5-2.5-1.5-5-1.5-7.5-.5z"/><path d="M12 6v13"/>"#)
-}
-
-pub fn copy() -> svg::Handle {
-    icon(r#"<rect x="8.5" y="8.5" width="11" height="11" rx="1.5"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>"#)
 }
 
 /// Draws an icon at `size` px, recoloured to the theme's text colour.

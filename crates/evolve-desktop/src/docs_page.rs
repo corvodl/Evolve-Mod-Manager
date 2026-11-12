@@ -63,8 +63,8 @@ pub fn search(query: &str) -> Vec<Hit> {
     }
     let has = |text: &str| text.to_ascii_lowercase().contains(&needle);
     let mut hits = Vec::new();
-    for (_, sections) in GROUPS {
-        for section in *sections {
+    for section in &DocsSection::ALL {
+        {
             let (title, summary, steps) = docs_spec(*section);
             if has(title) || has(summary) {
                 hits.push(Hit {

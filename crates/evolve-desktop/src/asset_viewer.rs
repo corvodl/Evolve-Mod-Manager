@@ -1823,16 +1823,6 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 false,
             ),
             dock_item(
-                crate::icons::wireframe(),
-                if state.viewer_wireframe {
-                    "Shaded display"
-                } else {
-                    "Wireframe display"
-                },
-                Message::ViewerToggleWireframe,
-                state.viewer_wireframe,
-            ),
-            dock_item(
                 crate::icons::zoom_out(),
                 "Zoom out",
                 Message::ViewerZoomWheel(-2.0),
@@ -1847,9 +1837,42 @@ fn viewport(state: &State) -> Element<'_, Message> {
         ],
         state.preferences.reduce_motion,
     );
-    // Texture gallery and quality live in the Textures menu.
+    // Shaded / Wireframe as an icon toggle pair, like the level editor's
+    // tool palette. Texture gallery and quality live in the Textures menu.
+    let display = crate::ui_kit::icon_segmented(
+        &state.ui,
+        "viewer-display",
+        vec![
+            crate::ui_kit::IconToggle {
+                icon: crate::icons::view_iso(),
+                label: "Shaded",
+                message: if state.viewer_wireframe {
+                    Message::ViewerToggleWireframe
+                } else {
+                    Message::Chrome(crate::chrome::Msg::Absorb)
+                },
+            },
+            crate::ui_kit::IconToggle {
+                icon: crate::icons::wireframe(),
+                label: "Wireframe",
+                message: if state.viewer_wireframe {
+                    Message::Chrome(crate::chrome::Msg::Absorb)
+                } else {
+                    Message::ViewerToggleWireframe
+                },
+            },
+        ],
+        usize::from(state.viewer_wireframe),
+    );
     let toolbar = row![
         dock,
+        display,
+        crate::ui_kit::icon_button(
+            crate::icons::fullscreen(),
+            "Fullscreen viewport",
+            Some(Message::ToggleViewerViewportFullscreen),
+            None,
+        ),
         tooltip(
             row![
                 svg(svg::Handle::from_memory(include_bytes!(
@@ -2614,9 +2637,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         text(readonly).size(design::LABEL).style(design::muted),
         text(format!("{} selected", state.file_selection.indices.len())).size(design::LABEL),
         iced::widget::space().width(Fill),
-        design::button("Fullscreen Viewport")
-            .style(design::secondary)
-            .on_press(Message::ToggleViewerViewportFullscreen),
         text(if state.gfx_active {
             "GFX: controls in right-hand GFX Tools tab"
         } else {

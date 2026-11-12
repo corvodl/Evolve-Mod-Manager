@@ -521,71 +521,6 @@ pub(super) fn tool_key(state: &State, key: char) -> Option<Message> {
     })
 }
 
-/// Camera and view actions as a dock that magnifies icons near the cursor.
-fn viewport_dock(state: &State) -> Element<'_, Message> {
-    use crate::icons;
-    use crate::ui_kit::{DockItem, dock};
-    let item = |icon, label, message, active| DockItem {
-        icon,
-        label,
-        message: Some(message),
-        active,
-    };
-    dock(
-        &state.ui,
-        "level",
-        vec![
-            item(
-                icons::view_iso(),
-                "Perspective",
-                Message::ViewerCameraPreset("Isometric"),
-                false,
-            ),
-            item(
-                icons::view_top(),
-                "Top",
-                Message::ViewerCameraPreset("Top"),
-                false,
-            ),
-            item(
-                icons::view_front(),
-                "Front",
-                Message::ViewerCameraPreset("Front"),
-                false,
-            ),
-            item(
-                icons::overview(),
-                if state.level_show_overview {
-                    "Hide 2D overview"
-                } else {
-                    "2D overview"
-                },
-                Message::LevelToggleOverview,
-                state.level_show_overview,
-            ),
-            item(
-                icons::focus(),
-                "Focus selection",
-                Message::LevelCameraFocus,
-                false,
-            ),
-            item(
-                icons::reset(),
-                "Reset view",
-                Message::LevelCameraReset,
-                false,
-            ),
-            item(
-                icons::fullscreen(),
-                "Fullscreen viewport",
-                Message::ToggleLevelViewportFullscreen,
-                false,
-            ),
-        ],
-        state.preferences.reduce_motion,
-    )
-}
-
 /// Unsaved • Saving… • Saved 12 s ago for the editable level project.
 fn level_save_status(state: &State) -> Element<'_, Message> {
     if state.level_project.is_none() || state.level_read_only {
@@ -834,6 +769,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             tool_hints(state)
         },
         space().width(Fill),
+        level_save_status(state),
         // Edits report success and refusals here; without it a refused edit
         // looked like the button did nothing.
         text(if state.status.is_empty() {

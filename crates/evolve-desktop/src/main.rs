@@ -872,19 +872,20 @@ fn intro_due(last_seen: &str, installed: &str) -> bool {
     now > seen
 }
 
-/// First few bullet-like lines of release notes, without Markdown markers.
-fn release_highlights(notes: &str, limit: usize) -> Vec<String> {
-    notes
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with(['-', '*', '•']))
-        .map(|line| {
-            line.trim_start_matches(['-', '*', '•', ' '])
-                .replace("**", "")
-        })
-        .filter(|line| !line.is_empty())
-        .take(limit)
-        .collect()
+/// Release notes rendered as Markdown with the app's type scale. Links go
+/// through `OpenNewsLink`, which only opens allowed URLs.
+fn release_notes_view(state: &State) -> Element<'_, Message> {
+    let theme = design::theme(&state.preferences);
+    let mut settings = iced::widget::markdown::Settings::with_text_size(
+        design::BODY,
+        iced::widget::markdown::Style::from(&theme),
+    );
+    settings.h1_size = design::TITLE.min(20.0).into();
+    settings.h2_size = 17.0.into();
+    settings.h3_size = design::HEADING.into();
+    settings.code_size = design::LABEL.into();
+    settings.spacing = 8.0.into();
+    iced::widget::markdown::view(&state.news.release_markdown, settings).map(Message::OpenNewsLink)
 }
 
 /// `theme_presets` key holding custom colours parked by a theme preset.
@@ -18737,6 +18738,7 @@ fn initial_state() -> State {
     // FFDec or Ruffle executable selected in settings takes precedence.
     gfx_bundled_tools::detect_bundled(&mut result.preferences);
     result.news.cache = whats_new::cached_on_start();
+    result.news.parse_release();
     result.library_root = result.preferences.asset_library_root.clone();
     result.assets_root = result.library_root.clone();
     if let Ok(executable) = std::env::current_exe()
