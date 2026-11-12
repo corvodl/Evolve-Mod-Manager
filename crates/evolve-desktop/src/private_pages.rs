@@ -1110,7 +1110,8 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
                 ..container::Style::default()
             });
         // Embers drift between the artwork and the controls.
-        stack![background, shade, with_embers(state, content.into())]
+        let content = with_embers(state, content.into());
+        stack![background, shade, content]
             .width(Fill)
             .height(Fill)
             .into()
