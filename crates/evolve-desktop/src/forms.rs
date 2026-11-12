@@ -176,6 +176,50 @@ fn ffmpeg(value: &str) -> Option<std::path::PathBuf> {
         .map(|_| path.to_path_buf())
 }
 
+/// A replacement file for a signed member: it must exist.
+pub fn check_existing_file(value: &str) -> Option<PathCheck> {
+    if value.trim().is_empty() {
+        return None;
+    }
+    let path = Path::new(value.trim());
+    Some(match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => PathCheck::found("File found"),
+        Ok(_) => PathCheck::problem("This is a folder, not a file"),
+        Err(_) if !path.is_absolute() => PathCheck::problem("Use a full path"),
+        Err(_) => PathCheck::problem("File not found"),
+    })
+}
+
+/// A rebuild output: a new file whose name is exactly the original PAK's.
+pub fn check_rebuild_output(value: &str, original: Option<&str>) -> Option<PathCheck> {
+    if value.trim().is_empty() {
+        return None;
+    }
+    let path = Path::new(value.trim());
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Some(if !path.is_absolute() {
+        PathCheck::problem("Use a full path")
+    } else if path.exists() {
+        PathCheck::problem("Choose a new path; this file already exists")
+    } else if path.parent().is_none_or(|parent| !parent.is_dir()) {
+        PathCheck::problem("Folder not found")
+    } else {
+        match original {
+            Some(original) if !name.eq_ignore_ascii_case(original) => {
+                PathCheck::problem(format!("Must end in the original name: {original}"))
+            }
+            Some(_) => PathCheck::found("New file with the original PAK name"),
+            None if name.to_ascii_lowercase().ends_with(".pak") => {
+                PathCheck::found("New .pak file (select a staged PAK to check its name)")
+            }
+            None => PathCheck::problem("Must end in the original .pak name"),
+        }
+    })
+}
+
 /// Checks one path. `None` for an empty value: nothing to report yet.
 pub fn check(kind: PathKind, value: &str) -> Option<PathCheck> {
     if value.trim().is_empty() {
@@ -236,6 +280,8 @@ pub fn check(kind: PathKind, value: &str) -> Option<PathCheck> {
 pub struct PathChecks {
     entries: BTreeMap<PathKind, (String, Option<PathCheck>)>,
     busy: bool,
+    /// Checks for paths that aren't preferences, keyed by field.
+    extra: BTreeMap<&'static str, (String, Option<PathCheck>)>,
 }
 
 impl PathChecks {
@@ -265,6 +311,23 @@ impl PathChecks {
             .get(&kind)
             .and_then(|(_, check)| check.as_ref())
     }
+
+    /// Re-checks `field` only when `key` (its value plus anything the check
+    /// depends on) changed.
+    pub fn sync_extra(
+        &mut self,
+        field: &'static str,
+        key: String,
+        check: impl FnOnce() -> Option<PathCheck>,
+    ) {
+        if self.extra.get(field).is_none_or(|(old, _)| *old != key) {
+            self.extra.insert(field, (key, check()));
+        }
+    }
+
+    pub fn extra(&self, field: &str) -> Option<&PathCheck> {
+        self.extra.get(field).and_then(|(_, check)| check.as_ref())
+    }
 }
 
 /// A labelled path input with a Browse… button and a ✓/✕ line under it.
@@ -277,11 +340,28 @@ pub fn path_field<'a>(
     checks: &'a PathChecks,
     browse: Message,
 ) -> Element<'a, Message> {
-    let value = kind.value(prefs);
-    let result = checks.get(kind);
+    path_input(
+        label,
+        placeholder,
+        kind.value(prefs),
+        checks.get(kind),
+        move |value| kind.set(value),
+        browse,
+    )
+}
+
+/// [`path_field`] for a value that isn't a saved preference.
+pub fn path_input<'a>(
+    label: &'a str,
+    placeholder: &'a str,
+    value: &'a str,
+    result: Option<&'a PathCheck>,
+    on_input: impl Fn(String) -> Message + 'a,
+    browse: Message,
+) -> Element<'a, Message> {
     let bad = result.is_some_and(|check| !check.ok);
     let input = design::text_input(placeholder, value)
-        .on_input(move |value| kind.set(value))
+        .on_input(on_input)
         .width(Fill)
         .style(move |theme: &Theme, status| {
             let mut style = iced::widget::text_input::default(theme, status);
@@ -367,6 +447,7 @@ impl NumberSpec {
 #[derive(Debug, Default)]
 pub struct FormState {
     last_good: BTreeMap<String, f64>,
+    drafts: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -374,17 +455,63 @@ pub enum FormMsg {
     /// A number field changed: remember `value` if it parsed, then run the
     /// field's own message.
     Edit(String, Option<f64>, Box<Message>),
+    /// A bound number field's text changed: keep the draft so partial
+    /// entries like `1.` survive, and run the message if it parsed.
+    Draft(String, String, Option<Box<Message>>),
 }
 
-pub fn update(forms: &mut FormState, message: FormMsg) -> Message {
+pub fn update(forms: &mut FormState, message: FormMsg) -> Option<Message> {
     match message {
         FormMsg::Edit(id, value, next) => {
             if let Some(value) = value {
                 forms.last_good.insert(id, value);
             }
-            *next
+            Some(*next)
+        }
+        FormMsg::Draft(id, text, next) => {
+            if let Some(value) = parse_finite(&text) {
+                forms.last_good.insert(id.clone(), value);
+            }
+            forms.drafts.insert(id, text);
+            next.map(|next| *next)
         }
     }
+}
+
+/// The text a bound field shows: the draft while it still describes the
+/// current value (or is mid-entry), otherwise the value itself.
+pub fn bound_text(forms: &FormState, id: &str, value: f64, decimals: usize) -> String {
+    let tolerance = 10f64.powi(-(decimals as i32)) * 0.5 + 1e-9;
+    match forms.drafts.get(id) {
+        Some(draft)
+            if parse_finite(draft).is_none_or(|parsed| (parsed - value).abs() < tolerance) =>
+        {
+            draft.clone()
+        }
+        _ => format_number(value, decimals),
+    }
+}
+
+/// A number field bound to a numeric state value (a slider's companion).
+/// Typing keeps a draft; each in-range entry runs `on_value`.
+pub fn bound_number<'a, F>(
+    forms: &FormState,
+    modifiers: Modifiers,
+    id: &'static str,
+    value: f64,
+    spec: NumberSpec,
+    on_value: F,
+) -> Element<'a, Message>
+where
+    F: Fn(f64) -> Message + Clone + 'a,
+{
+    let text = bound_text(forms, id, value, spec.decimals);
+    number_field(forms, modifiers, id, &text, spec, move |raw: String| {
+        let parsed = parse_finite(&raw)
+            .filter(|value| (spec.min..=spec.max).contains(value))
+            .map(|value| Box::new(on_value(value)));
+        Message::Form(FormMsg::Draft(id.to_owned(), raw, parsed))
+    })
 }
 
 /// True for text that is a number or on its way to one (`-`, `1.`, `.5`).
@@ -483,6 +610,22 @@ pub fn number_field<'a, F>(
 where
     F: Fn(String) -> Message + Clone + 'a,
 {
+    number_field_submit(forms, modifiers, id, value, spec, on_change, None)
+}
+
+/// [`number_field`] whose Enter also runs `submit` after committing.
+pub fn number_field_submit<'a, F>(
+    forms: &FormState,
+    modifiers: Modifiers,
+    id: impl Into<String>,
+    value: &str,
+    spec: NumberSpec,
+    on_change: F,
+    submit: Option<Message>,
+) -> Element<'a, Message>
+where
+    F: Fn(String) -> Message + Clone + 'a,
+{
     // `text_input` copies its value, so the text needn't outlive the view.
     let id = id.into();
     let last = forms
@@ -499,7 +642,10 @@ where
     let up = stepped(spec, value, last, 1.0, modifiers);
     let down_msg = (current > spec.min).then(|| make(down));
     let up_msg = (current < spec.max).then(|| make(up));
-    let commit_msg = make(committed(spec, value, last));
+    let commit_msg = match submit {
+        Some(submit) => Message::Sequence(vec![make(committed(spec, value, last)), submit]),
+        None => make(committed(spec, value, last)),
+    };
     let input = {
         let on_change = on_change.clone();
         let id = id.clone();
@@ -541,6 +687,7 @@ where
 
 /// One number field per component of a comma-separated vector
 /// (`"1, 2, 3"`); each edit rewrites the whole vector.
+#[allow(clippy::too_many_arguments)]
 pub fn vector_fields<'a, F>(
     forms: &FormState,
     modifiers: Modifiers,
@@ -549,6 +696,7 @@ pub fn vector_fields<'a, F>(
     labels: &'static [&'static str],
     spec: NumberSpec,
     on_change: F,
+    submit: Option<Message>,
 ) -> Element<'a, Message>
 where
     F: Fn(String) -> Message + Clone + 'a,
@@ -563,7 +711,7 @@ where
         let parts_for_edit = parts.clone();
         let on_change = on_change.clone();
         let component = parts[index].clone();
-        let field = number_field(
+        let field = number_field_submit(
             forms,
             modifiers,
             format!("{id}.{index}"),
@@ -574,6 +722,7 @@ where
                 next[index] = raw;
                 on_change(next.join(", "))
             },
+            submit.clone(),
         );
         fields = fields.push(
             column![
@@ -747,6 +896,17 @@ mod tests {
     }
 
     #[test]
+    fn bound_fields_keep_partial_drafts_until_the_value_moves() {
+        let mut forms = FormState::default();
+        let none = update(&mut forms, FormMsg::Draft("r".into(), "1.".into(), None));
+        assert!(none.is_none());
+        assert_eq!(bound_text(&forms, "r", 1.0, 1), "1.");
+        // The value changed elsewhere (a slider): the field follows it.
+        assert_eq!(bound_text(&forms, "r", 7.5, 1), "7.5");
+        assert_eq!(bound_text(&forms, "unknown", 2.0, 1), "2");
+    }
+
+    #[test]
     fn match_ranges_are_case_insensitive_and_disjoint() {
         assert_eq!(match_ranges("Emet/emet.CDF", "emet"), vec![0..4, 5..9]);
         assert!(match_ranges("abc", "").is_empty());
@@ -767,6 +927,31 @@ mod tests {
         assert!(check(PathKind::Projects, "  ").is_none());
         let relative = check(PathKind::Blender, "blender.exe").unwrap();
         assert!(!relative.ok);
+    }
+
+    #[test]
+    fn rebuild_output_must_be_new_and_keep_the_original_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("objects.pak");
+        let wrong = dir.path().join("other.pak");
+        assert!(
+            check_rebuild_output(good.to_str().unwrap(), Some("Objects.pak"))
+                .unwrap()
+                .ok
+        );
+        assert!(
+            !check_rebuild_output(wrong.to_str().unwrap(), Some("objects.pak"))
+                .unwrap()
+                .ok
+        );
+        std::fs::write(&good, b"x").unwrap();
+        assert!(
+            !check_rebuild_output(good.to_str().unwrap(), Some("objects.pak"))
+                .unwrap()
+                .ok
+        );
+        assert!(check_rebuild_output("", None).is_none());
+        assert!(check_existing_file(good.to_str().unwrap()).unwrap().ok);
     }
 
     #[test]

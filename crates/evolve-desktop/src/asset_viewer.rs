@@ -113,6 +113,21 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
                 .size(design::CAPTION).style(design::muted),
         ].spacing(5).into(),
         "Textures" => column![
+            crate::chrome::menu_item(
+                if state.gallery.open { "Back to viewport" } else { "Texture gallery" },
+                Some(Message::Gallery(crate::gallery::Msg::Toggle)),
+            ),
+            crate::chrome::menu_item(
+                if state.viewer_full_textures {
+                    "Quality: Full (switch to Balanced)"
+                } else {
+                    "Quality: Balanced (switch to Full)"
+                },
+                Some(Message::ViewerFullTexturesToggled),
+            ),
+            text("Full quality has no texture budget, so GPU memory can run out; Balanced limits usage.")
+                .size(design::CAPTION)
+                .style(design::muted),
             crate::chrome::menu_item("Resolve .mtl", Some(Message::StartMaterialResolve)),
             crate::chrome::menu_item("Load diffuse", Some(Message::StartDiffuseLoad)),
             crate::chrome::menu_item("Load normal", Some(Message::StartNormalLoad)),
@@ -671,9 +686,9 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 ),
                 design::button(
                     if state.kala_tubing == evolve_core::KalaTubingState::RiftDevice {
-                        "âœ“ Teleporter Â· Purple"
+                        "✓ Teleporter · Purple"
                     } else {
-                        "â—‹ Teleporter Â· Purple"
+                        "○ Teleporter · Purple"
                     }
                 )
                 .style(
@@ -1808,16 +1823,6 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 false,
             ),
             dock_item(
-                crate::icons::wireframe(),
-                if state.viewer_wireframe {
-                    "Shaded display"
-                } else {
-                    "Wireframe display"
-                },
-                Message::ViewerToggleWireframe,
-                state.viewer_wireframe,
-            ),
-            dock_item(
                 crate::icons::zoom_out(),
                 "Zoom out",
                 Message::ViewerZoomWheel(-2.0),
@@ -1832,20 +1837,41 @@ fn viewport(state: &State) -> Element<'_, Message> {
         ],
         state.preferences.reduce_motion,
     );
+    // Shaded / Wireframe as an icon toggle pair, like the level editor's
+    // tool palette. Texture gallery and quality live in the Textures menu.
+    let display = crate::ui_kit::icon_segmented(
+        &state.ui,
+        "viewer-display",
+        vec![
+            crate::ui_kit::IconToggle {
+                icon: crate::icons::view_iso(),
+                label: "Shaded",
+                message: if state.viewer_wireframe {
+                    Message::ViewerToggleWireframe
+                } else {
+                    Message::Chrome(crate::chrome::Msg::Absorb)
+                },
+            },
+            crate::ui_kit::IconToggle {
+                icon: crate::icons::wireframe(),
+                label: "Wireframe",
+                message: if state.viewer_wireframe {
+                    Message::Chrome(crate::chrome::Msg::Absorb)
+                } else {
+                    Message::ViewerToggleWireframe
+                },
+            },
+        ],
+        usize::from(state.viewer_wireframe),
+    );
     let toolbar = row![
         dock,
-        design::button(if state.gallery.open { "Viewport" } else { "Texture gallery" })
-            .style(design::secondary)
-            .on_press(Message::Gallery(crate::gallery::Msg::Toggle)),
-        tooltip(
-            design::button(if state.viewer_full_textures {
-                "Textures: Full quality"
-            } else {
-                "Textures: Balanced"
-            })
-            .on_press(Message::ViewerFullTexturesToggled),
-            text("Full quality has no manager-imposed texture budget. GPU memory exhaustion is possible; Balanced limits usage.").size(design::LABEL),
-            tooltip::Position::Bottom,
+        display,
+        crate::ui_kit::icon_button(
+            crate::icons::fullscreen(),
+            "Fullscreen viewport",
+            Some(Message::ToggleViewerViewportFullscreen),
+            None,
         ),
         tooltip(
             row![
@@ -2611,9 +2637,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         text(readonly).size(design::LABEL).style(design::muted),
         text(format!("{} selected", state.file_selection.indices.len())).size(design::LABEL),
         iced::widget::space().width(Fill),
-        design::button("Fullscreen Viewport")
-            .style(design::secondary)
-            .on_press(Message::ToggleViewerViewportFullscreen),
         text(if state.gfx_active {
             "GFX: controls in right-hand GFX Tools tab"
         } else {

@@ -106,6 +106,80 @@ fn material_path(path: &str) -> Option<String> {
     }
 }
 
+/// A terrain material to paint with: its paint ID, a readable name and a
+/// small preview of its Terrain.Layer diffuse texture, when one resolves.
+pub(super) struct PaletteEntry {
+    pub id: u8,
+    pub name: String,
+    pub thumbnail: Option<image::RgbaImage>,
+}
+
+/// The SurfaceTypes of a map's `leveldata.xml`: SurfaceTypeID, name and
+/// detail material, as a compiled terrain.dat paints them.
+pub(super) fn leveldata_surfaces(xml: &[u8]) -> Vec<(u8, String, String)> {
+    let mut reader = quick_xml::Reader::from_reader(xml);
+    let mut out = Vec::new();
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(e) | quick_xml::events::Event::Empty(e))
+                if e.name().as_ref() == b"SurfaceType" =>
+            {
+                let id = attr(&e, b"SurfaceTypeID").and_then(|v| v.parse::<u8>().ok());
+                let name = attr(&e, b"Name").unwrap_or_default();
+                let material = attr(&e, b"DetailMaterial").unwrap_or_else(|| name.clone());
+                if let Some(id) = id
+                    && out.len() < 256
+                {
+                    out.push((id, name, material));
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// "materials/terrain/snow_dirt_a" as "snow dirt a".
+fn readable(name: &str) -> String {
+    let stem = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let stem = stem.strip_suffix(".mtl").unwrap_or(stem);
+    stem.replace('_', " ")
+}
+
+/// Previews for terrain materials (paint ID, name, material path), from the
+/// same game installation as the map. A material whose texture cannot be
+/// resolved is still listed, without a preview.
+pub(super) fn surface_palette(
+    selected: &ImportedPak,
+    surfaces: &[(u8, String, String)],
+) -> Vec<PaletteEntry> {
+    let catalog = same_install_catalog(selected).ok();
+    surfaces
+        .iter()
+        .map(|(id, name, material)| {
+            let thumbnail = (|| {
+                let catalog = catalog.as_ref()?;
+                let material = material_path(material)?;
+                let path = verified(find(catalog, &material).ok()??).ok()?;
+                let document = read_material(&path).ok()?;
+                let diffuse = terrain_layer_diffuse(&document).ok()??;
+                let image = load_detail_image(catalog, &diffuse, &material).ok()?;
+                Some(image::imageops::thumbnail(&image, 64, 64))
+            })();
+            PaletteEntry {
+                id: *id,
+                name: if name.is_empty() {
+                    readable(material)
+                } else {
+                    readable(name)
+                },
+                thumbnail,
+            }
+        })
+        .collect()
+}
+
 /// Reviews original materials from imported PAKs in the *same installed Game
 /// directory* as the map. Missing/ambiguous materials never fall back to a
 /// different build, similar basename, or a supplied ZIP copied into Git.
@@ -404,30 +478,49 @@ pub(super) struct Preview {
     pub report: String,
 }
 
-/// An array texture requires equal source dimensions and at most 16 layers.
+/// An array texture holds at most `MAX_TERRAIN_LAYERS` layers of one size:
+/// the largest layer's (at most 2048 px), every other layer resampled to it.
+/// When the set is too large for the budget, all are scaled down together
+/// (to no less than 256 px).
 fn gpu_source(
     paint: &TerrainPaintMap,
     unit: f32,
     layers: &HashMap<u8, DetailLayer>,
 ) -> Option<GpuTerrainSource> {
-    if layers.is_empty() || layers.len() > 16 {
+    if layers.is_empty() || layers.len() > crate::world_instances::MAX_TERRAIN_LAYERS {
         return None;
     }
-    let dimensions = layers.values().next()?.image.dimensions();
-    if dimensions.0 > 2048
-        || dimensions.1 > 2048
-        || dimensions.0 == 0
-        || dimensions.1 == 0
-        || layers
-            .values()
-            .any(|layer| layer.image.dimensions() != dimensions)
+    let source = layers
+        .values()
+        .map(|layer| layer.image.dimensions())
+        .max_by_key(|(width, height)| u64::from(*width) * u64::from(*height))?;
+    if source.0 == 0 || source.1 == 0 {
+        return None;
+    }
+    // The diffuse array within 256 MiB (as before), at most 2048 px.
+    let budget = 256u64 * 1024 * 1024;
+    let mut dimensions = (source.0.min(2048), source.1.min(2048));
+    while (dimensions.0 as u64) * (dimensions.1 as u64) * 4 * layers.len() as u64 > budget
+        && dimensions.0 > 256
+        && dimensions.1 > 256
     {
+        dimensions = (dimensions.0 / 2, dimensions.1 / 2);
+    }
+    if (dimensions.0 as u64) * (dimensions.1 as u64) * 4 * layers.len() as u64 > budget {
         return None;
     }
-    let bytes = (dimensions.0 as u64) * (dimensions.1 as u64) * 4 * layers.len() as u64;
-    if bytes > 256 * 1024 * 1024 {
-        return None;
-    }
+    let fit = |image: &image::RgbaImage| {
+        if image.dimensions() == dimensions {
+            image.clone()
+        } else {
+            image::imageops::resize(
+                image,
+                dimensions.0,
+                dimensions.1,
+                image::imageops::FilterType::Triangle,
+            )
+        }
+    };
     let paint_image = image::RgbaImage::from_fn(paint.width, paint.height, |x, y| {
         image::Rgba([paint.id_at(x, y).unwrap_or(255), 0, 0, 255])
     });
@@ -440,7 +533,7 @@ fn gpu_source(
             .into_iter()
             .map(|(&id, layer)| GpuTerrainLayer {
                 id,
-                image: layer.image.clone(),
+                image: fit(&layer.image),
                 // Array layers share one size, so a differing map is resampled.
                 normal: layer.normal.as_ref().map(|normal| {
                     if normal.dimensions() == dimensions {
@@ -1152,7 +1245,7 @@ mod composition_tests {
     }
 
     #[test]
-    fn incompatible_terrain_array_falls_back_without_dropping_source_detail() {
+    fn mixed_size_layers_share_one_gpu_array_and_keep_their_detail() {
         let paint = fixture();
         let mut layers = HashMap::new();
         for (id, size) in [(1, 4), (2, 8)] {
@@ -1174,7 +1267,15 @@ mod composition_tests {
                 },
             );
         }
-        assert!(gpu_source(&paint, 1.0, &layers).is_none());
+        // Layers of different sizes are resampled to the largest one, so
+        // they still reach the GPU (Ice_Alpine's materials mix sizes).
+        let gpu = gpu_source(&paint, 1.0, &layers).unwrap();
+        assert_eq!(gpu.layers.len(), 2);
+        assert!(
+            gpu.layers
+                .iter()
+                .all(|layer| layer.image.dimensions() == (8, 8))
+        );
         assert_eq!(
             compose_detail(&paint, (8, 8), 1.0, &layers).dimensions(),
             (8, 8)

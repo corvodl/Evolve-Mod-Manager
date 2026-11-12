@@ -286,10 +286,12 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 .level_picks
                 .clone()
                 .unwrap_or_else(|| Arc::new(Vec::new())),
-            selected_pivot: state
-                .level_selected
-                .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
-                .map(|o| o.world.position),
+            gizmo: selection_gizmo(state),
+            area_vertices: area_vertices(state),
+            transforming: state
+                .level_transform
+                .as_ref()
+                .map(|operation| (operation.mode, operation.axis)),
             brush: state.level_project.is_some()
                 && !state.level_read_only
                 && state.level_tool != super::terrain_brush::LevelTool::Select,
@@ -501,6 +503,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             })
             .size(design::LABEL)
             .style(design::muted),
+            // G move · R rotate · S scale in the viewport; or type exact
+            // values here and press Enter, which saves them.
             text("POSITION").size(design::CAPTION).style(design::muted),
             crate::forms::vector_fields(
                 &state.forms,
@@ -510,10 +514,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 &["X", "Y", "Z"],
                 crate::forms::NumberSpec::new(-1_000_000.0, 1_000_000.0, 1.0, 3),
                 Message::LevelEditPositionChanged,
+                transform_submit(state, object),
             ),
-            text("ROTATION (QUATERNION)")
-                .size(design::CAPTION)
-                .style(design::muted),
+            text("ROTATION (QUATERNION)").size(design::CAPTION).style(design::muted),
             crate::forms::vector_fields(
                 &state.forms,
                 state.keyboard_modifiers,
@@ -522,6 +525,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 &["W", "X", "Y", "Z"],
                 crate::forms::NumberSpec::new(-1.0, 1.0, 0.01, 4),
                 Message::LevelEditRotationChanged,
+                transform_submit(state, object),
             ),
             text("SCALE").size(design::CAPTION).style(design::muted),
             crate::forms::vector_fields(
@@ -532,18 +536,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 &["X", "Y", "Z"],
                 crate::forms::NumberSpec::new(0.001, 1000.0, 0.1, 3),
                 Message::LevelEditScaleChanged,
+                transform_submit(state, object),
             ),
-            text("Wheel or −/+ to step · Shift ×10 · Ctrl ×0.1 · Enter clamps to range")
-                .size(design::CAPTION)
-                .style(design::muted),
-            design::button("Save transform to project")
-                .style(design::primary)
-                .on_press_maybe(
-                    (!state.level_read_only
-                        && state.level_project.is_some()
-                        && !object.kind.eq_ignore_ascii_case("Vegetation"))
-                    .then_some(Message::LevelApplyTransform)
-                ),
+            text(if state.level_read_only || state.level_project.is_none() {
+                ""
+            } else {
+                "G move · R rotate · S scale in the view, or edit a value (wheel steps, Shift ×10, Ctrl ×0.1) and press Enter"
+            })
+            .size(11)
+            .style(design::muted),
             crate::level_authoring::placement_editor(state, object),
         ]
         .spacing(6)
@@ -583,27 +584,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 ))
                 .size(design::LABEL)
                 .style(design::muted),
-                space().width(Fill),
-                text("RMB Look · WASD Fly · Q/E Elevate · F Focus")
-                    .size(design::CAPTION)
-                    .style(design::muted),
-            ]
-            .spacing(10)
-            .align_y(iced::Center),
-            row![
-                text("Yaw").size(design::LABEL),
-                iced::widget::slider(-180.0..=180.0, state.yaw, Message::YawChanged).width(Fill),
-                text("Pitch").size(design::LABEL),
-                iced::widget::slider(-85.0..=85.0, state.pitch, Message::PitchChanged).width(Fill),
-                text(format!("Zoom {:.1}×", state.zoom)).size(design::LABEL),
+                text(format!("Zoom {:.1}×", state.zoom)).size(12),
                 iced::widget::slider(
                     0.2..=80.0,
                     state.zoom.clamp(0.2, 80.0),
                     Message::ZoomChanged
                 )
-                .width(Fill),
+                .width(Length::Fixed(160.0)),
+                space().width(Fill),
+                text("Hold RMB: look, WASD fly, Q/E elevate · F focus")
+                    .size(11)
+                    .style(design::muted),
             ]
-            .spacing(8),
+            .spacing(10)
+            .align_y(iced::Center),
             if state.level_show_overview {
                 Element::from(
                     column![
@@ -1009,6 +1003,88 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .width(Length::Fixed(350.0))
         .height(Fill);
     row![viewport, inspector].spacing(8).height(Fill).into()
+}
+
+/// The gizmo on the selection: at the centre of the selected placements,
+/// following a transform in progress. Only for editable projects in the
+/// Select tool.
+fn selection_gizmo(state: &State) -> Option<(crate::level_transform::Mode, [f32; 3])> {
+    if state.level_project.is_none()
+        || state.level_read_only
+        || state.level_tool != super::terrain_brush::LevelTool::Select
+    {
+        return None;
+    }
+    let centre = |points: Vec<[f32; 3]>| {
+        (!points.is_empty()).then(|| {
+            let count = points.len() as f32;
+            let sum = points.iter().fold([0.0; 3], |sum, p| {
+                [sum[0] + p[0], sum[1] + p[1], sum[2] + p[2]]
+            });
+            sum.map(|v| v / count)
+        })
+    };
+    if let Some(operation) = &state.level_transform {
+        let pivot = centre(operation.results().iter().map(|t| t.position).collect())?;
+        return Some((operation.mode, pivot));
+    }
+    let scene = state.level_scene.as_ref()?;
+    let mut indices = state
+        .level_selection
+        .indices
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    if indices.is_empty() {
+        indices.extend(state.level_selected);
+    }
+    let pivot = centre(
+        indices
+            .iter()
+            .filter_map(|&index| scene.objects.get(index))
+            .filter(|object| !object.kind.eq_ignore_ascii_case("Vegetation"))
+            .map(|object| object.world.position)
+            .collect(),
+    )?;
+    Some((state.level_gizmo, pivot))
+}
+
+/// The selected area's polygon vertices in the world, as edited so far, for
+/// dragging in the viewport. Not while a move/rotate/scale is in progress.
+fn area_vertices(state: &State) -> Option<Arc<Vec<[f32; 3]>>> {
+    if state.level_project.is_none()
+        || state.level_read_only
+        || state.level_transform.is_some()
+        || state.level_tool != super::terrain_brush::LevelTool::Select
+    {
+        return None;
+    }
+    let object = state
+        .level_selected
+        .and_then(|index| state.level_scene.as_ref()?.objects.get(index))?;
+    if !(object.kind.eq_ignore_ascii_case("ZooKeeperShape")
+        || object.kind.eq_ignore_ascii_case("AreaShape"))
+    {
+        return None;
+    }
+    let points = state
+        .level_authoring
+        .points()
+        .unwrap_or_else(|_| object.shape_points.clone());
+    Some(Arc::new(
+        points
+            .iter()
+            .map(|point| crate::world_instances::place(object.world, *point))
+            .collect(),
+    ))
+}
+
+/// Enter in a transform field saves it, for an editable placement.
+fn transform_submit(state: &State, object: &evolve_core::PlacedObject) -> Option<Message> {
+    (!state.level_read_only
+        && state.level_project.is_some()
+        && !object.kind.eq_ignore_ascii_case("Vegetation"))
+    .then_some(Message::LevelApplyTransform)
 }
 
 /// Saved-edit history as a timeline: redoable (undone) steps on top in a

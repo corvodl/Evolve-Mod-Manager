@@ -1248,6 +1248,268 @@ pub fn segmented<'a>(
         .into()
 }
 
+/// One tab of a [`segmented_tabs`] row.
+pub struct TabItem<'a> {
+    pub icon: svg::Handle,
+    pub label: &'a str,
+    /// A status dot after the label.
+    pub dot: Option<Tone>,
+    pub message: Message,
+}
+
+/// Segmented tabs with an icon and optional status dot per tab, sharing
+/// [`segmented`]'s sliding highlight.
+pub fn segmented_tabs<'a>(
+    ui_state: &UiState,
+    id: &'static str,
+    items: Vec<TabItem<'a>>,
+    selected: usize,
+    width: f32,
+) -> Element<'a, Message> {
+    const UNIT: f32 = 1000.0;
+    let count = items.len().max(1);
+    let position = ui_state
+        .segment_position(id, selected, Instant::now())
+        .clamp(0.0, (count - 1) as f32);
+    let left = (position * UNIT) as u16;
+    let right = (((count - 1) as f32 - position) * UNIT) as u16;
+    let mut track = row![].height(Fill);
+    if left > 0 {
+        track = track.push(space().width(Length::FillPortion(left)));
+    }
+    track = track.push(
+        container(space())
+            .width(Length::FillPortion(UNIT as u16))
+            .height(Fill)
+            .style(|theme: &Theme| container::Style {
+                background: Some(Background::Color(theme.palette().primary)),
+                border: Border {
+                    radius: design::radius(theme, Radius::Medium).into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            }),
+    );
+    if right > 0 {
+        track = track.push(space().width(Length::FillPortion(right)));
+    }
+    let mut buttons = row![].height(Fill);
+    for (index, item) in items.into_iter().enumerate() {
+        let active = index == selected;
+        let ink = move |theme: &Theme| {
+            if active {
+                theme.extended_palette().primary.base.text
+            } else {
+                theme.palette().text
+            }
+        };
+        let mut content = row![
+            svg(item.icon)
+                .width(15)
+                .height(15)
+                .style(move |theme: &Theme, _| svg::Style {
+                    color: Some(ink(theme)),
+                }),
+            text(item.label)
+                .size(12)
+                .style(move |theme: &Theme| text::Style {
+                    color: Some(ink(theme)),
+                }),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        if let Some(tone) = item.dot {
+            content = content.push(container(space().width(7).height(7)).style(
+                move |theme: &Theme| container::Style {
+                    background: Some(Background::Color(design::tone_color(theme, tone))),
+                    border: Border {
+                        radius: 4.0.into(),
+                        color: theme.palette().background,
+                        width: 1.0,
+                    },
+                    ..container::Style::default()
+                },
+            ));
+        }
+        buttons = buttons.push(
+            iced::widget::button(container(content).center_x(Fill).center_y(Fill))
+                .width(Length::FillPortion(1))
+                .height(Fill)
+                .padding(0)
+                .style(|_, _| iced::widget::button::Style::default())
+                .on_press(ui(UiMsg::Segment(id, index, Box::new(item.message)))),
+        );
+    }
+    container(iced::widget::stack![track, buttons])
+        .padding(3)
+        .height(36)
+        .width(Length::Fixed(width * count as f32))
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(design::field(theme))),
+            border: Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: design::radius(theme, Radius::Medium).into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// One button of an [`icon_segmented`] group.
+pub struct IconToggle {
+    pub icon: svg::Handle,
+    pub label: &'static str,
+    pub message: Message,
+}
+
+/// Icon-only segmented toggles (tool palettes). The selected slot gets the
+/// same sliding highlight as [`segmented`]; each icon has a tooltip with its
+/// name and shortcut from `chrome::SHORTCUTS`.
+pub fn icon_segmented<'a>(
+    ui_state: &UiState,
+    id: &'static str,
+    items: Vec<IconToggle>,
+    selected: usize,
+) -> Element<'a, Message> {
+    const SLOT: f32 = 32.0;
+    const UNIT: f32 = 1000.0;
+    let count = items.len().max(1);
+    let position = ui_state
+        .segment_position(id, selected, Instant::now())
+        .clamp(0.0, (count - 1) as f32);
+    let left = (position * UNIT) as u16;
+    let right = (((count - 1) as f32 - position) * UNIT) as u16;
+    let mut track = row![].height(Fill);
+    if left > 0 {
+        track = track.push(space().width(Length::FillPortion(left)));
+    }
+    track = track.push(
+        container(space())
+            .width(Length::FillPortion(UNIT as u16))
+            .height(Fill)
+            .style(|theme: &Theme| container::Style {
+                background: Some(Background::Color(theme.palette().primary)),
+                border: Border {
+                    radius: design::radius(theme, Radius::Small).into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            }),
+    );
+    if right > 0 {
+        track = track.push(space().width(Length::FillPortion(right)));
+    }
+    let mut buttons = row![].height(Fill);
+    for (index, item) in items.into_iter().enumerate() {
+        let active = index == selected;
+        let icon = svg(item.icon)
+            .width(18)
+            .height(18)
+            .style(move |theme: &Theme, _| svg::Style {
+                color: Some(if active {
+                    theme.extended_palette().primary.base.text
+                } else {
+                    theme.palette().text
+                }),
+            });
+        let button = iced::widget::button(container(icon).center_x(Fill).center_y(Fill))
+            .width(SLOT)
+            .height(Fill)
+            .padding(0)
+            .style(|_, _| iced::widget::button::Style::default())
+            .on_press(ui(UiMsg::Segment(id, index, Box::new(item.message))));
+        let label = match crate::chrome::shortcut_for(item.label) {
+            Some(keys) => format!("{} · {keys}", item.label),
+            None => item.label.to_owned(),
+        };
+        buttons = buttons.push(design::tooltip(
+            button,
+            label,
+            None,
+            iced::widget::tooltip::Position::Bottom,
+        ));
+    }
+    container(iced::widget::stack![track, buttons])
+        .padding(2)
+        .height(34)
+        .width(Length::Fixed(SLOT * count as f32 + 4.0))
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(design::field(theme))),
+            border: Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: design::radius(theme, Radius::Medium).into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A square icon button with a tooltip (name and shortcut). `None`
+/// disables it; `reason` then explains why in the tooltip.
+pub fn icon_button<'a>(
+    icon: svg::Handle,
+    label: &'static str,
+    message: Option<Message>,
+    reason: Option<&'static str>,
+) -> Element<'a, Message> {
+    let enabled = message.is_some();
+    let glyph = svg(icon)
+        .width(17)
+        .height(17)
+        .style(move |theme: &Theme, _| svg::Style {
+            color: Some(if enabled {
+                theme.palette().text
+            } else {
+                design::with_alpha(theme.palette().text, 0.35)
+            }),
+        });
+    let button = iced::widget::button(container(glyph).center_x(30).center_y(30))
+        .padding(0)
+        .style(design::secondary)
+        .on_press_maybe(message);
+    let tip = match (enabled, reason) {
+        (false, Some(reason)) => format!("{label} · {reason}"),
+        _ => label.to_owned(),
+    };
+    design::tooltip(
+        button,
+        tip,
+        crate::chrome::shortcut_for(label),
+        iced::widget::tooltip::Position::Bottom,
+    )
+}
+
+/// A labelled button with a leading icon.
+pub fn icon_label_button<'a>(
+    icon: svg::Handle,
+    label: &'a str,
+) -> iced::widget::Button<'a, Message> {
+    iced::widget::button(
+        row![
+            svg(icon).width(16).height(16).style(design::icon),
+            text(label).size(design::BODY),
+        ]
+        .spacing(7)
+        .align_y(Alignment::Center),
+    )
+    .padding([7, 12])
+}
+
+/// Wraps a possibly-disabled control in a tooltip saying why it's disabled.
+pub fn why_disabled<'a>(
+    control: impl Into<Element<'a, Message>>,
+    disabled: bool,
+    reason: &'a str,
+) -> Element<'a, Message> {
+    if disabled {
+        design::tooltip(control, reason, None, iced::widget::tooltip::Position::Top)
+    } else {
+        control.into()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Switch
 // ---------------------------------------------------------------------------
@@ -1820,12 +2082,12 @@ pub fn dock<'a>(
     items: Vec<DockItem>,
     reduce_motion: bool,
 ) -> Element<'a, Message> {
-    const BASE: f32 = 22.0;
-    const SLOT: f32 = 40.0;
+    const BASE: f32 = 20.0;
+    const SLOT: f32 = 30.0;
     let cursor = ui_state.dock_cursor(id);
     let mut bar = row![].spacing(0).align_y(Alignment::End);
     for (index, item) in items.into_iter().enumerate() {
-        let center = SLOT * index as f32 + SLOT / 2.0 + 8.0;
+        let center = SLOT * index as f32 + SLOT / 2.0 + 5.0;
         let scale = dock_scale(cursor, center, reduce_motion);
         let size = BASE * scale;
         let active = item.active;
@@ -1846,7 +2108,7 @@ pub fn dock<'a>(
             .align_bottom(BASE * 1.45 + 10.0),
         );
     }
-    let shell = container(bar).padding([4, 8]).style(design::pill);
+    let shell = container(bar).padding([3, 5]).style(design::pill);
     mouse_area(shell)
         .on_move(move |point| ui(UiMsg::DockMove(id, point.x)))
         .on_exit(ui(UiMsg::DockExit(id)))

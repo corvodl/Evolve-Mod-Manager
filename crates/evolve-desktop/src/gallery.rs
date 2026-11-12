@@ -338,6 +338,55 @@ pub fn lightbox<'a>(state: &'a State, base: Element<'a, Message>) -> Element<'a,
     .into()
 }
 
+/// A full-window image viewer for any image (map thumbnails), with the
+/// same frame as the texture lightbox.
+pub fn image_lightbox<'a>(
+    base: Element<'a, Message>,
+    title: String,
+    handle: Handle,
+    close: Message,
+) -> Element<'a, Message> {
+    let bar = row![
+        text(title).size(13).width(Fill),
+        text("Wheel zoom · drag pan · Esc close")
+            .size(11)
+            .style(design::muted),
+        design::button("Close")
+            .style(design::primary)
+            .on_press(close.clone()),
+    ]
+    .spacing(10)
+    .align_y(iced::Center);
+    let panel = container(
+        column![
+            bar,
+            image::viewer(handle)
+                .width(Fill)
+                .height(Fill)
+                .min_scale(0.5)
+                .max_scale(16.0)
+                .filter_method(image::FilterMethod::Nearest)
+        ]
+        .spacing(10),
+    )
+    .padding(14)
+    .width(Fill)
+    .height(Fill)
+    .style(|theme: &Theme| container::Style {
+        background: Some(Background::Color(Color {
+            a: 0.94,
+            ..design::sidebar(theme)
+        })),
+        ..container::Style::default()
+    });
+    iced::widget::stack![
+        base,
+        iced::widget::mouse_area(space().width(Fill).height(Fill)).on_press(close),
+        container(panel).padding(24),
+    ]
+    .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

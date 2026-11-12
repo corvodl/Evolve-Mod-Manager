@@ -42,6 +42,87 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Move row up", "Alt+Up"),
     ("Move row down", "Alt+Down"),
     ("Exit fullscreen", "Esc"),
+    // Level editor tools.
+    ("Select", "1"),
+    ("Sculpt", "2"),
+    ("Paint", "3"),
+    ("Vegetation", "4"),
+    ("Move", "G"),
+    ("Rotate", "R"),
+    ("Scale", "S"),
+    ("Constrain to axis", "X / Y / Z"),
+    ("Confirm transform", "Enter"),
+    ("Cancel transform", "Esc"),
+    ("Undo", "Ctrl+Z"),
+    ("Redo", "Ctrl+Y"),
+    ("Save map", "Ctrl+S"),
+    ("Erase vegetation", "Ctrl+LMB"),
+    ("Raise", "Shift+1"),
+    ("Flatten", "Shift+2"),
+    ("Smooth", "Shift+3"),
+    ("Create ground", "Shift+4"),
+    ("Smaller brush", "["),
+    ("Larger brush", "]"),
+    ("Lower terrain", "Ctrl+LMB"),
+    ("Brush stroke", "LMB"),
+    ("Look around", "RMB"),
+    ("Fly", "RMB+W A S D"),
+    ("Descend / ascend", "RMB+Q / E"),
+    ("Select object", "LMB"),
+    // Developer tabs.
+    ("Network & Process", "Ctrl+1"),
+    ("Actors & Memory", "Ctrl+2"),
+    ("AI Controls", "Ctrl+3"),
+    ("Teleport & Fly", "Ctrl+4"),
+    ("External Overlay", "Ctrl+5"),
+    ("Keybinds", "Ctrl+6"),
+];
+
+/// Level editor shortcuts grouped by tool, for the cheat sheet. Every label
+/// resolves through [`shortcut_for`].
+pub const LEVEL_SHORTCUTS: &[(&str, &[&str])] = &[
+    (
+        "Tools",
+        &["Select", "Sculpt", "Paint", "Vegetation", "Command palette"],
+    ),
+    (
+        "Select and transform",
+        &[
+            "Select object",
+            "Move",
+            "Rotate",
+            "Scale",
+            "Constrain to axis",
+            "Confirm transform",
+            "Cancel transform",
+            "Focus selection",
+            "Delete",
+            "Copy",
+            "Paste",
+            "Duplicate",
+            "Undo",
+            "Redo",
+            "Save map",
+        ],
+    ),
+    (
+        "Sculpt and paint",
+        &[
+            "Raise",
+            "Flatten",
+            "Smooth",
+            "Create ground",
+            "Brush stroke",
+            "Lower terrain",
+            "Erase vegetation",
+            "Smaller brush",
+            "Larger brush",
+        ],
+    ),
+    (
+        "Camera",
+        &["Look around", "Fly", "Descend / ascend", "Exit fullscreen"],
+    ),
 ];
 
 /// The shortcut for an action label, if it has one.
@@ -107,6 +188,7 @@ pub enum Msg {
 pub enum MenuBar {
     Level,
     Viewer,
+    Modding,
 }
 
 #[derive(Debug, Default)]
@@ -234,6 +316,9 @@ pub fn update(state: &mut State, message: Msg) -> Option<Message> {
             }
             MenuBar::Viewer if state.viewer_menu.is_some_and(|open| open != menu) => {
                 state.viewer_menu = Some(menu);
+            }
+            MenuBar::Modding if state.modding_menu.is_some_and(|open| open != menu) => {
+                state.modding_menu = Some(menu);
             }
             _ => {}
         },
@@ -1010,6 +1095,15 @@ mod tests {
         assert_eq!(shortcut_for("command palette"), Some("Ctrl+K"));
         assert_eq!(shortcut_for("Focus selection"), Some("F"));
         assert_eq!(shortcut_for("Unknown action"), None);
+    }
+
+    #[test]
+    fn every_listed_level_shortcut_resolves() {
+        for (_, actions) in LEVEL_SHORTCUTS {
+            for action in *actions {
+                assert!(shortcut_for(action).is_some(), "{action}");
+            }
+        }
     }
 
     #[test]

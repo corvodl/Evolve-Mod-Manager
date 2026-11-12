@@ -548,6 +548,52 @@ impl Tab {
         Self::SystemHealth,
         Self::Advanced,
     ];
+    fn icon(self) -> iced::widget::svg::Handle {
+        match self {
+            Self::Appearance => crate::icons::palette(),
+            Self::Storage => crate::icons::drive(),
+            Self::Integration => crate::icons::plug(),
+            Self::Updates => crate::icons::download(),
+            Self::SystemHealth => crate::icons::pulse(),
+            Self::Advanced => crate::icons::sliders(),
+        }
+    }
+
+    /// A dot on the tab: an update waiting, or a path that fails its check.
+    fn status(self, state: &State) -> Option<crate::design::Tone> {
+        use crate::forms::PathKind;
+        let failing = |kinds: &[PathKind]| {
+            kinds
+                .iter()
+                .any(|kind| state.path_checks.get(*kind).is_some_and(|check| !check.ok))
+        };
+        match self {
+            Self::Updates => (!state.launch_updates.is_empty() || state.available_update.is_some())
+                .then_some(crate::design::Tone::Info),
+            Self::Storage => failing(&[
+                PathKind::GameInstall,
+                PathKind::ClientExe,
+                PathKind::TestGame,
+                PathKind::TestClient,
+                PathKind::Projects,
+                PathKind::AssetLibrary,
+            ])
+            .then_some(crate::design::Tone::Danger),
+            Self::Integration => failing(&[
+                PathKind::Blender,
+                PathKind::Ffdec,
+                PathKind::Ruffle,
+                PathKind::RuffleWeb,
+                PathKind::Ffmpeg,
+                PathKind::Vgmstream,
+                PathKind::OggRemux,
+                PathKind::FmodDesigner,
+            ])
+            .then_some(crate::design::Tone::Danger),
+            Self::Appearance | Self::SystemHealth | Self::Advanced => None,
+        }
+    }
+
     pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
@@ -561,18 +607,23 @@ impl Tab {
 }
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
-    let tabs = crate::ui_kit::segmented(
+    let tabs = crate::ui_kit::segmented_tabs(
         &state.ui,
         "settings-tabs",
         Tab::ALL
             .into_iter()
-            .map(|tab| (tab.title(), Message::SettingsTab(tab)))
+            .map(|tab| crate::ui_kit::TabItem {
+                icon: tab.icon(),
+                label: tab.title(),
+                dot: tab.status(state),
+                message: Message::SettingsTab(tab),
+            })
             .collect(),
         Tab::ALL
             .iter()
             .position(|tab| *tab == state.settings_tab)
             .unwrap_or(0),
-        true,
+        138.0,
     );
     let content: Element<'_, Message> = match state.settings_tab {
         Tab::Appearance => column![

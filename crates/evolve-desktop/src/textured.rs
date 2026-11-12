@@ -235,6 +235,8 @@ impl Vertex {
 pub struct Primitive {
     points: Vec<Vertex>,
     ground: Vec<GroundVertex>,
+    /// Editor handles (gizmos): screen-space triangles drawn over the scene.
+    overlay: Vec<GroundVertex>,
     indices: Vec<u32>,
     surfaces: Option<Arc<Vec<Surface>>>,
     diffuse: Option<Arc<image::RgbaImage>>,
@@ -382,6 +384,7 @@ impl shader::Program<super::Message> for Scene {
             }
         }
         Primitive {
+            overlay: Vec::new(),
             // In level mode the GPU world renderer clips actual world-space
             // triangles against the camera near plane. Do not draw a second
             // copy of terrain through legacy CPU NDC projection: it turns
@@ -442,6 +445,16 @@ impl shader::Program<super::Message> for Scene {
 impl Primitive {
     /// Level-editor-only axis guides in the existing depth-buffered line pass.
     /// Coordinates are projected NDC just like the ground grid.
+    /// A triangle of the editor overlay, in NDC, drawn over the whole scene.
+    pub(super) fn add_overlay_triangle(&mut self, corners: [[f32; 2]; 3], color: [f32; 4]) {
+        for corner in corners {
+            self.overlay.push(GroundVertex {
+                position: [corner[0], corner[1], 0.0],
+                rgba: color,
+            });
+        }
+    }
+
     pub(super) fn add_level_axis(&mut self, a: [f32; 3], b: [f32; 3], color: [f32; 4]) {
         self.ground.push(GroundVertex {
             position: a,
@@ -481,6 +494,10 @@ pub struct Pipeline {
     ground_vertex: wgpu::Buffer,
     ground_capacity: usize,
     ground_count: u32,
+    overlay_pipeline: wgpu::RenderPipeline,
+    overlay_vertex: wgpu::Buffer,
+    overlay_capacity: usize,
+    overlay_count: u32,
     layout: wgpu::BindGroupLayout,
     vertex: wgpu::Buffer,
     index: wgpu::Buffer,
@@ -1103,6 +1120,48 @@ impl Pipeline {
             multiview: None,
             cache: None,
         });
+        // Editor gizmos: always on top of the scene, as in Blender.
+        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Level editor gizmo overlay"),
+            layout: Some(&ground_layout),
+            vertex: wgpu::VertexState {
+                module: &program,
+                entry_point: Some("vs_floor"),
+                buffers: &[GroundVertex::descriptor()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &program,
+                entry_point: Some("fs_floor"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let overlay_vertex = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Level editor gizmo vertices"),
+            size: 32,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         // The shader compositor reuses the native window color target.
         // Explicitly paint an opaque rectangle in the *scissored viewport*
         // before any mesh/grid triangles, or alpha-zero/old window content
@@ -1277,6 +1336,10 @@ impl Pipeline {
             ground_vertex,
             ground_capacity: 32,
             ground_count: 0,
+            overlay_pipeline,
+            overlay_vertex,
+            overlay_capacity: 32,
+            overlay_count: 0,
             layout,
             vertex,
             index,
@@ -1744,6 +1807,20 @@ impl Pipeline {
             }
             queue.write_buffer(&self.ground_vertex, 0, floor_bytes);
         }
+        let overlay_bytes = bytemuck::cast_slice(&primitive.overlay);
+        self.overlay_count = primitive.overlay.len() as u32;
+        if !overlay_bytes.is_empty() {
+            if overlay_bytes.len() > self.overlay_capacity {
+                self.overlay_vertex = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Level editor gizmo vertices"),
+                    size: overlay_bytes.len() as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.overlay_capacity = overlay_bytes.len();
+            }
+            queue.write_buffer(&self.overlay_vertex, 0, overlay_bytes);
+        }
         self.upload_surfaces(
             device,
             queue,
@@ -2005,6 +2082,11 @@ impl Pipeline {
         self.world_renderer.draw_spotlight_beams(&mut pass);
         self.world_renderer.draw_light_points(&mut pass);
         self.world_renderer.draw_wildlife_overlay(&mut pass);
+        if self.overlay_count > 0 {
+            pass.set_pipeline(&self.overlay_pipeline);
+            pass.set_vertex_buffer(0, self.overlay_vertex.slice(..));
+            pass.draw(0..self.overlay_count, 0..1);
+        }
         drop(pass);
         self.world_renderer
             .draw_water(encoder, self.hdr.scene(), &self.depth, Some(clip));

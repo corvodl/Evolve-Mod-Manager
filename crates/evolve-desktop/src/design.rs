@@ -584,15 +584,19 @@ fn kbd_style(theme: &Theme) -> container::Style {
 }
 
 /// One key cap, e.g. `kbd("Ctrl")`.
-pub fn kbd<'a, M: 'a>(key: &'a str) -> iced::Element<'a, M> {
-    container(iced::widget::text(key).size(10).font(iced::Font::MONOSPACE))
-        .padding([1, 5])
-        .style(kbd_style)
-        .into()
+pub fn kbd<'a, M: 'a>(key: &str) -> iced::Element<'a, M> {
+    container(
+        iced::widget::text(key.to_owned())
+            .size(10)
+            .font(iced::Font::MONOSPACE),
+    )
+    .padding([1, 5])
+    .style(kbd_style)
+    .into()
 }
 
 /// A shortcut such as `"Ctrl+K"` drawn as key caps joined by `+`.
-pub fn key_hint<'a, M: 'a>(shortcut: &'a str) -> iced::Element<'a, M> {
+pub fn key_hint<'a, M: 'a>(shortcut: &str) -> iced::Element<'a, M> {
     let mut keys = iced::widget::row![]
         .spacing(3)
         .align_y(iced::Alignment::Center);
@@ -645,7 +649,7 @@ pub fn tooltip<'a, M: 'a>(
         .spacing(8)
         .align_y(iced::Alignment::Center);
     if let Some(shortcut) = shortcut {
-        tip = tip.push(key_hint(shortcut));
+        tip = tip.push(key_hint::<M>(shortcut));
     }
     iced::widget::tooltip(
         content,
