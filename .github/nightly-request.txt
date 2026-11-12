@@ -1,1 +1,4 @@
-Nightly requested 2026-11-12T17:29:25Z for PRs #206, #207, #208 and #210 (export fix, level editor edits, toasts, items 48-73)
+Nightly requested 2026-11-12 after merging all open PRs.
+request: user-requested-merge-all-then-build-2026-11-12-pr211
+base-main-commit: 4716d71d98aac1aea3379e3319673d513b7e13c5
+description: Build Windows nightly from latest main after merging PR #211 Asset Library build picker, import sheet, row actions, selection bar, and client version release-only display. Includes all previously merged changes. Preserve existing release packaging, signing and installer safeguards.
