@@ -371,7 +371,11 @@ pub fn cards(state: &State) -> Vec<Card> {
                             )),
                             false,
                         );
-                        card.subtitle = format!("{} · {}", crate::level_archive::display_subtitle(archive), archive.builds.join(", "));
+                        card.subtitle = format!(
+                            "{} · {}",
+                            crate::level_archive::display_subtitle(archive),
+                            archive.builds.join(", ")
+                        );
                         card.kind = "archive-map";
                         cards.push(card);
                     }
