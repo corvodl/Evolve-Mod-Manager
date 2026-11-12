@@ -8,9 +8,9 @@ use iced::widget::Svg;
 use iced::widget::svg;
 
 fn icon(body: &str) -> svg::Handle {
-    svg::Handle::from_memory(format!(
+    crate::handles::svg_markup(format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#D6454D" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">{body}</svg>"##
-    ).into_bytes())
+    ))
 }
 
 pub fn frame_all() -> svg::Handle {
@@ -322,6 +322,44 @@ pub fn sliders() -> svg::Handle {
 }
 
 /// Draws an icon at `size` px, recoloured to the theme's text colour.
+/// Sidebar panel: a window with its left column marked.
+pub fn sidebar() -> svg::Handle {
+    icon(
+        r#"<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M9 4.5v15M5.6 8.5h1M5.6 11h1"/>"#,
+    )
+}
+
+/// Discord: a rounded controller-like face with two eyes.
+pub fn discord() -> svg::Handle {
+    icon(
+        r#"<path d="M8.6 6.4c-1.7.3-3.1.8-4.3 1.6-1.8 2.9-2.4 5.9-2.2 8.9 1.4 1.1 3 1.8 4.6 2.3l1.1-1.7M15.4 6.4c1.7.3 3.1.8 4.3 1.6 1.8 2.9 2.4 5.9 2.2 8.9-1.4 1.1-3 1.8-4.6 2.3l-1.1-1.7M7.2 16.6c3.1 1.3 6.5 1.3 9.6 0M8.4 8.1c2.4-.6 4.8-.6 7.2 0"/><circle cx="9.2" cy="12.6" r="1.2"/><circle cx="14.8" cy="12.6" r="1.2"/>"#,
+    )
+}
+
+/// Source code: angle brackets with a slash.
+pub fn code() -> svg::Handle {
+    icon(r#"<path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.6 5l-3.2 14"/>"#)
+}
+
+/// A globe, for websites.
+pub fn globe() -> svg::Handle {
+    icon(
+        r#"<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3z"/>"#,
+    )
+}
+
+/// A person, for profiles.
+pub fn user() -> svg::Handle {
+    icon(r#"<circle cx="12" cy="8" r="3.8"/><path d="M4.5 20c1.4-3.4 4.1-5 7.5-5s6.1 1.6 7.5 5"/>"#)
+}
+
+/// An arrow leaving a box, for links that open in the browser.
+pub fn external() -> svg::Handle {
+    icon(
+        r#"<path d="M14 4h6v6M20 4l-9 9M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/>"#,
+    )
+}
+
 pub fn glyph<'a>(handle: svg::Handle, size: f32) -> Svg<'a> {
     iced::widget::svg(handle)
         .width(size)

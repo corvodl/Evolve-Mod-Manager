@@ -17,6 +17,7 @@ mod client_version;
 mod color_picker;
 mod command_palette;
 mod crash_diagnostics;
+mod credits;
 mod design;
 mod developer_auth;
 mod developer_hotkeys;
@@ -44,6 +45,7 @@ mod gfx_menu_video;
 mod gfx_mode_images;
 mod gfx_tool_install;
 mod guided_modding;
+mod handles;
 mod icons;
 mod initial_setup;
 mod launcher_bridge;
@@ -206,7 +208,7 @@ impl Page {
             Self::Levels => include_bytes!("../../../assets/nav/level-editor.svg"),
             Self::Settings => include_bytes!("../../../assets/nav/settings.svg"),
         };
-        svg::Handle::from_memory(data.to_vec())
+        handles::svg(data)
     }
 
     fn title(self) -> &'static str {
@@ -263,6 +265,26 @@ impl TeleportRequest {
 
 const SIDEBAR_COLLAPSED_WIDTH: f32 = 64.0;
 const SIDEBAR_EXPANDED_WIDTH: f32 = 174.0;
+
+/// Width of the modern sidebar's open panel, drawn over the page.
+const SIDEBAR_PANEL_WIDTH: f32 = 240.0;
+
+/// Legacy grows its rail on hover; the modern sidebar opens from its
+/// button (and on hover only with the peek setting).
+fn animate_sidebar(state: &mut State) {
+    let open = if state.preferences.ui_theme == "Evolve Legacy" {
+        state.sidebar_hovered
+    } else {
+        state.sidebar_open || state.preferences.sidebar_hover_peek && state.sidebar_hovered
+    };
+    state.sidebar_reveal = state.sidebar_reveal.with_easing(anim::Easing::EaseOut);
+    state.sidebar_reveal.animate_to(
+        if open { 1.0 } else { 0.0 },
+        Instant::now(),
+        SIDEBAR_REVEAL_DURATION,
+        state.preferences.reduce_motion,
+    );
+}
 
 fn sidebar_width(reveal: f32) -> f32 {
     SIDEBAR_COLLAPSED_WIDTH
@@ -381,6 +403,9 @@ struct State {
     level_viewport_fullscreen: bool,
     viewer_viewport_fullscreen: bool,
     sidebar_hovered: bool,
+    /// The modern sidebar's panel, opened by its button or Ctrl+B.
+    sidebar_open: bool,
+    credits_search: String,
     sidebar_reveal: anim::Tween,
     input: String,
     output: String,
@@ -3094,6 +3119,9 @@ enum Message {
     LaunchUpdatesChecked(Vec<(UpdateChannel, Result<Option<ReleaseUpdate>, String>)>),
     ApplyLaunchUpdate(String),
     SidebarHover(bool),
+    SidebarToggle,
+    SidebarClose,
+    PreferenceSidebarPeek,
     /// Redraw tick for shared `anim::Tween`s; only subscribed while one runs.
     AnimationFrame,
     LibraryPickFiles,
@@ -3650,7 +3678,6 @@ enum Message {
     PreferenceAccentPreset(&'static str),
     PreferenceReduceMotion,
     PreferenceSnapshots,
-    PreferenceActivity,
     PreferenceCrashLogging,
     OpenCrashLogs,
     OpenCrashLogsFolder,
@@ -3673,6 +3700,9 @@ enum Message {
     NewsImagesLoaded(Result<whats_new::ImageResults, String>),
     ClientVersionChecked(String, Option<String>),
     OpenNewsLink(String),
+    /// One of the fixed Credits links.
+    OpenCreditLink(&'static str),
+    CreditsSearch(String),
     ApplyUpdate,
     UpdatePrepared(Result<PreparedUpdate, String>),
     AssetsRootChanged(String),
@@ -6196,13 +6226,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::SidebarHover(hovered) => {
             state.sidebar_hovered = hovered;
-            state.sidebar_reveal = state.sidebar_reveal.with_easing(anim::Easing::EaseOut);
-            state.sidebar_reveal.animate_to(
-                if hovered { 1.0 } else { 0.0 },
-                Instant::now(),
-                SIDEBAR_REVEAL_DURATION,
-                state.preferences.reduce_motion || state.preferences.ui_theme != "Evolve Legacy",
-            );
+            animate_sidebar(state);
+            return Task::none();
+        }
+        Message::SidebarToggle => {
+            state.sidebar_open = !state.sidebar_open;
+            animate_sidebar(state);
+            return Task::none();
+        }
+        Message::SidebarClose => {
+            state.sidebar_open = false;
+            state.sidebar_hovered = false;
+            animate_sidebar(state);
+            return Task::none();
+        }
+        Message::PreferenceSidebarPeek => {
+            state.preferences.sidebar_hover_peek = !state.preferences.sidebar_hover_peek;
+            persist_preferences(state);
             return Task::none();
         }
         Message::ToastTick(now) => {
@@ -14170,10 +14210,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.keep_original_snapshots = !state.preferences.keep_original_snapshots;
             persist_preferences(state);
         }
-        Message::PreferenceActivity => {
-            state.preferences.show_activity_on_tasks = !state.preferences.show_activity_on_tasks;
-            persist_preferences(state);
-        }
         Message::PreferenceCrashLogging => {
             state.preferences.crash_logging_enabled = !state.preferences.crash_logging_enabled;
             crash_diagnostics::set_enabled(state.preferences.crash_logging_enabled);
@@ -14776,6 +14812,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = error;
             }
         }
+        Message::OpenCreditLink(url) => {
+            if let Err(error) = credits::open(url) {
+                state.status = error;
+            }
+        }
+        Message::CreditsSearch(value) => state.credits_search = value.chars().take(64).collect(),
         Message::UpdateChecked(result) => match result {
             Ok(Some(release)) => {
                 state.update_status = format!(
@@ -18036,6 +18078,270 @@ fn launch_update_actions(state: &State) -> Element<'_, Message> {
         .into()
 }
 
+fn sidebar_surface(theme: &iced::Theme) -> container::Style {
+    container::Style {
+        background: Some(iced::Background::Color(design::sidebar(theme))),
+        border: iced::Border {
+            color: design::border(theme),
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// The modern navigation: a 64 px icon rail that never moves the page, and
+/// a labelled panel that opens over the page from the button at the top.
+fn modern_shell<'a>(
+    state: &'a State,
+    page: Page,
+    body: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let reveal = state.sidebar_reveal.value(Instant::now());
+    let rail = mouse_area(
+        container(modern_nav(state, page, false))
+            .width(Length::Fixed(SIDEBAR_COLLAPSED_WIDTH))
+            .height(Fill)
+            .style(sidebar_surface),
+    )
+    .on_enter(Message::SidebarHover(true))
+    .on_exit(Message::SidebarHover(false));
+    let base = container(row![rail, body].height(Fill))
+        .width(Fill)
+        .height(Fill);
+    if reveal <= 0.001 {
+        return base.into();
+    }
+    let width = SIDEBAR_COLLAPSED_WIDTH + (SIDEBAR_PANEL_WIDTH - SIDEBAR_COLLAPSED_WIDTH) * reveal;
+    let panel = mouse_area(
+        container(modern_nav(state, page, reveal >= 0.6))
+            .width(Length::Fixed(width))
+            .height(Fill)
+            .clip(true)
+            .style(move |theme: &iced::Theme| container::Style {
+                shadow: iced::Shadow {
+                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4 * reveal),
+                    offset: iced::Vector::new(6.0, 0.0),
+                    blur_radius: 24.0,
+                },
+                ..sidebar_surface(theme)
+            }),
+    )
+    .on_enter(Message::SidebarHover(true))
+    .on_exit(Message::SidebarHover(false));
+    let mut layers = iced::widget::stack![base];
+    if state.sidebar_open {
+        // Clicking the dimmed page closes the panel.
+        layers = layers.push(
+            mouse_area(container(space()).width(Fill).height(Fill).style(
+                move |_: &iced::Theme| container::Style {
+                    background: Some(iced::Background::Color(iced::Color::from_rgba(
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.3 * reveal,
+                    ))),
+                    ..container::Style::default()
+                },
+            ))
+            .on_press(Message::SidebarClose),
+        );
+    }
+    layers.push(panel).into()
+}
+
+/// Sidebar contents; `labels` is false for the icon-only rail.
+fn modern_nav(state: &State, page: Page, labels: bool) -> Element<'_, Message> {
+    let tip = move |button: iced::widget::Button<'static, Message>,
+                    label: &'static str,
+                    shortcut: Option<&'static str>|
+          -> Element<'static, Message> {
+        if labels && shortcut.is_none() {
+            Element::from(button)
+        } else {
+            design::tooltip(
+                button,
+                label,
+                shortcut,
+                iced::widget::tooltip::Position::Right,
+            )
+        }
+    };
+    let item = move |icon: svg::Handle,
+                     label: &'static str,
+                     active: bool,
+                     indicator: Option<chrome::Indicator>,
+                     message: Message|
+          -> Element<'static, Message> {
+        let bar = container(space().width(3).height(20)).style(move |theme: &iced::Theme| {
+            container::Style {
+                background: active.then(|| iced::Background::Color(theme.palette().primary)),
+                ..container::Style::default()
+            }
+        });
+        let mut contents = row![
+            bar,
+            chrome::badge_icon(
+                svg(icon).style(design::icon).width(18).height(18),
+                18.0,
+                indicator,
+                1.0,
+            ),
+        ]
+        .spacing(6)
+        .align_y(iced::Center);
+        if labels {
+            contents = contents.push(text(label).size(14));
+        }
+        tip(
+            design::button(contents)
+                .width(Fill)
+                .height(36)
+                .padding([5, 4])
+                .style(move |theme, status| design::rail(theme, status, active))
+                .on_press(message),
+            label,
+            None,
+        )
+    };
+    let section = move |name: &'static str| -> Element<'static, Message> {
+        if labels {
+            container(text(name).size(design::CAPTION).style(design::muted))
+                .padding([6, 10])
+                .into()
+        } else {
+            container(
+                container(space().height(1))
+                    .width(Fill)
+                    .style(|theme: &iced::Theme| container::Style {
+                        background: Some(iced::Background::Color(design::border(theme))),
+                        ..container::Style::default()
+                    }),
+            )
+            .padding([8, 6])
+            .into()
+        }
+    };
+    let page_item = |target: Page, label: &'static str| {
+        item(
+            target.icon(),
+            label,
+            page == target,
+            chrome::nav_indicator(state, target),
+            Message::Navigate(target),
+        )
+    };
+
+    let mut toggle = row![
+        container(space().width(3)),
+        container(
+            svg(icons::sidebar())
+                .style(design::icon)
+                .width(20)
+                .height(20)
+        )
+        .padding([3, 3]),
+    ]
+    .spacing(6)
+    .align_y(iced::Center);
+    if labels {
+        toggle = toggle.push(text("Evolve Mod Manager").size(13).style(design::muted));
+    }
+    let toggle = tip(
+        design::button(toggle)
+            .width(Fill)
+            .height(36)
+            .padding([5, 4])
+            .style(|theme, status| design::rail(theme, status, false))
+            .on_press(Message::SidebarToggle),
+        if state.sidebar_open {
+            "Collapse sidebar"
+        } else {
+            "Expand sidebar"
+        },
+        Some("Ctrl+B"),
+    );
+
+    let navigation = column![
+        toggle,
+        section("WORKSPACE"),
+        page_item(Page::Home, "Home"),
+        page_item(Page::AssetLibrary, "Asset Library"),
+        page_item(Page::Files, "Modding"),
+        section("LEARN"),
+        page_item(Page::Docs, "Docs"),
+        page_item(Page::WhatsNew, "What's New"),
+        page_item(Page::Credits, "Credits"),
+        section("TOOLS"),
+        page_item(Page::Developer, "Developer"),
+        item(
+            Page::Models.icon(),
+            "Asset Viewer",
+            false,
+            None,
+            Message::OpenViewer
+        ),
+        item(
+            Page::Levels.icon(),
+            "Level Editor",
+            false,
+            None,
+            Message::OpenLevelEditorWindow,
+        ),
+    ]
+    .spacing(4);
+
+    let play = |bytes: &'static [u8], label: &'static str, message: Message, primary: bool| {
+        let mut contents = row![
+            container(space().width(3)),
+            container(svg(handles::svg(bytes)).width(20).height(20)).padding([3, 3]),
+        ]
+        .spacing(6)
+        .align_y(iced::Center);
+        // A dot on Play while the game is running.
+        if primary && state.active_play.is_some() {
+            contents = contents.push(design::indicator_dot::<Message>(None, 1.0));
+        }
+        if labels {
+            contents = contents.push(text(label).size(14));
+        }
+        tip(
+            design::button(contents)
+                .width(Fill)
+                .height(36)
+                .padding([5, 4])
+                .style(if primary {
+                    design::primary
+                } else {
+                    design::secondary
+                })
+                .on_press(message),
+            label,
+            None,
+        )
+    };
+    let lower = column![
+        play(
+            include_bytes!("../../../assets/nav/play-mods.svg"),
+            "Play with mods",
+            Message::PlayWithMods,
+            true,
+        ),
+        play(
+            include_bytes!("../../../assets/nav/play-clean.svg"),
+            "Play without mods",
+            Message::PlayWithoutMods,
+            false,
+        ),
+        page_item(Page::Settings, "Settings"),
+    ]
+    .spacing(4);
+    column![navigation, space().height(Fill), lower]
+        .height(Fill)
+        .padding([16, 12])
+        .into()
+}
+
 fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
     // Modern navigation keeps labels visible: no hover-dependent page names
@@ -18131,14 +18437,14 @@ fn view(state: &State) -> Element<'_, Message> {
             )
         });
     }
-    let play_mods_icon = svg(svg::Handle::from_memory(
-        include_bytes!("../../../assets/nav/play-mods.svg").to_vec(),
-    ))
+    let play_mods_icon = svg(handles::svg(include_bytes!(
+        "../../../assets/nav/play-mods.svg"
+    )))
     .width(20)
     .height(20);
-    let play_clean_icon = svg(svg::Handle::from_memory(
-        include_bytes!("../../../assets/nav/play-clean.svg").to_vec(),
-    ))
+    let play_clean_icon = svg(handles::svg(include_bytes!(
+        "../../../assets/nav/play-clean.svg"
+    )))
     .width(20)
     .height(20);
     let mut play_mods_row = row![play_mods_icon].spacing(12).align_y(iced::Center);
@@ -18249,20 +18555,18 @@ fn view(state: &State) -> Element<'_, Message> {
         .on_exit(Message::SidebarHover(false));
     let mut headline = row![
         design::button(
-            image(image::Handle::from_bytes(
-                include_bytes!("../../../assets/hunt.png").to_vec()
-            ))
-            .width(34)
-            .height(34)
+            image(handles::image(include_bytes!("../../../assets/hunt.png")))
+                .width(34)
+                .height(34)
         )
         .style(design::text_button)
         .on_press(Message::Navigate(Page::Home)),
         if state.preferences.ui_theme == "Evolve Legacy" {
             Element::<Message>::from(
                 row![
-                    image(image::Handle::from_bytes(
-                        include_bytes!("../../../assets/legacy/legacy-cursor-art.png").to_vec()
-                    ))
+                    image(handles::image(include_bytes!(
+                        "../../../assets/legacy/legacy-cursor-art.png"
+                    )))
                     .width(23)
                     .height(23),
                     // Legacy titles resolve from random glyphs on page change.
@@ -18412,7 +18716,7 @@ fn view(state: &State) -> Element<'_, Message> {
         Page::Home => private_pages::home(state),
         Page::Docs => private_pages::docs(state),
         Page::WhatsNew => private_pages::whats_new(state),
-        Page::Credits => private_pages::credits(),
+        Page::Credits => credits::view(state),
         Page::Developer => private_pages::developer(state),
         Page::AssetLibrary => asset_library_page::view(state),
         Page::Files => modding_page::view(state),
@@ -18726,10 +19030,14 @@ fn view(state: &State) -> Element<'_, Message> {
     .height(Fill);
     // Activity is detached so it never steals space from the working page.
     let body = chrome::sheet_overlay(body.into(), state);
-    let page: Element<'_, Message> = container(row![sidebar, body].height(Fill))
-        .width(Fill)
-        .height(Fill)
-        .into();
+    let page: Element<'_, Message> = if legacy_nav {
+        container(row![sidebar, body].height(Fill))
+            .width(Fill)
+            .height(Fill)
+            .into()
+    } else {
+        modern_shell(state, page, body)
+    };
     match island_panel {
         // The expanded island floats above the footer instead of resizing it.
         Some(panel) => iced::widget::stack![
@@ -19114,6 +19422,19 @@ impl Desktop {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        // Choosing anything from the open sidebar closes it.
+        if self.state.sidebar_open
+            && matches!(
+                message,
+                Message::Navigate(_)
+                    | Message::OpenViewer
+                    | Message::OpenLevelEditorWindow
+                    | Message::PlayWithMods
+                    | Message::PlayWithoutMods
+            )
+        {
+            let _ = update(&mut self.state, Message::SidebarClose);
+        }
         let task = self.route(message);
         sync_tickers(&mut self.state);
         // Both only touch the disk when a path changes or work finishes.
@@ -19288,6 +19609,10 @@ impl Desktop {
                     || self.state.modding_menu.is_some();
                 // The map thumbnail lightbox is the level window's top layer.
                 let closed_layer = closed_layer || self.state.map_chooser.lightbox.take().is_some();
+                // The open sidebar panel is the main window's lowest layer.
+                if !closed_layer && self.state.sidebar_open && Some(id) != self.level_id {
+                    return update(&mut self.state, Message::SidebarClose);
+                }
                 if closed_layer {
                     Task::none()
                 } else if self.level_id == Some(id)
@@ -19363,6 +19688,11 @@ impl Desktop {
             Message::OpenViewerPreferences => self.open_viewer_preferences(),
             Message::OpenInspectorWindow => self.open_inspector(),
             Message::ToggleActivity => self.open_activity(),
+            // A toast's action can open windows, which only this level can do.
+            Message::ToastClicked(id) => match self.state.toasts.take_action(id) {
+                Some(action) => self.update(action),
+                None => Task::none(),
+            },
             Message::DismissPlayNotice => {
                 let command = update(&mut self.state, Message::DismissPlayNotice);
                 let close = self
@@ -19522,26 +19852,18 @@ impl Desktop {
                 if finished {
                     self.state.modding_open_editor_when_scanned = false;
                 }
-                let automatic_activity = !was_busy
-                    && self.state.busy
-                    && self.state.preferences.show_activity_on_tasks
-                    && self.activity_id.is_none()
-                    && self.state.active_play.is_none();
-                let activity = if automatic_activity {
-                    self.open_activity()
-                } else {
-                    Task::none()
-                };
+                // Activity opens only when asked for (the footer, the
+                // command palette or a toast); toasts report results.
                 let notice = self.open_play_notice();
                 if opens_level && self.level_id.is_none() {
                     let open = self.open_level_editor();
-                    Task::batch([command, open, activity, notice])
+                    Task::batch([command, open, notice])
                 } else if opens_model && self.viewer_id.is_none() {
                     let open = self.open_viewer();
                     self.state.viewer_from_library = launched_from_library;
-                    Task::batch([command, open, activity, notice])
+                    Task::batch([command, open, notice])
                 } else {
-                    Task::batch([command, activity, notice])
+                    Task::batch([command, notice])
                 }
             }
         }
@@ -19841,6 +20163,14 @@ impl Desktop {
                 }) if modifiers.control() && value.eq_ignore_ascii_case("k") => Some(Message::Ui(
                     ui_kit::UiMsg::Palette(command_palette::Msg::Toggle),
                 )),
+                // Ctrl+B opens or collapses the sidebar.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    modifiers,
+                    ..
+                }) if modifiers.control() && value.eq_ignore_ascii_case("b") => {
+                    Some(Message::SidebarToggle)
+                }
                 // Ctrl+1–6 switch Developer tabs.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Character(value),

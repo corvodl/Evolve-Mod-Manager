@@ -658,6 +658,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 design::button(text(format!("Explorer: {}", state.preferences.file_explorer_side))).on_press(Message::PreferenceExplorerSide).style(design::secondary)
             ].spacing(8),
             crate::ui_kit::switch(&state.ui, "reduce-motion", "Reduce motion", state.preferences.reduce_motion, Message::PreferenceReduceMotion),
+            crate::ui_kit::switch(&state.ui, "sidebar-peek", "Open the sidebar while hovering its icons", state.preferences.sidebar_hover_peek, Message::PreferenceSidebarPeek),
+            text("Off: only the button at the top of the sidebar (or Ctrl+B) opens it. It always opens over the page.").size(design::CAPTION).style(design::muted),
             text("HOME SCREEN ARTWORK").size(design::LABEL),
             row![
                 design::button("Background On")
@@ -990,7 +992,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         text("Recovery copies are needed only for modified PAKs being swapped.").size(design::LABEL).style(design::muted),
         panel(column![
             crate::ui_kit::switch(&state.ui, "snapshots", "Keep full-game snapshots (extra disk use)", state.preferences.keep_original_snapshots, Message::PreferenceSnapshots),
-            crate::ui_kit::switch(&state.ui, "activity", "Show activity during tasks", state.preferences.show_activity_on_tasks, Message::PreferenceActivity),
             text("Crash reports").size(design::HEADING),
             text("Local diagnostics for model loading, GPU uploads, and Rust crashes. Enabled by default; logs may include local asset names and file paths.")
                 .size(design::LABEL).style(design::muted),

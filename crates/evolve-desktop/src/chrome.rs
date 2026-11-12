@@ -31,6 +31,8 @@ const VISIBLE_BANNERS: usize = 2;
 /// from here so their hints match the real key handling in `main.rs`.
 pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Command palette", "Ctrl+K"),
+    ("Expand sidebar", "Ctrl+B"),
+    ("Collapse sidebar", "Ctrl+B"),
     ("Close", "Esc"),
     ("Focus selection", "F"),
     ("Focus selected object", "F"),
