@@ -1555,7 +1555,13 @@ fn text_viewport(state: &State) -> Element<'_, Message> {
     };
     let tools = row![
         text("TEXT EDITOR").size(15),
+        if doc.editable {
+            crate::ui_kit::badge(crate::ui_kit::BadgeKind::Enabled, "Editable")
+        } else {
+            crate::ui_kit::badge(crate::ui_kit::BadgeKind::ReadOnly, "Read-only")
+        },
         text(doc.member.as_str()).size(12).width(Fill),
+        crate::ui_kit::copy_button(&state.ui, "text-member", doc.member.clone()),
         {
             let (saving, saved_at) = state.ui.save_info("text");
             crate::ui_kit::save_status(doc.dirty(), saving, saved_at)
@@ -1695,12 +1701,20 @@ fn viewport(state: &State) -> Element<'_, Message> {
             .into()
         }
     } else if let Some(handle) = &state.texture_preview {
-        container(
-            image(handle.clone())
+        // With an image replacement picked, compare it against the
+        // original with a draggable split.
+        let replacement = replacement_image(state);
+        let body: Element<'_, Message> = match replacement {
+            Some(replacement) => {
+                crate::ui_kit::compare_slider(&state.ui, handle.clone(), replacement)
+            }
+            None => image(handle.clone())
                 .content_fit(iced::ContentFit::Contain)
                 .width(Fill)
-                .height(Fill),
-        )
+                .height(Fill)
+                .into(),
+        };
+        container(body)
         .center(Fill)
         .style(|theme| container::Style {
             background: Some(Background::Color(design::field(theme))),
@@ -2731,4 +2745,18 @@ fn dock_item(
         message: Some(message),
         active,
     }
+}
+
+/// The picked replacement as a displayable image (PNG/JPEG/WebP only;
+/// DDS replacements cannot be decoded by the preview widget).
+fn replacement_image(state: &State) -> Option<iced::widget::image::Handle> {
+    if state.editor_replace_dialog.is_none() {
+        return None;
+    }
+    let path = std::path::Path::new(state.editor_replace_source.trim());
+    let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp") || !path.is_file() {
+        return None;
+    }
+    Some(iced::widget::image::Handle::from_path(path))
 }

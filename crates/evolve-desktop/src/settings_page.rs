@@ -273,8 +273,25 @@ fn storage(state: &State) -> Element<'_, Message> {
     }
     // Bucket sizes count up to their new values when an analysis finishes.
     const TICKERS: [&str; 5] = ["storage_0", "storage_1", "storage_2", "storage_3", "storage_4"];
-    let mut legend = row![].spacing(15);
-    for (i, label) in labels.iter().enumerate() {
+    // Legend order follows the sort header (size or name).
+    let mut order: Vec<usize> = (0..labels.len()).collect();
+    if let Some((column, ascending)) = state.storage_sort {
+        order.sort_by(|&a, &b| {
+            let order = if column == "size" {
+                buckets[a].cmp(&buckets[b])
+            } else {
+                labels[a].cmp(labels[b])
+            };
+            if ascending { order } else { order.reverse() }
+        });
+    }
+    let mut legend = row![
+        crate::ui_kit::sort_header("NAME", "name", state.storage_sort, Message::SortBy("storage", "name"), Length::Shrink),
+        crate::ui_kit::sort_header("SIZE", "size", state.storage_sort, Message::SortBy("storage", "size"), Length::Shrink),
+    ]
+    .spacing(15);
+    for i in order {
+        let label = &labels[i];
         legend = legend.push(
             text(format!(
                 "{}: {}",
@@ -298,6 +315,7 @@ fn storage(state: &State) -> Element<'_, Message> {
         text("GAME STORAGE").size(15),
         row![
             text("Mod Data Location").size(12),
+            crate::ui_kit::copy_button(&state.ui, "storage-root", root.to_owned()),
             container(text(root).size(12)).width(Fill).padding(9).style(|theme| container::Style {
                 background: Some(Background::Color(Color::from_rgb8(31, 31, 37))),
                 border: Border { color: design::border(theme), width: 1.0, radius: design::radius(theme, design::Radius::Small).into() },
@@ -578,7 +596,18 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         Tab::Updates => column![
         heading("Updates"),
         panel(column![
-            text(format!("Installed version: {}", env!("CARGO_PKG_VERSION"))).size(12),
+            row![
+                text(format!("Installed version: {}", env!("CARGO_PKG_VERSION"))).size(12),
+                crate::ui_kit::copy_button(&state.ui, "version", env!("CARGO_PKG_VERSION").to_owned()),
+            ]
+            .push(env!("CARGO_PKG_VERSION").contains("-nightly.").then(|| {
+                crate::ui_kit::badge(crate::ui_kit::BadgeKind::Nightly, "Nightly")
+            }))
+            .push(env!("CARGO_PKG_VERSION").contains("-beta.").then(|| {
+                crate::ui_kit::badge(crate::ui_kit::BadgeKind::Modified, "Beta")
+            }))
+            .spacing(8)
+            .align_y(iced::Center),
             row![
                 design::button("Check for Updates").on_press(Message::CheckUpdates).style(design::primary),
                 crate::ui_kit::segmented(

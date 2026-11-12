@@ -22,6 +22,21 @@ fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Containe
         })
 }
 
+fn sort_cell(
+    label: &'static str,
+    column: &'static str,
+    width: u16,
+    state: &State,
+) -> Element<'static, Message> {
+    crate::ui_kit::sort_header(
+        label,
+        column,
+        state.library_sort,
+        Message::SortBy("library", column),
+        Length::FillPortion(width),
+    )
+}
+
 fn header_cell(label: &'static str, width: u16) -> Element<'static, Message> {
     text(label)
         .size(13)
@@ -640,6 +655,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8),
     );
+    layout = layout.push(crate::ui_kit::chips(
+        &state.library_chips,
+        &state.library_chip_options,
+        &state.library_chip_query,
+        Message::LibraryChipPicked,
+        Message::LibraryChipInput,
+        Message::LibraryChipRemove,
+    ));
 
     let display_rows = browser_rows(state);
     let matching = state.library_matches.len();
@@ -753,10 +776,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     }
     let table_heading = container(
         row![
-            header_cell("Archive / Category", 6),
-            header_cell("Game", 4),
-            header_cell("Build(s)", 3),
-            header_cell("Files", 1),
+            sort_cell("Archive / Category", "name", 6, state),
+            sort_cell("Game", "game", 4, state),
+            sort_cell("Build(s)", "builds", 3, state),
+            sort_cell("Files", "files", 1, state),
             header_cell("Actions", 1),
         ]
         .spacing(9)

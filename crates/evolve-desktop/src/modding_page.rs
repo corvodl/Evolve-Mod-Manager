@@ -5,8 +5,8 @@ use super::{Message, State};
 use crate::design;
 use crate::modding_projects::{PakExportMode, ProjectRow};
 use evolve_core::mod_safety::{ModKind, classify};
-use iced::widget::{column, container, row, scrollable, space, svg, text};
-use iced::{Alignment, Background, Color, Element, Fill, Length};
+use iced::widget::{column, container, row, scrollable, space, text};
+use iced::{Alignment, Background, Element, Fill, Length};
 use std::collections::HashMap;
 
 pub(super) const PAGE: usize = 90;
@@ -178,7 +178,7 @@ fn scan_projects(projects: &[ProjectRow]) -> LoadOrderScan {
 
 pub(super) fn matching_projects(state: &State) -> Vec<usize> {
     let query = state.modding_filter.to_lowercase();
-    state
+    let mut matches = state
         .modding_projects
         .as_deref()
         .unwrap_or(&[])
@@ -193,7 +193,53 @@ pub(super) fn matching_projects(state: &State) -> Vec<usize> {
                     .any(|value| value.to_lowercase().contains(&query))))
             .then_some(i)
         })
-        .collect()
+        .filter(|&i| {
+            let p = &state.modding_projects.as_deref().unwrap_or(&[])[i];
+            state.modding_chips.iter().all(|chip| match chip.as_str() {
+                "Modified only" => !p.modified.is_empty(),
+                "Unmodified only" => p.modified.is_empty(),
+                "Enabled only" => p.enabled,
+                "Disabled only" => !p.enabled,
+                _ => chip
+                    .strip_prefix("PAK: ")
+                    .is_none_or(|target| p.target == target),
+            })
+        })
+        .collect::<Vec<_>>();
+    sort_projects(state, &mut matches);
+    matches
+}
+
+/// Apply the project list's header sort (display order only; the load
+/// order number shown in each row is unchanged).
+fn sort_projects(state: &State, indices: &mut [usize]) {
+    let projects = state.modding_projects.as_deref().unwrap_or(&[]);
+    if let Some((column, ascending)) = state.modding_sort {
+        indices.sort_by(|&a, &b| {
+                let (a, b) = (&projects[a], &projects[b]);
+                let order = match column {
+                    "pak" => a.target.to_lowercase().cmp(&b.target.to_lowercase()),
+                    "status" => a.status.cmp(&b.status),
+                    "enabled" => b.enabled.cmp(&a.enabled),
+                    _ => a.label.to_lowercase().cmp(&b.label.to_lowercase()),
+                };
+            if ascending { order } else { order.reverse() }
+        });
+    }
+}
+
+/// Options for the project chip filter.
+pub(super) fn modding_chip_options(projects: &[ProjectRow]) -> Vec<String> {
+    let mut options = vec![
+        "Modified only".to_owned(),
+        "Unmodified only".to_owned(),
+        "Enabled only".to_owned(),
+        "Disabled only".to_owned(),
+    ];
+    let targets: std::collections::BTreeSet<_> =
+        projects.iter().map(|p| format!("PAK: {}", p.target)).collect();
+    options.extend(targets);
+    options
 }
 
 pub(super) fn page_range(count: usize, page: usize) -> std::ops::Range<usize> {
@@ -331,32 +377,23 @@ fn dropdown_left(name: Option<&str>) -> f32 {
     }
 }
 
-fn project_header(advanced: bool) -> Element<'static, Message> {
+fn project_header(advanced: bool, sort: crate::ui_kit::Sort) -> Element<'static, Message> {
+    let sortable = |label: &'static str, column: &'static str, width: Length| {
+        crate::ui_kit::sort_header(label, column, sort, Message::SortBy("modding", column), width)
+    };
     let mut header = row![
         text("ORDER")
             .size(10)
             .style(design::muted)
             .width(Length::Fixed(48.0)),
-        text("ENABLED")
-            .size(10)
-            .style(design::muted)
-            .width(Length::FillPortion(2)),
-        text("MOD NAME / SOURCE")
-            .size(10)
-            .style(design::muted)
-            .width(Length::FillPortion(7)),
-        text("PAK")
-            .size(10)
-            .style(design::muted)
-            .width(Length::FillPortion(5)),
+        sortable("ENABLED", "enabled", Length::FillPortion(2)),
+        sortable("MOD NAME / SOURCE", "name", Length::FillPortion(7)),
+        sortable("PAK", "pak", Length::FillPortion(5)),
         text("DECLARED COLLISION")
             .size(10)
             .style(design::muted)
             .width(Length::Fixed(132.0)),
-        text("MANIFEST")
-            .size(10)
-            .style(design::muted)
-            .width(Length::FillPortion(2)),
+        sortable("MANIFEST", "status", Length::FillPortion(2)),
     ];
     if advanced {
         header = header
@@ -390,61 +427,32 @@ enum BadgeTone {
     Disabled,
 }
 
-fn badge_color(tone: BadgeTone, theme: &iced::Theme) -> Color {
-    match tone {
-        BadgeTone::Clean => theme.palette().success,
-        BadgeTone::Shared => theme.palette().warning,
-        BadgeTone::Target => theme.palette().danger,
-        BadgeTone::Disabled => theme.extended_palette().background.strongest.text,
-    }
-}
-
-/// Theme-aware badge: no fixed RGB mock palette, so light and legacy themes
-/// stay readable while the semantic color remains obvious.
+/// Project badges use the shared theme-aware `ui_kit::badge`.
 fn badge(label: impl Into<String>, tone: BadgeTone) -> Element<'static, Message> {
-    let label = label.into();
-    container(text(label).size(11).style(move |theme| text::Style {
-        color: Some(badge_color(tone, theme)),
-    }))
-    .padding([2, 7])
-    .style(move |theme| {
-        let color = badge_color(tone, theme);
-        container::Style {
-            background: Some(Background::Color(Color::from_rgba(
-                color.r, color.g, color.b, 0.14,
-            ))),
-            border: iced::border::rounded(5).color(color),
-            ..container::Style::default()
-        }
-    })
-    .into()
+    use crate::ui_kit::BadgeKind;
+    let kind = match tone {
+        BadgeTone::Clean => BadgeKind::Enabled,
+        BadgeTone::Shared => BadgeKind::Modified,
+        BadgeTone::Target => BadgeKind::Conflict,
+        BadgeTone::Disabled => BadgeKind::Neutral,
+    };
+    crate::ui_kit::badge(kind, label.into())
 }
 
 /// Lightweight, vector-sharp sliding switch. No images or theme-specific
 /// assets are bundled; thumb and red track interpolate on the Iced Tick.
 fn mod_toggle_switch(position: f32) -> Element<'static, Message> {
-    let position = position.clamp(0.0, 1.0);
-    let blend = |off: u8, on: u8| -> u8 {
-        (f32::from(off) + (f32::from(on) - f32::from(off)) * position).round() as u8
-    };
-    let red = blend(58, 217);
-    let green = blend(62, 49);
-    let blue = blend(72, 69);
-    let knob_x = 15.0 + 26.0 * position;
-    let graphic = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="56" height="32" viewBox="0 0 56 32">
-<rect x="2" y="3" width="52" height="26" rx="13" fill="#{red:02x}{green:02x}{blue:02x}" />
-<circle cx="{knob_x:.2}" cy="16" r="10" fill="#f4f5f7" />
-</svg>"##
-    );
-    svg(svg::Handle::from_memory(graphic.into_bytes()))
-        .width(Length::Fixed(56.0))
-        .height(Length::Fixed(32.0))
-        .into()
+    // Same themed track/knob as `ui_kit::switch`; position eases via anim.
+    iced::widget::canvas(crate::fx::SwitchKnob {
+        position: position.clamp(0.0, 1.0),
+    })
+    .width(Length::Fixed(40.0))
+    .height(Length::Fixed(22.0))
+    .into()
 }
 
 fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> {
-    let mut rows = column![project_header(state.modding_advanced)].spacing(4);
+    let mut rows = column![project_header(state.modding_advanced, state.modding_sort)].spacing(4);
     let projects = state.modding_projects.as_deref().unwrap_or(&[]);
     let matches = matching_projects(state);
     let count = matches.len();
@@ -477,7 +485,15 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
         };
         let mut cells = row![
             column![
-                text(record.label.as_str()).size(12),
+                row![text(record.label.as_str()).size(12)]
+                    .push((!record.modified.is_empty()).then(|| {
+                        crate::ui_kit::badge(
+                            crate::ui_kit::BadgeKind::Modified,
+                            format!("{} modified", record.modified.len()),
+                        )
+                    }))
+                    .spacing(6)
+                    .align_y(Alignment::Center),
                 text(source).size(11).style(design::muted),
             ]
             .width(Length::FillPortion(7)),
@@ -930,6 +946,7 @@ fn signed_paks(state: &State) -> Element<'_, Message> {
                                 )
                             )),
                         text(target).size(12).width(Fill),
+                        crate::ui_kit::badge(crate::ui_kit::BadgeKind::Signed, "Signed"),
                         text(if enabled { "Selected" } else { "Not selected" })
                             .size(11)
                             .style(design::muted),
@@ -1529,6 +1546,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 )
                 .on_input(Message::ModdingFilterChanged)
                 .width(Fill),
+                crate::ui_kit::chips(
+                    &state.modding_chips,
+                    &state.modding_chip_options,
+                    &state.modding_chip_query,
+                    Message::ModdingChipPicked,
+                    Message::ModdingChipInput,
+                    Message::ModdingChipRemove,
+                ),
                 design::button(text(format!("All mods ({all_count})")).size(11))
                     .style(if state.modding_kind.is_none() {
                         design::primary

@@ -781,6 +781,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     ]
                     .spacing(16),
                 );
+                for (label, id, hash) in [
+                    ("Original SHA-256", "sha-original", &result.original.sha256),
+                    ("Modified SHA-256", "sha-modified", &result.modified.sha256),
+                ] {
+                    rows = rows.push(
+                        row![
+                            text(label).size(11).width(Length::Fixed(120.0)),
+                            text(hash.as_str()).size(11).font(iced::Font::MONOSPACE).width(Fill),
+                            crate::ui_kit::copy_button(&state.ui, id, hash.clone()),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Center),
+                    );
+                }
                 if let Some((original, modified)) = &state.comparison_text {
                     rows = rows.push(
                         container(crate::diff_view::view(original, modified, "Original", "Modified"))

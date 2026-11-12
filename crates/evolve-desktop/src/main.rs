@@ -343,6 +343,19 @@ struct State {
     /// Shared component state: palette, holds, tickers, island, dock.
     ui: ui_kit::UiState,
     color_picker: color_picker::PickerState,
+    /// Sort orders for the library table, project list and storage legend.
+    library_sort: ui_kit::Sort,
+    modding_sort: ui_kit::Sort,
+    storage_sort: ui_kit::Sort,
+    /// Filter chips ("Category: X", "Source: Y", "Build: Z").
+    library_chips: Vec<String>,
+    library_chip_query: String,
+    library_chip_options: iced::widget::combo_box::State<String>,
+    /// Catalog fingerprint the chip options were built for.
+    library_chip_options_for: (usize, usize),
+    modding_chips: Vec<String>,
+    modding_chip_query: String,
+    modding_chip_options: iced::widget::combo_box::State<String>,
     level_viewport_fullscreen: bool,
     viewer_viewport_fullscreen: bool,
     sidebar_hovered: bool,
@@ -2796,6 +2809,16 @@ enum Message {
     OpenSettingsTab(settings_page::Tab),
     TextEditorToggleDiff,
     DismissIntro,
+    /// Sort a table: `(table, column)`; clicking again flips direction.
+    SortBy(&'static str, &'static str),
+    LibraryChipPicked(String),
+    LibraryChipInput(String),
+    LibraryChipRemove(usize),
+    ModdingChipPicked(String),
+    ModdingChipInput(String),
+    ModdingChipRemove(usize),
+    /// Files are being dragged over (`true`) or left (`false`) a window.
+    FilesHovered(window::Id, bool),
     ColorPicker(color_picker::Msg),
     /// Copy a value from a copy button: `(button id, value)`.
     CopyToClipboard(String, String),
@@ -4933,6 +4956,40 @@ fn refresh_library_matches(state: &mut State) {
         state.library_matches.clear();
         return;
     };
+    // Chip options are rebuilt only when the catalog changes, so the combo
+    // box keeps its own state while typing.
+    let fingerprint = (catalog.archives.len(), catalog.builds.len());
+    if state.library_chip_options_for != fingerprint {
+        let mut options = std::collections::BTreeSet::new();
+        for archive in &catalog.archives {
+            if !archive.group.is_empty() {
+                options.insert(format!("Category: {}", archive.group));
+            }
+            if !archive.source.is_empty() {
+                options.insert(format!("Source: {}", archive.source));
+            }
+        }
+        for build in &catalog.builds {
+            options.insert(format!("Build: {build}"));
+        }
+        state.library_chip_options =
+            iced::widget::combo_box::State::new(options.into_iter().collect());
+        state.library_chip_options_for = fingerprint;
+    }
+    let chips = state.library_chips.clone();
+    let chip_match = |entry: &evolve_core::ImportedPak| {
+        chips.iter().all(|chip| {
+            if let Some(value) = chip.strip_prefix("Category: ") {
+                entry.group == value
+            } else if let Some(value) = chip.strip_prefix("Source: ") {
+                entry.source == value
+            } else if let Some(value) = chip.strip_prefix("Build: ") {
+                entry.builds.iter().any(|build| build == value)
+            } else {
+                true
+            }
+        })
+    };
     let needle = state.library_search.to_ascii_lowercase();
     let build = state
         .library_by_build
@@ -4944,6 +5001,9 @@ fn refresh_library_matches(state: &mut State) {
         .enumerate()
         .filter_map(|(i, entry)| {
             if state.library_by_build && !build.is_some_and(|label| entry.builds.contains(label)) {
+                return None;
+            }
+            if !chip_match(entry) {
                 return None;
             }
             if !needle.is_empty()
@@ -4961,6 +5021,20 @@ fn refresh_library_matches(state: &mut State) {
             Some(i)
         })
         .collect();
+    // Sorting happens here (data or column change), never per redraw.
+    if let Some((column, ascending)) = state.library_sort {
+        let archives = &catalog.archives;
+        state.library_matches.sort_by(|&a, &b| {
+            let (a, b) = (&archives[a], &archives[b]);
+            let order = match column {
+                "game" => a.source.to_lowercase().cmp(&b.source.to_lowercase()),
+                "builds" => a.builds.len().cmp(&b.builds.len()),
+                "files" => a.entries.cmp(&b.entries),
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            };
+            if ascending { order } else { order.reverse() }
+        });
+    }
 }
 
 fn refresh_viewer_rows(state: &mut State) {
@@ -9394,6 +9468,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         | Message::ViewerOpened
         | Message::ActivityOpened
         | Message::WindowClosed(_)
+        | Message::FilesHovered(_, _)
         | Message::FileDropped(_, _) => {}
         Message::CancelScan => {
             if let Some(cancel) = &state.scan_cancel {
@@ -12383,6 +12458,57 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 persist_preferences(state);
             }
         }
+        Message::SortBy(table, column) => {
+            match table {
+                "library" => {
+                    state.library_sort = ui_kit::next_sort(state.library_sort, column);
+                    refresh_library_matches(state);
+                }
+                "modding" => state.modding_sort = ui_kit::next_sort(state.modding_sort, column),
+                "storage" => state.storage_sort = ui_kit::next_sort(state.storage_sort, column),
+                _ => {}
+            }
+        }
+        Message::LibraryChipPicked(chip) => {
+            if !state.library_chips.contains(&chip) {
+                state.library_chips.push(chip);
+            }
+            state.library_chip_query.clear();
+            state.library_page = 0;
+            refresh_library_matches(state);
+        }
+        Message::LibraryChipInput(value) => {
+            // A second empty input means Backspace in an empty field.
+            if value.is_empty() && state.library_chip_query.is_empty() {
+                state.library_chips.pop();
+                refresh_library_matches(state);
+            }
+            state.library_chip_query = value;
+        }
+        Message::LibraryChipRemove(index) => {
+            if index < state.library_chips.len() {
+                state.library_chips.remove(index);
+                refresh_library_matches(state);
+            }
+        }
+        Message::ModdingChipPicked(chip) => {
+            if !state.modding_chips.contains(&chip) {
+                state.modding_chips.push(chip);
+            }
+            state.modding_chip_query.clear();
+            state.modding_page = 0;
+        }
+        Message::ModdingChipInput(value) => {
+            if value.is_empty() && state.modding_chip_query.is_empty() {
+                state.modding_chips.pop();
+            }
+            state.modding_chip_query = value;
+        }
+        Message::ModdingChipRemove(index) => {
+            if index < state.modding_chips.len() {
+                state.modding_chips.remove(index);
+            }
+        }
         Message::DismissIntro => {
             state.preferences.last_seen_version = env!("CARGO_PKG_VERSION").into();
             persist_preferences(state);
@@ -14327,6 +14453,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                 }
                 Ok(Completed::Projects(projects)) => {
+                    state.modding_chip_options = iced::widget::combo_box::State::new(
+                        modding_page::modding_chip_options(&projects),
+                    );
                     let focus = state.modding_pending_focus.take();
                     let previous = focus
                         .clone()
@@ -16841,6 +16970,7 @@ fn view(state: &State) -> Element<'_, Message> {
             text(compact_footer_status(&state.status))
                 .size(12)
                 .width(Fill),
+            ui_kit::copy_button(&state.ui, "status", state.status.clone()),
             footer_progress,
             text(format!("v{}", env!("CARGO_PKG_VERSION")))
                 .size(12)
@@ -17387,7 +17517,16 @@ impl Desktop {
             Message::ActivityOpened => Task::none(),
             Message::InspectorOpened => Task::none(),
             Message::ViewerOpened => Task::none(),
+            Message::FilesHovered(id, hovering) => {
+                self.state.ui.drop_target = if hovering {
+                    Some(id)
+                } else {
+                    self.state.ui.drop_target.filter(|target| *target != id)
+                };
+                Task::none()
+            }
             Message::FileDropped(id, path) => {
+                self.state.ui.drop_target = None;
                 if (self.viewer_id == Some(id) || self.inspector_id == Some(id))
                     && self.state.viewer_from_library
                 {
@@ -17531,6 +17670,12 @@ impl Desktop {
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
         let content = self.window_contents(id);
+        let content = if self.state.ui.drop_target == Some(id) {
+            let (label, refused) = self.drop_description(id);
+            ui_kit::drop_zone(content, label, refused)
+        } else {
+            content
+        };
         // Completion toasts follow the user into the windows where
         // long-running work is started; small dialogs stay uncluttered.
         if id == self.main_id || self.viewer_id == Some(id) || self.level_id == Some(id) {
@@ -17546,6 +17691,32 @@ impl Desktop {
             }
         } else {
             content
+        }
+    }
+
+    /// What dropping files on window `id` will do, mirroring `FileDropped`.
+    fn drop_description(&self, id: window::Id) -> (String, bool) {
+        let viewer = self.viewer_id == Some(id) || self.inspector_id == Some(id);
+        if viewer && self.state.viewer_from_library {
+            return (
+                "Asset Library originals are read-only — drop files in Modding instead".into(),
+                true,
+            );
+        }
+        if self.state.editor_replace_dialog.is_some() {
+            return ("Drop to use as the replacement source".into(), false);
+        }
+        let project = self
+            .state
+            .modding_selected
+            .and_then(|index| self.state.modding_projects.as_ref()?.get(index))
+            .map(|project| project.label.clone());
+        match project {
+            Some(label) if self.state.page == Some(Page::Files) => (
+                format!("Drop to inspect alongside {label} — a folder scans, a file opens"),
+                false,
+            ),
+            _ => ("Drop a folder to scan it, or a DDS, PAK or model file to open it".into(), false),
         }
     }
 
@@ -17755,6 +17926,19 @@ impl Desktop {
                 }) if modifiers.control() && value.eq_ignore_ascii_case("k") => Some(Message::Ui(
                     ui_kit::UiMsg::Palette(command_palette::Msg::Toggle),
                 )),
+                // Left/Right nudge an open image comparison split.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key:
+                        iced::keyboard::Key::Named(
+                            named @ (iced::keyboard::key::Named::ArrowLeft
+                            | iced::keyboard::key::Named::ArrowRight),
+                        ),
+                    ..
+                }) if status == iced::event::Status::Ignored => Some(Message::Ui(
+                    ui_kit::UiMsg::CompareNudge(
+                        if named == iced::keyboard::key::Named::ArrowLeft { -0.02 } else { 0.02 },
+                    ),
+                )),
                 // Palette navigation; ignored by the palette while closed.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key:
@@ -17827,6 +18011,12 @@ impl Desktop {
                 }
                 iced::Event::Window(window::Event::FileDropped(path)) => {
                     Some(Message::FileDropped(id, path))
+                }
+                iced::Event::Window(window::Event::FileHovered(_)) => {
+                    Some(Message::FilesHovered(id, true))
+                }
+                iced::Event::Window(window::Event::FilesHoveredLeft) => {
+                    Some(Message::FilesHovered(id, false))
                 }
                 _ => None,
             }),

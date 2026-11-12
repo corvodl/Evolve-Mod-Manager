@@ -48,6 +48,10 @@ pub enum UiMsg {
     Segment(&'static str, usize, Box<Message>),
     /// Switch flipped: `(switch key, new value, message to run)`.
     Switch(String, bool, Box<Message>),
+    /// Image comparison split set by clicking or dragging (0..1).
+    CompareSet(f32),
+    /// Arrow-key nudge of the comparison split.
+    CompareNudge(f32),
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +118,10 @@ pub struct UiState {
     switches: BTreeMap<String, Tween>,
     /// Copy buttons show ✓ for a moment after copying.
     copied: Option<(String, Instant)>,
+    /// Image comparison split (0 = all replacement, 1 = all original).
+    pub compare_split: Option<f32>,
+    /// Window currently hovered by dragged files.
+    pub drop_target: Option<iced::window::Id>,
 }
 
 impl UiState {
@@ -326,6 +334,11 @@ pub fn update(ui: &mut UiState, message: UiMsg, reduce_motion: bool) -> Option<M
         }
         UiMsg::Spotlight(key, point) => {
             ui.spotlight = point.map(|point| (key, point));
+        }
+        UiMsg::CompareSet(fraction) => ui.compare_split = Some(fraction.clamp(0.0, 1.0)),
+        UiMsg::CompareNudge(delta) => {
+            let split = ui.compare_split.unwrap_or(0.5);
+            ui.compare_split = Some((split + delta).clamp(0.0, 1.0));
         }
         UiMsg::Segment(id, index, message) => {
             let tween = ui
@@ -1070,6 +1083,143 @@ pub fn switch<'a>(
     .style(design::text_button)
     .on_press(ui(UiMsg::Switch(key.to_owned(), !value, Box::new(message))))
     .into()
+}
+
+// ---------------------------------------------------------------------------
+// Image comparison slider
+// ---------------------------------------------------------------------------
+
+/// Original (left of the handle) over the replacement (right), split by a
+/// handle you drag. Drawn on a canvas so the original is clipped, not
+/// squeezed. Left/Right arrow keys nudge the split.
+pub fn compare_slider<'a>(
+    ui_state: &UiState,
+    original: iced::widget::image::Handle,
+    replacement: iced::widget::image::Handle,
+) -> Element<'a, Message> {
+    iced::widget::canvas(crate::fx::ImageCompare {
+        original,
+        replacement,
+        split: ui_state.compare_split.unwrap_or(0.5),
+    })
+    .width(Fill)
+    .height(Fill)
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// Drop zone
+// ---------------------------------------------------------------------------
+
+/// Layer the drop feedback over `base`: dashed border plus a label saying
+/// what the drop will do (or why it is refused).
+pub fn drop_zone<'a>(base: Element<'a, Message>, label: String, refused: bool) -> Element<'a, Message> {
+    let tone = if refused { Tone::Danger } else { Tone::Info };
+    let message = container(
+        row![
+            text(if refused { "⊘" } else { "⤓" }).size(20),
+            text(label).size(14),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+    )
+    .padding([12, 18])
+    .style(move |theme: &Theme| {
+        let mut style = design::tinted(theme, tone);
+        style.background = Some(Background::Color(design::surface(theme)));
+        style
+    });
+    iced::widget::stack![
+        base,
+        iced::widget::canvas(crate::fx::DropZone { refused }).width(Fill).height(Fill),
+        container(message).center(Fill),
+    ]
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// Sortable table header
+// ---------------------------------------------------------------------------
+
+/// Current sort: `(column id, ascending)`.
+pub type Sort = Option<(&'static str, bool)>;
+
+/// Flip direction on the active column, otherwise sort ascending by it.
+pub fn next_sort(current: Sort, column: &'static str) -> Sort {
+    match current {
+        Some((active, ascending)) if active == column => Some((column, !ascending)),
+        _ => Some((column, true)),
+    }
+}
+
+/// A clickable column header with a ▲/▼ arrow on the active column.
+pub fn sort_header<'a>(
+    label: &'a str,
+    column: &'static str,
+    sort: Sort,
+    message: Message,
+    width: Length,
+) -> Element<'a, Message> {
+    let arrow = match sort {
+        Some((active, true)) if active == column => " ▲",
+        Some((active, false)) if active == column => " ▼",
+        _ => "",
+    };
+    iced::widget::button(text(format!("{label}{arrow}")).size(10).style(design::muted))
+        .padding([2, 0])
+        .width(width)
+        .style(|theme, status| {
+            let mut style = design::text_button(theme, status);
+            style.background = None;
+            style
+        })
+        .on_press(message)
+        .into()
+}
+
+// ---------------------------------------------------------------------------
+// Filter chips
+// ---------------------------------------------------------------------------
+
+/// Removable filter chips followed by a combo box to add more. Backspace
+/// in the empty input removes the last chip (handled by the caller's
+/// `on_input`, which receives "" twice in a row).
+pub fn chips<'a>(
+    chips: &'a [String],
+    options: &'a iced::widget::combo_box::State<String>,
+    query: &'a str,
+    on_pick: fn(String) -> Message,
+    on_input: fn(String) -> Message,
+    on_remove: fn(usize) -> Message,
+) -> Element<'a, Message> {
+    let mut line = row![].spacing(6).align_y(Alignment::Center);
+    for (index, chip) in chips.iter().enumerate() {
+        line = line.push(
+            container(
+                row![
+                    text(chip.as_str()).size(11),
+                    iced::widget::button(text("✕").size(9))
+                        .padding([0, 3])
+                        .style(design::text_button)
+                        .on_press(on_remove(index)),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+            )
+            .padding([2, 4])
+            .style(|theme: &Theme| {
+                let mut style = design::pill(theme);
+                style.background = Some(Background::Color(design::selection(theme)));
+                style
+            }),
+        );
+    }
+    let picker = iced::widget::combo_box(options, "Add filter…", None, on_pick)
+        .on_input(on_input)
+        .size(12)
+        .width(Length::Fixed(220.0));
+    let _ = query;
+    line.push(picker).wrap().into()
 }
 
 // ---------------------------------------------------------------------------

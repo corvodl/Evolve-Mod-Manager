@@ -10,7 +10,7 @@ evolve-core = { path = "../evolve-core" }
 # Preserve Iced 0.14's native defaults while excluding its `web-colors` feature.
 # That feature opts into web-style color blending instead of the sRGB
 # rendering path required by the Level Editor and Model Viewer.
-iced = { version = "0.14", default-features = false, features = ["wgpu", "tiny-skia", "crisp", "thread-pool", "linux-theme-detection", "x11", "wayland", "tokio", "canvas", "svg", "image"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "tiny-skia", "crisp", "thread-pool", "linux-theme-detection", "x11", "wayland", "tokio", "canvas", "svg", "image", "advanced"] }
 # Explicitly match iced_wgpu 0.14's GPU API generation.
 wgpu = "27.0"
 tokio = { version = "1", features = ["rt"] }

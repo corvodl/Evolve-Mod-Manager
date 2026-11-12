@@ -153,6 +153,183 @@ impl canvas::Program<Message> for BorderBeam {
     }
 }
 
+/// Before/after texture comparison with a draggable vertical split.
+pub struct ImageCompare {
+    pub original: iced::widget::image::Handle,
+    pub replacement: iced::widget::image::Handle,
+    /// Fraction of the width showing the original (from the left).
+    pub split: f32,
+}
+
+#[derive(Default)]
+pub struct CompareDrag {
+    dragging: bool,
+}
+
+/// Largest rectangle with the image's aspect ratio centred in `size`.
+fn contain(renderer: &Renderer, handle: &iced::widget::image::Handle, size: Size) -> Rectangle {
+    use iced::advanced::image::Renderer as _;
+    let image = renderer
+        .measure_image(handle)
+        .map(|s| Size::new(s.width as f32, s.height as f32))
+        .filter(|s| s.width > 0.0 && s.height > 0.0)
+        .unwrap_or(size);
+    let scale = (size.width / image.width).min(size.height / image.height);
+    let fitted = Size::new(image.width * scale, image.height * scale);
+    Rectangle::new(
+        Point::new((size.width - fitted.width) / 2.0, (size.height - fitted.height) / 2.0),
+        fitted,
+    )
+}
+
+impl canvas::Program<Message> for ImageCompare {
+    type State = CompareDrag;
+
+    fn update(
+        &self,
+        state: &mut CompareDrag,
+        event: &iced::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        let set = |x: f32| {
+            canvas::Action::publish(Message::Ui(crate::ui_kit::UiMsg::CompareSet(
+                (x - bounds.x) / bounds.width.max(1.0),
+            )))
+            .and_capture()
+        };
+        match event {
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if cursor.is_over(bounds) =>
+            {
+                state.dragging = true;
+                cursor.position().map(|p| set(p.x))
+            }
+            iced::Event::Mouse(mouse::Event::CursorMoved { position }) if state.dragging => {
+                Some(set(position.x))
+            }
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                state.dragging = false;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn draw(
+        &self,
+        _state: &CompareDrag,
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let size = bounds.size();
+        let split_x = size.width * self.split.clamp(0.0, 1.0);
+        frame.draw_image(
+            contain(renderer, &self.replacement, size),
+            canvas::Image::new(self.replacement.clone()),
+        );
+        // Clip region starts at the origin, so drawing coordinates match.
+        let original_bounds = contain(renderer, &self.original, size);
+        frame.with_clip(
+            Rectangle::new(Point::ORIGIN, Size::new(split_x, size.height)),
+            |clipped| {
+                clipped.draw_image(original_bounds, canvas::Image::new(self.original.clone()));
+            },
+        );
+        let accent = theme.palette().primary;
+        frame.fill_rectangle(
+            Point::new(split_x - 1.0, 0.0),
+            Size::new(2.0, size.height),
+            accent,
+        );
+        let grip = Point::new(split_x, size.height / 2.0);
+        frame.fill(&Path::circle(grip, 13.0), accent);
+        frame.fill_text(canvas::Text {
+            content: "⇔".into(),
+            position: grip,
+            color: Color::WHITE,
+            size: 13.0.into(),
+            align_x: iced::alignment::Horizontal::Center.into(),
+            align_y: iced::alignment::Vertical::Center,
+            ..canvas::Text::default()
+        });
+        for (label, x, align) in [
+            ("Original", 10.0, iced::alignment::Horizontal::Left),
+            ("Replacement", size.width - 10.0, iced::alignment::Horizontal::Right),
+        ] {
+            frame.fill_text(canvas::Text {
+                content: label.into(),
+                position: Point::new(x, 10.0),
+                color: design::with_alpha(Color::WHITE, 0.85),
+                size: 12.0.into(),
+                align_x: align.into(),
+                ..canvas::Text::default()
+            });
+        }
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(
+        &self,
+        _state: &CompareDrag,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if cursor.is_over(bounds) {
+            mouse::Interaction::ResizingHorizontally
+        } else {
+            mouse::Interaction::default()
+        }
+    }
+}
+
+/// Dashed accent border with a faint wash, shown while files are held
+/// over a window that accepts drops.
+pub struct DropZone {
+    pub refused: bool,
+}
+
+impl canvas::Program<Message> for DropZone {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let color = if self.refused {
+            theme.palette().danger
+        } else {
+            theme.palette().primary
+        };
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), design::with_alpha(color, 0.08));
+        let inset = 10.0;
+        let radius = design::radius(theme, design::Radius::Large);
+        frame.stroke(
+            &Path::rounded_rectangle(
+                Point::new(inset, inset),
+                Size::new(bounds.width - inset * 2.0, bounds.height - inset * 2.0),
+                radius.into(),
+            ),
+            Stroke {
+                line_dash: canvas::LineDash {
+                    segments: &[10.0, 7.0],
+                    offset: 0,
+                },
+                ..Stroke::default().with_width(2.0).with_color(color)
+            },
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
 /// Track and knob for `ui_kit::switch`; `position` 0 = off, 1 = on.
 pub struct SwitchKnob {
     pub position: f32,

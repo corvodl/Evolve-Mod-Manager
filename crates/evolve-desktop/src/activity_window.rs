@@ -55,6 +55,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 text("MANAGER ACTIVITY").size(17),
                 text(active).size(12),
                 iced::widget::space().width(Fill),
+                crate::ui_kit::copy_button(&state.ui, "activity-log", state.activity_log.join("\n")),
                 button("Clear History").on_press(Message::ClearActivity),
                 button("Cancel Scan")
                     .on_press_maybe(state.scan_cancel.is_some().then_some(Message::CancelScan))
@@ -66,7 +67,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             )
             .size(12),
             meter,
-            container(text(&state.status).size(13)).padding(8),
+            container(
+                row![
+                    text(&state.status).size(13).width(Fill),
+                    crate::ui_kit::copy_button(&state.ui, "activity-status", state.status.clone()),
+                ]
+                .spacing(8)
+            )
+            .padding(8),
             scrollable(lines).height(Fill)
         ]
         .spacing(14)
