@@ -62,7 +62,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     "activity-log",
                     state.activity_log.join("\n")
                 ),
-                button("Clear History").on_press(Message::ClearActivity),
+                crate::ui_kit::hold_button(
+                    &state.ui,
+                    "clear-activity",
+                    "Hold to clear history",
+                    Message::ClearActivity,
+                    !state.activity_log.is_empty(),
+                    state.preferences.reduce_motion,
+                ),
                 button("Cancel Scan")
                     .on_press_maybe(state.scan_cancel.is_some().then_some(Message::CancelScan))
             ]

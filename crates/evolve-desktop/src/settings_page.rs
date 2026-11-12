@@ -110,26 +110,32 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
         column![
             heading("Game & Client"),
             text("Game launch method").size(design::BODY),
-            row![
-                design::button("Client Launch")
-                    .on_press(if state.preferences.game_launch_mode == "Direct Launch" {
-                        // Moving to the full client is worth a moment's
-                        // explanation; switching back is not.
-                        crate::chrome::confirm(
-                            "Switch to Client Launch?",
-                            "Play buttons will start the installed Modded Evolve client, which signs in to your profile and connects to the relay and Shift+Tab friends. Modded play still needs a verified signing stage. You can switch back to Direct Launch at any time.",
-                            "Use Client Launch",
-                            crate::design::Tone::Info,
-                            Message::PreferenceGameLaunchMode("Client Launch"),
-                        )
-                    } else {
-                        Message::PreferenceGameLaunchMode("Client Launch")
-                    })
-                    .style(if state.preferences.game_launch_mode != "Direct Launch" { design::primary } else { design::secondary }),
-                design::button("Direct Launch")
-                    .on_press(Message::PreferenceGameLaunchMode("Direct Launch"))
-                    .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
-            ].spacing(8),
+            container(crate::ui_kit::segmented(
+                &state.ui,
+                "launch-mode",
+                vec![
+                    (
+                        "Client Launch",
+                        if state.preferences.game_launch_mode == "Direct Launch" {
+                            // Moving to the full client is worth a moment's
+                            // explanation; switching back is not.
+                            crate::chrome::confirm(
+                                "Switch to Client Launch?",
+                                "Play buttons will start the installed Modded Evolve client, which signs in to your profile and connects to the relay and Shift+Tab friends. Modded play still needs a verified signing stage. You can switch back to Direct Launch at any time.",
+                                "Use Client Launch",
+                                crate::design::Tone::Info,
+                                Message::PreferenceGameLaunchMode("Client Launch"),
+                            )
+                        } else {
+                            Message::PreferenceGameLaunchMode("Client Launch")
+                        },
+                    ),
+                    ("Direct Launch", Message::PreferenceGameLaunchMode("Direct Launch")),
+                ],
+                usize::from(state.preferences.game_launch_mode == "Direct Launch"),
+                true,
+            ))
+            .max_width(320),
             crate::ui_kit::callout(crate::design::Tone::Info, "Recommended: Client Launch for authenticated profiles, relay and Shift+Tab friends. Direct Launch currently uses a Stage 2 smoke host and does not establish the full relay/overlay session. Explicit Direct selection is preserved."),
             crate::forms::path_field(
                 "Game location (EvolveGame or bin64_SteamRetail)",
@@ -164,11 +170,11 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                 design::button(if state.preferences.game_launch_mode == "Direct Launch" { "Save Game Setup" } else { "Save Game & Client" })
                     .on_press(Message::SaveGameSetup)
                     .style(design::primary),
-                design::button("Play with Mods")
-                    .on_press(Message::PlayWithMods)
+                design::button(super::play_label(state, true, "Play with Mods"))
+                    .on_press_maybe(super::play_action(state, Message::PlayWithMods))
                     .style(design::secondary),
-                design::button("Play without Mods")
-                    .on_press(Message::PlayWithoutMods)
+                design::button(super::play_label(state, false, "Play without Mods"))
+                    .on_press_maybe(super::play_action(state, Message::PlayWithoutMods))
                     .style(design::secondary),
             ]
             .spacing(8),
@@ -205,9 +211,13 @@ fn test_environment_setup(state: &State) -> Element<'_, Message> {
         column![
             heading("Test Environment"),
             row![
-                design::button(if enabled { "Test Client: ON" } else { "Test Client: OFF" })
-                    .on_press(Message::PreferenceUseTestClient(!enabled))
-                    .style(if enabled { design::primary } else { design::secondary }),
+                crate::ui_kit::switch(
+                    &state.ui,
+                    "test-client",
+                    "Use Test Client",
+                    enabled,
+                    Message::PreferenceUseTestClient(!enabled),
+                ),
                 text(if enabled {
                     "Both Play buttons use the Test Client and Test Game."
                 } else {
@@ -630,14 +640,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         heading("Appearance"),
         panel(column![
             text("INTERFACE THEME").size(design::LABEL),
-            row![
-                design::button("Modern")
-                    .on_press(Message::PreferenceUiTheme("Modern"))
-                    .style(if state.preferences.ui_theme == "Modern" { design::primary } else { design::secondary }),
-                design::button("Evolve Legacy")
-                    .on_press(Message::PreferenceUiTheme("Evolve Legacy"))
-                    .style(if state.preferences.ui_theme == "Evolve Legacy" { design::primary } else { design::secondary }),
-            ].spacing(8),
+            container(crate::ui_kit::segmented(
+                &state.ui,
+                "ui-theme",
+                vec![
+                    ("Modern", Message::PreferenceUiTheme("Modern")),
+                    ("Evolve Legacy", Message::PreferenceUiTheme("Evolve Legacy")),
+                ],
+                usize::from(state.preferences.ui_theme == "Evolve Legacy"),
+                true,
+            ))
+            .max_width(320),
             text(if state.preferences.ui_theme == "Evolve Legacy" {
                 "Legacy theme: charcoal panels, red selection, white hover and sharper controls. The original supplied UI_Assets.pak is not bundled or modified; its textures require separate verified extraction."
             } else {
@@ -661,14 +674,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             crate::ui_kit::switch(&state.ui, "sidebar-peek", "Open the sidebar while hovering its icons", state.preferences.sidebar_hover_peek, Message::PreferenceSidebarPeek),
             text("Off: only the button at the top of the sidebar (or Ctrl+B) opens it. It always opens over the page.").size(design::CAPTION).style(design::muted),
             text("HOME SCREEN ARTWORK").size(design::LABEL),
-            row![
-                design::button("Background On")
-                    .on_press_maybe((!state.preferences.show_home_background).then_some(Message::PreferenceHomeBackground))
-                    .style(if state.preferences.show_home_background { design::primary } else { design::secondary }),
-                design::button("Background Off")
-                    .on_press_maybe(state.preferences.show_home_background.then_some(Message::PreferenceHomeBackground))
-                    .style(if !state.preferences.show_home_background { design::primary } else { design::secondary }),
-            ].spacing(8),
+            crate::ui_kit::switch(&state.ui, "home-background", "Show Evolve artwork on Home", state.preferences.show_home_background, Message::PreferenceHomeBackground),
             text("Off hides the Evolve artwork and restores opaque Home panels. This only affects Home, keeps other themes and pages unchanged, and is saved automatically.")
                 .size(design::CAPTION).style(design::muted),
             text("THEME PRESETS").size(design::LABEL),

@@ -961,9 +961,11 @@ fn ui_ambient_running(state: &State) -> bool {
         && matches!(state.page, Some(Page::Files | Page::Home | Page::Settings));
     let skeleton = news_loading(state) && matches!(state.page, Some(Page::Home | Page::WhatsNew))
         || state.library_startup_loading && state.page == Some(Page::AssetLibrary);
+    // The Play with Mods beam loops on Modding and Home.
+    let play_beam = matches!(state.page, Some(Page::Files | Page::Home));
     // The Activity button's dot pulses while work runs.
     let activity = footer_is_working(state);
-    embers || beam || skeleton || activity
+    embers || beam || play_beam || skeleton || activity
 }
 
 /// Writes one bookkeeping field into the saved preferences without also
@@ -3075,6 +3077,15 @@ impl Operation {
 // Legacy message variants are retained for compatibility with the hidden
 // experimental workflow, but the replacement Developer UI does not emit them.
 #[allow(dead_code)]
+/// Answers to the "unsaved level edits" prompt shown when quitting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuitGuard {
+    Cancel,
+    /// Show the Level Editor, where the edits can be saved.
+    Review,
+    Quit,
+}
+
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
@@ -3152,6 +3163,8 @@ enum Message {
     DismissMenus,
     MenuCommand(Box<Message>),
     ModdingFilterChanged(String),
+    /// Clear the Modding search, kind filter and chips together.
+    ModdingClearFilters,
     ModdingPage(bool),
     ModdingChangesPage(bool),
     ModdingSelectProject(usize),
@@ -3322,6 +3335,10 @@ enum Message {
     ViewerOpened,
     ActivityOpened,
     WindowClosed(window::Id),
+    /// The main window's close button or Alt+F4: quit, unless level edits
+    /// are unsaved.
+    WindowCloseRequested(window::Id),
+    QuitGuard(QuitGuard),
     FileDropped(window::Id, PathBuf),
     DropPath(PathBuf),
     CancelScan,
@@ -4228,6 +4245,44 @@ fn vegetation_dab(state: &mut State, origin: [f32; 3], direction: [f32; 3], eras
         state.vegetation_stroke_pushed = true;
         apply_draft_edit(state, next, &done);
     }
+}
+
+/// Why every Play button is disabled while a launch runs.
+const LAUNCHING_TIP: &str = "Evolve is launching. Wait for it to finish.";
+
+/// A Play button's message, or None (disabled) while any launch runs.
+fn play_action(state: &State, message: Message) -> Option<Message> {
+    state.active_play.is_none().then_some(message)
+}
+
+/// A Play button's label: "Launching…" on the kind being launched.
+fn play_label(state: &State, modded: bool, idle: &'static str) -> &'static str {
+    match state.active_play {
+        Some(kind) if (kind == play_dialog::Kind::Modded) == modded => "Launching…",
+        _ => idle,
+    }
+}
+
+/// What quitting now would lose, or None when every level edit is saved.
+/// Closing only the Level Editor window keeps all of these in memory.
+fn unsaved_level_summary(state: &State) -> Option<String> {
+    let mut parts = Vec::new();
+    if draft_pending(state) {
+        parts.push("unsaved map changes".to_owned());
+    }
+    if state
+        .terrain_session
+        .as_ref()
+        .is_some_and(terrain_brush::TerrainSession::is_dirty)
+    {
+        parts.push("unsaved terrain strokes".to_owned());
+    }
+    match state.level_dirty_count {
+        0 => {}
+        1 => parts.push("1 moved object not saved".to_owned()),
+        n => parts.push(format!("{n} moved objects not saved")),
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 /// Whether the open map has unsaved changes.
@@ -6436,6 +6491,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ModdingFilterChanged(value) => {
             state.modding_filter = value;
+            state.modding_page = 0;
+        }
+        Message::ModdingClearFilters => {
+            state.modding_filter.clear();
+            state.modding_kind = None;
+            state.modding_chips.clear();
             state.modding_page = 0;
         }
         Message::ModdingPage(next) => {
@@ -10985,6 +11046,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         | Message::ViewerOpened
         | Message::ActivityOpened
         | Message::WindowClosed(_)
+        | Message::WindowCloseRequested(_)
+        | Message::QuitGuard(_)
         | Message::FilesHovered(_, _)
         | Message::FileDropped(_, _) => {}
         Message::CancelScan => {
@@ -14534,6 +14597,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 play_dialog::Kind::Clean
             };
+            if state.active_play.is_some() {
+                state.status = LAUNCHING_TIP.into();
+                return Task::none();
+            }
             if state.developer_network_busy {
                 state.status = "Finish applying the Developer online firewall setting before launching Evolve.".into();
                 state.play_notice = Some(play_dialog::Notice::finished(
@@ -18292,6 +18359,7 @@ fn modern_nav(state: &State, page: Page, labels: bool) -> Element<'_, Message> {
     .spacing(4);
 
     let play = |bytes: &'static [u8], label: &'static str, message: Message, primary: bool| {
+        let shown = play_label(state, primary, label);
         let mut contents = row![
             container(space().width(3)),
             container(svg(handles::svg(bytes)).width(20).height(20)).padding([3, 3]),
@@ -18303,7 +18371,7 @@ fn modern_nav(state: &State, page: Page, labels: bool) -> Element<'_, Message> {
             contents = contents.push(design::indicator_dot::<Message>(None, 1.0));
         }
         if labels {
-            contents = contents.push(text(label).size(14));
+            contents = contents.push(text(shown).size(14));
         }
         tip(
             design::button(contents)
@@ -18315,8 +18383,12 @@ fn modern_nav(state: &State, page: Page, labels: bool) -> Element<'_, Message> {
                 } else {
                     design::secondary
                 })
-                .on_press(message),
-            label,
+                .on_press_maybe(play_action(state, message)),
+            if state.active_play.is_some() {
+                LAUNCHING_TIP
+            } else {
+                label
+            },
             None,
         )
     };
@@ -18472,19 +18544,27 @@ fn view(state: &State) -> Element<'_, Message> {
     ));
     if labels_visible {
         play_mods_row = play_mods_row.push(
-            text(if legacy_nav {
-                "Play with Mods"
-            } else {
-                "Play with mods"
-            })
+            text(play_label(
+                state,
+                true,
+                if legacy_nav {
+                    "Play with Mods"
+                } else {
+                    "Play with mods"
+                },
+            ))
             .size(if legacy_nav { 12 } else { 14 }),
         );
         play_clean_row = play_clean_row.push(
-            text(if legacy_nav {
-                "Play"
-            } else {
-                "Play without mods"
-            })
+            text(play_label(
+                state,
+                false,
+                if legacy_nav {
+                    "Play"
+                } else {
+                    "Play without mods"
+                },
+            ))
             .size(if legacy_nav { 12 } else { 14 }),
         );
         settings_row = settings_row.push(text("Settings").size(if legacy_nav { 13 } else { 14 }));
@@ -18501,14 +18581,14 @@ fn view(state: &State) -> Element<'_, Message> {
             design::button(play_mods_row)
                 .width(Fill)
                 .height(if legacy_nav { 40 } else { 36 })
-                .on_press(Message::PlayWithMods),
+                .on_press_maybe(play_action(state, Message::PlayWithMods)),
             "Play with Mods",
         ),
         rail_tip(
             design::button(play_clean_row)
                 .width(Fill)
                 .height(if legacy_nav { 40 } else { 36 })
-                .on_press(Message::PlayWithoutMods),
+                .on_press_maybe(play_action(state, Message::PlayWithoutMods)),
             "Play without mods",
         ),
         rail_tip(
@@ -19265,6 +19345,8 @@ struct Desktop {
     activity_id: Option<window::Id>,
     play_notice_id: Option<window::Id>,
     export_id: Option<window::Id>,
+    /// Quitting was asked for while level edits are unsaved.
+    quit_prompt: bool,
     discord_presence: discord_presence::Service,
 }
 
@@ -19284,6 +19366,8 @@ impl Desktop {
             icon: app_window_icon(),
             size: iced::Size::new(1440.0, 900.0),
             min_size: Some(iced::Size::new(880.0, 620.0)),
+            // Quitting is checked for unsaved level edits first.
+            exit_on_close_request: false,
             ..window::Settings::default()
         });
         let mut state = initial_state();
@@ -19311,6 +19395,7 @@ impl Desktop {
                 activity_id: None,
                 play_notice_id: None,
                 export_id: None,
+                quit_prompt: false,
                 discord_presence,
             },
             Task::batch([
@@ -19745,6 +19830,29 @@ impl Desktop {
                     update(&mut self.state, Message::DropPath(path))
                 }
             }
+            Message::WindowCloseRequested(id) => {
+                // Only the main window asks; it quits the whole manager.
+                if id != self.main_id {
+                    return window::close(id);
+                }
+                if unsaved_level_summary(&self.state).is_some() {
+                    self.quit_prompt = true;
+                    return window::gain_focus(id);
+                }
+                window::close(id)
+            }
+            Message::QuitGuard(answer) => {
+                self.quit_prompt = false;
+                match answer {
+                    QuitGuard::Cancel => Task::none(),
+                    QuitGuard::Quit => window::close(self.main_id),
+                    // Reopening keeps the loaded map; skip the map chooser.
+                    QuitGuard::Review => match self.level_id {
+                        Some(id) => window::gain_focus(id),
+                        None => self.open_level_editor(),
+                    },
+                }
+            }
             Message::WindowClosed(id) => {
                 if id == self.main_id {
                     iced::exit()
@@ -19887,6 +19995,14 @@ impl Desktop {
             );
             if id == self.main_id {
                 let content = chrome::modal_overlay(content, &self.state);
+                let content = match self
+                    .quit_prompt
+                    .then(|| unsaved_level_summary(&self.state))
+                    .flatten()
+                {
+                    Some(summary) => chrome::quit_prompt(content, summary),
+                    None => content,
+                };
                 command_palette::overlay(content, &self.state)
             } else if self.viewer_id == Some(id) {
                 gallery::lightbox(&self.state, content)
@@ -20148,6 +20264,7 @@ impl Desktop {
             scan_progress,
             wheel,
             window::close_events().map(Message::WindowClosed),
+            window::close_requests().map(Message::WindowCloseRequested),
             if self.state.developer_capture.is_some() {
                 iced::keyboard::listen().map(Message::DeveloperKeyEvent)
             } else {

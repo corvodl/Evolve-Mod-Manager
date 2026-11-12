@@ -296,8 +296,31 @@ fn status_value_preview(value: &str) -> String {
 }
 
 fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
+    status_row(label, value, None)
+}
+
+/// A status row whose full path can be copied; the copy button only
+/// appears once the path is set.
+fn path_status_card<'a>(
+    state: &State,
+    label: &'static str,
+    path: &str,
+    unset: &str,
+) -> Element<'a, Message> {
+    if path.is_empty() {
+        return status_row(label, unset.to_owned(), None);
+    }
+    let copy = crate::ui_kit::copy_button(&state.ui, label, path.to_owned());
+    status_row(label, path.to_owned(), Some(copy))
+}
+
+fn status_row<'a>(
+    label: &'static str,
+    value: String,
+    copy: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
     let short = status_value_preview(&value);
-    row![
+    let mut line = row![
         text(label).size(design::BODY).width(Length::FillPortion(2)),
         container(tooltip(
             text(short).size(design::BODY).style(design::muted),
@@ -307,8 +330,11 @@ fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
         .width(Length::FillPortion(3)),
     ]
     .spacing(12)
-    .align_y(iced::Center)
-    .into()
+    .align_y(iced::Center);
+    if let Some(copy) = copy {
+        line = line.push(copy);
+    }
+    line.into()
 }
 
 /// The release part only; the +build identifier stays available on hover.
@@ -575,6 +601,24 @@ fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     Some((width, height, rgba))
 }
 
+/// Home's Play with Mods carries the same looping beam as Modding's,
+/// quickening while a modded launch is in progress.
+fn play_mods_beam<'a>(
+    state: &'a State,
+    button: iced::widget::Button<'a, Message>,
+) -> Element<'a, Message> {
+    crate::ui_kit::why_disabled(
+        crate::ui_kit::beam(
+            &state.ui,
+            button,
+            state.active_play == Some(crate::play_dialog::Kind::Modded),
+            state.preferences.reduce_motion,
+        ),
+        state.active_play.is_some(),
+        super::LAUNCHING_TIP,
+    )
+}
+
 fn home_launch_card<'a>(
     label: &'static str,
     title: &'static str,
@@ -634,11 +678,13 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             "INSTANT PLAY",
             "Launch Evolve",
             "Launch with enabled mod projects and staged overrides.",
-            design::button("Play with Mods")
-                .on_press(Message::PlayWithMods)
-                .style(move |theme, status| home_button_style(theme, status, wallpaper, true))
-                .width(Fill)
-                .into(),
+            play_mods_beam(
+                state,
+                design::button(super::play_label(state, true, "Play with Mods"))
+                    .on_press_maybe(super::play_action(state, Message::PlayWithMods))
+                    .style(move |theme, status| home_button_style(theme, status, wallpaper, true))
+                    .width(Fill),
+            ),
             wallpaper
         ),
         home_surface(
@@ -789,12 +835,20 @@ fn home_bento(state: &State) -> Element<'_, Message> {
             |bytes| crate::ui_kit::format_bytes(ticked(&state.ui, "storage_total", bytes)),
         ))
         .size(18),
-        design::button(text("Analyze").size(design::CAPTION))
-            .padding([3, 8])
-            .on_press_maybe(
-                (!state.busy && !state.storage_analyzing)
-                    .then_some(Message::OpenSettingsTab(crate::settings_page::Tab::Storage),)
-            ),
+        crate::ui_kit::why_disabled(
+            design::button(text("Analyze").size(design::CAPTION))
+                .padding([3, 8])
+                .on_press_maybe(
+                    (!state.busy && !state.storage_analyzing)
+                        .then_some(Message::OpenSettingsTab(crate::settings_page::Tab::Storage),)
+                ),
+            state.busy || state.storage_analyzing,
+            if state.storage_analyzing {
+                "Storage is already being analyzed."
+            } else {
+                "Wait for the current task to finish."
+            },
+        ),
     ]
     .spacing(4);
     let update = column![
@@ -1025,16 +1079,23 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
     }
     quick = quick.push(
         row![
-            design::button(if state.developer_unlocked && state.developer_online_mods {
-                "Play with Mods Online · Dev Test"
-            } else {
-                "Play with Mods"
-            })
-            .on_press(Message::PlayWithMods)
-            .padding([12, 20])
-            .style(move |theme, status| home_button_style(theme, status, wallpaper, true)),
-            design::button("Play without Mods")
-                .on_press(Message::PlayWithoutMods)
+            play_mods_beam(
+                state,
+                design::button(super::play_label(
+                    state,
+                    true,
+                    if state.developer_unlocked && state.developer_online_mods {
+                        "Play with Mods Online · Dev Test"
+                    } else {
+                        "Play with Mods"
+                    },
+                ))
+                .on_press_maybe(super::play_action(state, Message::PlayWithMods))
+                .padding([12, 20])
+                .style(move |theme, status| home_button_style(theme, status, wallpaper, true)),
+            ),
+            design::button(super::play_label(state, false, "Play without Mods"))
+                .on_press_maybe(super::play_action(state, Message::PlayWithoutMods))
                 .padding([12, 20])
                 .style(move |theme, status| home_button_style(theme, status, wallpaper, false)),
         ]
@@ -1079,21 +1140,17 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
         text("At a glance").size(19),
         home_surface(
             column![
-                status_card(
+                path_status_card(
+                    state,
                     "Game installation",
-                    if state.preferences.game_installation.is_empty() {
-                        "Select EvolveGame in Settings".to_owned()
-                    } else {
-                        state.preferences.game_installation.clone()
-                    },
+                    &state.preferences.game_installation,
+                    "Select EvolveGame in Settings",
                 ),
-                status_card(
+                path_status_card(
+                    state,
                     "Modded Evolve client",
-                    if state.preferences.client_executable.is_empty() {
-                        "Select ModdedEvolveLauncher.exe in Settings".to_owned()
-                    } else {
-                        state.preferences.client_executable.clone()
-                    },
+                    &state.preferences.client_executable,
+                    "Select ModdedEvolveLauncher.exe in Settings",
                 ),
                 client_version_card(state.client_version.as_deref()),
                 status_card(
@@ -1104,13 +1161,11 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
                         "Isolated offline stage configured".to_owned()
                     },
                 ),
-                status_card(
+                path_status_card(
+                    state,
                     "Editing project",
-                    if state.preferences.current_workspace.is_empty() {
-                        "None selected".to_owned()
-                    } else {
-                        state.preferences.current_workspace.clone()
-                    },
+                    &state.preferences.current_workspace,
+                    "None selected",
                 ),
             ]
             .spacing(16),

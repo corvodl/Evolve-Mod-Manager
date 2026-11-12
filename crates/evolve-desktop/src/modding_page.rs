@@ -687,9 +687,17 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
         };
         return panel(state_view).into();
     }
+    if count == 0 {
+        rows = rows.push(crate::ui_kit::empty_state(
+            Some(super::Page::Files.icon()),
+            "No matching projects",
+            "Nothing matches the current search, kind and chip filters.",
+            Some(("Clear filters", Message::ModdingClearFilters)),
+        ));
+    }
     let empty: Element<'_, Message> = if count == 0 {
-        text("No projects match this filter.")
-            .size(design::BODY)
+        text("0 matching projects")
+            .size(design::CAPTION)
             .style(design::muted)
             .into()
     } else {
@@ -1038,11 +1046,12 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
         .and_then(|i| state.library_catalog.as_ref()?.archives.get(i))
         .is_some();
     if matching == 0 && state.library_catalog.is_some() {
-        rows = rows.push(
-            text("No imported PAKs match the current search.")
-                .size(design::LABEL)
-                .style(design::muted),
-        );
+        rows = rows.push(crate::ui_kit::empty_state(
+            None,
+            "No matching PAKs",
+            "No imported PAK matches the current search.",
+            Some(("Clear search", Message::ModdingFilterChanged(String::new()))),
+        ));
     }
     let description = if state.library_startup_loading {
         "Loading saved PAK manifests; you do not need to reimport."
@@ -1359,7 +1368,8 @@ fn play_mods_card<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Mes
     // Eases when mods are toggled; falls back to the scan before first sync.
     let enabled = crate::ui_kit::ticked(&state.ui, "enabled_mods", scan.enabled_count() as f64)
         .round() as usize;
-    let working = super::footer_is_working(state);
+    // The beam always loops; it speeds up while a modded launch runs.
+    let launching = state.active_play == Some(crate::play_dialog::Kind::Modded);
     let card = panel(
         column![
             text("PLAY WITH MODS").size(10).style(design::accent),
@@ -1371,14 +1381,20 @@ fn play_mods_card<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Mes
             .style(design::muted),
             space().height(Length::Fixed(6.0)),
             row![
-                // A beam circles the button while a build or launch runs.
-                crate::ui_kit::beam(
-                    &state.ui,
-                    crate::ui_kit::icon_label_button(crate::icons::play(), "Play with Mods")
+                crate::ui_kit::why_disabled(
+                    crate::ui_kit::beam(
+                        &state.ui,
+                        crate::ui_kit::icon_label_button(
+                            crate::icons::play(),
+                            super::play_label(state, true, "Play with Mods"),
+                        )
                         .style(design::primary)
-                        .on_press(Message::PlayWithMods),
-                    working,
-                    state.preferences.reduce_motion,
+                        .on_press_maybe(super::play_action(state, Message::PlayWithMods)),
+                        launching,
+                        state.preferences.reduce_motion,
+                    ),
+                    state.active_play.is_some(),
+                    super::LAUNCHING_TIP,
                 ),
                 crate::ui_kit::icon_label_button(crate::icons::refresh(), "Refresh")
                     .style(design::text_button)

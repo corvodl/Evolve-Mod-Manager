@@ -182,11 +182,14 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
                     .then_some(Message::LevelDraftRedo),
                 Some("Nothing to redo"),
             ))
-            .push(icon_button(
-                icons::discard(),
-                "Discard changes",
-                pending.then_some(Message::LevelDiscardMap),
-                Some("No unsaved changes"),
+            // Discarding drops every unsaved change and its undo history.
+            .push(crate::ui_kit::hold_button(
+                &state.ui,
+                "level-discard-map",
+                "Hold to discard",
+                Message::LevelDiscardMap,
+                pending,
+                state.preferences.reduce_motion,
             ))
             .push(
                 design::button("Save Map")
@@ -212,11 +215,13 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
             .then_some(Message::LevelBrushRedo),
         Some("Nothing to redo"),
     ))
-    .push(icon_button(
-        icons::discard(),
-        "Discard changes",
-        dirty.then_some(Message::LevelBrushDiscard),
-        Some("No unsaved terrain changes"),
+    .push(crate::ui_kit::hold_button(
+        &state.ui,
+        "level-discard-terrain",
+        "Hold to discard",
+        Message::LevelBrushDiscard,
+        dirty,
+        state.preferences.reduce_motion,
     ))
     .push(
         design::button("Save Terrain")

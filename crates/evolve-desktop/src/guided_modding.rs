@@ -340,7 +340,21 @@ pub fn view(state: &State) -> Element<'_, Message> {
                 .size(11),
             )
             .push(scrollable(fields).height(180))
-            .push(row![design::button("Save gameplay values").on_press(message(Action::Save)), design::button("Discard edits").on_press(message(Action::Discard))].spacing(8));
+            .push(
+                row![
+                    design::button("Save gameplay values").on_press(message(Action::Save)),
+                    // Discarding resets every field and cannot be undone.
+                    crate::ui_kit::hold_button(
+                        &state.ui,
+                        "guided-discard",
+                        "Hold to discard edits",
+                        message(Action::Discard),
+                        e.fields.iter().any(|f| f.value != f.original),
+                        state.preferences.reduce_motion,
+                    ),
+                ]
+                .spacing(8),
+            );
     }
     panel.into()
 }

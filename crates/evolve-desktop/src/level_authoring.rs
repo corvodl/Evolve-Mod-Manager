@@ -601,18 +601,20 @@ pub(super) fn placement_editor<'a>(
             ))
             .push(
                 row![
-                    crate::design::button(if forms.spawn_enabled {
-                        "☑ Enabled"
-                    } else {
-                        "☐ Enabled"
-                    })
-                    .on_press(Message::LevelAuthoringToggleEnabled),
-                    crate::design::button(if forms.spawn_on_round_start {
-                        "☑ Spawn on round start"
-                    } else {
-                        "☐ Spawn on round start"
-                    })
-                    .on_press(Message::LevelAuthoringToggleRoundStart),
+                    crate::ui_kit::switch(
+                        &state.ui,
+                        "spawn-enabled",
+                        "Enabled",
+                        forms.spawn_enabled,
+                        Message::LevelAuthoringToggleEnabled,
+                    ),
+                    crate::ui_kit::switch(
+                        &state.ui,
+                        "spawn-round-start",
+                        "Spawn on round start",
+                        forms.spawn_on_round_start,
+                        Message::LevelAuthoringToggleRoundStart,
+                    ),
                 ]
                 .spacing(6),
             )

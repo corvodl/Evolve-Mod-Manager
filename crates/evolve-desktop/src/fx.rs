@@ -105,6 +105,8 @@ pub struct BorderBeam {
     pub time: f32,
     /// Seconds per lap.
     pub period: f32,
+    /// Overall opacity, 0–1: a faint idle loop or a bright busy one.
+    pub strength: f32,
 }
 
 impl canvas::Program<Message> for BorderBeam {
@@ -137,7 +139,7 @@ impl canvas::Program<Message> for BorderBeam {
             let to = perimeter_point(size, radius, head - length * (1.0 - b));
             let offset = |p: Point| Point::new(p.x + inset, p.y + inset);
             // Tail fades in toward the bright head.
-            let alpha = b * b;
+            let alpha = b * b * self.strength.clamp(0.0, 1.0);
             frame.stroke(
                 &Path::line(offset(from), offset(to)),
                 Stroke::default()

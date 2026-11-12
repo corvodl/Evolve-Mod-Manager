@@ -1523,6 +1523,17 @@ pub fn switch<'a>(
     value: bool,
     message: Message,
 ) -> Element<'a, Message> {
+    switch_maybe(ui_state, key, label, value, Some(message))
+}
+
+/// A [`switch`] that is disabled while `message` is None.
+pub fn switch_maybe<'a>(
+    ui_state: &UiState,
+    key: &str,
+    label: impl text::IntoFragment<'a>,
+    value: bool,
+    message: Option<Message>,
+) -> Element<'a, Message> {
     let position = ui_state.switch_position(key, value, Instant::now());
     let knob = iced::widget::canvas(crate::fx::SwitchKnob { position })
         .width(36)
@@ -1534,7 +1545,9 @@ pub fn switch<'a>(
     )
     .padding([4, 6])
     .style(design::text_button)
-    .on_press(ui(UiMsg::Switch(key.to_owned(), !value, Box::new(message))))
+    .on_press_maybe(
+        message.map(|message| ui(UiMsg::Switch(key.to_owned(), !value, Box::new(message)))),
+    )
     .into()
 }
 
@@ -2155,23 +2168,27 @@ pub fn spotlight<'a>(
 // Border beam
 // ---------------------------------------------------------------------------
 
-/// While `active`, a bright segment travels around `content`'s border. The
-/// content keeps all of its own interaction; the beam layer never captures.
+/// A segment that keeps travelling around `content`'s border: slow and faint
+/// at rest, quick and bright while `busy`. The content keeps all of its own
+/// interaction; the beam layer never captures. Callers must keep the ambient
+/// frame clock running wherever a beam is on screen (`ui_ambient_running`).
 pub fn beam<'a>(
     ui_state: &UiState,
     content: impl Into<Element<'a, Message>>,
-    active: bool,
+    busy: bool,
     reduce_motion: bool,
 ) -> Element<'a, Message> {
     let content = content.into();
-    if !active || reduce_motion {
+    if reduce_motion {
         return content;
     }
+    let (period, strength) = if busy { (2.4, 1.0) } else { (4.5, 0.55) };
     iced::widget::stack![
         content,
         iced::widget::canvas(crate::fx::BorderBeam {
             time: ui_state.clock(Instant::now()),
-            period: 2.4,
+            period,
+            strength,
         })
         .width(Fill)
         .height(Fill),

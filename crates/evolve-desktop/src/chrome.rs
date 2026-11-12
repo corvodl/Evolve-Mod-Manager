@@ -860,6 +860,48 @@ pub fn dialog<'a>(
     stack![base, backdrop, container(card).center(Fill).padding(24)].into()
 }
 
+/// Asked when the main window closes while level edits are unsaved.
+/// Saving stays in the Level Editor, where each kind of edit has its own
+/// checks, so the prompt offers to go there instead of saving blindly.
+pub fn quit_prompt<'a>(base: Element<'a, Message>, summary: String) -> Element<'a, Message> {
+    use crate::QuitGuard;
+    let card = container(
+        column![
+            row![
+                icons::glyph(tone_icon(Tone::Warning), 20.0).style(|theme: &Theme, _| {
+                    svg::Style {
+                        color: Some(design::tone_color(theme, Tone::Warning)),
+                    }
+                }),
+                design::heading("Quit with unsaved level edits?"),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            design::body(format!(
+                "The Level Editor has {summary}. Quitting now discards them."
+            )),
+            row![
+                design::button("Quit without saving")
+                    .style(design::text_button)
+                    .on_press(Message::QuitGuard(QuitGuard::Quit)),
+                space().width(Fill),
+                design::button("Cancel")
+                    .style(design::secondary)
+                    .on_press(Message::QuitGuard(QuitGuard::Cancel)),
+                design::button("Open Level Editor")
+                    .style(design::primary)
+                    .on_press(Message::QuitGuard(QuitGuard::Review)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(14),
+    )
+    .padding(20)
+    .max_width(500);
+    dialog(base, card.into(), Message::QuitGuard(QuitGuard::Cancel))
+}
+
 // ---------------------------------------------------------------------------
 // Side sheet
 // ---------------------------------------------------------------------------

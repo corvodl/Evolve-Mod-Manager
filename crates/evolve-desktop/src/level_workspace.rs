@@ -658,13 +658,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         outliner_content = outliner_content
             .push(
                 row![
-                    design::button(if state.level_show_wildlife {
-                        "☑ Wildlife Spawns"
-                    } else {
-                        "☐ Wildlife Spawns"
-                    })
-                    .style(design::secondary)
-                    .on_press(Message::LevelToggleWildlife),
+                    crate::ui_kit::switch(
+                        &state.ui,
+                        "level-wildlife",
+                        "Wildlife Spawns",
+                        state.level_show_wildlife,
+                        Message::LevelToggleWildlife,
+                    ),
                     text(format!("{wildlife_count} markers / areas"))
                         .size(design::CAPTION)
                         .style(design::muted),

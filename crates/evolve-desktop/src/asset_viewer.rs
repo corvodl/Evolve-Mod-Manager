@@ -481,14 +481,13 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         );
     }
     if monster_selected && !state.cdf_legacy_2012 {
-        entries = entries.push(
-            design::button(if state.full_armor_glow {
-                "☑ Glow"
-            } else {
-                "☐ Glow"
-            })
-            .on_press_maybe((!state.busy).then_some(Message::ViewerToggleMonsterGlow)),
-        );
+        entries = entries.push(crate::ui_kit::switch_maybe(
+            &state.ui,
+            "viewer-glow",
+            "Glow",
+            state.full_armor_glow,
+            (!state.busy).then_some(Message::ViewerToggleMonsterGlow),
+        ));
         entries = entries.push(
             text("Optional source-verified [name]_glow_diff overlay for Stage 2 monsters. Turning Glow off removes only this alternate overlay; original materials, diffuse and authored emission remain intact.")
                 .size(design::CAPTION)
@@ -516,14 +515,13 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                     .style(design::muted),
             );
         }
-        entries = entries.push(
-            design::button(if state.damage_blend_enabled {
-                "☑ Damage blend"
-            } else {
-                "☐ Damage blend"
-            })
-            .on_press_maybe((!state.busy).then_some(Message::ViewerToggleDamageBlend)),
-        );
+        entries = entries.push(crate::ui_kit::switch_maybe(
+            &state.ui,
+            "viewer-damage-blend",
+            "Damage blend",
+            state.damage_blend_enabled,
+            (!state.busy).then_some(Message::ViewerToggleDamageBlend),
+        ));
         if state.damage_blend_enabled {
             entries = entries.push(
                 row![
@@ -613,14 +611,13 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 .get(evolve_core::character_emet::BEACON)
                 .is_none_or(|value| value == evolve_core::character_emet::BEACON_ON);
             entries = entries.push(text("Respawn Beacon").size(design::LABEL));
-            entries = entries.push(
-                design::button(if visible {
-                    "☑ Show Respawn Beacon"
-                } else {
-                    "☐ Show Respawn Beacon"
-                })
-                .on_press_maybe((!state.busy).then_some(Message::ViewerEmetBeacon(!visible))),
-            );
+            entries = entries.push(crate::ui_kit::switch_maybe(
+                &state.ui,
+                "viewer-beacon",
+                "Show Respawn Beacon",
+                visible,
+                (!state.busy).then_some(Message::ViewerEmetBeacon(!visible)),
+            ));
         } else {
             entries = entries.push(
                 text("No attached Respawn Beacon mesh is declared in this CDF; a beacon cannot be placed at a guessed position.")
@@ -1178,12 +1175,13 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                 GFX_ROTATION,
                             ))
                             .push(
-                                design::button(if state.gfx_layout_visible {
-                                    "☑ Visible (click to hide)"
-                                } else {
-                                    "☐ Hidden (click to show)"
-                                })
-                                .on_press(Message::GfxLayoutVisible(!state.gfx_layout_visible)),
+                                crate::ui_kit::switch(
+                                    &state.ui,
+                                    "gfx-layer-visible",
+                                    "Visible",
+                                    state.gfx_layout_visible,
+                                    Message::GfxLayoutVisible(!state.gfx_layout_visible),
+                                ),
                             )
                             .push(
                                 design::button("Stage selected layout edit").on_press_maybe(
@@ -1617,9 +1615,14 @@ fn text_viewport(state: &State) -> Element<'_, Message> {
             .on_press_maybe(
                 (doc.editable && doc.dirty() && !state.busy).then_some(Message::TextEditorSave)
             ),
-        design::button("Discard")
-            .style(design::secondary)
-            .on_press_maybe(doc.dirty().then_some(Message::TextEditorDiscard)),
+        crate::ui_kit::hold_button(
+            &state.ui,
+            "text-discard",
+            "Hold to discard",
+            Message::TextEditorDiscard,
+            doc.dirty(),
+            state.preferences.reduce_motion,
+        ),
         design::button("Close")
             .style(design::secondary)
             .on_press(Message::TextEditorClose),
@@ -1945,18 +1948,21 @@ fn viewport(state: &State) -> Element<'_, Message> {
         .max(0.03);
     let timeline = row![
         text("Timeline").size(design::LABEL),
-        design::button(if state.playback_loop {
-            "Loop on"
-        } else {
-            "Loop off"
-        })
-        .on_press(Message::PlaybackLoopChanged),
-        design::button(if state.motion_in_place {
-            "In place"
-        } else {
-            "Root motion"
-        })
-        .on_press(Message::MotionInPlaceChanged),
+        // Switches show state unambiguously; "Loop off" read as an action.
+        crate::ui_kit::switch(
+            &state.ui,
+            "timeline-loop",
+            "Loop",
+            state.playback_loop,
+            Message::PlaybackLoopChanged,
+        ),
+        crate::ui_kit::switch(
+            &state.ui,
+            "timeline-in-place",
+            "In place",
+            state.motion_in_place,
+            Message::MotionInPlaceChanged,
+        ),
         design::button("◀").on_press(Message::MotionScrub(0.0)),
         design::button(if state.playing { "Ⅱ" } else { "▶" }).on_press(Message::ToggleMotion),
         slider(
@@ -2068,6 +2074,12 @@ fn file_context_actions(state: &State) -> Element<'_, Message> {
             let is_model = [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cdf"]
                 .iter()
                 .any(|extension| filename.to_ascii_lowercase().ends_with(extension));
+            // Library sources are read-only; edits happen in a mod project.
+            let edit_reason = if state.viewer_from_library {
+                "Library files are read-only. Open the file from a mod project to edit it."
+            } else {
+                "Wait for the current task to finish."
+            };
             panel(
                 column![
                     row![
@@ -2084,20 +2096,30 @@ fn file_context_actions(state: &State) -> Element<'_, Message> {
                             .width(Fill)
                             .style(design::text_button)
                             .on_press(Message::ViewerPreviewSelected),
-                        design::button("Import over…")
-                            .width(Fill)
-                            .style(design::text_button)
-                            .on_press_maybe(
-                                (!state.viewer_from_library && !state.busy)
-                                    .then_some(Message::EditorOpenReplacement)
+                        crate::ui_kit::why_disabled(
+                            design::button("Import over…")
+                                .width(Fill)
+                                .style(design::text_button)
+                                .on_press_maybe(
+                                    (!state.viewer_from_library && !state.busy)
+                                        .then_some(Message::EditorOpenReplacement)
+                                ),
+                            state.viewer_from_library || state.busy,
+                            edit_reason,
+                        ),
+                        // Restoring replaces the imported file with the backup.
+                        crate::ui_kit::why_disabled(
+                            crate::ui_kit::hold_button(
+                                &state.ui,
+                                "viewer-restore-original",
+                                "Hold to restore original",
+                                Message::EditorRestoreRawMember,
+                                !state.viewer_from_library && !state.busy,
+                                state.preferences.reduce_motion,
                             ),
-                        design::button("Restore original")
-                            .width(Fill)
-                            .style(design::text_button)
-                            .on_press_maybe(
-                                (!state.viewer_from_library && !state.busy)
-                                    .then_some(Message::EditorRestoreRawMember)
-                            ),
+                            state.viewer_from_library || state.busy,
+                            edit_reason,
+                        ),
                         design::button("Copy path")
                             .width(Fill)
                             .style(design::text_button)
@@ -2110,20 +2132,36 @@ fn file_context_actions(state: &State) -> Element<'_, Message> {
                             .width(Fill)
                             .style(design::text_button)
                             .on_press(Message::StartDependencyInspection),
-                        design::button("Preview full CDF")
-                            .width(Fill)
-                            .style(design::text_button)
-                            .on_press_maybe(is_cdf.then_some(Message::ViewerPreviewStaticCdf)),
-                        design::button("Export DDS → PNG")
-                            .width(Fill)
-                            .style(design::text_button)
-                            .on_press_maybe(is_dds.then_some(Message::ExportOpen)),
-                        design::button("Rigged FBX")
-                            .width(Fill)
-                            .style(design::text_button)
-                            .on_press_maybe(
-                                (is_model && !state.busy).then_some(Message::ExportOpen)
-                            ),
+                        crate::ui_kit::why_disabled(
+                            design::button("Preview full CDF")
+                                .width(Fill)
+                                .style(design::text_button)
+                                .on_press_maybe(is_cdf.then_some(Message::ViewerPreviewStaticCdf)),
+                            !is_cdf,
+                            "Only for .cdf character files.",
+                        ),
+                        crate::ui_kit::why_disabled(
+                            design::button("Export DDS → PNG")
+                                .width(Fill)
+                                .style(design::text_button)
+                                .on_press_maybe(is_dds.then_some(Message::ExportOpen)),
+                            !is_dds,
+                            "Only for .dds textures.",
+                        ),
+                        crate::ui_kit::why_disabled(
+                            design::button("Rigged FBX")
+                                .width(Fill)
+                                .style(design::text_button)
+                                .on_press_maybe(
+                                    (is_model && !state.busy).then_some(Message::ExportOpen)
+                                ),
+                            !is_model || state.busy,
+                            if is_model {
+                                "Wait for the current task to finish."
+                            } else {
+                                "Only for model files."
+                            },
+                        ),
                     ]
                     .spacing(2),
                     if filename.to_ascii_lowercase().ends_with(".fsb")
@@ -2497,30 +2535,34 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
         }
     }
     let flags = row![
-        design::button(if state.export_rigged {
-            "☑ Rigged"
-        } else {
-            "☐ Rigged"
-        })
-        .on_press(Message::ExportToggleRigged),
-        design::button(if state.export_embed_textures {
-            "☑ Embedded textures"
-        } else {
-            "☐ Embedded textures"
-        })
-        .on_press(Message::ExportToggleEmbedded),
-        design::button(if state.export_combine_meshes {
-            "☑ Combine meshes"
-        } else {
-            "☐ Combine meshes"
-        })
-        .on_press(Message::ExportToggleCombineMeshes),
-        design::button(if state.export_dependencies {
-            "☑ Export dependencies"
-        } else {
-            "☐ Export dependencies"
-        })
-        .on_press(Message::ExportToggleDependencies),
+        crate::ui_kit::switch(
+            &state.ui,
+            "export-rigged",
+            "Rigged",
+            state.export_rigged,
+            Message::ExportToggleRigged,
+        ),
+        crate::ui_kit::switch(
+            &state.ui,
+            "export-embedded",
+            "Embedded textures",
+            state.export_embed_textures,
+            Message::ExportToggleEmbedded,
+        ),
+        crate::ui_kit::switch(
+            &state.ui,
+            "export-combine",
+            "Combine meshes",
+            state.export_combine_meshes,
+            Message::ExportToggleCombineMeshes,
+        ),
+        crate::ui_kit::switch(
+            &state.ui,
+            "export-dependencies",
+            "Export dependencies",
+            state.export_dependencies,
+            Message::ExportToggleDependencies,
+        ),
     ]
     .spacing(5);
     let controls = column![
@@ -2574,9 +2616,13 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
                     text(compact_export_source(&state.diffuse_input, "Standalone diffuse: auto from original MTL")).width(Fill),
                     design::button("Select diffuse DDS…").on_press(Message::ExportBrowse("diffuse")),
                 ].spacing(8),
-                design::button(if state.export_include_animation {
-                    "☑ Embed selected animation in FBX" } else { "☐ Embed selected animation in FBX" })
-                    .on_press(Message::ViewerToggleExportAnimations),
+                crate::ui_kit::switch(
+                    &state.ui,
+                    "export-animation",
+                    "Embed selected animation in FBX",
+                    state.export_include_animation,
+                    Message::ViewerToggleExportAnimations,
+                ),
                 row![
                     text(compact_export_source(&state.caf_path, "No CAF loaded for this model")).width(Fill),
                     design::button("Choose another CAF…").on_press(Message::ExportBrowse("caf")),
