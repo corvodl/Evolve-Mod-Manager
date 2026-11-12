@@ -1,4 +1,4 @@
 Nightly requested 2026-11-12 after merging all open PRs.
-request: user-requested-merge-all-then-build-2026-11-12-pr212
-base-main-commit: d205de64dcbb5d3edbf7f520bde1229a0ac64e82
-description: Build Windows nightly from main including PR #212 overlay sidebar, Credits page, Activity opens only when clicked, and steady logo, together with all previously merged changes. Includes cross-platform evolve-cli reparse guard Clippy fix. Preserve existing official signing, installer and portable packaging safeguards.
+request: user-requested-merge-all-then-build-2026-11-12-pr213-pr214-pr215-pr216
+base-main-commit: 7abe5f354cbc5e8050a11a586eb14e4bed4611e4
+description: Build a fresh Windows nightly from merged main including PR #213 Level Editor camera/announcement/sidebar fixes, PR #214 map chooser auto-discovery and previews, PR #215 2012 map-owned level.pak discovery and classification, and PR #216 looping Play beam, quit guard, Launching state and UI kit improvements. Preserve authorized Stage 2 runtime packaging, signing safeguards, installer and portable ZIP creation. Full version-24 2012 terrain viewport parity remains a separate unfinished task.
