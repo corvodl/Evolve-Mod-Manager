@@ -70,6 +70,7 @@ mod level_workspace;
 mod library_picker;
 mod loading_wheel;
 mod map_chooser;
+mod map_preview;
 mod menu_popup;
 mod mod_play;
 mod modding_keys;
@@ -19505,7 +19506,11 @@ impl Desktop {
             }
             Message::LevelShowMapChooser => {
                 let shown = update(&mut self.state, Message::LevelShowMapChooser);
-                Task::batch([shown, map_chooser::ensure_thumbs(&mut self.state)])
+                Task::batch([
+                    shown,
+                    map_chooser::ensure_thumbs(&mut self.state),
+                    map_chooser::refresh_index(&mut self.state),
+                ])
             }
             Message::Ui(ui_kit::UiMsg::Palette(msg)) => {
                 // Ctrl+K from a secondary window brings the main window up.
@@ -19567,7 +19572,11 @@ impl Desktop {
                 self.state.level_map_choices = None;
                 self.state.level_project_choices = None;
                 let thumbs = map_chooser::ensure_thumbs(&mut self.state);
-                Task::batch([self.open_level_editor(), thumbs])
+                Task::batch([
+                    self.open_level_editor(),
+                    thumbs,
+                    map_chooser::refresh_index(&mut self.state),
+                ])
             }
             Message::ToggleLevelViewportFullscreen => {
                 let Some(id) = self.level_id else {
@@ -19795,6 +19804,7 @@ impl Desktop {
                 let project_scan_done = self.state.modding_open_editor_when_scanned
                     && matches!(&message, Message::Finished(Ok(Completed::Inventory(_))));
                 let finished = matches!(&message, Message::Finished(_));
+                let indexed_library = matches!(&message, Message::StartupLibraryIndexed(_, _));
                 let finished_ok = matches!(&message, Message::Finished(Ok(_)));
                 // Take the pending toast before `update`: a completion may
                 // immediately launch a follow-up operation of its own.
@@ -19823,6 +19833,11 @@ impl Desktop {
                 let was_settings_updates = self.state.page == Some(Page::Settings)
                     && self.state.settings_tab == settings_page::Tab::Updates;
                 let command = update(&mut self.state, message);
+                let indexing = if (finished || indexed_library) && self.state.level_map_prompt {
+                    map_chooser::ensure_index(&mut self.state)
+                } else {
+                    Task::none()
+                };
                 // A clicked update toast may live in the viewer or level
                 // window; bring the main window forward to show Settings.
                 let command = if !was_settings_updates
@@ -19857,13 +19872,13 @@ impl Desktop {
                 let notice = self.open_play_notice();
                 if opens_level && self.level_id.is_none() {
                     let open = self.open_level_editor();
-                    Task::batch([command, open, notice])
+                    Task::batch([command, indexing, open, notice])
                 } else if opens_model && self.viewer_id.is_none() {
                     let open = self.open_viewer();
                     self.state.viewer_from_library = launched_from_library;
-                    Task::batch([command, open, notice])
+                    Task::batch([command, indexing, open, notice])
                 } else {
-                    Task::batch([command, notice])
+                    Task::batch([command, indexing, notice])
                 }
             }
         }
