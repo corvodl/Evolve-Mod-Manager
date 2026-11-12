@@ -21,8 +21,8 @@ impl Default for Camera {
 }
 
 impl Camera {
-    /// Derive a starting position from the verified geometry bounds, not a
-    /// guessed Desert Canyon origin. Also works on maps with negative coords.
+    /// Start over the center of the verified ground, rather than one map-width
+    /// away or beneath it. Also works on maps with negative world coordinates.
     pub fn frame(mesh: &RenderMesh, yaw: f32, pitch: f32) -> Self {
         let mut lo = [f32::INFINITY; 3];
         let mut hi = [f32::NEG_INFINITY; 3];
@@ -37,13 +37,26 @@ impl Camera {
         if !lo.iter().all(|x| x.is_finite()) || !hi.iter().all(|x| x.is_finite()) {
             return Self::default();
         }
-        let center: [f32; 3] = std::array::from_fn(|axis| (lo[axis] + hi[axis]) * 0.5);
-        let extent = (0..3)
-            .map(|axis| hi[axis] - lo[axis])
-            .fold(1.0f32, f32::max);
-        let distance = (extent * 1.45).max(10.0);
+        let center_xy = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
+        let ground = mesh
+            .positions
+            .iter()
+            .filter(|point| point.iter().all(|v| v.is_finite()))
+            .min_by(|a, b| {
+                let distance =
+                    |p: &[f32; 3]| (p[0] - center_xy[0]).powi(2) + (p[1] - center_xy[1]).powi(2);
+                distance(a).total_cmp(&distance(b))
+            })
+            .map_or((lo[2] + hi[2]) * 0.5, |point| point[2]);
+        let extent = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1.0);
+        let distance = (extent * 0.025).clamp(30.0, 150.0);
         let (forward, _, _) = basis(yaw, pitch);
-        let position = std::array::from_fn(|i| center[i] - forward[i] * distance);
+        let mut position = [
+            center_xy[0] - forward[0] * distance,
+            center_xy[1] - forward[1] * distance,
+            ground - forward[2] * distance,
+        ];
+        position[2] = position[2].max(ground + 20.0);
         Self {
             position,
             speed: (extent * 0.12).clamp(1.0, 2500.0),
@@ -149,6 +162,111 @@ pub(super) fn basis(yaw: f32, pitch: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn start_camera_is_above_the_ground_near_the_map_center() {
+        let mesh = RenderMesh {
+            info: evolve_core::ModelInfo {
+                format: String::new(),
+                version: 0,
+                chunk_count: 0,
+                vertex_count: 5,
+                triangle_count: 0,
+                original_uv0: false,
+                original_normals: false,
+            },
+            positions: vec![
+                [-500.0, -500.0, -1000.0],
+                [500.0, -500.0, 0.0],
+                [-500.0, 500.0, 0.0],
+                [500.0, 500.0, 0.0],
+                [0.0, 0.0, 10.0],
+            ],
+            indices: vec![],
+            uv0: None,
+            normals: None,
+            vertex_alpha: None,
+            vertex_color: None,
+        };
+        let camera = Camera::frame(&mesh, -30.0, -32.0);
+        assert!(camera.position[0].abs() < 150.0 && camera.position[1].abs() < 150.0);
+        assert!(camera.position[2] >= 30.0);
+        let target = camera.project([0.0, 0.0, 10.0], -30.0, -32.0, 1.0, 1.0);
+        assert!(target[0].abs() < 1.0 && target[1].abs() < 1.0);
+        assert!(target[2] > 0.0 && target[2] < 1.0);
+    }
+
+    #[test]
+    #[ignore = "requires local read-only Tutorial Asset Library (EVOLVE_BENCH_LIBRARY)"]
+    fn imported_tutorial_camera_starts_over_the_ground() {
+        let library = std::env::var("EVOLVE_BENCH_LIBRARY").unwrap();
+        let imports = evolve_core::imported_library(std::path::Path::new(&library)).unwrap();
+        let archive = imports
+            .archives
+            .iter()
+            .find(|pak| {
+                pak.name.eq_ignore_ascii_case("levels_tutorial.pak")
+                    && pak.source.to_ascii_lowercase().contains("moddedevolve")
+            })
+            .unwrap();
+        let inventory = evolve_core::imported_archive_files(archive).unwrap();
+        let member = inventory
+            .entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .relative_path
+                    .eq_ignore_ascii_case("levels/Tutorial/leveldata/Heightmap.dat")
+            })
+            .unwrap();
+        let terrain = evolve_core::read_terrain(
+            &std::path::Path::new(&inventory.root).join(&member.relative_path),
+            64,
+        )
+        .unwrap();
+        let mesh = RenderMesh {
+            info: evolve_core::ModelInfo {
+                format: String::new(),
+                version: 0,
+                chunk_count: 0,
+                vertex_count: terrain.vertices.len(),
+                triangle_count: 0,
+                original_uv0: false,
+                original_normals: false,
+            },
+            positions: terrain.vertices,
+            indices: vec![],
+            uv0: None,
+            normals: None,
+            vertex_alpha: None,
+            vertex_color: None,
+        };
+        let camera = Camera::frame(&mesh, -30.0, -32.0);
+        let (lo, hi) = mesh.positions.iter().fold(
+            ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]),
+            |(mut lo, mut hi), point| {
+                for i in 0..2 {
+                    lo[i] = lo[i].min(point[i]);
+                    hi[i] = hi[i].max(point[i]);
+                }
+                (lo, hi)
+            },
+        );
+        let center = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
+        let sample = mesh
+            .positions
+            .iter()
+            .min_by(|a, b| {
+                let distance =
+                    |p: &[f32; 3]| (p[0] - center[0]).powi(2) + (p[1] - center[1]).powi(2);
+                distance(a).total_cmp(&distance(b))
+            })
+            .unwrap();
+        assert!(camera.position[2] >= sample[2] + 20.0);
+        assert!((camera.position[0] - center[0]).abs() <= 150.0);
+        assert!((camera.position[1] - center[1]).abs() <= 150.0);
+        let projected = camera.project(*sample, -30.0, -32.0, 1.0, 1.0);
+        assert!(projected[0].abs() < 1.0 && projected[1].abs() < 1.0);
+    }
     #[test]
     fn first_person_camera_moves_in_view_direction_and_strafes() {
         let mut camera = Camera {

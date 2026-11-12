@@ -291,6 +291,10 @@ fn sidebar_width(reveal: f32) -> f32 {
         + (SIDEBAR_EXPANDED_WIDTH - SIDEBAR_COLLAPSED_WIDTH) * reveal.clamp(0.0, 1.0)
 }
 
+fn rail_exit_closes_hover(reveal: f32) -> bool {
+    reveal <= 0.001
+}
+
 /// Right-hand Level Editor workspace. Actor editing is the default; verbose
 /// GPU/source diagnostics must not consume the actor hierarchy's space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -3119,6 +3123,7 @@ enum Message {
     LaunchUpdatesChecked(Vec<(UpdateChannel, Result<Option<ReleaseUpdate>, String>)>),
     ApplyLaunchUpdate(String),
     SidebarHover(bool),
+    SidebarRailHover(bool),
     SidebarToggle,
     SidebarClose,
     PreferenceSidebarPeek,
@@ -6225,8 +6230,24 @@ fn send_dev_bind(state: &mut State, action: developer_hotkeys::Action) {
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::SidebarHover(hovered) => {
+            if state.sidebar_hovered == hovered {
+                return Task::none();
+            }
             state.sidebar_hovered = hovered;
             animate_sidebar(state);
+            return Task::none();
+        }
+        Message::SidebarRailHover(hovered) => {
+            // The expanding panel replaces the rail's hit target. Its enter/
+            // exit events own hover until it has fully closed; treating the
+            // covered rail's exit as a real leave caused open/close jitter.
+            if !hovered && !rail_exit_closes_hover(state.sidebar_reveal.value(Instant::now())) {
+                return Task::none();
+            }
+            if state.sidebar_hovered != hovered {
+                state.sidebar_hovered = hovered;
+                animate_sidebar(state);
+            }
             return Task::none();
         }
         Message::SidebarToggle => {
@@ -11819,12 +11840,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelCameraReset => {
             state.yaw = -30.0;
-            state.pitch = 32.0;
+            state.pitch = -32.0;
             state.zoom = 1.0;
             state.level_keys.clear();
             state.level_camera = state
-                .model
+                .level_world
                 .as_ref()
+                .and_then(|world| {
+                    world.groups.iter().find(|group| {
+                        group.instances.len() == 1 && group.instances[0].object_index == usize::MAX
+                    })
+                })
+                .map(|group| group.mesh.as_ref())
+                .or(state.model.as_deref())
                 .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
         }
         Message::LevelCameraWindowFocus(_, focused) => {
@@ -17220,6 +17248,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     // manager on its originating workspace.
                     state.zoom = 1.0;
                     state.level_keys.clear();
+                    state.yaw = -30.0;
+                    state.pitch = -32.0;
                     state.level_camera = state
                         .model
                         .as_ref()
@@ -17489,6 +17519,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .as_ref()
                             .map(|(mesh, _)| Arc::new(mesh.clone()));
                     }
+                    let initial_ground_camera = if keep_view {
+                        None
+                    } else {
+                        loaded
+                            .terrain
+                            .as_ref()
+                            .map(|(mesh, _)| level_camera::Camera::frame(mesh, -30.0, -32.0))
+                    };
                     state.terrain = loaded.terrain.map(|(_, info)| info);
                     // A reloaded map (including after Save Terrain) starts a fresh brush session.
                     state.terrain_session = None;
@@ -17517,15 +17555,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         // Keep the manager on its originating workspace.
                         state.level_zoom = 1.0;
                         state.yaw = -30.0;
-                        state.pitch = 32.0;
+                        state.pitch = -32.0;
                         state.zoom = 1.0;
                         state.pan_x = 0.0;
                         state.pan_y = 0.0;
                         state.level_keys.clear();
-                        state.level_camera = state
-                            .model
-                            .as_ref()
-                            .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
+                        state.level_camera = initial_ground_camera.or_else(|| {
+                            state
+                                .level_world
+                                .as_ref()
+                                .and_then(|world| {
+                                    world.groups.iter().find(|group| {
+                                        group.instances.len() == 1
+                                            && group.instances[0].object_index == usize::MAX
+                                    })
+                                })
+                                .map(|group| group.mesh.as_ref())
+                                .or(state.model.as_deref())
+                                .map(|mesh| {
+                                    level_camera::Camera::frame(mesh, state.yaw, state.pitch)
+                                })
+                        });
                     }
                 }
                 Ok(Completed::Level(scene, source, hash)) => {
@@ -18104,8 +18154,8 @@ fn modern_shell<'a>(
             .height(Fill)
             .style(sidebar_surface),
     )
-    .on_enter(Message::SidebarHover(true))
-    .on_exit(Message::SidebarHover(false));
+    .on_enter(Message::SidebarRailHover(true))
+    .on_exit(Message::SidebarRailHover(false));
     let base = container(row![rail, body].height(Fill))
         .width(Fill)
         .height(Fill);
@@ -18114,18 +18164,22 @@ fn modern_shell<'a>(
     }
     let width = SIDEBAR_COLLAPSED_WIDTH + (SIDEBAR_PANEL_WIDTH - SIDEBAR_COLLAPSED_WIDTH) * reveal;
     let panel = mouse_area(
-        container(modern_nav(state, page, reveal >= 0.6))
-            .width(Length::Fixed(width))
-            .height(Fill)
-            .clip(true)
-            .style(move |theme: &iced::Theme| container::Style {
-                shadow: iced::Shadow {
-                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4 * reveal),
-                    offset: iced::Vector::new(6.0, 0.0),
-                    blur_radius: 24.0,
-                },
-                ..sidebar_surface(theme)
-            }),
+        container(
+            container(modern_nav(state, page, reveal >= 0.6))
+                .width(Length::Fixed(width))
+                .height(Fill)
+                .clip(true)
+                .style(move |theme: &iced::Theme| container::Style {
+                    shadow: iced::Shadow {
+                        color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4 * reveal),
+                        offset: iced::Vector::new(6.0, 0.0),
+                        blur_radius: 24.0,
+                    },
+                    ..sidebar_surface(theme)
+                }),
+        )
+        .width(Length::Fixed(SIDEBAR_PANEL_WIDTH))
+        .height(Fill),
     )
     .on_enter(Message::SidebarHover(true))
     .on_exit(Message::SidebarHover(false));
@@ -20347,6 +20401,13 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn expanding_sidebar_does_not_treat_covered_rail_as_a_hover_exit() {
+        assert!(rail_exit_closes_hover(0.0));
+        assert!(!rail_exit_closes_hover(0.1));
+        assert!(!rail_exit_closes_hover(1.0));
+    }
 
     #[test]
     fn copy_key_remembers_selection_and_paste_keeps_relative_offset() {
