@@ -179,6 +179,9 @@ pub fn describe_archive(filename: &str) -> (String, String) {
     if stem == "level" {
         return ("Levels".into(), "Level".into());
     }
+    if stem == "terraintexture" {
+        return ("Textures".into(), "Baked terrain color tiles".into());
+    }
     if stem.starts_with("levels") || stem.contains("terrain") {
         return ("Levels".into(), readable(stem));
     }
@@ -1423,6 +1426,9 @@ mod tests {
         let (group, description) = describe_archive("level.pak");
         assert_eq!(group, "Levels");
         assert_eq!(description, "Level");
+        let (group, description) = describe_archive("terraintexture.pak");
+        assert_eq!(group, "Textures");
+        assert_eq!(description, "Baked terrain color tiles");
     }
     #[test]
     fn incremental_build_labels_include_distinct_game_roots() {
