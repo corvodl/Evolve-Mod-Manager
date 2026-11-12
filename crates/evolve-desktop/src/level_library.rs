@@ -21,6 +21,9 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug)]
 pub(super) struct MapCandidate {
     pub name: String,
+    /// Only a compiled-only map with verified Game/Levels/<map>/level.pak
+    /// provenance is known to have been ported from Legacy.
+    pub legacy_ported: bool,
     pub layers: Vec<PathBuf>,
     pub terrain: Option<PathBuf>,
     pub vegetation: Option<PathBuf>,
@@ -54,7 +57,47 @@ pub(super) struct LoadedMap {
 
 /// Records how far a map load got, for the chooser's stepper.
 fn set_load_step(step: usize) {
-    crate::map_chooser::LOAD_STEP.store(step, std::sync::atomic::Ordering::Relaxed);
+    PREVIEWING.with(|preview| {
+        if !preview.get() {
+            crate::map_chooser::LOAD_STEP.store(step, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+}
+
+thread_local! { static PREVIEWING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+/// Decode source assets on a single chooser worker; never install this map in
+/// the editor or write to its imported archive. Failures leave a blank card.
+pub(super) fn preview_archive(archive: ImportedPak, name: &str) -> Option<Vec<u8>> {
+    PREVIEWING.with(|flag| {
+        flag.set(true);
+        let result = (|| {
+            let (_, maps) = index_maps(&archive).ok()?;
+            let index = maps.iter().position(|map| map.name == name)?;
+            let loaded = open(archive, index).ok()?;
+            (loaded.maps[loaded.index].name == name)
+                .then_some(loaded.thumbnail)
+                .flatten()
+        })();
+        flag.set(false);
+        result
+    })
+}
+
+pub(super) fn preview_project(project: ProjectRow, name: &str, library: &Path) -> Option<Vec<u8>> {
+    PREVIEWING.with(|flag| {
+        flag.set(true);
+        let result = (|| {
+            let maps = index_project_maps(&project).ok()?;
+            let index = maps.iter().position(|map| map.name == name)?;
+            let loaded = open_project(project, index, library, None).ok()?;
+            (loaded.maps[loaded.index].name == name)
+                .then_some(loaded.thumbnail)
+                .flatten()
+        })();
+        flag.set(false);
+        result
+    })
 }
 
 /// Most imported map archives are Levels_*.pak. Other imports can be opened
@@ -935,6 +978,13 @@ pub(super) fn list_maps(archive: &ImportedPak) -> Result<Vec<MapCandidate>, Stri
     discover_with_companion(archive).map(|(_, _, maps)| maps)
 }
 
+/// Background chooser indexing must not change the active map's load step.
+pub(super) fn index_maps(
+    archive: &ImportedPak,
+) -> Result<(ImportedPak, Vec<MapCandidate>), String> {
+    discover_with_companion(archive).map(|(owner, _, maps)| (owner, maps))
+}
+
 /// A Legacy-ported map's Game/levels_<map>.pak carries only cubemaps, weather
 /// and ExternalLayers; its placements live in Game/Levels/<map>/level.pak.
 /// When the selected archive has no map of its own, use that exact sibling,
@@ -993,8 +1043,36 @@ fn discover_with_companion(
 
 pub(super) fn list_project_maps(project: &ProjectRow) -> Result<Vec<MapCandidate>, String> {
     set_load_step(0);
+    index_project_maps(project)
+}
+
+pub(super) fn index_project_maps(project: &ProjectRow) -> Result<Vec<MapCandidate>, String> {
     let inventory = scan_directory(&project.workspace.join("files")).map_err(|e| e.to_string())?;
     discover_inventory(&inventory).map(|(_, maps)| maps)
+}
+
+pub(super) fn index_project_maps_with_source(
+    project: &ProjectRow,
+    library: &Path,
+) -> Result<Vec<MapCandidate>, String> {
+    let mut maps = index_project_maps(project)?;
+    if snapshot_asset_archive(project, library)
+        .as_ref()
+        .and_then(source_map_owner)
+        .is_some()
+    {
+        for map in &mut maps {
+            map.legacy_ported = map.compiled_terrain.is_some()
+                && map.terrain.is_none()
+                && !map.layers.iter().any(|layer| {
+                    layer
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                        .ends_with(".lyr")
+                });
+        }
+    }
+    Ok(maps)
 }
 
 fn discover_inventory(inventory: &Inventory) -> Result<(PathBuf, Vec<MapCandidate>), String> {
@@ -1032,6 +1110,7 @@ fn discover_inventory_with_owner(
         };
         let group = groups.entry(key).or_insert_with(|| MapCandidate {
             name,
+            legacy_ported: false,
             layers: Vec::new(),
             terrain: None,
             vegetation: None,
@@ -1081,6 +1160,14 @@ fn discover_inventory_with_owner(
                 .layers
                 .retain(|p| p.to_string_lossy().to_ascii_lowercase().ends_with(".lyr"));
         }
+        candidate.legacy_ported = source_owner.is_some()
+            && candidate.terrain.is_none()
+            && !candidate.layers.iter().any(|path| {
+                path.to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with(".lyr")
+            })
+            && candidate.compiled_terrain.is_some();
     }
     maps.retain(|map| {
         !map.layers.is_empty()
@@ -1263,9 +1350,23 @@ pub(super) fn open_project(
     previous: Option<std::sync::Arc<crate::world_instances::World>>,
 ) -> Result<LoadedMap, String> {
     let inventory = scan_directory(&project.workspace.join("files")).map_err(|e| e.to_string())?;
-    let (root, maps) = discover_inventory(&inventory)?;
+    let (root, mut maps) = discover_inventory(&inventory)?;
     let (verified_source, build) = match snapshot_asset_archive(&project, library_root) {
-        Some(pak) => (Some(PathBuf::from(&pak.source)), pak.builds),
+        Some(pak) => {
+            if source_map_owner(&pak).is_some() {
+                for map in &mut maps {
+                    map.legacy_ported = map.compiled_terrain.is_some()
+                        && map.terrain.is_none()
+                        && !map.layers.iter().any(|layer| {
+                            layer
+                                .to_string_lossy()
+                                .to_ascii_lowercase()
+                                .ends_with(".lyr")
+                        });
+                }
+            }
+            (Some(PathBuf::from(&pak.source)), pak.builds)
+        }
         None => (
             project_asset_source(&project, library_root),
             if library_root.is_dir() && !project.source_build.trim().is_empty() {
@@ -2224,9 +2325,15 @@ fn open_selected(
         assembled.world = std::sync::Arc::new(world);
         diagnostics.push(assembled.report.status());
     }
-    let thumbnail = terrain
-        .as_ref()
-        .and_then(|(mesh, _)| crate::map_chooser::terrain_thumbnail(&mesh.positions));
+    let thumbnail = crate::map_preview::render(
+        terrain.as_ref().map(|(mesh, _)| mesh),
+        full_scene.as_ref().map(|scene| scene.world.as_ref()),
+    )
+    .or_else(|| {
+        terrain
+            .as_ref()
+            .and_then(|(mesh, _)| crate::map_chooser::terrain_thumbnail(&mesh.positions))
+    });
     Ok(LoadedMap {
         thumbnail,
         archive,
@@ -3008,6 +3115,7 @@ mod tests {
     fn baked_terrain_resources_use_exact_map_owner_not_a_global_filename() {
         let map = MapCandidate {
             name: "Desert_Canyon".into(),
+            legacy_ported: false,
             layers: vec![PathBuf::from(
                 "Levels/Desert_Canyon/Layers/add_new_assets_here.lyr",
             )],
@@ -3117,6 +3225,7 @@ mod tests {
             .unwrap();
         let inventory = evolve_core::imported_archive_preview_inventory(selected).unwrap();
         let map = MapCandidate {
+            legacy_ported: false,
             name: "Tutorial".into(),
             layers: Vec::new(),
             terrain: Some(PathBuf::from(map_path)),
@@ -3257,6 +3366,7 @@ mod tests {
         let (_, maps) = discover_inventory_with_owner(&inventory, Some(&owner)).unwrap();
         assert_eq!(maps.len(), 1);
         assert_eq!(maps[0].name, "Ice_Alpine");
+        assert!(maps[0].legacy_ported);
         assert_eq!(maps[0].layers, vec![PathBuf::from("mission_mission0.xml")]);
         assert!(
             maps[0]
@@ -3264,6 +3374,35 @@ mod tests {
                 .as_ref()
                 .is_some_and(|p| p.to_string_lossy().replace('\\', "/") == "terrain/terrain.dat")
         );
+        let (_, copied) = discover_inventory(&inventory).unwrap();
+        assert!(!copied[0].legacy_ported);
+        std::fs::write(dir.path().join("Heightmap.dat"), b"editor source").unwrap();
+        let source_inventory = scan_directory(dir.path()).unwrap();
+        let (_, authored) = discover_inventory_with_owner(&source_inventory, Some(&owner)).unwrap();
+        assert!(!authored[0].legacy_ported);
+    }
+
+    #[test]
+    #[ignore = "requires local read-only Tutorial Asset Library (EVOLVE_BENCH_LIBRARY)"]
+    fn unopened_tutorial_can_index_and_render_a_preview() {
+        let root = std::env::var("EVOLVE_BENCH_LIBRARY").unwrap();
+        let library = imported_library(Path::new(&root)).unwrap();
+        let archive = library
+            .archives
+            .iter()
+            .find(|pak| {
+                pak.name.eq_ignore_ascii_case("levels_tutorial.pak")
+                    && pak.source.to_ascii_lowercase().contains("moddedevolve")
+            })
+            .unwrap();
+        let (owner, maps) = index_maps(archive).unwrap();
+        assert!(
+            maps.iter()
+                .any(|map| map.name.eq_ignore_ascii_case("tutorial"))
+        );
+        let png = preview_archive(owner, &maps[0].name).unwrap();
+        let decoded = image::load_from_memory(&png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (160, 160));
     }
 
     #[test]
@@ -3471,6 +3610,7 @@ mod tests {
             .unwrap();
         let inventory = imported_archive_files(selected).unwrap();
         let map = MapCandidate {
+            legacy_ported: false,
             name: "Tutorial".into(),
             layers: Vec::new(),
             terrain: Some(PathBuf::from("Levels/Tutorial/Heightmap.dat")),
