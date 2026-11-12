@@ -333,14 +333,14 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
         .into()
     } else {
         text("No verified level geometry loaded. Select a map PAK containing mesh or heightmap resources.")
-            .size(12).color(MUTED).into()
+            .size(design::LABEL).color(MUTED).into()
     }
 }
 
 pub(super) fn fullscreen_view(state: &State) -> Element<'_, Message> {
     column![
         row![
-            text("Level Editor  /  Perspective").size(13),
+            text("Level Editor  /  Perspective").size(design::BODY),
             space().width(Fill),
             design::button("Exit Fullscreen (Esc)")
                 .style(design::secondary)
@@ -360,10 +360,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let Some(scene) = &state.level_scene else {
         return container(
             column![
-                text("Perspective  /  Lit").size(13),
+                text("Perspective  /  Lit").size(design::BODY),
                 world_viewport(state),
                 text("No object placement layer · Available terrain remains visible")
-                    .size(12)
+                    .size(design::LABEL)
                     .color(MUTED),
             ]
             .spacing(8),
@@ -410,7 +410,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     group,
                     objects.len()
                 ))
-                .size(12),
+                .size(design::LABEL),
             )
             .width(Fill)
             .style(design::secondary)
@@ -441,7 +441,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     } else {
                         format!("{}  /  {}", obj.layer, obj.name)
                     })
-                    .size(12),
+                    .size(design::LABEL),
                 )
                 .width(Fill)
                 .padding([7, 9])
@@ -461,10 +461,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     {
         column![
             text(object.name.as_str()).size(16),
-            text(object.kind.as_str()).size(12).style(design::muted),
-            text(format!("Position: {:?}", object.world.position)).size(12),
-            text(format!("Rotation (wxyz): {:?}", object.world.quaternion)).size(12),
-            text(format!("Scale: {:?}", object.world.scale)).size(12),
+            text(object.kind.as_str())
+                .size(design::LABEL)
+                .style(design::muted),
+            text(format!("Position: {:?}", object.world.position)).size(design::LABEL),
+            text(format!("Rotation (wxyz): {:?}", object.world.quaternion)).size(design::LABEL),
+            text(format!("Scale: {:?}", object.world.scale)).size(design::LABEL),
             text(format!(
                 "Model: {}",
                 if object.model.is_empty() && object.is_wildlife_spawn() {
@@ -473,7 +475,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     &object.model
                 }
             ))
-            .size(12),
+            .size(design::LABEL),
             text(if object.kind.eq_ignore_ascii_case("CreatureSpawn") {
                 format!(
                     "Populations: {} · Home area: {}",
@@ -488,23 +490,52 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             } else {
                 String::new()
             })
-            .size(12),
+            .size(design::LABEL),
             text(format!("Status: {}", object.status))
-                .size(12)
+                .size(design::LABEL)
                 .color(MUTED),
             text(if state.level_read_only {
                 "Source transform · read-only"
             } else {
                 "Local transform"
             })
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
-            design::text_input("Position: x, y, z", &state.level_edit_position)
-                .on_input(Message::LevelEditPositionChanged),
-            design::text_input("Rotation: w, x, y, z", &state.level_edit_rotation)
-                .on_input(Message::LevelEditRotationChanged),
-            design::text_input("Scale: x, y, z", &state.level_edit_scale)
-                .on_input(Message::LevelEditScaleChanged),
+            text("POSITION").size(design::CAPTION).style(design::muted),
+            crate::forms::vector_fields(
+                &state.forms,
+                state.keyboard_modifiers,
+                "level.position",
+                &state.level_edit_position,
+                &["X", "Y", "Z"],
+                crate::forms::NumberSpec::new(-1_000_000.0, 1_000_000.0, 1.0, 3),
+                Message::LevelEditPositionChanged,
+            ),
+            text("ROTATION (QUATERNION)")
+                .size(design::CAPTION)
+                .style(design::muted),
+            crate::forms::vector_fields(
+                &state.forms,
+                state.keyboard_modifiers,
+                "level.rotation",
+                &state.level_edit_rotation,
+                &["W", "X", "Y", "Z"],
+                crate::forms::NumberSpec::new(-1.0, 1.0, 0.01, 4),
+                Message::LevelEditRotationChanged,
+            ),
+            text("SCALE").size(design::CAPTION).style(design::muted),
+            crate::forms::vector_fields(
+                &state.forms,
+                state.keyboard_modifiers,
+                "level.scale",
+                &state.level_edit_scale,
+                &["X", "Y", "Z"],
+                crate::forms::NumberSpec::new(0.001, 1000.0, 0.1, 3),
+                Message::LevelEditScaleChanged,
+            ),
+            text("Wheel or −/+ to step · Shift ×10 · Ctrl ×0.1 · Enter clamps to range")
+                .size(design::CAPTION)
+                .style(design::muted),
             design::button("Save transform to project")
                 .style(design::primary)
                 .on_press_maybe(
@@ -519,27 +550,27 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .into()
     } else {
         text("Select an object or click its point on the map to inspect original transforms.")
-            .size(12)
+            .size(design::LABEL)
             .color(MUTED)
             .into()
     };
     let viewport = container(
         column![
             row![
-                text("Perspective  /  Lit").size(13),
+                text("Perspective  /  Lit").size(design::BODY),
                 space().width(Fill),
                 text(if state.level_read_only {
                     "SOURCE SCENE"
                 } else {
                     "PROJECT PREVIEW"
                 })
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             ]
             .align_y(iced::Center),
             world_viewport(state),
             row![
-                text("Camera speed").size(12),
+                text("Camera speed").size(design::LABEL),
                 iced::widget::slider(
                     1.0..=2500.0,
                     state.level_camera.map_or(120.0, |c| c.speed),
@@ -550,21 +581,21 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     "{:.0} units/s",
                     state.level_camera.map_or(0.0, |c| c.speed)
                 ))
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
                 space().width(Fill),
                 text("RMB Look · WASD Fly · Q/E Elevate · F Focus")
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
             ]
             .spacing(10)
             .align_y(iced::Center),
             row![
-                text("Yaw").size(12),
+                text("Yaw").size(design::LABEL),
                 iced::widget::slider(-180.0..=180.0, state.yaw, Message::YawChanged).width(Fill),
-                text("Pitch").size(12),
+                text("Pitch").size(design::LABEL),
                 iced::widget::slider(-85.0..=85.0, state.pitch, Message::PitchChanged).width(Fill),
-                text(format!("Zoom {:.1}×", state.zoom)).size(12),
+                text(format!("Zoom {:.1}×", state.zoom)).size(design::LABEL),
                 iced::widget::slider(
                     0.2..=80.0,
                     state.zoom.clamp(0.2, 80.0),
@@ -577,8 +608,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 Element::from(
                     column![
                         row![
-                            text("2D Placement Overview").size(13),
-                            text(format!("{} authored objects", scene.objects.len())).size(12),
+                            text("2D Placement Overview").size(design::BODY),
+                            text(format!("{} authored objects", scene.objects.len())).size(design::LABEL),
                         ]
                         .spacing(10),
                         canvas_widget(SceneOverview {
@@ -592,7 +623,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         .width(Fill)
                         .height(Length::Fixed(175.0)),
                         row![
-                            text("Overview zoom").size(12),
+                            text("Overview zoom").size(design::LABEL),
                             iced::widget::slider(
                                 0.3..=3.0,
                                 state.level_zoom.max(0.3),
@@ -602,7 +633,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                             text(if state.level_show_wildlife && state.level_spawn_distances.is_some() {
                                 "Camera rings: red min · green max · amber despawn (authored, not simulated)"
                             } else { "Click a point to inspect its placement" })
-                                .size(12)
+                                .size(design::LABEL)
                                 .color(MUTED),
                         ]
                         .spacing(10),
@@ -641,7 +672,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .style(design::secondary)
                     .on_press(Message::LevelToggleWildlife),
                     text(format!("{wildlife_count} markers / areas"))
-                        .size(11)
+                        .size(design::CAPTION)
                         .style(design::muted),
                 ]
                 .spacing(8)
@@ -657,7 +688,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     "{visible} objects · {} selected · Shift/Ctrl to multi-select",
                     state.level_selection.indices.len()
                 ))
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             );
     }
@@ -670,24 +701,29 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             Length::FillPortion(3)
         })
         .style(design::panel);
-    let details_panel =
-        container(column![text("Details").size(15), scrollable(details).height(Fill),].spacing(8))
-            .padding(12)
-            .width(Fill)
-            .height(Length::FillPortion(3))
-            .style(design::panel);
+    let details_panel = container(
+        column![
+            text("Details").size(design::HEADING),
+            scrollable(details).height(Fill),
+        ]
+        .spacing(8),
+    )
+    .padding(12)
+    .width(Fill)
+    .height(Length::FillPortion(3))
+    .style(design::panel);
     // The right panel is an editor first. Time and texture choices stay
     // compact; long engine/source diagnostics have their own scrollable tab.
     let scene_settings_panel = container(
         column![
-            text("Scene Settings").size(15),
+            text("Scene Settings").size(design::HEADING),
             row![
-                text("Time of day").size(12),
+                text("Time of day").size(design::LABEL),
                 space().width(Fill),
                 text(super::level_lighting::Lighting::label(
                     state.level_time_of_day
                 ))
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             ]
             .align_y(iced::Center),
@@ -731,11 +767,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     )
                 },
             ))
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
             crate::level_authoring::terrain_editor(state),
             text("Rendering details and source warnings are in Diagnostics.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         ]
         .spacing(8),
@@ -746,10 +782,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let diagnostics_panel = container(
         column![
             row![
-                text("Rendering Diagnostics").size(15),
+                text("Rendering Diagnostics").size(design::HEADING),
                 space().width(Fill),
                 text(format!("{} scene notes", state.level_diagnostics.len()))
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
             ]
             .align_y(iced::Center),
@@ -769,7 +805,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         p.peak.load(Relaxed) as f64 / mib,
                     )
                 },
-            )).size(11).style(design::muted),
+            )).size(design::CAPTION).style(design::muted),
             text(state.level_world.as_ref().map_or_else(
                 || "Source diffuse coverage: no world loaded.".to_owned(),
                 |world| {
@@ -790,10 +826,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     )
                 },
             ))
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
             text("Full: loaded assets remain on the GPU even when offscreen; no manager GPU residency cap. Balanced: new groups may be deferred at its memory target, but loaded assets are never evicted. Hardware VRAM limits still apply.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             text(if let Some(source) = state.level_world.as_ref()
                 .and_then(|world| world.time_of_day.as_ref()) {
@@ -802,7 +838,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             } else {
                 "No verified original TimeOfDay.xml; using approximate lighting.".to_owned()
             })
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             text(state.level_world.as_ref().map_or_else(
                 || "Fog preview disabled: no verified map world.".to_owned(),
@@ -825,28 +861,28 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     _ => "Fog preview disabled: exact original Environment.xml and TimeOfDay.xml are both required.".to_owned(),
                 },
             ))
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             text(state.level_world.as_ref().and_then(|world| world.time_of_day.as_ref()).map_or_else(
                 || "No verified TimeOfDay fog-variable inventory.".to_owned(),
                 |tod| tod.fog_source_diagnostics(state.level_time_of_day),
             ))
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             text(state.level_world.as_ref().map_or_else(
                 || "Original effects/shaders unavailable.".to_owned(),
                 |world| world.source_resources.description(),
             ))
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
                     text(format!("Original imported scene audit · {} notes", state.level_diagnostics.len()))
-                        .size(12),
+                        .size(design::LABEL),
                     text(if state.level_diagnostics.is_empty() {
                         "No imported source diagnostics for this level.".to_owned()
                     } else {
                         state.level_diagnostics.join("\n\n")
                     })
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
                 ]
                 .spacing(8),
@@ -861,7 +897,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .style(design::panel);
     let changes_panel = container(
         column![
-            text("Changes").size(15),
+            text("Changes").size(design::HEADING),
             row![
                 design::button("Undo").on_press_maybe(
                     (!state.level_read_only && !state.level_undo.is_empty())
@@ -872,7 +908,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         .then_some(Message::LevelRedoTransform)
                 ),
                 text(format!("{} preview undo steps", state.level_undo.len()))
-                    .size(12)
+                    .size(design::LABEL)
                     .color(MUTED),
             ]
             .spacing(8),
@@ -897,10 +933,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 "{} saved edit(s) available to undo (session only)",
                 state.level_committed_undo.len()
             ))
-            .size(12)
+            .size(design::LABEL)
             .color(MUTED),
             undo_history(state),
-            text(format!("{} unsaved placements", state.level_dirty_count)).size(12),
+            text(format!("{} unsaved placements", state.level_dirty_count)).size(design::LABEL),
             design::text_input(
                 "New absolute .lyr or .xml output path",
                 &state.level_edit_output
@@ -913,7 +949,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         .then_some(Message::LevelExportEdits)
                 ),
             text("Original PAK is never changed.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         ]
         .spacing(7),

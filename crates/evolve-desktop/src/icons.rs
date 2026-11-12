@@ -1,7 +1,10 @@
-//! Small stroke icons for dock toolbars, drawn in the same 24×24,
-//! 1.65-stroke style as `assets/nav`. `design::icon` recolours them to the
+//! The app's outline icon set: 24×24, 1.65 stroke, round caps and joins,
+//! the same style as `assets/nav`. These are drawn for this app rather than
+//! copied from a third-party set, so there is no licence to track.
+//! [`glyph`] draws one through `design::icon`, which recolours it to the
 //! theme's text colour.
 
+use iced::widget::Svg;
 use iced::widget::svg;
 
 fn icon(body: &str) -> svg::Handle {
@@ -66,4 +69,105 @@ pub fn fullscreen() -> svg::Handle {
 
 pub fn chevron() -> svg::Handle {
     icon(r#"<path d="m9 6 6 6-6 6"/>"#)
+}
+
+pub fn search() -> svg::Handle {
+    icon(r#"<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>"#)
+}
+
+pub fn close() -> svg::Handle {
+    icon(r#"<path d="M6 6l12 12M18 6 6 18"/>"#)
+}
+
+pub fn check() -> svg::Handle {
+    icon(r#"<path d="m5 12.5 4.5 4.5L19 7.5"/>"#)
+}
+
+pub fn error() -> svg::Handle {
+    icon(r#"<circle cx="12" cy="12" r="8.5"/><path d="m9 9 6 6M15 9l-6 6"/>"#)
+}
+
+pub fn warning() -> svg::Handle {
+    icon(r#"<path d="M12 3.5 21 19.5H3z"/><path d="M12 10v4.5M12 17.2v.1"/>"#)
+}
+
+pub fn info() -> svg::Handle {
+    icon(r#"<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.1"/>"#)
+}
+
+pub fn plus() -> svg::Handle {
+    icon(r#"<path d="M12 5v14M5 12h14"/>"#)
+}
+
+pub fn minus() -> svg::Handle {
+    icon(r#"<path d="M5 12h14"/>"#)
+}
+
+pub fn pin() -> svg::Handle {
+    icon(r#"<path d="M9 4h6l-1 6 3 3H7l3-3z"/><path d="M12 13v7"/>"#)
+}
+
+pub fn folder() -> svg::Handle {
+    icon(
+        r#"<path d="M3.5 7a1.5 1.5 0 0 1 1.5-1.5h4l2 2h8a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/>"#,
+    )
+}
+
+pub fn file() -> svg::Handle {
+    icon(r#"<path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13.5 3.5v4h4"/>"#)
+}
+
+pub fn details() -> svg::Handle {
+    icon(
+        r#"<rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M14 4.5v15M16.5 9h1.5M16.5 12h1.5"/>"#,
+    )
+}
+
+pub fn shield() -> svg::Handle {
+    icon(r#"<path d="M12 3.5 19 6v5.5c0 4.2-3 7.4-7 9-4-1.6-7-4.8-7-9V6z"/>"#)
+}
+
+pub fn flask() -> svg::Handle {
+    icon(
+        r#"<path d="M9.5 3.5h5M10.5 3.5v6L5 19a1 1 0 0 0 .9 1.5h12.2A1 1 0 0 0 19 19l-5.5-9.5v-6"/><path d="M7.5 15h9"/>"#,
+    )
+}
+
+/// Draws an icon at `size` px, recoloured to the theme's text colour.
+pub fn glyph<'a>(handle: svg::Handle, size: f32) -> Svg<'a> {
+    iced::widget::svg(handle)
+        .width(size)
+        .height(size)
+        .style(crate::design::icon)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn icons_build_valid_svg_documents() {
+        for handle in [
+            search(),
+            close(),
+            check(),
+            error(),
+            warning(),
+            info(),
+            plus(),
+            minus(),
+            pin(),
+            folder(),
+            file(),
+            details(),
+            shield(),
+            flask(),
+        ] {
+            let iced::advanced::svg::Data::Bytes(bytes) = handle.data() else {
+                panic!("icons are built from memory");
+            };
+            let source = std::str::from_utf8(bytes).unwrap();
+            assert!(source.starts_with("<svg") && source.ends_with("</svg>"));
+        }
+    }
 }

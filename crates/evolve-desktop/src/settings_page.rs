@@ -19,8 +19,10 @@ fn heading(name: &str) -> iced::widget::Text<'_> {
 fn health_entry<'a>(title: &'static str, value: &str) -> Element<'a, Message> {
     panel(
         column![
-            text(title).size(13),
-            text(value.to_owned()).size(12).style(design::muted),
+            text(title).size(design::BODY),
+            text(value.to_owned())
+                .size(design::LABEL)
+                .style(design::muted),
         ]
         .spacing(8),
     )
@@ -38,6 +40,23 @@ fn health_panel(state: &State) -> Element<'_, Message> {
     )
 }
 
+/// Disk and memory levels as threshold-coloured meters.
+fn health_meters(meters: &[crate::system_meters::Meter]) -> Element<'_, Message> {
+    if meters.is_empty() {
+        return design::caption("Drive and memory levels were not available.").into();
+    }
+    meters
+        .iter()
+        .fold(column![].spacing(10), |list, meter| {
+            list.push(crate::chrome::meter(
+                meter.label.clone(),
+                meter.level(),
+                meter.detail.clone(),
+            ))
+        })
+        .into()
+}
+
 fn health_body(state: &State) -> Element<'_, Message> {
     let check = row![
         design::button(if state.health_checking {
@@ -47,15 +66,16 @@ fn health_body(state: &State) -> Element<'_, Message> {
         })
         .on_press_maybe((!state.health_checking).then_some(Message::CheckSystemHealth)),
         text("Read-only until you choose an explicit operation")
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
     ]
     .spacing(12);
     if let Some(result) = &state.health_report {
         column![
             text("Checks are opt-in. Firewall, registry, dumps and cleanup settings are never changed.")
-                .size(12).style(design::muted),
+                .size(design::LABEL).style(design::muted),
             check,
+            health_meters(&state.health_meters),
             row![
                 health_entry("Windows Firewall", &result.firewall),
                 health_entry("Game Process", &result.game_process),
@@ -70,7 +90,7 @@ fn health_body(state: &State) -> Element<'_, Message> {
     } else {
         column![
             text("Nothing is scanned while this panel is closed. Select Check System Health to run read-only checks.")
-                .size(12).style(design::muted),
+                .size(design::LABEL).style(design::muted),
             check,
         ].spacing(9).into()
     }
@@ -89,40 +109,44 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
     panel(
         column![
             heading("Game & Client"),
-            text("Game launch method").size(13),
+            text("Game launch method").size(design::BODY),
             row![
                 design::button("Client Launch")
-                    .on_press(Message::PreferenceGameLaunchMode("Client Launch"))
+                    .on_press(if state.preferences.game_launch_mode == "Direct Launch" {
+                        // Moving to the full client is worth a moment's
+                        // explanation; switching back is not.
+                        crate::chrome::confirm(
+                            "Switch to Client Launch?",
+                            "Play buttons will start the installed Modded Evolve client, which signs in to your profile and connects to the relay and Shift+Tab friends. Modded play still needs a verified signing stage. You can switch back to Direct Launch at any time.",
+                            "Use Client Launch",
+                            crate::design::Tone::Info,
+                            Message::PreferenceGameLaunchMode("Client Launch"),
+                        )
+                    } else {
+                        Message::PreferenceGameLaunchMode("Client Launch")
+                    })
                     .style(if state.preferences.game_launch_mode != "Direct Launch" { design::primary } else { design::secondary }),
                 design::button("Direct Launch")
                     .on_press(Message::PreferenceGameLaunchMode("Direct Launch"))
                     .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
             ].spacing(8),
             crate::ui_kit::callout(crate::design::Tone::Info, "Recommended: Client Launch for authenticated profiles, relay and Shift+Tab friends. Direct Launch currently uses a Stage 2 smoke host and does not establish the full relay/overlay session. Explicit Direct selection is preserved."),
-            text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
-            row![
-                design::text_input(
-                    r"C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail",
-                    &state.preferences.game_installation,
-                )
-                .on_input(Message::PreferenceGameInstall),
-                design::button("Browse…")
-                    .on_press(Message::PickGameInstallation)
-                    .style(design::secondary),
-            ]
-            .spacing(8),
-            text("Installed client executable (also supplies Direct Launch services)").size(12),
-            row![
-                design::text_input(
-                    r"C:\Users\billn\AppData\Local\Programs\Modded Evolve\ModdedEvolveLauncher.exe",
-                    &state.preferences.client_executable,
-                )
-                .on_input(Message::PreferenceClientExecutable),
-                design::button("Browse…")
-                    .on_press(Message::PickClientExecutable)
-                    .style(design::secondary),
-            ]
-            .spacing(8),
+            crate::forms::path_field(
+                "Game location (EvolveGame or bin64_SteamRetail)",
+                r"C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail",
+                crate::forms::PathKind::GameInstall,
+                &state.preferences,
+                &state.path_checks,
+                Message::PickGameInstallation,
+            ),
+            crate::forms::path_field(
+                "Installed client executable (also supplies Direct Launch services)",
+                r"C:\Users\billn\AppData\Local\Programs\Modded Evolve\ModdedEvolveLauncher.exe",
+                crate::forms::PathKind::ClientExe,
+                &state.preferences,
+                &state.path_checks,
+                Message::PickClientExecutable,
+            ),
             text(if paths_ok {
                 if state.preferences.game_launch_mode == "Direct Launch" {
                     "Game and compatible client selected. Direct modded play also needs verified signing and recovery files."
@@ -134,7 +158,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
             } else {
                 "Choose valid game and client paths, then save."
             })
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
             row![
                 design::button(if state.preferences.game_launch_mode == "Direct Launch" { "Save Game Setup" } else { "Save Game & Client" })
@@ -158,7 +182,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                 .on_press_maybe((!state.busy).then_some(Message::StartAutomaticSetup))
                 .style(design::primary),
                 text("Sparse setup saves disk space. Permanent full-game snapshots are optional and disabled by default.")
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
             ]
             .spacing(9),
@@ -189,25 +213,29 @@ fn test_environment_setup(state: &State) -> Element<'_, Message> {
                 } else {
                     "Both Play buttons use the normal client and game."
                 })
-                .size(12).style(design::muted),
+                .size(design::LABEL).style(design::muted),
             ].spacing(10).align_y(iced::Center),
-            text("Test Client executable (separate .exe build)").size(12),
-            row![
-                design::text_input("Select Test Client .exe", &state.preferences.test_client_executable)
-                    .on_input(Message::PreferenceTestClientExecutable),
-                design::button("Browse…").on_press(Message::PickTestClient).style(design::secondary),
-            ].spacing(8),
-            text("Test Game directory (separate EvolveGame build)").size(12),
-            row![
-                design::text_input("Select Test Game folder", &state.preferences.test_game_installation)
-                    .on_input(Message::PreferenceTestGameInstall),
-                design::button("Browse…").on_press(Message::PickTestGame).style(design::secondary),
-            ].spacing(8),
+            crate::forms::path_field(
+                "Test Client executable (separate .exe build)",
+                "Select Test Client .exe",
+                crate::forms::PathKind::TestClient,
+                &state.preferences,
+                &state.path_checks,
+                Message::PickTestClient,
+            ),
+            crate::forms::path_field(
+                "Test Game directory (separate EvolveGame build)",
+                "Select Test Game folder",
+                crate::forms::PathKind::TestGame,
+                &state.preferences,
+                &state.path_checks,
+                Message::PickTestGame,
+            ),
             text(if valid {
                 "Separate Test Client and Test Game verified. The test client must be configured to launch this Test Game."
             } else {
                 "Choose both test builds. The Test Game only needs its executable here; production PAK inventory checks are not used."
-            }).size(11).style(design::muted),
+            }).size(design::CAPTION).style(design::muted),
             row![
                 design::button("Save Test Environment")
                     .on_press(Message::SaveTestSetup)
@@ -217,10 +245,10 @@ fn test_environment_setup(state: &State) -> Element<'_, Message> {
                     .style(design::secondary),
             ].spacing(8),
             crate::ui_kit::callout(crate::design::Tone::Info, "Modded test launches use an independent Test signing stage and swap journal. Creating a Test Mod Setup uses the existing signed-PAK setup workflow; unsupported test archive formats will be reported, not silently replaced."),
-            text("Test signing stage (separate from production)").size(12),
+            text("Test signing stage (separate from production)").size(design::LABEL),
             design::text_input("Test stage folder", &state.preferences.test_stage)
                 .on_input(Message::PreferenceTestStage),
-            text("Test recovery / swap folder").size(12),
+            text("Test recovery / swap folder").size(design::LABEL),
             design::text_input("Test swap folder", &state.preferences.test_swap)
                 .on_input(Message::PreferenceTestSwap),
         ].spacing(9),
@@ -317,7 +345,7 @@ fn storage(state: &State) -> Element<'_, Message> {
                         crate::ui_kit::ticked(&state.ui, TICKERS[i], buckets[i] as f64) as u64
                     ))
                 ))
-                .size(11)
+                .size(design::CAPTION)
                 .color(colors[i]),
             );
     }
@@ -329,11 +357,11 @@ fn storage(state: &State) -> Element<'_, Message> {
         ))
     });
     panel(column![
-        text("GAME STORAGE").size(15),
+        text("GAME STORAGE").size(design::HEADING),
         row![
-            text("Mod Data Location").size(12),
+            text("Mod Data Location").size(design::LABEL),
             crate::ui_kit::copy_button(&state.ui, "storage-root", root.to_owned()),
-            container(text(root).size(12)).width(Fill).padding(9).style(|theme| container::Style {
+            container(text(root).size(design::LABEL)).width(Fill).padding(9).style(|theme| container::Style {
                 background: Some(Background::Color(Color::from_rgb8(31, 31, 37))),
                 border: Border { color: design::border(theme), width: 1.0, radius: design::radius(theme, design::Radius::Small).into() },
                 ..container::Style::default()
@@ -341,13 +369,13 @@ fn storage(state: &State) -> Element<'_, Message> {
             design::button("Change…").on_press(Message::SettingsToggleAdvancedPaths).style(design::secondary)
         ].spacing(9).align_y(iced::Center),
         crate::ui_kit::callout(crate::design::Tone::Warning, "Changing this location affects FUTURE setups only. Existing signing and recovery files are not moved."),
-        text(format!("Active stage: {}", if state.preferences.stage.is_empty() { "Not configured" } else { &state.preferences.stage })).size(11),
+        text(format!("Active stage: {}", if state.preferences.stage.is_empty() { "Not configured" } else { &state.preferences.stage })).size(design::CAPTION),
         container(column![
             row![
-                text("STORAGE BREAKDOWN").size(12),
-                text(total_label.clone().map(|total| format!("{total} total")).unwrap_or_default()).size(12),
+                text("STORAGE BREAKDOWN").size(design::LABEL),
+                text(total_label.clone().map(|total| format!("{total} total")).unwrap_or_default()).size(design::LABEL),
                 space().width(Fill),
-                text(if state.storage_analyzing { "Checking storage…" } else if state.storage_usage.is_some() { "Scan complete" } else { "Not yet analyzed" }).size(11).style(design::muted)
+                text(if state.storage_analyzing { "Checking storage…" } else if state.storage_usage.is_some() { "Scan complete" } else { "Not yet analyzed" }).size(design::CAPTION).style(design::muted)
             ],
             row![
                 iced::widget::canvas(crate::fx::RingChart {
@@ -364,7 +392,7 @@ fn storage(state: &State) -> Element<'_, Message> {
             .align_y(iced::Center),
             row![
                 design::button("Analyze Storage").on_press_maybe((!state.storage_analyzing && !state.busy).then_some(Message::SettingsAnalyzeStorage)).style(design::secondary),
-                text(state.storage_usage.as_ref().map_or("No storage analysis yet.".to_owned(), |r| format!("{} files checked{}", r.files, if r.truncated { " • Scan limit reached; totals incomplete" } else { "" }))).size(11).style(design::muted)
+                text(state.storage_usage.as_ref().map_or("No storage analysis yet.".to_owned(), |r| format!("{} files checked{}", r.files, if r.truncated { " • Scan limit reached; totals incomplete" } else { "" }))).size(design::CAPTION).style(design::muted)
             ].spacing(8)
         ].spacing(8)).padding(10).width(Fill).style(|theme| container::Style {
             background: Some(Background::Color(design::field(theme))),
@@ -373,23 +401,29 @@ fn storage(state: &State) -> Element<'_, Message> {
         crate::ui_kit::disclosure(
             &state.ui,
             "settings:advanced-paths",
-            text("Advanced folder paths").size(13),
+            text("Advanced folder paths").size(design::BODY),
             state.settings_advanced_paths,
             Message::SettingsToggleAdvancedPaths,
             || -> Element<'_, Message> {
             column![
-                text("Future GameSets location").size(12),
+                text("Future GameSets location").size(design::LABEL),
                 design::text_input("GameSets folder", &state.preferences.game_storage_root).on_input(Message::PreferenceGameStorage),
-                text("Leave blank to have Set Up Manager use its own GameSets folder under your Windows user profile. It creates new stage and recovery folders automatically; no private manager data is needed.").size(11).style(design::muted),
-                text("Signing stage • existing location").size(12),
+                text("Leave blank to have Set Up Manager use its own GameSets folder under your Windows user profile. It creates new stage and recovery folders automatically; no private manager data is needed.").size(design::CAPTION).style(design::muted),
+                text("Signing stage • existing location").size(design::LABEL),
                 design::text_input("Stage folder", &state.preferences.stage).on_input(Message::PreferenceStage),
-                text("Launch restoration journal").size(12),
+                text("Launch restoration journal").size(design::LABEL),
                 design::text_input("Swap journal folder", &state.preferences.swap).on_input(Message::PreferenceSwap),
-                text("Mod projects").size(12),
-                design::text_input("Projects folder", &state.preferences.projects).on_input(Message::PreferenceProjects),
-                text("Current editor workspace").size(12),
+                crate::forms::path_field(
+                    "Mod projects",
+                    "Projects folder",
+                    crate::forms::PathKind::Projects,
+                    &state.preferences,
+                    &state.path_checks,
+                    Message::BrowsePath(crate::forms::PathKind::Projects),
+                ),
+                text("Current editor workspace").size(design::LABEL),
                 design::text_input("Current workspace", &state.preferences.current_workspace).on_input(Message::PreferenceWorkspace),
-                text("Paths are saved only when you select Save Settings; no data is automatically moved.").size(11).style(design::muted),
+                text("Paths are saved only when you select Save Settings; no data is automatically moved.").size(design::CAPTION).style(design::muted),
             ].spacing(6).into()
             },
         ),
@@ -449,7 +483,7 @@ fn library(state: &State) -> Element<'_, Message> {
     });
     panel(
         column![
-            text("EXTRACTED PAK LIBRARY").size(15),
+            text("EXTRACTED PAK LIBRARY").size(design::HEADING),
             text(format!(
                 "{} imported archives • {} stored",
                 archive_count,
@@ -459,26 +493,29 @@ fn library(state: &State) -> Element<'_, Message> {
                     "Not indexed yet".into()
                 }
             ))
-            .size(12),
+            .size(design::LABEL),
             text(reference_counts.map_or(
                 "Shared references: —  •  Animation references: —".to_string(),
                 |(shared, animations)| format!(
                     "Shared references: {shared}/6  •  Animation references: {animations}/3"
                 )
             ))
-            .size(12),
+            .size(design::LABEL),
             text(if state.library_root.is_empty() {
                 "Default Asset Library location could not be detected"
             } else {
                 state.library_root.as_str()
             })
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
-            design::text_input(
+            crate::forms::path_field(
+                "Asset Library folder",
                 "Existing extracted AssetLibrary folder...",
-                &state.preferences.asset_library_root
-            )
-            .on_input(Message::PreferenceAssets),
+                crate::forms::PathKind::AssetLibrary,
+                &state.preferences,
+                &state.path_checks,
+                Message::BrowsePath(crate::forms::PathKind::AssetLibrary),
+            ),
             design::button("Load Library")
                 .on_press_maybe((!state.busy).then_some(Message::LibraryRefresh)),
             design::button("Manage Asset Library / Add PAKs…")
@@ -541,7 +578,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         Tab::Appearance => column![
         heading("Appearance"),
         panel(column![
-            text("INTERFACE THEME").size(12),
+            text("INTERFACE THEME").size(design::LABEL),
             row![
                 design::button("Modern")
                     .on_press(Message::PreferenceUiTheme("Modern"))
@@ -554,7 +591,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 "Legacy theme: charcoal panels, red selection, white hover and sharper controls. The original supplied UI_Assets.pak is not bundled or modified; its textures require separate verified extraction."
             } else {
                 "Modern theme: original color choices and rounder panels. Choose Evolve Legacy to preview the alternative instantly; switching back preserves your Modern colors."
-            }).size(11).style(design::muted),
+            }).size(design::CAPTION).style(design::muted),
             row![
                 crate::ui_kit::segmented(
                     &state.ui,
@@ -570,7 +607,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 design::button(text(format!("Explorer: {}", state.preferences.file_explorer_side))).on_press(Message::PreferenceExplorerSide).style(design::secondary)
             ].spacing(8),
             crate::ui_kit::switch(&state.ui, "reduce-motion", "Reduce motion", state.preferences.reduce_motion, Message::PreferenceReduceMotion),
-            text("HOME SCREEN ARTWORK").size(12),
+            text("HOME SCREEN ARTWORK").size(design::LABEL),
             row![
                 design::button("Background On")
                     .on_press_maybe((!state.preferences.show_home_background).then_some(Message::PreferenceHomeBackground))
@@ -580,11 +617,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .style(if !state.preferences.show_home_background { design::primary } else { design::secondary }),
             ].spacing(8),
             text("Off hides the Evolve artwork and restores opaque Home panels. This only affects Home, keeps other themes and pages unchanged, and is saved automatically.")
-                .size(11).style(design::muted),
-            text("THEME PRESETS").size(12),
+                .size(design::CAPTION).style(design::muted),
+            text("THEME PRESETS").size(design::LABEL),
             theme_presets(state),
             row![
-                text("Corners").size(12),
+                text("Corners").size(design::LABEL),
                 crate::ui_kit::segmented(
                     &state.ui,
                     "corner-style",
@@ -603,9 +640,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             ]
             .spacing(12)
             .align_y(iced::Center),
-            text("CUSTOM COLOURS").size(12),
+            text("CUSTOM COLOURS").size(design::LABEL),
             crate::color_picker::view(state),
-            text("MODERN THEME ACCENT COLOR").size(12),
+            text("MODERN THEME ACCENT COLOR").size(design::LABEL),
             row![
                 design::button("Default")
                     .on_press_maybe((state.preferences.ui_theme == "Modern").then_some(Message::PreferenceAccentPreset("Default")))
@@ -621,14 +658,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .style(if state.preferences.appearance_colors.get("accent").is_some_and(|c| c == "#a91f38") { design::primary } else { design::secondary }),
             ].spacing(8),
             text("Modern accent presets and Light/Dark modes are retained separately; selecting Legacy never overwrites those preferences. Original Scaleform assets are not executed by the native theme.")
-                .size(11).style(design::muted),
+                .size(design::CAPTION).style(design::muted),
         ].spacing(8)),
         ].spacing(12).into(),
         Tab::Updates => column![
         heading("Updates"),
         panel(column![
             row![
-                text(format!("Installed version: {}", env!("CARGO_PKG_VERSION"))).size(12),
+                text(format!("Installed version: {}", env!("CARGO_PKG_VERSION"))).size(design::LABEL),
                 crate::ui_kit::copy_button(&state.ui, "version", env!("CARGO_PKG_VERSION").to_owned()),
             ]
             .push(env!("CARGO_PKG_VERSION").contains("-nightly.").then(|| {
@@ -653,14 +690,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     true,
                 ),
             ].spacing(8),
-            text("Beta and Nightly builds are prereleases. Every channel is checked automatically when the manager starts.").size(11).style(design::muted),
-            text(state.update_status.as_str()).size(12).style(design::muted),
+            text("Beta and Nightly builds are prereleases. Every channel is checked automatically when the manager starts.").size(design::CAPTION).style(design::muted),
+            text(state.update_status.as_str()).size(design::LABEL).style(design::muted),
             if let Some(error) = &state.update_worker_failure {
                 text(format!(
                     "Previous update helper failure: {error}. See LocalAppData/EvolveModManager/Updates/last-update-error.txt"
-                )).size(12).style(design::muted)
+                )).size(design::LABEL).style(design::muted)
             } else {
-                text("").size(12)
+                text("").size(design::LABEL)
             },
             if state.update_worker_failure.is_some() {
                 design::button("Retry update")
@@ -682,12 +719,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             column![
                 heading("Integrations"),
                 panel(column![
-                    text("DISCORD RICH PRESENCE · LOCAL ONLY").size(15),
+                    text("DISCORD RICH PRESENCE · LOCAL ONLY").size(design::HEADING),
                     text("No account linking, OAuth, bot, or token. Uses the desktop Discord app through local IPC. Discord's own Activity Privacy settings also control visibility.")
-                        .size(12).style(design::muted),
+                        .size(design::LABEL).style(design::muted),
                     crate::ui_kit::switch(&state.ui, "discord-enabled", "Rich Presence", state.preferences.discord_presence_enabled, Message::PreferenceDiscordToggle("enabled")),
                     text("Manager: 1563784115785048114 (Evolve Mod Manager). Game: 1565093139616763987 (Evolve). Automatically switches when Evolve starts/closes. Override below applies only to the manager.")
-                        .size(11).style(design::muted),
+                        .size(design::CAPTION).style(design::muted),
                     design::text_input("Manager application ID (optional developer override)", &state.preferences.discord_application_id)
                         .on_input(Message::PreferenceDiscordAppId),
                     row![
@@ -703,176 +740,192 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         crate::ui_kit::switch(&state.ui, "discord-minimal", "Minimal privacy", state.preferences.discord_minimal, Message::PreferenceDiscordToggle("minimal")),
                     ].spacing(8),
                     text("Character names use the read-only local IEntity resolver and known aliases; unknown names are hidden. Health is available when validated. Armor and evolution are monster-only. Maps, modes and game art still need verified sources. Discord may prioritize the game's own presence over the manager's activity.")
-                        .size(11).style(design::muted),
+                        .size(design::CAPTION).style(design::muted),
                 ].spacing(8)),
                 panel(column![
-                    text("BLENDER · FBX EXPORT").size(15),
+                    text("BLENDER · FBX EXPORT").size(design::HEADING),
                     if crate::blender_install::valid_blender(&state.blender_path).is_some() {
                         Element::from(text(format!("Installed: {}", state.blender_path))
-                            .size(12).style(design::muted))
+                            .size(design::LABEL).style(design::muted))
                     } else {
                         Element::from(column![
                             text("Not detected. Install Blender 4.2+ or choose an existing blender.exe.")
-                                .size(12).style(design::muted),
-                            design::text_input("Path to Blender executable", &state.preferences.blender_executable)
-                                .on_input(Message::PreferenceBlender),
+                                .size(design::LABEL).style(design::muted),
+                            crate::forms::path_field(
+                                "Blender executable",
+                                "Path to blender.exe",
+                                crate::forms::PathKind::Blender,
+                                &state.preferences,
+                                &state.path_checks,
+                                Message::BrowsePath(crate::forms::PathKind::Blender),
+                            ),
                         ].spacing(6))
                     },
                 ].spacing(8)),
                 panel(column![
-                    text("FFDEC · GFX / ACTIONSCRIPT EDITOR").size(15),
+                    text("FFDEC · GFX / ACTIONSCRIPT EDITOR").size(design::HEADING),
                     if let Some(path) = &ffdec {
                         Element::from(text(format!("Installed: {}", path.display()))
-                            .size(12).style(design::muted))
+                            .size(design::LABEL).style(design::muted))
                     } else {
                         Element::from(column![
                             text("Not detected. Install the verified FFDec 26.3.0 portable distribution (~19 MiB download).")
-                                .size(12).style(design::muted),
+                                .size(design::LABEL).style(design::muted),
                             design::button("Install FFDec")
                                 .on_press_maybe((!state.gfx_install_busy)
                                     .then_some(Message::GfxInstallTool(crate::gfx_tool_install::Tool::Ffdec))),
                         ].spacing(6))
                     },
-                    row![
-                        design::text_input("Absolute path to ffdec-cli.exe or ffdec.jar", &state.preferences.ffdec_executable)
-                            .on_input(Message::GfxConfigChanged),
-                        design::button("Select existing…")
-                            .on_press(Message::GfxPickBackend)
-                            .style(design::secondary),
-                    ].spacing(8).align_y(iced::Center),
+                    crate::forms::path_field(
+                        "FFDec executable",
+                        "Absolute path to ffdec-cli.exe or ffdec.jar",
+                        crate::forms::PathKind::Ffdec,
+                        &state.preferences,
+                        &state.path_checks,
+                        Message::GfxPickBackend,
+                    ),
                     text("FFDec may require a compatible Java runtime. No Java installer is bundled.")
-                        .size(11).style(design::muted),
+                        .size(design::CAPTION).style(design::muted),
                 ].spacing(8)),
                 panel(column![
-                    text("AUDIO TOOLS · FMOD / FSB SOUND BANKS").size(15),
+                    text("AUDIO TOOLS · FMOD / FSB SOUND BANKS").size(design::HEADING),
                     text("vgmstream decodes original FSB5 samples to WAV for previews and exports. Native rebuilding supports replacement of existing FSB5 Vorbis samples. FMOD Designer remains optional for advanced FDP/FEV authoring.")
-                        .size(12).style(design::muted),
+                        .size(design::LABEL).style(design::muted),
                     if let Some(decoder) = crate::audio_tools::valid_decoder(&state.preferences.vgmstream_executable) {
                         Element::from(text(format!("vgmstream ready: {}", decoder.display()))
-                            .size(12).style(design::muted))
+                            .size(design::LABEL).style(design::muted))
                     } else {
                         Element::from(column![
                             text("vgmstream r2117 not configured (verified ~4.3 MiB Windows x64 download).")
-                                .size(12).style(design::muted),
+                                .size(design::LABEL).style(design::muted),
                             design::button("Install vgmstream")
                                 .on_press_maybe((!state.gfx_install_busy)
                                     .then_some(Message::GfxInstallTool(crate::gfx_tool_install::Tool::Vgmstream))),
                         ].spacing(6))
                     },
-                    row![
-                        design::text_input("Absolute path to vgmstream-cli.exe", &state.preferences.vgmstream_executable)
-                            .on_input(Message::AudioDecoderPathChanged),
-                        design::button("Select existing…").on_press(Message::AudioPickDecoder)
-                            .style(design::secondary),
-                    ].spacing(8).align_y(iced::Center),
-                    text("NATIVE FSB5 COMPILATION · VORBIS REPLACEMENTS").size(12),
+                    crate::forms::path_field(
+                        "vgmstream decoder",
+                        "Absolute path to vgmstream-cli.exe",
+                        crate::forms::PathKind::Vgmstream,
+                        &state.preferences,
+                        &state.path_checks,
+                        Message::AudioPickDecoder,
+                    ),
+                    text("NATIVE FSB5 COMPILATION · VORBIS REPLACEMENTS").size(design::LABEL),
                     text("For WAV replacements, a configured FFmpeg encoder and the MIT-licensed oggvorbis2fsb5 remuxer feed the manager's native multi-sample FSB5 writer. No FMOD Designer required.")
-                        .size(11).style(design::muted),
+                        .size(design::CAPTION).style(design::muted),
                     if let Some(remuxer) = crate::audio_tools::valid_remuxer(&state.preferences.oggvorbis_remux_executable) {
                         Element::from(text(format!("Remuxer ready: {}", remuxer.display()))
-                            .size(12).style(design::muted))
+                            .size(design::LABEL).style(design::muted))
                     } else {
                         Element::from(column![
                             text("oggvorbis2fsb5 is not configured.")
-                                .size(12).style(design::muted),
+                                .size(design::LABEL).style(design::muted),
                             design::button("Install Vorbis FSB5 remuxer")
                                 .on_press_maybe((!state.gfx_install_busy)
                                     .then_some(Message::GfxInstallTool(crate::gfx_tool_install::Tool::OggRemux))),
                         ].spacing(6))
                     },
-                    row![
-                        design::text_input("Absolute path to oggvorbis2fsb5.exe", &state.preferences.oggvorbis_remux_executable)
-                            .on_input(Message::AudioRemuxPathChanged),
-                        design::button("Select existing…").on_press(Message::AudioPickRemux)
-                            .style(design::secondary),
-                    ].spacing(8).align_y(iced::Center),
+                    crate::forms::path_field(
+                        "Vorbis FSB5 remuxer",
+                        "Absolute path to oggvorbis2fsb5.exe",
+                        crate::forms::PathKind::OggRemux,
+                        &state.preferences,
+                        &state.path_checks,
+                        Message::AudioPickRemux,
+                    ),
                     text("OGG inputs can bypass FFmpeg; WAV inputs use the FFmpeg configured below. IMA ADPCM bank writing and in-game compatibility remain unverified.")
-                        .size(11).style(design::muted),
+                        .size(design::CAPTION).style(design::muted),
                     if let Some(designer) = crate::audio_tools::valid_designer(&state.preferences.fmod_designer_executable) {
                         Element::from(text(format!("Legacy FMOD Designer detected: {}", designer.display()))
-                            .size(12).style(design::muted))
+                            .size(design::LABEL).style(design::muted))
                     } else {
                         Element::from(text("Legacy FMOD Designer not configured. Install a licensed copy separately. Modern FMOD Studio does not rebuild legacy FDP projects.")
-                            .size(12).style(design::muted))
+                            .size(design::LABEL).style(design::muted))
                     },
-                    row![
-                        design::text_input("Absolute path to fmod_designer.exe", &state.preferences.fmod_designer_executable)
-                            .on_input(Message::AudioDesignerPathChanged),
-                        design::button("Select existing…").on_press(Message::AudioPickDesigner)
-                            .style(design::secondary),
-                    ].spacing(8).align_y(iced::Center),
+                    crate::forms::path_field(
+                        "FMOD Designer",
+                        "Absolute path to fmod_designer.exe",
+                        crate::forms::PathKind::FmodDesigner,
+                        &state.preferences,
+                        &state.path_checks,
+                        Message::AudioPickDesigner,
+                    ),
                     text("Inspect audio in Asset Library → File Explorer. Only editable Modding projects can stage altered FDP projects or rebuilt FSB/FEV files; playback is preview-only.")
-                        .size(11).style(design::muted),
+                        .size(design::CAPTION).style(design::muted),
                 ].spacing(8)),
                 panel(column![
-                    text("ORIGINAL MAIN-MENU VIDEO · OPTIONAL FFMPEG").size(15),
+                    text("ORIGINAL MAIN-MENU VIDEO · OPTIONAL FFMPEG").size(design::HEADING),
                     text("The Stage 2 Goliath background is a CRI USM in videos.pak. Select a trusted compatible ffmpeg.exe to convert the verified source in scratch storage without a console window. No game files are modified. If no decoder is configured, an adjacent mainmenu_goliath.preview.mp4 or .webm can be used.")
-                        .size(12).style(design::muted),
-                    row![
-                        design::text_input("Absolute path to ffmpeg.exe", &state.preferences.gfx_ffmpeg_executable)
-                            .on_input(Message::GfxFfmpegConfigChanged),
-                        design::button("Select existing…")
-                            .on_press(Message::GfxPickFfmpeg)
-                            .style(design::secondary),
-                    ].spacing(8).align_y(iced::Center),
+                        .size(design::LABEL).style(design::muted),
+                    crate::forms::path_field(
+                        "FFmpeg executable",
+                        "Absolute path to ffmpeg.exe",
+                        crate::forms::PathKind::Ffmpeg,
+                        &state.preferences,
+                        &state.path_checks,
+                        Message::GfxPickFfmpeg,
+                    ),
                     text("FFmpeg must be installed separately and support your original USM codec; this does not download or launch an unselected executable.")
-                        .size(11).style(design::muted),
+                        .size(design::CAPTION).style(design::muted),
                 ].spacing(8)),
                 panel(column![
-                    text("RUFFLE · GFX PREVIEW INTEGRATIONS").size(15),
-                    text("RUFFLE WEB · REQUIRED FOR LIVE BUTTONS").size(12),
+                    text("RUFFLE · GFX PREVIEW INTEGRATIONS").size(design::HEADING),
+                    text("RUFFLE WEB · REQUIRED FOR LIVE BUTTONS").size(design::LABEL),
                     if let Some(path) = &ruffle_web {
                         Element::from(text(format!("Ready: {} (JavaScript + WebAssembly detected)", path.display()))
-                            .size(12).style(design::muted))
+                            .size(design::LABEL).style(design::muted))
                     } else {
                         Element::from(column![
                             text("Missing Ruffle Web. Live GFX controls will not open with desktop ruffle.exe alone. Install the self-hosted Ruffle Web 0.7.1 runtime, or select its ruffle.js file with the adjacent .wasm runtime.")
-                                .size(12).style(design::muted),
+                                .size(design::LABEL).style(design::muted),
                             design::button("Install Ruffle Web")
                                 .on_press_maybe((!state.gfx_install_busy)
                                     .then_some(Message::GfxInstallTool(crate::gfx_tool_install::Tool::RuffleWeb))),
                         ].spacing(6))
                     },
-                    row![
-                        design::text_input("Absolute path to Ruffle Web ruffle.js", &state.preferences.ruffle_web_runtime)
-                            .on_input(Message::GfxRuffleWebConfigChanged),
-                        design::button("Select existing…")
-                            .on_press(Message::GfxPickRuffleWeb)
-                            .style(design::secondary),
-                    ].spacing(8).align_y(iced::Center),
+                    crate::forms::path_field(
+                        "Ruffle Web runtime",
+                        "Absolute path to Ruffle Web ruffle.js",
+                        crate::forms::PathKind::RuffleWeb,
+                        &state.preferences,
+                        &state.path_checks,
+                        Message::GfxPickRuffleWeb,
+                    ),
                     text("Live mode uses a private localhost browser player. Ruffle Web's ruffle.js and WebAssembly files must remain in the same folder. Blank path auto-detects the bundled third_party/RuffleWeb directory.")
-                        .size(11).style(design::muted),
-                    text("RUFFLE DESKTOP · STANDALONE SWF VIEWING").size(12),
+                        .size(design::CAPTION).style(design::muted),
+                    text("RUFFLE DESKTOP · STANDALONE SWF VIEWING").size(design::LABEL),
                     if let Some(path) = &ruffle {
                         Element::from(text(format!("Installed: {}", path.display()))
-                            .size(12).style(design::muted))
+                            .size(design::LABEL).style(design::muted))
                     } else {
                         Element::from(column![
                             text("Optional desktop Ruffle player not detected (~20.5 MiB verified download). Not required for live browser GFX controls.")
-                                .size(12).style(design::muted),
+                                .size(design::LABEL).style(design::muted),
                             design::button("Install Ruffle Desktop")
                                 .on_press_maybe((!state.gfx_install_busy)
                                     .then_some(Message::GfxInstallTool(crate::gfx_tool_install::Tool::Ruffle))),
                         ].spacing(6))
                     },
-                    row![
-                        design::text_input("Absolute path to desktop ruffle.exe", &state.preferences.ruffle_executable)
-                            .on_input(Message::GfxRuffleConfigChanged),
-                        design::button("Select existing…")
-                            .on_press(Message::GfxPickRuffle)
-                            .style(design::secondary),
-                    ].spacing(8).align_y(iced::Center),
+                    crate::forms::path_field(
+                        "Ruffle Desktop",
+                        "Absolute path to desktop ruffle.exe",
+                        crate::forms::PathKind::Ruffle,
+                        &state.preferences,
+                        &state.path_checks,
+                        Message::GfxPickRuffle,
+                    ),
                     crate::ui_kit::callout(crate::design::Tone::Warning, "An installed manager under Program Files may require administrator permission to install missing integrations. You can also rerun the installer with optional GFX Tools enabled. Native Evolve game callbacks remain unavailable in Ruffle."),
                 ].spacing(8)),
                 if state.gfx_install_busy {
                     Element::from(text("Downloading and verifying GFX integration files…")
-                        .size(12).style(design::muted))
+                        .size(design::LABEL).style(design::muted))
                 } else {
                     Element::from(text(state.gfx_install_status.as_str())
-                        .size(12).style(design::muted))
+                        .size(design::LABEL).style(design::muted))
                 },
                 text("Tools included with the optional Windows installer component are detected automatically. Existing custom paths take priority; the portable manager can install missing tools on demand.")
-                    .size(11).style(design::muted),
+                    .size(design::CAPTION).style(design::muted),
             ].spacing(12).into()
         },
         Tab::SystemHealth => column![
@@ -883,20 +936,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .into(),
         Tab::Advanced => column![
         heading("Backups & Recovery"),
-        text("Recovery copies are needed only for modified PAKs being swapped.").size(12).style(design::muted),
+        text("Recovery copies are needed only for modified PAKs being swapped.").size(design::LABEL).style(design::muted),
         panel(column![
             crate::ui_kit::switch(&state.ui, "snapshots", "Keep full-game snapshots (extra disk use)", state.preferences.keep_original_snapshots, Message::PreferenceSnapshots),
             crate::ui_kit::switch(&state.ui, "activity", "Show activity during tasks", state.preferences.show_activity_on_tasks, Message::PreferenceActivity),
-            text("Crash reports").size(15),
+            text("Crash reports").size(design::HEADING),
             text("Local diagnostics for model loading, GPU uploads, and Rust crashes. Enabled by default; logs may include local asset names and file paths.")
-                .size(12).style(design::muted),
+                .size(design::LABEL).style(design::muted),
             crate::ui_kit::switch(&state.ui, "crash-logging", "Crash logging", state.preferences.crash_logging_enabled, Message::PreferenceCrashLogging),
             row![
                 design::button("Open crash log").on_press(Message::OpenCrashLogs).style(design::secondary),
                 design::button("Open logs folder").on_press(Message::OpenCrashLogsFolder).style(design::secondary),
             ].spacing(8),
             crate::ui_kit::callout(crate::design::Tone::Warning, "Disabling logging stops new entries but does not delete existing logs. A native Windows fail-fast may not produce a Rust panic entry."),
-            text("Recovery settings do not imply that every private-manager swap operation has been ported.").size(11).style(design::muted),
+            text("Recovery settings do not imply that every private-manager swap operation has been ported.").size(design::CAPTION).style(design::muted),
         ].spacing(8)),
         ].spacing(12).into(),
         Tab::Storage => column![
@@ -915,7 +968,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .style(design::primary)
                 .on_press(Message::SavePreferences),
             text(state.settings_status.as_str())
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted)
         ]
         .spacing(12),
@@ -998,7 +1051,7 @@ fn swatch_card<'a>(
                     ..container::Style::default()
                 }
             }),
-            container(text("Aa").size(13).color(foreground))
+            container(text("Aa").size(design::BODY).color(foreground))
                 .padding([4, 8])
                 .width(Fill)
                 .style(move |theme| container::Style {
@@ -1025,7 +1078,7 @@ fn swatch_card<'a>(
     iced::widget::button(
         column![
             preview,
-            text(name).size(12),
+            text(name).size(design::LABEL),
             text(blurb).size(10).style(design::muted),
         ]
         .spacing(6),

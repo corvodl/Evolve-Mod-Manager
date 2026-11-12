@@ -519,9 +519,195 @@ pub fn pill(theme: &Theme) -> container::Style {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Type scale
+// ---------------------------------------------------------------------------
+
+/// Page and dialog titles.
+pub const TITLE: f32 = 28.0;
+/// Panel headings.
+pub const HEADING: f32 = 15.0;
+/// Running text.
+pub const BODY: f32 = 13.0;
+/// Field labels and dense rows.
+pub const LABEL: f32 = 12.0;
+/// Hints, captions and secondary detail.
+pub const CAPTION: f32 = 11.0;
+
+pub fn title<'a>(content: impl text::IntoFragment<'a>) -> iced::widget::Text<'a> {
+    iced::widget::text(content).size(TITLE)
+}
+
+pub fn heading<'a>(content: impl text::IntoFragment<'a>) -> iced::widget::Text<'a> {
+    iced::widget::text(content).size(HEADING)
+}
+
+pub fn body<'a>(content: impl text::IntoFragment<'a>) -> iced::widget::Text<'a> {
+    iced::widget::text(content).size(BODY)
+}
+
+pub fn label<'a>(content: impl text::IntoFragment<'a>) -> iced::widget::Text<'a> {
+    iced::widget::text(content).size(LABEL)
+}
+
+/// Muted secondary text.
+pub fn caption<'a>(content: impl text::IntoFragment<'a>) -> iced::widget::Text<'a> {
+    iced::widget::text(content).size(CAPTION).style(muted)
+}
+
+/// Paths, hashes and other literal values.
+pub fn mono<'a>(content: impl text::IntoFragment<'a>) -> iced::widget::Text<'a> {
+    iced::widget::text(content)
+        .size(LABEL)
+        .font(iced::Font::MONOSPACE)
+}
+
+// ---------------------------------------------------------------------------
+// Key caps and tooltips
+// ---------------------------------------------------------------------------
+
+fn kbd_style(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(field(theme))),
+        border: Border {
+            color: border(theme),
+            width: 1.0,
+            radius: radius(theme, Radius::Small).into(),
+        },
+        shadow: iced::Shadow {
+            color: with_alpha(Color::BLACK, 0.35),
+            offset: iced::Vector::new(0.0, 1.0),
+            blur_radius: 0.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+/// One key cap, e.g. `kbd("Ctrl")`.
+pub fn kbd<'a, M: 'a>(key: &'a str) -> iced::Element<'a, M> {
+    container(iced::widget::text(key).size(10).font(iced::Font::MONOSPACE))
+        .padding([1, 5])
+        .style(kbd_style)
+        .into()
+}
+
+/// A shortcut such as `"Ctrl+K"` drawn as key caps joined by `+`.
+pub fn key_hint<'a, M: 'a>(shortcut: &'a str) -> iced::Element<'a, M> {
+    let mut keys = iced::widget::row![]
+        .spacing(3)
+        .align_y(iced::Alignment::Center);
+    for (index, key) in shortcut_keys(shortcut).into_iter().enumerate() {
+        if index > 0 {
+            keys = keys.push(iced::widget::text("+").size(10).style(muted));
+        }
+        keys = keys.push(kbd(key));
+    }
+    keys.into()
+}
+
+/// Splits `"Ctrl+Shift+K"` into its keys; a lone `"+"` stays one key.
+pub fn shortcut_keys(shortcut: &str) -> Vec<&str> {
+    if shortcut == "+" {
+        return vec!["+"];
+    }
+    shortcut.split('+').filter(|key| !key.is_empty()).collect()
+}
+
+fn tooltip_style(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(field(theme))),
+        text_color: Some(theme.palette().text),
+        border: Border {
+            color: border(theme),
+            width: 1.0,
+            radius: radius(theme, Radius::Small).into(),
+        },
+        shadow: iced::Shadow {
+            color: with_alpha(Color::BLACK, 0.3),
+            offset: iced::Vector::new(0.0, 2.0),
+            blur_radius: 8.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Delay before a tooltip appears, so passing over a toolbar stays quiet.
+pub const TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(350);
+
+/// A themed tooltip with an optional key hint, shown after a short delay.
+pub fn tooltip<'a, M: 'a>(
+    content: impl Into<iced::Element<'a, M>>,
+    label: impl text::IntoFragment<'a>,
+    shortcut: Option<&'a str>,
+    position: iced::widget::tooltip::Position,
+) -> iced::Element<'a, M> {
+    let mut tip = iced::widget::row![iced::widget::text(label).size(CAPTION)]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+    if let Some(shortcut) = shortcut {
+        tip = tip.push(key_hint(shortcut));
+    }
+    iced::widget::tooltip(
+        content,
+        container(tip).padding([4, 8]).style(tooltip_style),
+        position,
+    )
+    .gap(4)
+    .delay(TOOLTIP_DELAY)
+    .into()
+}
+
+/// A small accent dot, optionally carrying a count, for nav indicators.
+pub fn indicator_dot<'a, M: 'a>(count: Option<usize>, pulse: f32) -> iced::Element<'a, M> {
+    match count {
+        Some(count) => container(
+            iced::widget::text(if count > 9 {
+                "9+".to_owned()
+            } else {
+                count.to_string()
+            })
+            .size(9),
+        )
+        .padding([0, 4])
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(theme.palette().primary)),
+            text_color: Some(Color::WHITE),
+            border: Border {
+                radius: 8.0.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        })
+        .into(),
+        None => container(iced::widget::space().width(7).height(7))
+            .style(move |theme: &Theme| container::Style {
+                background: Some(Background::Color(with_alpha(
+                    theme.palette().primary,
+                    0.55 + 0.45 * pulse.clamp(0.0, 1.0),
+                ))),
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            })
+            .into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shortcut_keys_split_on_plus() {
+        assert_eq!(shortcut_keys("Ctrl+Shift+K"), vec!["Ctrl", "Shift", "K"]);
+        assert_eq!(shortcut_keys("F"), vec!["F"]);
+        assert_eq!(shortcut_keys("+"), vec!["+"]);
+    }
+
+    // The type scale must descend; checked at compile time.
+    const _: () = assert!(TITLE > HEADING && HEADING > BODY && BODY > LABEL && LABEL > CAPTION);
+
     #[test]
     fn legacy_theme_is_distinct_and_uses_white_menu_hover() {
         let mut prefs = Preferences {

@@ -80,7 +80,7 @@ pub fn commands(state: &State) -> Vec<Command> {
             Message::OpenSettingsTab(tab),
         ));
     }
-    let actions: [(&str, &str, Message); 12] = [
+    let actions: [(&str, &str, Message); 14] = [
         (
             "Play with mods",
             "Build enabled mods and launch",
@@ -100,6 +100,18 @@ pub fn commands(state: &State) -> Vec<Command> {
             Message::OpenLevelEditorWindow,
         ),
         ("Show activity", "Window", Message::ToggleActivity),
+        (
+            "Show inspector in side panel",
+            "Window",
+            Message::Chrome(crate::chrome::Msg::OpenSheet(
+                crate::chrome::Sheet::Inspector,
+            )),
+        ),
+        (
+            "Restore original game files…",
+            "Recovery",
+            crate::chrome::restore_originals_confirm(),
+        ),
         (
             "Analyze storage",
             "Settings › Storage",

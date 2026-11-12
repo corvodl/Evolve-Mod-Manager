@@ -1835,11 +1835,10 @@ pub fn dock<'a>(
             .style(move |theme, status| design::rail(theme, status, active))
             .on_press_maybe(item.message);
         bar = bar.push(
-            container(iced::widget::tooltip(
+            container(design::tooltip(
                 button,
-                container(text(item.label).size(11))
-                    .padding([3, 7])
-                    .style(design::pill),
+                item.label,
+                crate::chrome::shortcut_for(item.label),
                 iced::widget::tooltip::Position::Top,
             ))
             .width(SLOT)

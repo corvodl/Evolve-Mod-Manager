@@ -11,6 +11,7 @@ mod asset_viewer;
 mod audio_tools;
 mod auto_resources;
 mod blender_install;
+mod chrome;
 mod client_version;
 mod color_picker;
 mod command_palette;
@@ -22,6 +23,7 @@ mod diff_view;
 mod direct_runtime;
 mod discord_presence;
 mod explorer_tree;
+mod forms;
 mod fx;
 mod gallery;
 mod gfx_bundled_tools;
@@ -89,6 +91,7 @@ mod staged_library;
 mod standard_user_launch;
 mod storage_usage;
 mod system_health;
+mod system_meters;
 mod terrain_brush;
 mod terrain_material_probe;
 // Native RGB24 source-backed output stage; UI activation awaits verified\n// per-pixel Evolve paint alpha and original multi-layer shader ordering.\n#[allow(dead_code)]\nmod terrain_rebake_project;
@@ -345,6 +348,14 @@ struct State {
     ui: ui_kit::UiState,
     color_picker: color_picker::PickerState,
     gallery: gallery::GalleryState,
+    /// Banners, modal, side sheet and breadcrumb state.
+    chrome: chrome::ChromeState,
+    /// Disk and memory levels from the last System Health check.
+    health_meters: Vec<system_meters::Meter>,
+    /// Cached Settings path checks, refreshed when a path changes.
+    path_checks: forms::PathChecks,
+    /// Last good value per number field.
+    forms: forms::FormState,
     /// Sort orders for the library table, project list and storage legend.
     library_sort: ui_kit::Sort,
     modding_sort: ui_kit::Sort,
@@ -566,6 +577,8 @@ struct State {
     viewer_rows: Vec<explorer_tree::ExplorerRow>,
     viewer_page: usize,
     viewer_more_rows: bool,
+    /// Files matching the explorer search, across every page.
+    viewer_match_count: Option<usize>,
     // Latest selected asset while an earlier worker is running. Never replay
     // a stale index after the indexed source folder changes.
     viewer_queued_preview: Option<usize>,
@@ -871,7 +884,34 @@ fn ui_ambient_running(state: &State) -> bool {
         && matches!(state.page, Some(Page::Files | Page::Home | Page::Settings));
     let skeleton = news_loading(state) && matches!(state.page, Some(Page::Home | Page::WhatsNew))
         || state.library_startup_loading && state.page == Some(Page::AssetLibrary);
-    embers || beam || skeleton
+    // The Activity button's dot pulses while work runs.
+    let activity = footer_is_working(state);
+    embers || beam || skeleton || activity
+}
+
+/// Writes one bookkeeping field into the saved preferences without also
+/// saving Settings edits the user hasn't saved yet.
+fn persist_saved_field(change: impl FnOnce(&mut Preferences)) {
+    let Ok(path) = settings_path() else {
+        return;
+    };
+    // No saved file yet (or an unreadable one): don't create or replace it.
+    let Ok(mut saved) = load_from(&path) else {
+        return;
+    };
+    change(&mut saved);
+    let _ = save_to(&path, &saved);
+}
+
+/// Remembers the newest announcement as seen, so the What's New count
+/// clears. Saved straight away so it survives a restart.
+fn mark_news_seen(state: &mut State) {
+    if let Some(newest) = chrome::newest_news(state)
+        && newest > state.preferences.news_seen_at
+    {
+        state.preferences.news_seen_at = newest.clone();
+        persist_saved_field(move |saved| saved.news_seen_at = newest);
+    }
 }
 
 /// News has been requested but nothing has arrived yet.
@@ -920,6 +960,7 @@ fn sync_tickers(state: &mut State) {
 /// True while any shared UI tween still needs frames.
 fn ui_animation_running(state: &State, now: Instant) -> bool {
     state.ui.animating(now)
+        || state.chrome.animating(now)
         || state.sidebar_reveal.is_running(now)
         || state
             .mod_toggle_animations
@@ -2820,6 +2861,11 @@ enum Message {
     TextEditorToggleDiff,
     DismissIntro,
     Gallery(gallery::Msg),
+    Chrome(chrome::Msg),
+    Form(forms::FormMsg),
+    /// Browse for a path setting that has no dedicated picker.
+    BrowsePath(forms::PathKind),
+    BrowsedPath(forms::PathKind, Option<PathBuf>),
     /// Move a mod within the selected profile: `(from, to)`.
     ProfileModMove(usize, usize),
     /// Sort a table: `(table, column)`; clicking again flips direction.
@@ -3189,6 +3235,7 @@ enum Message {
     ToggleSystemHealth,
     CheckSystemHealth,
     SystemHealthChecked(system_health::Snapshot),
+    SystemMetersChecked(Vec<system_meters::Meter>),
     DeveloperPasswordChanged(String),
     UnlockDeveloper,
     DeveloperChecked(bool),
@@ -5078,6 +5125,12 @@ fn refresh_viewer_rows(state: &mut State) {
     } else {
         Vec::new()
     };
+    let needle = state.viewer_search.trim().to_lowercase();
+    state.viewer_match_count = (!needle.is_empty()).then(|| {
+        rows.iter()
+            .filter(|(_, path, _)| path.to_lowercase().contains(&needle))
+            .count()
+    });
     const PAGE: usize = 350;
     let offset = state.viewer_page.saturating_mul(PAGE);
     let mut visible = explorer_tree::visible_rows_page(
@@ -5219,6 +5272,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.ui.start_clock();
             let now = Instant::now();
             state.sidebar_reveal.tick(now);
+            state.chrome.tick(now);
             state
                 .mod_toggle_animations
                 .retain_mut(|animation| animation.thumb.tick(now));
@@ -5281,6 +5335,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.ui.start_scramble(Instant::now());
             }
             state.page = Some(page);
+            if page == Page::WhatsNew {
+                mark_news_seen(state);
+            }
             let mut tasks = Vec::new();
             if page == Page::Home {
                 tasks.push(inspect_client_version_task(
@@ -7431,7 +7488,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let game = state.preferences.game_storage_root.clone();
             let stage = state.preferences.stage.clone();
             let projects = state.preferences.projects.clone();
-            return Task::perform(
+            let install = state.preferences.game_installation.clone();
+            let paths = [
+                ("Game drive", install),
+                ("Stage drive", stage.clone()),
+                ("GameSets drive", game.clone()),
+                ("Projects drive", projects.clone()),
+            ];
+            let meters = Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let paths: Vec<(&str, &str)> = paths
+                            .iter()
+                            .map(|(label, path)| (*label, path.as_str()))
+                            .collect();
+                        system_meters::meters(&paths)
+                    })
+                    .await
+                    .unwrap_or_default()
+                },
+                Message::SystemMetersChecked,
+            );
+            let report = Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
                         system_health::inspect(&game, &stage, &projects)
@@ -7448,7 +7526,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 },
                 Message::SystemHealthChecked,
             );
+            return Task::batch([report, meters]);
         }
+        Message::SystemMetersChecked(meters) => state.health_meters = meters,
         Message::SystemHealthChecked(report) => {
             state.health_report = Some(report);
             state.health_checking = false;
@@ -12556,9 +12636,36 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::Gallery(msg) => return gallery::update(state, msg),
+        Message::Chrome(msg) => {
+            return match chrome::update(state, msg) {
+                Some(next) => update(state, next),
+                None => Task::none(),
+            };
+        }
+        Message::Form(msg) => {
+            let next = forms::update(&mut state.forms, msg);
+            return update(state, next);
+        }
+        Message::BrowsePath(kind) => {
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        native_export_picker(if kind.folder() { "folder" } else { "file" })
+                    })
+                    .await
+                    .unwrap_or(None)
+                },
+                move |selection| Message::BrowsedPath(kind, selection),
+            );
+        }
+        Message::BrowsedPath(kind, Some(path)) => {
+            return update(state, kind.set(path.to_string_lossy().into_owned()));
+        }
+        Message::BrowsedPath(_, None) => {}
         Message::DismissIntro => {
-            state.preferences.last_seen_version = env!("CARGO_PKG_VERSION").into();
-            persist_preferences(state);
+            let version: String = env!("CARGO_PKG_VERSION").into();
+            state.preferences.last_seen_version = version.clone();
+            persist_saved_field(move |saved| saved.last_seen_version = version);
         }
         Message::TextEditorToggleDiff => {
             if let Some(doc) = state.text_document.as_mut() {
@@ -13171,6 +13278,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::NewsLoaded(result) => match result {
             Ok(news) => {
                 state.news.apply(news);
+                if state.page == Some(Page::WhatsNew) {
+                    mark_news_seen(state);
+                }
                 if matches!(state.page, Some(Page::Home | Page::WhatsNew)) {
                     return start_news_images(state);
                 }
@@ -16440,22 +16550,36 @@ fn view(state: &State) -> Element<'_, Message> {
             if !legacy_nav {
                 contents = contents.push(indicator);
             }
-            contents = contents.push(
+            let icon_size = if legacy_nav { 20.0 } else { 18.0 };
+            contents = contents.push(chrome::badge_icon(
                 svg(item.icon())
                     .style(design::icon)
-                    .width(if legacy_nav { 20 } else { 18 })
-                    .height(if legacy_nav { 20 } else { 18 }),
-            );
+                    .width(icon_size)
+                    .height(icon_size),
+                icon_size,
+                chrome::nav_indicator(state, item),
+                1.0,
+            ));
             if labels_visible {
                 contents = contents.push(text(item.title()).size(if legacy_nav { 13 } else { 14 }));
             }
             let nav = design::button(contents)
                 .width(Fill)
                 .height(if legacy_nav { 40 } else { 36 })
-                .padding(if legacy_nav { [8, 11] } else { [8, 12] })
+                .padding(if legacy_nav { [5, 7] } else { [5, 8] })
                 .style(move |theme, status| design::rail(theme, status, active))
                 .on_press(Message::Navigate(item));
-            items.push(nav)
+            // The collapsed Legacy rail shows icons only, so name them.
+            if labels_visible {
+                items.push(nav)
+            } else {
+                items.push(design::tooltip(
+                    nav,
+                    item.title(),
+                    None,
+                    iced::widget::tooltip::Position::Right,
+                ))
+            }
         },
     );
     // Asset Viewer and Level Editor are independent native windows, not manager pages.
@@ -16478,14 +16602,22 @@ fn view(state: &State) -> Element<'_, Message> {
         if labels_visible {
             contents = contents.push(text(label).size(if legacy_nav { 13 } else { 14 }));
         }
-        navigation = navigation.push(
-            design::button(contents)
-                .width(Fill)
-                .height(if legacy_nav { 40 } else { 36 })
-                .padding(if legacy_nav { [8, 11] } else { [8, 12] })
-                .style(|theme, status| design::rail(theme, status, false))
-                .on_press(message),
-        );
+        let launcher = design::button(contents)
+            .width(Fill)
+            .height(if legacy_nav { 40 } else { 36 })
+            .padding(if legacy_nav { [8, 11] } else { [8, 12] })
+            .style(|theme, status| design::rail(theme, status, false))
+            .on_press(message);
+        navigation = navigation.push(if labels_visible {
+            Element::from(launcher)
+        } else {
+            design::tooltip(
+                launcher,
+                label,
+                None,
+                iced::widget::tooltip::Position::Right,
+            )
+        });
     }
     let play_mods_icon = svg(svg::Handle::from_memory(
         include_bytes!("../../../assets/nav/play-mods.svg").to_vec(),
@@ -16511,12 +16643,15 @@ fn view(state: &State) -> Element<'_, Message> {
             },
         ));
     }
-    settings_row = settings_row.push(
+    settings_row = settings_row.push(chrome::badge_icon(
         svg(Page::Settings.icon())
             .style(design::icon)
             .width(20)
             .height(20),
-    );
+        20.0,
+        chrome::nav_indicator(state, Page::Settings),
+        1.0,
+    ));
     if labels_visible {
         play_mods_row = play_mods_row.push(
             text(if legacy_nav {
@@ -16536,21 +16671,37 @@ fn view(state: &State) -> Element<'_, Message> {
         );
         settings_row = settings_row.push(text("Settings").size(if legacy_nav { 13 } else { 14 }));
     }
+    let rail_tip = |button: iced::widget::Button<'static, Message>, label: &'static str| {
+        if labels_visible {
+            Element::from(button)
+        } else {
+            design::tooltip(button, label, None, iced::widget::tooltip::Position::Right)
+        }
+    };
     let lower = column![
-        design::button(play_mods_row)
-            .width(Fill)
-            .height(if legacy_nav { 40 } else { 36 })
-            .on_press(Message::PlayWithMods),
-        design::button(play_clean_row)
-            .width(Fill)
-            .height(if legacy_nav { 40 } else { 36 })
-            .on_press(Message::PlayWithoutMods),
-        design::button(settings_row)
-            .width(Fill)
-            .height(if legacy_nav { 43 } else { 36 })
-            .padding(if legacy_nav { [10, 10] } else { [8, 12] })
-            .style(move |theme, status| design::rail(theme, status, page == Page::Settings))
-            .on_press(Message::Navigate(Page::Settings)),
+        rail_tip(
+            design::button(play_mods_row)
+                .width(Fill)
+                .height(if legacy_nav { 40 } else { 36 })
+                .on_press(Message::PlayWithMods),
+            "Play with Mods",
+        ),
+        rail_tip(
+            design::button(play_clean_row)
+                .width(Fill)
+                .height(if legacy_nav { 40 } else { 36 })
+                .on_press(Message::PlayWithoutMods),
+            "Play without mods",
+        ),
+        rail_tip(
+            design::button(settings_row)
+                .width(Fill)
+                .height(if legacy_nav { 43 } else { 36 })
+                .padding(if legacy_nav { [10, 10] } else { [8, 12] })
+                .style(move |theme, status| design::rail(theme, status, page == Page::Settings))
+                .on_press(Message::Navigate(Page::Settings)),
+            "Settings",
+        ),
     ]
     .spacing(if legacy_nav { 5 } else { 4 });
     let mut sidebar_content = column![].spacing(if legacy_nav { 8 } else { 16 });
@@ -16609,15 +16760,30 @@ fn view(state: &State) -> Element<'_, Message> {
                 .align_y(iced::Center),
             )
         } else {
-            Element::<Message>::from(text(page.title()).size(28))
+            Element::<Message>::from(design::title(page.title()))
         },
         space().width(Fill),
         design::button("Help")
             .on_press(Message::Navigate(Page::Docs))
             .style(design::secondary),
-        design::button("Activity")
+        design::tooltip(
+            design::button(if footer_is_working(state) {
+                // A pulsing dot while work runs.
+                let pulse = (state.ui.clock(Instant::now()) * 3.5).sin() * 0.5 + 0.5;
+                Element::from(
+                    row![text("Activity"), design::indicator_dot(None, pulse)]
+                        .spacing(7)
+                        .align_y(iced::Center),
+                )
+            } else {
+                Element::from(text("Activity"))
+            })
             .on_press(Message::ToggleActivity)
             .style(design::secondary),
+            "Activity log and running work",
+            None,
+            iced::widget::tooltip::Position::Bottom,
+        ),
     ]
     .spacing(16)
     .align_y(iced::Center);
@@ -17015,8 +17181,11 @@ fn view(state: &State) -> Element<'_, Message> {
             .map(|line| compact_footer_status(line))
             .collect(),
     );
+    let banners: Element<'_, Message> =
+        chrome::banner_strip(state).unwrap_or_else(|| column![].into());
     let body = column![
         headline,
+        banners,
         tools,
         workspace,
         row![
@@ -17044,6 +17213,7 @@ fn view(state: &State) -> Element<'_, Message> {
     .width(Fill)
     .height(Fill);
     // Activity is detached so it never steals space from the working page.
+    let body = chrome::sheet_overlay(body.into(), state);
     let page: Element<'_, Message> = container(row![sidebar, body].height(Fill))
         .width(Fill)
         .height(Fill)
@@ -17412,6 +17582,11 @@ impl Desktop {
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.route(message);
         sync_tickers(&mut self.state);
+        // Both only touch the disk when a path changes or work finishes.
+        self.state
+            .path_checks
+            .sync(&self.state.preferences, self.state.busy);
+        chrome::sync(&mut self.state);
         task
     }
 
@@ -17428,6 +17603,20 @@ impl Desktop {
             return task;
         }
         match message {
+            // The page under an open modal ignores global shortcuts.
+            Message::Ui(
+                ui_kit::UiMsg::Palette(_)
+                | ui_kit::UiMsg::ReorderKey(_)
+                | ui_kit::UiMsg::CompareNudge(_),
+            )
+            | Message::LevelDeleteKey(_)
+            | Message::LevelCopyKey(_)
+            | Message::LevelPasteKey(_)
+            | Message::LevelDuplicateKey(_)
+                if self.state.chrome.modal.is_some() =>
+            {
+                Task::none()
+            }
             Message::Ui(ui_kit::UiMsg::Palette(msg)) => {
                 // Ctrl+K from a secondary window brings the main window up.
                 let raise =
@@ -17524,16 +17713,25 @@ impl Desktop {
                 )
             }
             Message::ViewportEscape(id) => {
-                // Esc closes the topmost transient layer first.
-                let closed_layer = std::mem::take(&mut self.state.ui.palette.open)
+                // Esc closes the topmost transient layer first: the modal,
+                // palette, popover, lightbox, then the side sheet.
+                let closed_layer = self.state.chrome.modal.take().is_some()
+                    || std::mem::take(&mut self.state.ui.palette.open)
                     || self.state.ui.popover.take().is_some()
                     || self.state.gallery.lightbox.take().is_some();
+                let menus_open = self.state.library_menu.is_some()
+                    || self.state.viewer_menu.is_some()
+                    || self.state.modding_menu.is_some();
                 if closed_layer {
                     Task::none()
+                } else if id == self.main_id && self.state.chrome.sheet_floating() {
+                    self.update(chrome::msg(chrome::Msg::CloseSheet))
                 } else if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
                     self.update(Message::ToggleLevelViewportFullscreen)
                 } else if self.viewer_id == Some(id) && self.state.viewer_viewport_fullscreen {
                     self.update(Message::ToggleViewerViewportFullscreen)
+                } else if !menus_open && let Some(clear) = self.search_clear(id) {
+                    self.update(clear)
                 } else {
                     update(&mut self.state, Message::DismissMenus)
                 }
@@ -17762,6 +17960,7 @@ impl Desktop {
                 self.state.preferences.reduce_motion,
             );
             if id == self.main_id {
+                let content = chrome::modal_overlay(content, &self.state);
                 command_palette::overlay(content, &self.state)
             } else if self.viewer_id == Some(id) {
                 gallery::lightbox(&self.state, content)
@@ -17770,6 +17969,31 @@ impl Desktop {
             }
         } else {
             content
+        }
+    }
+
+    /// The message that clears the search box Esc applies to in window
+    /// `id`, if that search has text.
+    fn search_clear(&self, id: window::Id) -> Option<Message> {
+        let state = &self.state;
+        if self.viewer_id == Some(id) {
+            return (!state.viewer_search.is_empty())
+                .then(|| Message::ViewerSearchChanged(String::new()));
+        }
+        if id != self.main_id {
+            return None;
+        }
+        match state.page {
+            Some(Page::AssetLibrary) if !state.library_search.is_empty() => {
+                Some(Message::LibrarySearchChanged(String::new()))
+            }
+            Some(Page::Files) if !state.modding_filter.is_empty() => {
+                Some(Message::ModdingFilterChanged(String::new()))
+            }
+            Some(Page::Files) if !state.search.is_empty() => {
+                Some(Message::SearchChanged(String::new()))
+            }
+            _ => None,
         }
     }
 
@@ -18008,6 +18232,13 @@ impl Desktop {
                 }) if modifiers.control() && value.eq_ignore_ascii_case("k") => Some(Message::Ui(
                     ui_kit::UiMsg::Palette(command_palette::Msg::Toggle),
                 )),
+                // Enter outside a text field confirms an open modal.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                    ..
+                }) if status == iced::event::Status::Ignored => {
+                    Some(Message::Chrome(chrome::Msg::Enter))
+                }
                 // Left/Right nudge an open image comparison split.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key:
