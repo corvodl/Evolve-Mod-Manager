@@ -810,6 +810,8 @@ struct State {
     modding_selected: Option<usize>,
     modding_name_input: String,
     modding_export_options_open: bool,
+    /// The specialist single-member rebuild disclosure.
+    modding_specialist_open: bool,
     modding_added_member: String,
     mod_launch_progress: Option<Arc<AtomicUsize>>,
     mod_toggle_animations: Vec<ModToggleAnimation>,
@@ -968,6 +970,32 @@ fn remember_opened_map(state: &mut State, loaded: &mut level_library::LoadedMap)
     let recents = state.preferences.recent_maps.clone();
     let _ = recent;
     persist_saved_field(move |saved| saved.recent_maps = recents);
+}
+
+/// The selected staged PAK's file name, which a rebuild output must keep.
+fn selected_staged_pak_name(state: &State) -> Option<String> {
+    let inventory = state.inventory.as_ref()?;
+    let index = state.file_selection.indices.iter().copied().max()?;
+    let entry = inventory.entries.get(index)?;
+    Path::new(&entry.relative_path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| name.to_ascii_lowercase().ends_with(".pak"))
+}
+
+/// Specialist rebuild path checks, re-run only when a value changes.
+fn sync_rebuild_checks(state: &mut State) {
+    let replacement = state.signed_replacement.clone();
+    state.path_checks.sync_extra("rebuild-replacement", replacement.clone(), || {
+        forms::check_existing_file(&replacement)
+    });
+    let original = selected_staged_pak_name(state);
+    let output = state.output.clone();
+    state.path_checks.sync_extra(
+        "rebuild-output",
+        format!("{output}|{}", original.clone().unwrap_or_default()),
+        || forms::check_rebuild_output(&output, original.as_deref()),
+    );
 }
 
 /// Remembers the newest announcement as seen, so the What's New count
@@ -3414,6 +3442,10 @@ enum Message {
     LevelExportEdits,
     ToggleAdvancedTools,
     ToggleActivity,
+    ModdingToggleSpecialist,
+    /// Browse for the specialist rebuild's replacement (`false`) or output (`true`).
+    ModdingBrowseRebuild(bool),
+    ModdingBrowsedRebuild(bool, Option<PathBuf>),
     DocsSelect(private_pages::DocsSection),
     DocsSearch(String),
     /// Open search hit `n` and scroll its step into view.
@@ -7056,6 +7088,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.modding_export_options_open = !state.modding_export_options_open;
         }
         Message::ModdingExportChoose(mode) => {
+            if state.preferences.last_export_format != mode.key() {
+                state.preferences.last_export_format = mode.key().to_owned();
+                persist_saved_field(move |saved| saved.last_export_format = mode.key().to_owned());
+            }
+            state.modding_export_options_open = false;
             if state.busy || state.gfx_busy {
                 state.status = "Finish the current operation before exporting.".into();
                 return Task::none();
@@ -8667,6 +8704,31 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.health_checking = false;
             state.status = "Read-only System Health check completed.".into();
         }
+        Message::ModdingToggleSpecialist => {
+            state.modding_specialist_open = !state.modding_specialist_open;
+        }
+        Message::ModdingBrowseRebuild(output) => {
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || native_export_picker("file"))
+                        .await
+                        .unwrap_or(None)
+                },
+                move |path| Message::ModdingBrowsedRebuild(output, path),
+            );
+        }
+        Message::ModdingBrowsedRebuild(output, Some(path)) => {
+            let value = path.display().to_string();
+            return update(
+                state,
+                if output {
+                    Message::OutputChanged(value)
+                } else {
+                    Message::SignedReplacementChanged(value)
+                },
+            );
+        }
+        Message::ModdingBrowsedRebuild(_, None) => {}
         Message::DocsSelect(section) => {
             state.docs_selected = section;
             return iced::widget::operation::snap_to(
@@ -18871,6 +18933,7 @@ impl Desktop {
             .path_checks
             .sync(&self.state.preferences, self.state.busy);
         chrome::sync(&mut self.state);
+        sync_rebuild_checks(&mut self.state);
         task
     }
 

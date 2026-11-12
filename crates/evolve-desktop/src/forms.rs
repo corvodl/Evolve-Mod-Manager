@@ -176,6 +176,50 @@ fn ffmpeg(value: &str) -> Option<std::path::PathBuf> {
         .map(|_| path.to_path_buf())
 }
 
+/// A replacement file for a signed member: it must exist.
+pub fn check_existing_file(value: &str) -> Option<PathCheck> {
+    if value.trim().is_empty() {
+        return None;
+    }
+    let path = Path::new(value.trim());
+    Some(match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => PathCheck::found("File found"),
+        Ok(_) => PathCheck::problem("This is a folder, not a file"),
+        Err(_) if !path.is_absolute() => PathCheck::problem("Use a full path"),
+        Err(_) => PathCheck::problem("File not found"),
+    })
+}
+
+/// A rebuild output: a new file whose name is exactly the original PAK's.
+pub fn check_rebuild_output(value: &str, original: Option<&str>) -> Option<PathCheck> {
+    if value.trim().is_empty() {
+        return None;
+    }
+    let path = Path::new(value.trim());
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Some(if !path.is_absolute() {
+        PathCheck::problem("Use a full path")
+    } else if path.exists() {
+        PathCheck::problem("Choose a new path; this file already exists")
+    } else if path.parent().is_none_or(|parent| !parent.is_dir()) {
+        PathCheck::problem("Folder not found")
+    } else {
+        match original {
+            Some(original) if !name.eq_ignore_ascii_case(original) => {
+                PathCheck::problem(format!("Must end in the original name: {original}"))
+            }
+            Some(_) => PathCheck::found("New file with the original PAK name"),
+            None if name.to_ascii_lowercase().ends_with(".pak") => {
+                PathCheck::found("New .pak file (select a staged PAK to check its name)")
+            }
+            None => PathCheck::problem("Must end in the original .pak name"),
+        }
+    })
+}
+
 /// Checks one path. `None` for an empty value: nothing to report yet.
 pub fn check(kind: PathKind, value: &str) -> Option<PathCheck> {
     if value.trim().is_empty() {
@@ -236,6 +280,8 @@ pub fn check(kind: PathKind, value: &str) -> Option<PathCheck> {
 pub struct PathChecks {
     entries: BTreeMap<PathKind, (String, Option<PathCheck>)>,
     busy: bool,
+    /// Checks for paths that aren't preferences, keyed by field.
+    extra: BTreeMap<&'static str, (String, Option<PathCheck>)>,
 }
 
 impl PathChecks {
@@ -265,6 +311,23 @@ impl PathChecks {
             .get(&kind)
             .and_then(|(_, check)| check.as_ref())
     }
+
+    /// Re-checks `field` only when `key` (its value plus anything the check
+    /// depends on) changed.
+    pub fn sync_extra(
+        &mut self,
+        field: &'static str,
+        key: String,
+        check: impl FnOnce() -> Option<PathCheck>,
+    ) {
+        if self.extra.get(field).is_none_or(|(old, _)| *old != key) {
+            self.extra.insert(field, (key, check()));
+        }
+    }
+
+    pub fn extra(&self, field: &str) -> Option<&PathCheck> {
+        self.extra.get(field).and_then(|(_, check)| check.as_ref())
+    }
 }
 
 /// A labelled path input with a Browse… button and a ✓/✕ line under it.
@@ -277,11 +340,28 @@ pub fn path_field<'a>(
     checks: &'a PathChecks,
     browse: Message,
 ) -> Element<'a, Message> {
-    let value = kind.value(prefs);
-    let result = checks.get(kind);
+    path_input(
+        label,
+        placeholder,
+        kind.value(prefs),
+        checks.get(kind),
+        move |value| kind.set(value),
+        browse,
+    )
+}
+
+/// [`path_field`] for a value that isn't a saved preference.
+pub fn path_input<'a>(
+    label: &'a str,
+    placeholder: &'a str,
+    value: &'a str,
+    result: Option<&'a PathCheck>,
+    on_input: impl Fn(String) -> Message + 'a,
+    browse: Message,
+) -> Element<'a, Message> {
     let bad = result.is_some_and(|check| !check.ok);
     let input = design::text_input(placeholder, value)
-        .on_input(move |value| kind.set(value))
+        .on_input(on_input)
         .width(Fill)
         .style(move |theme: &Theme, status| {
             let mut style = iced::widget::text_input::default(theme, status);
@@ -847,6 +927,19 @@ mod tests {
         assert!(check(PathKind::Projects, "  ").is_none());
         let relative = check(PathKind::Blender, "blender.exe").unwrap();
         assert!(!relative.ok);
+    }
+
+    #[test]
+    fn rebuild_output_must_be_new_and_keep_the_original_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("objects.pak");
+        let wrong = dir.path().join("other.pak");
+        assert!(check_rebuild_output(good.to_str().unwrap(), Some("Objects.pak")).unwrap().ok);
+        assert!(!check_rebuild_output(wrong.to_str().unwrap(), Some("objects.pak")).unwrap().ok);
+        std::fs::write(&good, b"x").unwrap();
+        assert!(!check_rebuild_output(good.to_str().unwrap(), Some("objects.pak")).unwrap().ok);
+        assert!(check_rebuild_output("", None).is_none());
+        assert!(check_existing_file(good.to_str().unwrap()).unwrap().ok);
     }
 
     #[test]

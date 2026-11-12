@@ -49,6 +49,8 @@ pub struct Preferences {
     pub developer_tab: String,
     /// Set the first time Play with Mods starts the game (Getting Started).
     pub played_with_mods: bool,
+    /// Export format used last ("ChangedZz", "ChangedOriginal", "FullOriginal").
+    pub last_export_format: String,
     pub reduce_motion: bool,
     pub keep_original_snapshots: bool,
     pub show_activity_on_tasks: bool,
@@ -143,6 +145,7 @@ impl Default for Preferences {
             recent_maps: Vec::new(),
             developer_tab: String::new(),
             played_with_mods: false,
+            last_export_format: String::new(),
             reduce_motion: false,
             keep_original_snapshots: false,
             show_activity_on_tasks: true,
@@ -358,6 +361,12 @@ impl Preferences {
             self.news_seen_at.clear();
         }
         self.recent_maps.truncate(5);
+        if !matches!(
+            self.last_export_format.as_str(),
+            "" | "ChangedZz" | "ChangedOriginal" | "FullOriginal"
+        ) {
+            self.last_export_format.clear();
+        }
         if self.developer_tab.len() > 64 {
             self.developer_tab.clear();
         }

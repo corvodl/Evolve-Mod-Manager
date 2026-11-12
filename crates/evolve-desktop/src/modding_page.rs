@@ -256,127 +256,143 @@ fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Containe
         .style(design::panel)
 }
 
-fn menu(_state: &State) -> Element<'_, Message> {
-    row![
-        design::button("File")
-            .style(design::text_button)
-            .on_press(Message::ModdingMenu("File")),
-        design::button("Edit")
-            .style(design::text_button)
-            .on_press(Message::ModdingMenu("Edit")),
-        design::button("View")
-            .style(design::text_button)
-            .on_press(Message::ModdingMenu("View")),
-        design::button("Tools")
-            .style(design::text_button)
-            .on_press(Message::ModdingMenu("Tools")),
-        space().width(Fill),
-    ]
-    .spacing(15)
-    .align_y(iced::Center)
-    .into()
-}
-
-fn dropdown(state: &State) -> Option<Element<'_, Message>> {
-    let commands: Element<'_, Message> = match state.modding_menu? {
-        "File" => column![
-            design::button("Refresh Projects")
-                .on_press(Message::MenuCommand(Box::new(Message::ModdingRefresh))),
-            design::button("Browse staged PAKs")
-                .on_press(Message::MenuCommand(Box::new(Message::ModdingBrowsePaks))),
-            design::button("Installed Mods / Profiles").on_press(Message::MenuCommand(Box::new(
-                Message::ModdingToggleProfiles
-            ))),
-        ]
-        .spacing(3)
-        .into(),
-        "Edit" => column![
-            design::button("Continue Editing")
-                .on_press(Message::MenuCommand(Box::new(Message::ModdingOpenProject))),
-            design::button("Open XML / Lua / TXT editor")
-                .on_press(Message::MenuCommand(Box::new(Message::ModdingOpenProject))),
-            design::button("Open Level Editor").on_press(Message::MenuCommand(Box::new(
-                Message::LevelOpenSelectedModProject
-            ))),
-            design::button("Review Changes").on_press(Message::MenuCommand(Box::new(
-                Message::ModdingReviewChanges
-            ))),
-            design::button("Build Mod")
-                .on_press(Message::MenuCommand(Box::new(Message::ModdingBuild))),
-            design::button("Export Mod…")
-                .on_press(Message::MenuCommand(Box::new(Message::ModdingExportPak))),
-        ]
-        .spacing(3)
-        .into(),
-        "View" => column![
-            design::button(if state.modding_advanced {
+/// Menu entries as `(menu, label, action)`. `None` greys an entry out.
+/// The command palette lists the enabled ones too.
+pub(super) fn menu_commands(state: &State) -> Vec<(&'static str, &'static str, Option<Message>)> {
+    let selected = state.modding_selected.is_some();
+    let pak = !state.file_selection.indices.is_empty();
+    let idle = !state.busy;
+    vec![
+        ("File", "Refresh Projects", Some(Message::ModdingRefresh)),
+        ("File", "Browse staged PAKs", Some(Message::ModdingBrowsePaks)),
+        ("File", "Installed Mods / Profiles", Some(Message::ModdingToggleProfiles)),
+        ("Edit", "Continue Editing", selected.then_some(Message::ModdingOpenProject)),
+        (
+            "Edit",
+            "Open Level Editor",
+            selected.then_some(Message::LevelOpenSelectedModProject),
+        ),
+        ("Edit", "Review Changes", selected.then_some(Message::ModdingReviewChanges)),
+        ("Edit", "Build Mod", (selected && idle).then_some(Message::ModdingBuild)),
+        ("Edit", "Export Mod…", (selected && idle).then_some(Message::ModdingExportPak)),
+        (
+            "View",
+            if state.modding_advanced {
                 "Hide archive browser"
             } else {
                 "Show archive browser"
-            })
-            .on_press(Message::MenuCommand(Box::new(
-                Message::ModdingToggleAdvanced
-            ))),
-            design::button("Open Asset Viewer")
-                .on_press(Message::MenuCommand(Box::new(Message::OpenViewer))),
-        ]
+            },
+            Some(Message::ModdingToggleAdvanced),
+        ),
+        ("View", "Open Asset Viewer", Some(Message::OpenViewer)),
+        (
+            "Tools",
+            "Verify selected signed PAK",
+            (pak && idle).then_some(Message::StartSignedInspection),
+        ),
+        ("Tools", "Initialize isolated stage", idle.then_some(Message::StartStageInit)),
+        ("Tools", "Check stage", idle.then_some(Message::StartStageStatus)),
+        ("Tools", "Restore backup", idle.then_some(Message::StartStageRestore)),
+        ("Tools", "Import signed original", idle.then_some(Message::StartStageImport)),
+        ("Tools", "Apply signed replacement", idle.then_some(Message::StartStageApply)),
+        (
+            "Tools",
+            "Asset Library",
+            Some(Message::Navigate(super::Page::AssetLibrary)),
+        ),
+        (
+            "Tools",
+            "Verify offline launcher + signed PAKs",
+            idle.then_some(Message::StartOfflineLauncherCheck),
+        ),
+        (
+            "Tools",
+            "Audit installed original PAKs (read-only)",
+            idle.then_some(Message::StartLivePakAudit),
+        ),
+        (
+            "Tools",
+            "Play with mods (existing private helper)",
+            idle.then_some(Message::StartOfflineLauncherLaunch),
+        ),
+    ]
+}
+
+fn menu(state: &State) -> Element<'_, Message> {
+    let title = |label: &'static str| {
+        crate::chrome::menu_title(
+            crate::chrome::MenuBar::Modding,
+            label,
+            label,
+            state.modding_menu,
+            Message::ModdingMenu(label),
+            13.0,
+            [6, 11],
+        )
+    };
+    row![title("File"), title("Edit"), title("View"), title("Tools"), space().width(Fill)]
         .spacing(3)
-        .into(),
-        "Tools" => column![
-            design::button("Verify selected signed PAK").on_press(Message::MenuCommand(Box::new(
-                Message::StartSignedInspection
-            ))),
-            design::button("Initialize isolated stage")
-                .on_press(Message::MenuCommand(Box::new(Message::StartStageInit))),
-            design::button("Check stage")
-                .on_press(Message::MenuCommand(Box::new(Message::StartStageStatus))),
-            design::button("Restore backup")
-                .on_press(Message::MenuCommand(Box::new(Message::StartStageRestore))),
-            design::button("Import signed original")
-                .on_press(Message::MenuCommand(Box::new(Message::StartStageImport))),
-            design::button("Apply signed replacement")
-                .on_press(Message::MenuCommand(Box::new(Message::StartStageApply))),
-            design::button("Installed Mods / Profiles").on_press(Message::MenuCommand(Box::new(
-                Message::ModdingToggleProfiles
-            ))),
-            design::button("Asset Library").on_press(Message::MenuCommand(Box::new(
-                Message::Navigate(super::Page::AssetLibrary)
-            ))),
-            design::button("Verify offline launcher + signed PAKs").on_press(Message::MenuCommand(
-                Box::new(Message::StartOfflineLauncherCheck)
-            )),
-            design::button("Audit installed original PAKs (read-only)")
-                .on_press(Message::MenuCommand(Box::new(Message::StartLivePakAudit))),
-            design::button("Play with mods (existing private helper)").on_press(
-                Message::MenuCommand(Box::new(Message::StartOfflineLauncherLaunch))
-            ),
-            crate::ui_kit::hold_button(
+        .align_y(iced::Center)
+        .into()
+}
+
+fn dropdown(state: &State) -> Option<Element<'_, Message>> {
+    let open = state.modding_menu?;
+    let mut commands = column![].spacing(2);
+    for (menu, label, action) in menu_commands(state) {
+        if menu == open {
+            commands = commands.push(crate::chrome::menu_item(label, action));
+        }
+    }
+    if open == "Tools" {
+        commands = commands
+            .push(crate::ui_kit::hold_button(
                 &state.ui,
                 "restore-original-files-menu",
                 "Hold: restore original PAKs + hook",
                 Message::MenuCommand(Box::new(Message::StartOfflineLauncherRestore)),
                 !state.busy,
                 state.preferences.reduce_motion,
-            ),
-            text("Offline only. Launcher and backup checks are verified before use.")
-                .size(design::CAPTION)
-                .style(design::muted),
-        ]
-        .spacing(3)
-        .into(),
-        _ => return None,
-    };
-    Some(commands)
+            ))
+            .push(
+                text("Offline only. Launcher and backup checks are verified before use.")
+                    .size(design::CAPTION)
+                    .style(design::muted),
+            );
+    }
+    Some(commands.into())
 }
 
 fn dropdown_left(name: Option<&str>) -> f32 {
     match name {
         Some("File") => 8.0,
-        Some("Edit") => 72.0,
-        Some("View") => 138.0,
-        Some("Tools") => 203.0,
+        Some("Edit") => 59.0,
+        Some("View") => 111.0,
+        Some("Tools") => 167.0,
         _ => 8.0,
     }
+}
+
+/// "Page 2 of 7" between previous and next icon buttons.
+fn pager<'a>(page: usize, pages: usize, previous: Option<Message>, next: Option<Message>) -> Element<'a, Message> {
+    row![
+        crate::ui_kit::icon_button(
+            crate::icons::chevron_left(),
+            "Previous page",
+            previous,
+            Some("Already on the first page"),
+        ),
+        text(format!("Page {} of {}", page + 1, pages.max(1))).size(design::LABEL),
+        crate::ui_kit::icon_button(
+            crate::icons::chevron(),
+            "Next page",
+            next,
+            Some("Already on the last page"),
+        ),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn project_header(advanced: bool, sort: crate::ui_kit::Sort) -> Element<'static, Message> {
@@ -656,10 +672,12 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
             row![
                 empty,
                 space().width(Fill),
-                design::button("Previous")
-                    .on_press_maybe((range.start > 0).then_some(Message::ModdingPage(false))),
-                design::button("Next")
-                    .on_press_maybe((range.end < count).then_some(Message::ModdingPage(true))),
+                pager(
+                    range.start / PAGE.max(1),
+                    count.div_ceil(PAGE.max(1)),
+                    (range.start > 0).then_some(Message::ModdingPage(false)),
+                    (range.end < count).then_some(Message::ModdingPage(true)),
+                ),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
@@ -735,12 +753,12 @@ fn modifications(state: &State) -> Element<'_, Message> {
                     ))
                     .size(design::LABEL),
                     space().width(Fill),
-                    design::button("Previous").on_press_maybe(
-                        (range.start > 0).then_some(Message::ModdingChangesPage(false))
-                    ),
-                    design::button("Next").on_press_maybe(
+                    pager(
+                        range.start / PAGE.max(1),
+                        record.modified.len().div_ceil(PAGE.max(1)),
+                        (range.start > 0).then_some(Message::ModdingChangesPage(false)),
                         (range.end < record.modified.len())
-                            .then_some(Message::ModdingChangesPage(true))
+                            .then_some(Message::ModdingChangesPage(true)),
                     ),
                 ]
                 .spacing(8),
@@ -813,32 +831,102 @@ fn archive_browser(state: &State) -> Element<'_, Message> {
         ].spacing(8),
         scrollable(list).height(Length::Fixed(180.0)),
         text(format!("{count} matching staged PAK(s)")).size(design::LABEL).style(design::muted),
-        row![
-            design::button("Verify PAK").style(design::secondary)
-                .on_press(Message::StartSignedInspection),
-            design::button("Unpack PAK").style(design::secondary)
-                .on_press(Message::ModdingUnpackPak),
-            design::button("Edit Files").style(design::primary)
-                .on_press(Message::ModdingOpenProject),
-            design::button("Level Editor").style(design::secondary)
-                .on_press(Message::Navigate(super::Page::Levels)),
-        ].spacing(8),
-        text("SPECIALIST · REBUILD ONE SIGNED MEMBER").size(design::LABEL).style(design::muted),
-        row![
-            design::text_input("Exact archive member path…", &state.signed_entry)
-                .on_input(Message::SignedMemberChanged).width(Fill),
-            design::text_input("Modified replacement file…", &state.signed_replacement)
-                .on_input(Message::SignedReplacementChanged).width(Fill),
-        ].spacing(7),
-        row![
-            design::text_input("NEW output path ending in original .pak basename…", &state.output)
-                .on_input(Message::OutputChanged).width(Fill),
-            design::button("Rebuild one member").style(design::secondary)
-                .on_press(Message::StartSignedRebuild),
-        ].spacing(7),
-        text("Signing keys and the signed basename are resolved from your prepared stage and selected archive.")
-            .size(design::LABEL).style(design::muted),
+        archive_actions(state),
+        crate::ui_kit::disclosure(
+            &state.ui,
+            "modding:specialist",
+            text("Specialist · rebuild one signed member").size(design::LABEL),
+            state.modding_specialist_open,
+            Message::ModdingToggleSpecialist,
+            || specialist_rebuild(state),
+        ),
     ].spacing(8)).into()
+}
+
+/// Verify / Unpack / Edit Files / Level Editor for the selected staged PAK.
+/// They stay disabled until a PAK is selected, and say why.
+fn archive_actions(state: &State) -> Element<'_, Message> {
+    let pak = !state.file_selection.indices.is_empty();
+    let idle = !state.busy;
+    let reason = if !pak {
+        "Select a staged PAK first"
+    } else {
+        "Wait for the current operation to finish"
+    };
+    let action = |icon, label: &'static str, primary: bool, message: Message| {
+        let enabled = pak && idle;
+        crate::ui_kit::why_disabled(
+            crate::ui_kit::icon_label_button(icon, label)
+                .style(if primary { design::primary } else { design::secondary })
+                .on_press_maybe(enabled.then_some(message)),
+            !enabled,
+            reason,
+        )
+    };
+    row![
+        action(crate::icons::shield(), "Verify", false, Message::StartSignedInspection),
+        action(crate::icons::unpack(), "Unpack", false, Message::ModdingUnpackPak),
+        action(crate::icons::pencil(), "Edit Files", true, Message::ModdingOpenProject),
+        action(
+            crate::icons::map(),
+            "Level Editor",
+            false,
+            Message::Navigate(super::Page::Levels)
+        ),
+    ]
+    .spacing(8)
+    .into()
+}
+
+/// The single-member rebuild, with checked replacement and output paths.
+fn specialist_rebuild(state: &State) -> Element<'_, Message> {
+    let ready = !state.signed_entry.trim().is_empty()
+        && state
+            .path_checks
+            .extra("rebuild-replacement")
+            .is_some_and(|check| check.ok)
+        && state
+            .path_checks
+            .extra("rebuild-output")
+            .is_some_and(|check| check.ok)
+        && !state.busy;
+    column![
+        column![
+            design::label("Archive member"),
+            design::text_input("Exact archive member path…", &state.signed_entry)
+                .on_input(Message::SignedMemberChanged)
+                .width(Fill),
+        ]
+        .spacing(5),
+        crate::forms::path_input(
+            "Replacement file",
+            "Modified replacement file…",
+            &state.signed_replacement,
+            state.path_checks.extra("rebuild-replacement"),
+            Message::SignedReplacementChanged,
+            Message::ModdingBrowseRebuild(false),
+        ),
+        crate::forms::path_input(
+            "New output PAK",
+            "New path ending in the original .pak name…",
+            &state.output,
+            state.path_checks.extra("rebuild-output"),
+            Message::OutputChanged,
+            Message::ModdingBrowseRebuild(true),
+        ),
+        row![
+            design::button("Rebuild one member")
+                .style(design::secondary)
+                .on_press_maybe(ready.then_some(Message::StartSignedRebuild)),
+            design::caption(
+                "Signing keys and the signed basename come from your prepared stage and the selected archive."
+            ),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(8)
+    .into()
 }
 
 /// One-click source PAK editing from the persisted Asset Library. This
@@ -1222,14 +1310,14 @@ fn play_mods_card<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Mes
                 // A beam circles the button while a build or launch runs.
                 crate::ui_kit::beam(
                     &state.ui,
-                    design::button("Play with Mods")
+                    crate::ui_kit::icon_label_button(crate::icons::play(), "Play with Mods")
                         .style(design::primary)
                         .on_press(Message::PlayWithMods),
                     working,
                     state.preferences.reduce_motion,
                 ),
-                design::button("Refresh Mods")
-                    .style(design::secondary)
+                crate::ui_kit::icon_label_button(crate::icons::refresh(), "Refresh")
+                    .style(design::text_button)
                     .on_press(Message::ModdingRefresh),
             ]
             .spacing(8),
@@ -1518,19 +1606,39 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .into();
     }
 
-    let selected_actions = row![
-        design::button("Continue Editing")
-            .style(design::secondary)
-            .on_press(Message::ModdingOpenProject),
-        design::button("Edit Level")
-            .style(design::secondary)
-            .on_press_maybe(
-                state
-                    .modding_selected
-                    .map(|_| Message::LevelOpenSelectedModProject)
-            ),
+    let has_selection = state.modding_selected.is_some();
+    // Split button: the main part repeats the last format; ▾ lists all three.
+    let last_format = PakExportMode::from_key(&state.preferences.last_export_format);
+    let export_ready = has_selection && !state.busy;
+    let export_split = row![
+        crate::ui_kit::why_disabled(
+            crate::ui_kit::icon_label_button(
+                crate::icons::export(),
+                if last_format.is_some() { "Export Mod" } else { "Export Mod…" },
+            )
+            .style(design::primary)
+            .on_press_maybe(export_ready.then(|| match last_format {
+                Some(mode) => Message::ModdingExportChoose(mode),
+                None => Message::ModdingExportPak,
+            })),
+            !has_selection,
+            "Select a project first",
+        ),
+        design::tooltip(
+            iced::widget::button(crate::icons::glyph(crate::icons::chevron_down(), 14.0))
+                .padding([9, 8])
+                .style(design::primary)
+                .on_press_maybe(export_ready.then_some(Message::ModdingExportPak)),
+            "Choose an export format",
+            None,
+            iced::widget::tooltip::Position::Top,
+        ),
+        design::caption(match last_format {
+            Some(mode) => mode.description(),
+            None => "Choose a format, then Save As to any folder.",
+        }),
     ]
-    .spacing(7)
+    .spacing(2)
     .align_y(iced::Center);
     let mut selected_content = column![
         row![
@@ -1557,36 +1665,33 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ),]
         .spacing(8)
         .align_y(iced::Center),
-        selected_actions,
-        row![
-            design::button("Export Mod…")
-                .style(design::primary)
-                .on_press_maybe(state.modding_selected.map(|_| Message::ModdingExportPak)),
-            text("Choose an export format, then Save As to any folder.")
-                .size(design::CAPTION)
-                .style(design::muted),
-        ]
-        .spacing(8)
-        .align_y(iced::Center),
+        export_split,
     ]
     .spacing(10);
     if state.modding_export_options_open && chosen.is_some() {
         selected_content = selected_content.push(
-            column![
-                text("EXPORT FORMAT")
-                    .size(design::LABEL)
-                    .style(design::muted),
-                design::button("zz_[modname].pak — changed files only")
-                    .style(design::secondary)
-                    .on_press(Message::ModdingExportChoose(PakExportMode::ChangedZz)),
-                design::button("[OriginalPakName].pak — changed files only")
-                    .style(design::secondary)
-                    .on_press(Message::ModdingExportChoose(PakExportMode::ChangedOriginal)),
-                design::button("[OriginalPakName].pak — entire original PAK")
-                    .style(design::secondary)
-                    .on_press(Message::ModdingExportChoose(PakExportMode::FullOriginal)),
-            ]
-            .spacing(5),
+            PakExportMode::ALL.into_iter().fold(
+                column![text("EXPORT FORMAT").size(design::LABEL).style(design::muted)].spacing(4),
+                |menu, mode| {
+                    let last = last_format == Some(mode);
+                    menu.push(
+                        design::button(
+                            row![
+                                text(mode.description()).size(design::LABEL).width(Fill),
+                            ]
+                            .push(last.then(|| crate::ui_kit::badge(
+                                crate::ui_kit::BadgeKind::Neutral,
+                                "Last used",
+                            )))
+                            .spacing(8)
+                            .align_y(iced::Center),
+                        )
+                        .width(Fill)
+                        .style(design::secondary)
+                        .on_press(Message::ModdingExportChoose(mode)),
+                    )
+                },
+            ),
         );
     }
     if state.modding_advanced {
@@ -1757,12 +1862,118 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         }
         main = main.push(scrollable(lines.spacing(4)).height(Length::Fixed(145.0)));
     }
-    crate::menu_popup::overlay(
+    let page = crate::menu_popup::overlay(
         main,
         dropdown(state),
         dropdown_left(state.modding_menu),
         115.0,
         310.0,
+    );
+    match selection_toolbar(state) {
+        Some(toolbar) => iced::widget::stack![
+            page,
+            container(toolbar)
+                .width(Fill)
+                .height(Fill)
+                .align_bottom(Fill)
+                .center_x(Fill)
+                .padding(iced::Padding {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 18.0,
+                    left: 0.0,
+                })
+        ]
+        .into(),
+        None => page,
+    }
+}
+
+/// A pill bar along the bottom while projects are selected:
+/// "2 selected · Edit · Level · Export · Rename · Disable".
+fn selection_toolbar(state: &State) -> Option<Element<'_, Message>> {
+    let projects = state.modding_projects.as_deref()?;
+    let mut selected: Vec<usize> = state
+        .project_selection
+        .indices
+        .iter()
+        .copied()
+        .filter(|index| *index < projects.len())
+        .collect();
+    if selected.is_empty() {
+        return None;
+    }
+    selected.sort_unstable();
+    let single = state.modding_selected.is_some() && selected.len() == 1;
+    let idle = !state.busy;
+    let any_enabled = selected.iter().any(|index| projects[*index].enabled);
+    // Disable every selected enabled project, or enable them all if none is.
+    let toggles: Vec<Message> = selected
+        .iter()
+        .filter(|index| projects[**index].enabled == any_enabled)
+        .map(|index| Message::ModdingToggleEnabled(*index))
+        .collect();
+    let action = |icon, label: &'static str, message: Option<Message>| {
+        crate::ui_kit::why_disabled(
+            crate::ui_kit::icon_label_button(icon, label)
+                .style(design::text_button)
+                .on_press_maybe(message.clone()),
+            message.is_none(),
+            "Select a single project",
+        )
+    };
+    let bar = row![
+        text(format!("{} selected", selected.len())).size(design::BODY),
+        text("·").style(design::muted),
+        action(
+            crate::icons::pencil(),
+            "Edit",
+            single.then_some(Message::ModdingOpenProject)
+        ),
+        action(
+            crate::icons::map(),
+            "Level",
+            single.then_some(Message::LevelOpenSelectedModProject)
+        ),
+        action(
+            crate::icons::export(),
+            "Export",
+            (single && idle).then_some(Message::ModdingExportPak)
+        ),
+        action(
+            crate::icons::pencil(),
+            "Rename",
+            single.then_some(Message::Ui(crate::ui_kit::UiMsg::Popover(Some(
+                "rename-mod"
+            ))))
+        ),
+        crate::ui_kit::icon_label_button(
+            crate::icons::discard(),
+            if any_enabled { "Disable" } else { "Enable" }
+        )
+        .style(design::text_button)
+        .on_press_maybe((idle && !toggles.is_empty()).then_some(Message::Sequence(toggles))),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    Some(
+        container(bar)
+            .padding([6, 14])
+            .style(|theme: &iced::Theme| container::Style {
+                background: Some(Background::Color(design::surface(theme))),
+                border: iced::Border {
+                    color: design::border(theme),
+                    width: 1.0,
+                    radius: design::radius(theme, design::Radius::Pill).into(),
+                },
+                shadow: iced::Shadow {
+                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+                    offset: iced::Vector::new(0.0, 6.0),
+                    blur_radius: 18.0,
+                },
+                ..container::Style::default()
+            })
+            .into(),
     )
 }
 

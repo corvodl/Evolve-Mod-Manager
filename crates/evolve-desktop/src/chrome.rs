@@ -194,6 +194,7 @@ pub enum Msg {
 pub enum MenuBar {
     Level,
     Viewer,
+    Modding,
 }
 
 #[derive(Debug, Default)]
@@ -321,6 +322,9 @@ pub fn update(state: &mut State, message: Msg) -> Option<Message> {
             }
             MenuBar::Viewer if state.viewer_menu.is_some_and(|open| open != menu) => {
                 state.viewer_menu = Some(menu);
+            }
+            MenuBar::Modding if state.modding_menu.is_some_and(|open| open != menu) => {
+                state.modding_menu = Some(menu);
             }
             _ => {}
         },
