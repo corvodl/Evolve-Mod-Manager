@@ -81,7 +81,7 @@ class HomeBannerAssetTests(unittest.TestCase):
         self.assertIn("Create your first mod", home)
         self.assertNotIn("Length::Fixed(280.0)", home)
 
-    def test_home_news_is_thumbnail_and_art_is_brighter(self):
+    def test_home_news_shows_complete_image_and_art_is_brighter(self):
         code = (ROOT / "crates/evolve-desktop/src/private_pages.rs").read_text()
         news = code.split("fn latest_announcement(", 1)[1].split(
             "fn home_banner(", 1
@@ -89,8 +89,9 @@ class HomeBannerAssetTests(unittest.TestCase):
         self.assertRegex(news, r"\.image_urls\s*\.iter\(\)")
         self.assertIn(".find(|url| crate::whats_new::allowed_image_url(url))", news)
         self.assertIn("row![details, preview]", news)
-        self.assertIn("Length::Fixed(112.0)", news)
-        self.assertIn(".content_fit(iced::ContentFit::Cover)", news)
+        self.assertIn("Length::Fixed(240.0)", news)
+        self.assertIn(".content_fit(iced::ContentFit::Contain)", news)
+        self.assertNotIn(".content_fit(iced::ContentFit::Cover)", news)
         self.assertIn("Message::OpenNewsLink(url.clone())", news)
         self.assertNotIn("Length::Fixed(125.0)", news)
         self.assertNotIn("Length::Fixed(340.0)", news)
