@@ -21,6 +21,7 @@ mod developer_auth;
 mod developer_hotkeys;
 mod diff_view;
 mod direct_runtime;
+mod docs_page;
 mod discord_presence;
 mod explorer_tree;
 mod forms;
@@ -694,7 +695,9 @@ struct State {
     runtime_phase3_value: String,
     runtime_signature: String,
     runtime_plan_result: String,
-    docs_expanded: HashSet<private_pages::DocsSection>,
+    /// The Docs section shown on the right.
+    docs_selected: private_pages::DocsSection,
+    docs_search: String,
     show_advanced_tools: bool,
     activity_log: Vec<String>,
     health_expanded: bool,
@@ -3411,8 +3414,10 @@ enum Message {
     LevelExportEdits,
     ToggleAdvancedTools,
     ToggleActivity,
-    ToggleDocsSection(private_pages::DocsSection),
-    DocsExpandAll(bool),
+    DocsSelect(private_pages::DocsSection),
+    DocsSearch(String),
+    /// Open search hit `n` and scroll its step into view.
+    DocsOpenResult(usize),
     /// Show one Developer tab (remembered across sessions).
     DeveloperTab(private_pages::DeveloperSection),
     /// Ctrl+1–6: the Developer tab by position.
@@ -8662,16 +8667,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.health_checking = false;
             state.status = "Read-only System Health check completed.".into();
         }
-        Message::ToggleDocsSection(section) => {
-            if !state.docs_expanded.insert(section) {
-                state.docs_expanded.remove(&section);
-            }
+        Message::DocsSelect(section) => {
+            state.docs_selected = section;
+            return iced::widget::operation::snap_to(
+                docs_page::scroll_id(),
+                iced::widget::operation::RelativeOffset::START,
+            );
         }
-        Message::DocsExpandAll(expand) => {
-            state.docs_expanded.clear();
-            if expand {
-                state.docs_expanded.extend(private_pages::DocsSection::ALL);
-            }
+        Message::DocsSearch(value) => state.docs_search = value,
+        Message::DocsOpenResult(index) => {
+            let hits = docs_page::search(&state.docs_search);
+            let Some(hit) = hits.get(index) else {
+                return Task::none();
+            };
+            state.docs_selected = hit.section;
+            state.docs_search.clear();
+            // Roughly where the step sits in the section's scroll range.
+            let steps = private_pages::docs_spec(hit.section).2.len().max(1) as f32;
+            let at = hit.step.map_or(0.0, |step| (step as f32 / steps).clamp(0.0, 1.0));
+            return iced::widget::operation::snap_to(
+                docs_page::scroll_id(),
+                iced::widget::operation::RelativeOffset { x: 0.0, y: at },
+            );
         }
         Message::DeveloperTab(section) => {
             let name = section.title().to_owned();
@@ -14272,6 +14289,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             state.active_play = Some(kind);
+            if kind == play_dialog::Kind::Modded && !state.preferences.played_with_mods {
+                state.preferences.played_with_mods = true;
+                persist_saved_field(|saved| saved.played_with_mods = true);
+            }
             state.play_notice = Some(play_dialog::Notice::preparing(kind));
             let test_mode = state.preferences.play_through_test_client;
             // The separate Test Client owns its game's startup. Never use the
@@ -18530,7 +18551,6 @@ fn compact_footer_status(status: &str) -> String {
 
 fn initial_state() -> State {
     let mut result = State {
-        docs_expanded: HashSet::from([private_pages::DocsSection::GettingStarted]),
         yaw: orientation_gizmo::FRONT_YAW,
         zoom: 1.0,
         playback_speed: 1.0,
@@ -18896,6 +18916,13 @@ impl Desktop {
                     &mut self.state,
                     map_chooser::Msg::Move(if delta < 0.0 { -1 } else { 1 }),
                 )
+            }
+            Message::Chrome(chrome::Msg::Enter)
+                if self.state.chrome.modal.is_none()
+                    && self.state.page == Some(Page::Docs)
+                    && !self.state.docs_search.trim().is_empty() =>
+            {
+                self.update(Message::DocsOpenResult(0))
             }
             Message::Chrome(chrome::Msg::Enter)
                 if self.state.chrome.modal.is_none()

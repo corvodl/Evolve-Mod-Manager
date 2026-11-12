@@ -47,6 +47,8 @@ pub struct Preferences {
     pub recent_maps: Vec<RecentMap>,
     /// The Developer page tab shown last.
     pub developer_tab: String,
+    /// Set the first time Play with Mods starts the game (Getting Started).
+    pub played_with_mods: bool,
     pub reduce_motion: bool,
     pub keep_original_snapshots: bool,
     pub show_activity_on_tasks: bool,
@@ -140,6 +142,7 @@ impl Default for Preferences {
             news_seen_at: String::new(),
             recent_maps: Vec::new(),
             developer_tab: String::new(),
+            played_with_mods: false,
             reduce_motion: false,
             keep_original_snapshots: false,
             show_activity_on_tasks: true,

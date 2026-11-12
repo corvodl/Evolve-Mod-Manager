@@ -5,8 +5,9 @@ use crate::{design, developer_hotkeys, runtime_teleport};
 use iced::widget::{button, column, container, image, row, scrollable, stack, svg, text, tooltip};
 use iced::{Background, Border, Element, Fill, Length};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub(super) enum DocsSection {
+    #[default]
     GettingStarted,
     Install,
     Paths,
@@ -1148,7 +1149,7 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
     }
 }
 
-fn docs_spec(
+pub(super) fn docs_spec(
     section: DocsSection,
 ) -> (
     &'static str,
@@ -1561,80 +1562,8 @@ fn docs_spec(
     }
 }
 
-fn docs_section(state: &State, section: DocsSection, expanded: bool) -> Element<'static, Message> {
-    let (title, summary, steps) = docs_spec(section);
-    let body = move || -> Element<'static, Message> {
-        let mut content = column![].spacing(11);
-        {
-            content = content.push(text(summary).size(design::BODY).style(design::muted));
-            for (index, (step, details)) in steps.iter().enumerate() {
-                content = content.push(
-                    column![
-                        text(format!("{}  {}", index + 1, step)).size(14),
-                        text(*details).size(design::LABEL).style(design::muted),
-                    ]
-                    .spacing(4),
-                );
-            }
-            let destination = match section {
-                DocsSection::GettingStarted
-                | DocsSection::Paths
-                | DocsSection::Updates
-                | DocsSection::Install => Some(("Open Settings", Page::Settings)),
-                DocsSection::Import | DocsSection::Browse | DocsSection::Export => {
-                    Some(("Open Asset Library", Page::AssetLibrary))
-                }
-                DocsSection::Projects | DocsSection::Edit | DocsSection::Gfx => {
-                    Some(("Open Modding", Page::Files))
-                }
-                DocsSection::LaunchMods | DocsSection::LaunchClean | DocsSection::Recovery => {
-                    Some(("Go to Home", Page::Home))
-                }
-                DocsSection::Troubleshoot | DocsSection::Faq => None,
-            };
-            if let Some((label, page)) = destination {
-                content = content.push(design::button(label).on_press(Message::Navigate(page)));
-            }
-        }
-        content.into()
-    };
-    surface(crate::ui_kit::disclosure(
-        &state.ui,
-        &format!("docs:{section:?}"),
-        text(title).size(17),
-        expanded,
-        Message::ToggleDocsSection(section),
-        body,
-    ))
-    .into()
-}
-
 pub(super) fn docs(state: &State) -> Element<'_, Message> {
-    let mut sections = column![
-        text("Docs").size(24),
-        row![
-            design::button("Expand all").on_press(Message::DocsExpandAll(true)),
-            design::button("Collapse all").on_press(Message::DocsExpandAll(false)),
-            design::button("Go to Settings").on_press(Message::Navigate(Page::Settings)),
-        ]
-        .spacing(8),
-        text("Getting Started").size(19),
-        docs_section(
-            state,
-            DocsSection::GettingStarted,
-            state.docs_expanded.contains(&DocsSection::GettingStarted)
-        ),
-        text("How To").size(19),
-    ]
-    .spacing(11);
-    for section in DocsSection::ALL.into_iter().skip(1) {
-        sections = sections.push(docs_section(
-            state,
-            section,
-            state.docs_expanded.contains(&section),
-        ));
-    }
-    scrollable(sections.padding(12)).height(Fill).into()
+    crate::docs_page::view(state)
 }
 
 pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
