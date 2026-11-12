@@ -27,6 +27,42 @@ const FOLDER_DURATION: Duration = Duration::from_millis(150);
 const SEGMENT_DURATION: Duration = Duration::from_millis(220);
 const SWITCH_DURATION: Duration = Duration::from_millis(160);
 const COPIED_FOR: Duration = Duration::from_millis(1500);
+/// Fixed row height of reorder lists (drop index = cursor y / row).
+pub const REORDER_ROW: f32 = 34.0;
+const REORDER_SLIDE: Duration = Duration::from_millis(120);
+const SCRAMBLE_TOTAL: Duration = Duration::from_millis(420);
+const SCRAMBLE_STEP_MS: u128 = 30;
+const SCRAMBLE_GLYPHS: &[char] = &[
+    'A', 'E', 'H', 'K', 'M', 'R', 'V', 'X', 'Z', '0', '3', '7', '#', '%', '/', '<', '>', '=', '+',
+];
+
+/// Split-flap resolve: character `i` settles at a staggered time across
+/// [`SCRAMBLE_TOTAL`]; before that it shows a glyph that changes every
+/// 30 ms. Spaces never scramble, so word shapes stay readable.
+pub fn scramble(value: &str, elapsed: Duration) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let count = chars.len().max(1) as u128;
+    let total = SCRAMBLE_TOTAL.as_millis();
+    let elapsed_ms = elapsed.as_millis();
+    let step = elapsed_ms / SCRAMBLE_STEP_MS;
+    chars
+        .iter()
+        .enumerate()
+        .map(|(index, ch)| {
+            let settle = total * (index as u128 + 1) / count;
+            if ch.is_whitespace() || elapsed_ms >= settle {
+                *ch
+            } else {
+                let seed = (index as u128 * 31 + step * 17) as usize;
+                SCRAMBLE_GLYPHS[seed % SCRAMBLE_GLYPHS.len()]
+            }
+        })
+        .collect()
+}
+const DISCLOSE_DURATION: Duration = Duration::from_millis(240);
+/// Height cap the accordion grows through; content beyond it appears once
+/// the animation settles (iced cannot measure content ahead of layout).
+const DISCLOSE_MAX: f32 = 900.0;
 /// Skeleton pulse period.
 const PULSE_PERIOD: f32 = 1.4;
 
@@ -52,6 +88,33 @@ pub enum UiMsg {
     CompareSet(f32),
     /// Arrow-key nudge of the comparison split.
     CompareNudge(f32),
+    /// Reorder list: start dragging row `index` of `list`.
+    ReorderGrab(&'static str, usize, fn(usize, usize) -> Message),
+    /// Cursor height over the list while dragging.
+    ReorderMove(&'static str, f32),
+    ReorderDrop(&'static str),
+    /// Alt+↑/↓ moves the last focused row.
+    ReorderKey(i32),
+    /// Accordion toggled: `(key, now open, message that flips the state)`.
+    Disclose(String, bool, Box<Message>),
+    /// Open (`Some`) or close a popover form.
+    Popover(Option<&'static str>),
+    /// Save a popover form: close it and run the message.
+    PopoverSave(Box<Message>),
+    /// A faded scroll list moved: `(list, relative offset, overflows)`.
+    Scrolled(&'static str, f32, bool),
+}
+
+/// An in-progress reorder drag (or the keyboard-focused row).
+#[derive(Debug, Clone, Copy)]
+struct Reorder {
+    list: &'static str,
+    from: usize,
+    target: usize,
+    dragging: bool,
+    make: fn(usize, usize) -> Message,
+    /// Eased drop indicator position, in rows.
+    indicator: Tween,
 }
 
 #[derive(Debug, Clone)]
@@ -84,14 +147,15 @@ impl Ticker {
         self.from + (self.to - self.from) * t
     }
 
-    fn set(&mut self, value: f64, now: Instant, reduce_motion: bool) {
+    fn set(&mut self, value: f64, now: Instant, reduce_motion: bool, easing: Easing) {
         if value == self.to {
             return;
         }
         self.from = self.value(now);
         self.to = value;
-        self.progress = Tween::settled(0.0).with_easing(Easing::EaseOut);
-        self.progress.animate_to(1.0, now, TICKER_DURATION, reduce_motion);
+        self.progress = Tween::settled(0.0).with_easing(easing);
+        self.progress
+            .animate_to(1.0, now, TICKER_DURATION, reduce_motion);
     }
 }
 
@@ -122,6 +186,17 @@ pub struct UiState {
     pub compare_split: Option<f32>,
     /// Window currently hovered by dragged files.
     pub drop_target: Option<iced::window::Id>,
+    reorder: Option<Reorder>,
+    /// Accordion openness (0 closed → 1 open), keyed by section.
+    disclosures: BTreeMap<String, Tween>,
+    /// Storage ring sweep-in after an analysis completes.
+    ring: Tween,
+    /// Open popover form, by id.
+    pub popover: Option<&'static str>,
+    /// Last scroll position per faded list: `(relative y, overflows)`.
+    scrolls: BTreeMap<&'static str, (f32, bool)>,
+    /// When the Legacy title scramble started (once per page change).
+    scramble_start: Option<Instant>,
 }
 
 impl UiState {
@@ -180,8 +255,26 @@ impl UiState {
         })
     }
 
+    /// `(from, target, indicator rows)` while `list` is being dragged.
+    pub fn reorder_state(&self, list: &str, now: Instant) -> Option<(usize, usize, f32)> {
+        self.reorder
+            .filter(|drag| drag.list == list && drag.dragging)
+            .map(|drag| (drag.from, drag.target, drag.indicator.value(now)))
+    }
+
     /// True while a tween-driven element needs ~60 fps frames.
     pub fn animating(&self, now: Instant) -> bool {
+        if self.scrambling(now) {
+            return true;
+        }
+        if self
+            .reorder
+            .is_some_and(|drag| drag.indicator.is_running(now))
+            || self.disclosures.values().any(|tween| tween.is_running(now))
+            || self.ring.is_running(now)
+        {
+            return true;
+        }
         self.segments.values().any(|tween| tween.is_running(now))
             || self.switches.values().any(|tween| tween.is_running(now))
             // The ✓ needs a frame to revert after COPIED_FOR.
@@ -221,6 +314,7 @@ impl UiState {
         // Settled chevrons need no entry: `folder_turn` falls back to state.
         self.folders.retain(|_, tween| tween.tick(now));
         self.switches.retain(|_, tween| tween.tick(now));
+        self.disclosures.retain(|_, tween| tween.tick(now));
         for tween in self.segments.values_mut() {
             tween.tick(now);
         }
@@ -251,6 +345,43 @@ impl UiState {
         None
     }
 
+    /// Start the split-flap title effect (Legacy only, skipped with
+    /// reduce motion by the caller).
+    pub fn start_scramble(&mut self, now: Instant) {
+        self.scramble_start = Some(now);
+    }
+
+    pub fn scrambling(&self, now: Instant) -> bool {
+        self.scramble_start
+            .is_some_and(|start| now.saturating_duration_since(start) < SCRAMBLE_TOTAL)
+    }
+
+    /// `value` as currently resolved by the scramble.
+    pub fn scrambled(&self, value: &str, now: Instant) -> String {
+        match self.scramble_start {
+            Some(start) if self.scrambling(now) => {
+                scramble(value, now.saturating_duration_since(start))
+            }
+            _ => value.to_owned(),
+        }
+    }
+
+    /// Sweep the storage ring in from empty.
+    pub fn sweep_ring(&mut self, now: Instant, reduce: bool) {
+        self.ring = Tween::settled(0.0).with_easing(Easing::EaseOut);
+        self.ring
+            .animate_to(1.0, now, Duration::from_millis(700), reduce);
+    }
+
+    /// Ring sweep 0..1 (1 when no sweep has run).
+    pub fn ring_sweep(&self, now: Instant) -> f32 {
+        if self.ring.start.is_none() && self.ring.to == 0.0 {
+            1.0
+        } else {
+            self.ring.value(now)
+        }
+    }
+
     pub fn island_value(&self, now: Instant) -> f32 {
         self.island.value(now)
     }
@@ -265,9 +396,15 @@ impl UiState {
 
     /// Retarget a number ticker. The first value is shown immediately.
     pub fn set_ticker(&mut self, key: &'static str, value: f64, now: Instant, reduce: bool) {
+        // Live counters (worker progress) count steadily; totals settle.
+        let easing = if key == "import_files" {
+            Easing::Linear
+        } else {
+            Easing::EaseOut
+        };
         self.tickers
             .entry(key)
-            .and_modify(|ticker| ticker.set(value, now, reduce))
+            .and_modify(|ticker| ticker.set(value, now, reduce, easing))
             .or_insert_with(|| Ticker::settled(value));
     }
 
@@ -336,6 +473,69 @@ pub fn update(ui: &mut UiState, message: UiMsg, reduce_motion: bool) -> Option<M
             ui.spotlight = point.map(|point| (key, point));
         }
         UiMsg::CompareSet(fraction) => ui.compare_split = Some(fraction.clamp(0.0, 1.0)),
+        UiMsg::ReorderGrab(list, index, make) => {
+            ui.reorder = Some(Reorder {
+                list,
+                from: index,
+                target: index,
+                dragging: true,
+                make,
+                indicator: Tween::settled(index as f32).with_easing(Easing::EaseOut),
+            });
+        }
+        UiMsg::ReorderMove(list, y) => {
+            if let Some(drag) = ui.reorder.as_mut().filter(|d| d.list == list && d.dragging) {
+                let target = (y / REORDER_ROW).floor().max(0.0) as usize;
+                if target != drag.target {
+                    drag.target = target;
+                    drag.indicator
+                        .animate_to(target as f32, now, REORDER_SLIDE, reduce_motion);
+                }
+            }
+        }
+        UiMsg::ReorderDrop(list) => {
+            if let Some(drag) = ui.reorder.as_mut().filter(|d| d.list == list && d.dragging) {
+                drag.dragging = false;
+                let (from, to) = (drag.from, drag.target);
+                // Keep keyboard focus on the moved row.
+                drag.from = to;
+                if from != to {
+                    return Some((drag.make)(from, to));
+                }
+            }
+        }
+        UiMsg::Disclose(key, open, message) => {
+            let tween = ui
+                .disclosures
+                .entry(key)
+                .or_insert_with(|| Tween::settled(if open { 0.0 } else { 1.0 }));
+            *tween = tween.with_easing(Easing::EaseOut);
+            tween.animate_to(
+                if open { 1.0 } else { 0.0 },
+                now,
+                DISCLOSE_DURATION,
+                reduce_motion,
+            );
+            return Some(*message);
+        }
+        UiMsg::Popover(id) => ui.popover = id,
+        UiMsg::Scrolled(list, offset, overflows) => {
+            ui.scrolls.insert(list, (offset, overflows));
+        }
+        UiMsg::PopoverSave(message) => {
+            ui.popover = None;
+            return Some(*message);
+        }
+        UiMsg::ReorderKey(delta) => {
+            if let Some(drag) = ui.reorder.as_mut() {
+                let from = drag.from;
+                let to = (from as i64 + i64::from(delta)).max(0) as usize;
+                if to != from {
+                    drag.from = to;
+                    return Some((drag.make)(from, to));
+                }
+            }
+        }
         UiMsg::CompareNudge(delta) => {
             let split = ui.compare_split.unwrap_or(0.5);
             ui.compare_split = Some((split + delta).clamp(0.0, 1.0));
@@ -348,7 +548,12 @@ pub fn update(ui: &mut UiState, message: UiMsg, reduce_motion: bool) -> Option<M
             // Width-relative travel: one segment step is one "unit".
             let distance = (tween.value(now) - index as f32).abs().max(1.0);
             *tween = tween.with_easing(Easing::EaseOut);
-            tween.animate_to(index as f32, now, SEGMENT_DURATION.mul_f32(distance.min(3.0)), reduce_motion);
+            tween.animate_to(
+                index as f32,
+                now,
+                SEGMENT_DURATION.mul_f32(distance.min(3.0)),
+                reduce_motion,
+            );
             return Some(*message);
         }
         UiMsg::Switch(key, value, message) => {
@@ -357,7 +562,12 @@ pub fn update(ui: &mut UiState, message: UiMsg, reduce_motion: bool) -> Option<M
                 .entry(key)
                 .or_insert_with(|| Tween::settled(if value { 0.0 } else { 1.0 }));
             *tween = tween.with_easing(Easing::EaseInOut);
-            tween.animate_to(if value { 1.0 } else { 0.0 }, now, SWITCH_DURATION, reduce_motion);
+            tween.animate_to(
+                if value { 1.0 } else { 0.0 },
+                now,
+                SWITCH_DURATION,
+                reduce_motion,
+            );
             return Some(*message);
         }
     }
@@ -386,44 +596,38 @@ pub fn callout<'a>(tone: Tone, body: impl text::IntoFragment<'a>) -> Element<'a,
     callout_with(tone, None, body)
 }
 
-pub fn callout_titled<'a>(
-    tone: Tone,
-    title: &'a str,
-    body: impl text::IntoFragment<'a>,
-) -> Element<'a, Message> {
-    callout_with(tone, Some(title), body)
-}
-
 fn callout_with<'a>(
     tone: Tone,
     title: Option<&'a str>,
     body: impl text::IntoFragment<'a>,
 ) -> Element<'a, Message> {
-    let bar = container(space().width(3).height(Fill)).style(move |theme: &Theme| {
-        container::Style {
+    let bar =
+        container(space().width(3).height(Fill)).style(move |theme: &Theme| container::Style {
             background: Some(Background::Color(design::tone_color(theme, tone))),
             border: Border {
                 radius: design::radius(theme, Radius::Small).into(),
                 ..Border::default()
             },
             ..container::Style::default()
-        }
-    });
-    let badge = container(text(tone_glyph(tone)).size(11).style(move |theme: &Theme| {
-        text::Style {
-            color: Some(design::tone_color(theme, tone)),
-        }
-    }))
-    .center_x(18)
-    .center_y(18)
-    .style(move |theme: &Theme| container::Style {
-        border: Border {
-            color: design::tone_color(theme, tone),
-            width: 1.0,
-            radius: design::radius(theme, Radius::Pill).into(),
-        },
-        ..container::Style::default()
-    });
+        });
+    let badge =
+        container(
+            text(tone_glyph(tone))
+                .size(11)
+                .style(move |theme: &Theme| text::Style {
+                    color: Some(design::tone_color(theme, tone)),
+                }),
+        )
+        .center_x(18)
+        .center_y(18)
+        .style(move |theme: &Theme| container::Style {
+            border: Border {
+                color: design::tone_color(theme, tone),
+                width: 1.0,
+                radius: design::radius(theme, Radius::Pill).into(),
+            },
+            ..container::Style::default()
+        });
     let mut copy = column![].spacing(3).width(Fill);
     if let Some(title) = title {
         copy = copy.push(text(title).size(13));
@@ -453,11 +657,7 @@ pub fn empty_state<'a>(
     action: Option<(&'a str, Message)>,
 ) -> Element<'a, Message> {
     let glyph: Element<'a, Message> = match icon {
-        Some(handle) => svg(handle)
-            .width(28)
-            .height(28)
-            .style(design::icon)
-            .into(),
+        Some(handle) => svg(handle).width(28).height(28).style(design::icon).into(),
         None => text("○").size(24).into(),
     };
     let ring = container(glyph)
@@ -536,15 +736,13 @@ pub fn save_status<'a>(
     } else {
         Tone::Success
     };
-    let dot = container(space().width(7).height(7)).style(move |theme: &Theme| {
-        container::Style {
-            background: Some(Background::Color(design::tone_color(theme, tone))),
-            border: Border {
-                radius: design::radius(theme, Radius::Pill).into(),
-                ..Border::default()
-            },
-            ..container::Style::default()
-        }
+    let dot = container(space().width(7).height(7)).style(move |theme: &Theme| container::Style {
+        background: Some(Background::Color(design::tone_color(theme, tone))),
+        border: Border {
+            radius: design::radius(theme, Radius::Pill).into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
     });
     container(
         row![dot, text(save_label(dirty, saving, saved_at, now)).size(11)]
@@ -587,22 +785,6 @@ pub fn skeleton<'a>(width: impl Into<Length>, height: f32, alpha: f32) -> Elemen
             ..container::Style::default()
         })
         .into()
-}
-
-/// A card-shaped skeleton: image block plus two text lines.
-pub fn skeleton_card<'a>(width: f32, image_height: f32, alpha: f32) -> Element<'a, Message> {
-    container(
-        column![
-            skeleton(Fill, image_height, alpha),
-            skeleton(Length::FillPortion(3), 12.0, alpha),
-            row![skeleton(Length::FillPortion(2), 10.0, alpha), space().width(Length::FillPortion(1))],
-        ]
-        .spacing(8),
-    )
-    .padding(10)
-    .width(width)
-    .style(design::panel)
-    .into()
 }
 
 // ---------------------------------------------------------------------------
@@ -664,12 +846,17 @@ pub fn timeline<'a>(items: Vec<TimelineItem<'a>>) -> Element<'a, Message> {
             card = card.push(body);
         }
         list = list.push(
-            row![rail, container(card).padding(iced::Padding {
-                top: 0.0,
-                right: 0.0,
-                bottom: if last { 0.0 } else { 16.0 },
-                left: 0.0,
-            }).width(Fill)]
+            row![
+                rail,
+                container(card)
+                    .padding(iced::Padding {
+                        top: 0.0,
+                        right: 0.0,
+                        bottom: if last { 0.0 } else { 16.0 },
+                        left: 0.0,
+                    })
+                    .width(Fill)
+            ]
             .spacing(12)
             .height(Length::Shrink),
         );
@@ -739,24 +926,30 @@ pub fn stepper<'a>(steps: &Steps, wheel_frame: u32) -> Element<'a, Message> {
                     StepState::Failed => ("✕", Some(Tone::Danger)),
                     _ => ("○", None),
                 };
-                container(text(glyph).size(13).style(move |theme: &Theme| text::Style {
-                    color: Some(tone.map_or(
-                        theme.extended_palette().background.strongest.text,
-                        |tone| design::tone_color(theme, tone),
-                    )),
-                }))
+                container(
+                    text(glyph)
+                        .size(13)
+                        .style(move |theme: &Theme| text::Style {
+                            color: Some(tone.map_or(
+                                theme.extended_palette().background.strongest.text,
+                                |tone| design::tone_color(theme, tone),
+                            )),
+                        }),
+                )
                 .center_x(18)
                 .center_y(18)
                 .into()
             }
         };
-        let label = text(*label).size(12).style(move |theme: &Theme| text::Style {
-            color: Some(match status {
-                StepState::Waiting => theme.extended_palette().background.strongest.text,
-                StepState::Failed => theme.palette().danger,
-                _ => theme.palette().text,
-            }),
-        });
+        let label = text(*label)
+            .size(12)
+            .style(move |theme: &Theme| text::Style {
+                color: Some(match status {
+                    StepState::Waiting => theme.extended_palette().background.strongest.text,
+                    StepState::Failed => theme.palette().danger,
+                    _ => theme.palette().text,
+                }),
+            });
         list = list.push(row![marker, label].spacing(9).align_y(Alignment::Center));
     }
     list.into()
@@ -803,16 +996,18 @@ pub fn hold_button<'a>(
     let now = Instant::now();
     if reduce_motion {
         let armed = ui_state.is_armed(key, now);
-        return design::button(text(if armed { "Click again to confirm" } else { label }))
-            .style(if armed {
-                design::primary
-            } else {
-                design::secondary
-            })
-            .on_press_maybe(
-                enabled.then(|| ui_arm(key, action)),
-            )
-            .into();
+        return design::button(text(if armed {
+            "Click again to confirm"
+        } else {
+            label
+        }))
+        .style(if armed {
+            design::primary
+        } else {
+            design::secondary
+        })
+        .on_press_maybe(enabled.then(|| ui_arm(key, action)))
+        .into();
     }
     let progress = ui_state.hold_progress(key, now);
     let holding = progress > 0.0;
@@ -892,20 +1087,12 @@ pub fn bento_tile<'a>(
     content: impl Into<Element<'a, Message>>,
     portion: u16,
 ) -> Element<'a, Message> {
-    container(
-        column![
-            text(title)
-                .size(11)
-                .style(design::muted),
-            content.into()
-        ]
-        .spacing(8),
-    )
-    .padding(14)
-    .width(Length::FillPortion(portion))
-    .height(Fill)
-    .style(design::panel)
-    .into()
+    container(column![text(title).size(11).style(design::muted), content.into()].spacing(8))
+        .padding(14)
+        .width(Length::FillPortion(portion))
+        .height(Fill)
+        .style(design::panel)
+        .into()
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,13 +1211,17 @@ pub fn segmented<'a>(
         let active = index == selected;
         buttons = buttons.push(
             iced::widget::button(
-                container(text(label).size(12).style(move |theme: &Theme| text::Style {
-                    color: Some(if active {
-                        theme.extended_palette().primary.base.text
-                    } else {
-                        theme.palette().text
-                    }),
-                }))
+                container(
+                    text(label)
+                        .size(12)
+                        .style(move |theme: &Theme| text::Style {
+                            color: Some(if active {
+                                theme.extended_palette().primary.base.text
+                            } else {
+                                theme.palette().text
+                            }),
+                        }),
+                )
                 .center_x(Fill)
                 .center_y(Fill),
             )
@@ -1113,7 +1304,11 @@ pub fn compare_slider<'a>(
 
 /// Layer the drop feedback over `base`: dashed border plus a label saying
 /// what the drop will do (or why it is refused).
-pub fn drop_zone<'a>(base: Element<'a, Message>, label: String, refused: bool) -> Element<'a, Message> {
+pub fn drop_zone<'a>(
+    base: Element<'a, Message>,
+    label: String,
+    refused: bool,
+) -> Element<'a, Message> {
     let tone = if refused { Tone::Danger } else { Tone::Info };
     let message = container(
         row![
@@ -1131,7 +1326,9 @@ pub fn drop_zone<'a>(base: Element<'a, Message>, label: String, refused: bool) -
     });
     iced::widget::stack![
         base,
-        iced::widget::canvas(crate::fx::DropZone { refused }).width(Fill).height(Fill),
+        iced::widget::canvas(crate::fx::DropZone { refused })
+            .width(Fill)
+            .height(Fill),
         container(message).center(Fill),
     ]
     .into()
@@ -1165,16 +1362,20 @@ pub fn sort_header<'a>(
         Some((active, false)) if active == column => " ▼",
         _ => "",
     };
-    iced::widget::button(text(format!("{label}{arrow}")).size(10).style(design::muted))
-        .padding([2, 0])
-        .width(width)
-        .style(|theme, status| {
-            let mut style = design::text_button(theme, status);
-            style.background = None;
-            style
-        })
-        .on_press(message)
-        .into()
+    iced::widget::button(
+        text(format!("{label}{arrow}"))
+            .size(10)
+            .style(design::muted),
+    )
+    .padding([2, 0])
+    .width(width)
+    .style(|theme, status| {
+        let mut style = design::text_button(theme, status);
+        style.background = None;
+        style
+    })
+    .on_press(message)
+    .into()
 }
 
 // ---------------------------------------------------------------------------
@@ -1220,6 +1421,259 @@ pub fn chips<'a>(
         .width(Length::Fixed(220.0));
     let _ = query;
     line.push(picker).wrap().into()
+}
+
+// ---------------------------------------------------------------------------
+// Drag-to-reorder list
+// ---------------------------------------------------------------------------
+
+/// Rows you can drag (grip ⠿) or move with ↑/↓ buttons; Alt+↑/↓ moves the
+/// last touched row. While dragging, rows preview the new order and an
+/// accent line eases to the drop slot. `make(from, to)` builds the message
+/// that persists the move.
+pub fn reorder_list<'a>(
+    ui_state: &UiState,
+    list: &'static str,
+    rows: Vec<Element<'a, Message>>,
+    make: fn(usize, usize) -> Message,
+) -> Element<'a, Message> {
+    let count = rows.len();
+    let drag = ui_state.reorder_state(list, Instant::now());
+    let mut slots: Vec<Option<Element<'a, Message>>> = rows.into_iter().map(Some).collect();
+    // Preview order: the dragged row sits at its target slot.
+    let mut order: Vec<usize> = (0..count).collect();
+    if let Some((from, target, _)) = drag {
+        let target = target.min(count.saturating_sub(1));
+        let moved = order.remove(from.min(count.saturating_sub(1)));
+        order.insert(target, moved);
+    }
+    let mut column = column![].spacing(0);
+    for (position, index) in order.into_iter().enumerate() {
+        let content = slots[index].take().expect("each row used once");
+        let dragged = drag.is_some_and(|(from, _, _)| from == index);
+        let grip = mouse_area(
+            container(text("⠿").size(14).style(design::muted))
+                .center_y(Fill)
+                .padding([0, 6]),
+        )
+        .on_press(ui(UiMsg::ReorderGrab(list, index, make)))
+        .interaction(iced::mouse::Interaction::Grab);
+        let arrows = row![
+            design::button(text("↑").size(11))
+                .padding([1, 6])
+                .style(design::text_button)
+                .on_press_maybe((index > 0).then(|| make(index, index - 1))),
+            design::button(text("↓").size(11))
+                .padding([1, 6])
+                .style(design::text_button)
+                .on_press_maybe((index + 1 < count).then(|| make(index, index + 1))),
+        ];
+        let line = container(
+            row![grip, container(content).width(Fill), arrows]
+                .spacing(6)
+                .align_y(Alignment::Center)
+                .height(Fill),
+        )
+        .height(REORDER_ROW)
+        .style(move |theme: &Theme| container::Style {
+            background: Some(Background::Color(if dragged {
+                design::selection(theme)
+            } else if position % 2 == 0 {
+                design::surface(theme)
+            } else {
+                design::field(theme)
+            })),
+            border: Border {
+                color: if dragged {
+                    theme.palette().primary
+                } else {
+                    iced::Color::TRANSPARENT
+                },
+                width: if dragged { 1.0 } else { 0.0 },
+                radius: design::radius(theme, Radius::Small).into(),
+            },
+            ..container::Style::default()
+        });
+        column = column.push(line);
+    }
+    let mut layers = iced::widget::stack![column];
+    if let Some((_, _, indicator)) = drag {
+        layers = layers.push(column![
+            space().height(Length::Fixed((indicator * REORDER_ROW - 1.0).max(0.0))),
+            container(space().height(2).width(Fill)).style(|theme: &Theme| container::Style {
+                background: Some(Background::Color(theme.palette().primary)),
+                ..container::Style::default()
+            }),
+        ]);
+    }
+    mouse_area(layers)
+        .on_move(move |point| ui(UiMsg::ReorderMove(list, point.y)))
+        .on_release(ui(UiMsg::ReorderDrop(list)))
+        .into()
+}
+
+// ---------------------------------------------------------------------------
+// Accordion / disclosure
+// ---------------------------------------------------------------------------
+
+/// A header with a rotating chevron; the body grows open inside a clipped
+/// container and shrinks closed before it is removed.
+pub fn disclosure<'a>(
+    ui_state: &UiState,
+    key: &str,
+    title: impl Into<Element<'a, Message>>,
+    open: bool,
+    toggle: Message,
+    body: impl FnOnce() -> Element<'a, Message>,
+) -> Element<'a, Message> {
+    let now = Instant::now();
+    let tween = ui_state.disclosures.get(key);
+    let value = match tween {
+        Some(tween) if tween.to == if open { 1.0 } else { 0.0 } => tween.value(now),
+        _ => {
+            if open {
+                1.0
+            } else {
+                0.0
+            }
+        }
+    };
+    let animating = tween.is_some_and(|tween| tween.is_running(now));
+    let header = iced::widget::button(
+        row![chevron(value), title.into()]
+            .spacing(10)
+            .align_y(Alignment::Center),
+    )
+    .width(Fill)
+    .style(design::secondary)
+    .on_press(ui(UiMsg::Disclose(key.to_owned(), !open, Box::new(toggle))));
+    let mut column = column![header].spacing(11);
+    if value > 0.001 {
+        let content = container(body()).width(Fill);
+        column = column.push(if animating {
+            content.max_height(DISCLOSE_MAX * value).clip(true)
+        } else {
+            content
+        });
+    }
+    column.into()
+}
+
+// ---------------------------------------------------------------------------
+// Popover form
+// ---------------------------------------------------------------------------
+
+pub fn popover_input_id(id: &str) -> iced::widget::Id {
+    iced::widget::Id::from(format!("popover-{id}"))
+}
+
+/// A trigger button that morphs into a small inline form (text field +
+/// Save/Cancel). Enter saves, Esc or Cancel closes.
+#[allow(clippy::too_many_arguments)]
+pub fn popover_form<'a>(
+    ui_state: &UiState,
+    id: &'static str,
+    trigger: &'a str,
+    placeholder: &'a str,
+    value: &'a str,
+    on_input: fn(String) -> Message,
+    save: Option<Message>,
+) -> Element<'a, Message> {
+    if ui_state.popover != Some(id) {
+        return design::button(trigger)
+            .style(design::secondary)
+            .on_press(ui(UiMsg::Popover(Some(id))))
+            .into();
+    }
+    let save_message = save.map(|message| ui(UiMsg::PopoverSave(Box::new(message))));
+    let mut input = design::text_input(placeholder, value)
+        .id(popover_input_id(id))
+        .on_input(on_input)
+        .width(Length::Fixed(240.0));
+    if let Some(message) = save_message.clone() {
+        input = input.on_submit(message);
+    }
+    container(
+        row![
+            input,
+            design::button("Save")
+                .style(design::primary)
+                .on_press_maybe(save_message),
+            design::button("Cancel")
+                .style(design::text_button)
+                .on_press(ui(UiMsg::Popover(None))),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .padding(6)
+    .style(|theme: &Theme| {
+        let mut style = design::panel(theme);
+        style.border.color = theme.palette().primary;
+        style.shadow = iced::Shadow {
+            color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 12.0,
+        };
+        style
+    })
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// Edge fades
+// ---------------------------------------------------------------------------
+
+/// Gradient strip from the surface colour to transparent. `top` = opaque
+/// at the top edge. (iced's angle 0 runs bottom → top.)
+fn edge_fade<'a>(top: bool) -> Element<'a, Message> {
+    container(space().height(22).width(Fill))
+        .width(Fill)
+        .style(move |theme: &Theme| {
+            let solid = design::surface(theme);
+            let clear = design::with_alpha(solid, 0.0);
+            let gradient =
+                iced::gradient::Linear::new(if top { 0.0 } else { std::f32::consts::PI })
+                    .add_stop(0.0, clear)
+                    .add_stop(1.0, solid);
+            container::Style {
+                background: Some(Background::Gradient(gradient.into())),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// A vertical scrollable with soft fades over its edges: the top fade only
+/// once scrolled down, the bottom fade until the end is reached. `long`
+/// shows the bottom fade before the first scroll event for lists that are
+/// known to overflow.
+pub fn faded_scroll<'a>(
+    ui_state: &UiState,
+    list: &'static str,
+    content: impl Into<Element<'a, Message>>,
+    long: bool,
+) -> Element<'a, Message> {
+    let (offset, overflows) = ui_state.scrolls.get(list).copied().unwrap_or((0.0, long));
+    let scroll = iced::widget::scrollable(content)
+        .height(Fill)
+        .width(Fill)
+        .on_scroll(move |viewport| {
+            let overflows = viewport.content_bounds().height > viewport.bounds().height + 1.0;
+            ui(UiMsg::Scrolled(
+                list,
+                viewport.relative_offset().y,
+                overflows,
+            ))
+        });
+    let mut layers = iced::widget::stack![scroll];
+    if overflows && offset > 0.01 {
+        layers = layers.push(column![edge_fade(true)]);
+    }
+    if overflows && offset < 0.99 {
+        layers = layers.push(column![space().height(Fill), edge_fade(false)]);
+    }
+    layers.into()
 }
 
 // ---------------------------------------------------------------------------
@@ -1273,9 +1727,13 @@ impl BadgeKind {
 
 /// Small pill with a faint fill and coloured text, following the theme.
 pub fn badge<'a>(kind: BadgeKind, label: impl text::IntoFragment<'a>) -> Element<'a, Message> {
-    container(text(label).size(10).style(move |theme: &Theme| text::Style {
-        color: Some(kind.color(theme)),
-    }))
+    container(
+        text(label)
+            .size(10)
+            .style(move |theme: &Theme| text::Style {
+                color: Some(kind.color(theme)),
+            }),
+    )
     .padding([2, 8])
     .style(move |theme: &Theme| {
         let color = kind.color(theme);
@@ -1323,7 +1781,9 @@ pub fn chevron<'a>(turn: f32) -> Element<'a, Message> {
         .width(14)
         .height(14)
         .style(design::icon)
-        .rotation(iced::Radians(turn.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2))
+        .rotation(iced::Radians(
+            turn.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2,
+        ))
         .into()
 }
 
@@ -1369,10 +1829,7 @@ pub fn dock<'a>(
         let scale = dock_scale(cursor, center, reduce_motion);
         let size = BASE * scale;
         let active = item.active;
-        let icon = svg(item.icon)
-            .width(size)
-            .height(size)
-            .style(design::icon);
+        let icon = svg(item.icon).width(size).height(size).style(design::icon);
         let button = iced::widget::button(icon)
             .padding(4)
             .style(move |theme, status| design::rail(theme, status, active))
@@ -1390,9 +1847,7 @@ pub fn dock<'a>(
             .align_bottom(BASE * 1.45 + 10.0),
         );
     }
-    let shell = container(bar)
-        .padding([4, 8])
-        .style(design::pill);
+    let shell = container(bar).padding([4, 8]).style(design::pill);
     mouse_area(shell)
         .on_move(move |point| ui(UiMsg::DockMove(id, point.x)))
         .on_exit(ui(UiMsg::DockExit(id)))
@@ -1565,6 +2020,18 @@ mod tests {
             assert!((0.35..=0.76).contains(&value));
         }
         assert_eq!(pulse(0.3, true), pulse(0.9, true));
+    }
+
+    #[test]
+    fn scramble_resolves_left_to_right_and_finishes_exact() {
+        let title = "Asset Library";
+        let early = scramble(title, Duration::from_millis(5));
+        assert_eq!(early.chars().count(), title.chars().count());
+        assert_ne!(early, title);
+        assert_eq!(early.chars().nth(5), Some(' '));
+        assert_eq!(scramble(title, SCRAMBLE_TOTAL), title);
+        let mid = scramble(title, SCRAMBLE_TOTAL / 2);
+        assert!(mid.starts_with("Ass"));
     }
 
     #[test]

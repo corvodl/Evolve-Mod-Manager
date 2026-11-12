@@ -975,6 +975,36 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     row![viewport, inspector].spacing(8).height(Fill).into()
 }
 
+/// Saved-edit history as a timeline: redoable (undone) steps on top in a
+/// muted tone, then the undo stack newest first.
+fn undo_history(state: &State) -> Element<'_, Message> {
+    let mut items = Vec::new();
+    for revision in state.level_committed_redo.iter().rev().take(4) {
+        items.push(crate::ui_kit::TimelineItem {
+            title: revision.member().to_owned(),
+            meta: format!("{} · undone", revision.target()),
+            body: None,
+            tone: Some(crate::design::Tone::Warning),
+        });
+    }
+    for (index, revision) in state.level_committed_undo.iter().rev().take(8).enumerate() {
+        items.push(crate::ui_kit::TimelineItem {
+            title: revision.member().to_owned(),
+            meta: if index == 0 {
+                format!("{} · latest", revision.target())
+            } else {
+                revision.target().to_owned()
+            },
+            body: None,
+            tone: Some(crate::design::Tone::Success),
+        });
+    }
+    if items.is_empty() {
+        return iced::widget::space().height(0).into();
+    }
+    crate::ui_kit::timeline(items)
+}
+
 #[cfg(test)]
 mod editing_tests {
     use super::*;
@@ -1025,34 +1055,4 @@ mod editing_tests {
         assert_eq!(local.quaternion[0], local.quaternion[1]);
         assert_eq!(local.position, [1., 2., 3.]);
     }
-}
-
-/// Saved-edit history as a timeline: redoable (undone) steps on top in a
-/// muted tone, then the undo stack newest first.
-fn undo_history(state: &State) -> Element<'_, Message> {
-    let mut items = Vec::new();
-    for revision in state.level_committed_redo.iter().rev().take(4) {
-        items.push(crate::ui_kit::TimelineItem {
-            title: revision.member().to_owned(),
-            meta: format!("{} · undone", revision.target()),
-            body: None,
-            tone: Some(crate::design::Tone::Warning),
-        });
-    }
-    for (index, revision) in state.level_committed_undo.iter().rev().take(8).enumerate() {
-        items.push(crate::ui_kit::TimelineItem {
-            title: revision.member().to_owned(),
-            meta: if index == 0 {
-                format!("{} · latest", revision.target())
-            } else {
-                revision.target().to_owned()
-            },
-            body: None,
-            tone: Some(crate::design::Tone::Success),
-        });
-    }
-    if items.is_empty() {
-        return iced::widget::space().height(0).into();
-    }
-    crate::ui_kit::timeline(items)
 }

@@ -1566,9 +1566,13 @@ fn text_viewport(state: &State) -> Element<'_, Message> {
             let (saving, saved_at) = state.ui.save_info("text");
             crate::ui_kit::save_status(doc.dirty(), saving, saved_at)
         },
-        design::button(if doc.show_diff { "Edit" } else { "Show changes" })
-            .style(design::secondary)
-            .on_press(Message::TextEditorToggleDiff),
+        design::button(if doc.show_diff {
+            "Edit"
+        } else {
+            "Show changes"
+        })
+        .style(design::secondary)
+        .on_press(Message::TextEditorToggleDiff),
         design::button("Save")
             .style(design::primary)
             .on_press_maybe(
@@ -1621,6 +1625,9 @@ fn text_viewport(state: &State) -> Element<'_, Message> {
 fn viewport(state: &State) -> Element<'_, Message> {
     if state.text_document.is_some() {
         return text_viewport(state);
+    }
+    if state.gallery.open {
+        return crate::gallery::view(state);
     }
     if state.gfx_active {
         return gfx_viewport(state);
@@ -1715,12 +1722,12 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 .into(),
         };
         container(body)
-        .center(Fill)
-        .style(|theme| container::Style {
-            background: Some(Background::Color(design::field(theme))),
-            ..container::Style::default()
-        })
-        .into()
+            .center(Fill)
+            .style(|theme| container::Style {
+                background: Some(Background::Color(design::field(theme))),
+                ..container::Style::default()
+            })
+            .into()
     } else {
         container(
             column![
@@ -1746,24 +1753,66 @@ fn viewport(state: &State) -> Element<'_, Message> {
         &state.ui,
         "viewer",
         vec![
-            dock_item(crate::icons::frame_all(), "Frame all", Message::ViewerResetCamera, false),
-            dock_item(crate::icons::view_front(), "Front view", Message::ViewerCameraPreset("Front"), false),
-            dock_item(crate::icons::view_right(), "Right view", Message::ViewerCameraPreset("Right"), false),
-            dock_item(crate::icons::view_top(), "Top view", Message::ViewerCameraPreset("Top"), false),
-            dock_item(crate::icons::view_iso(), "Isometric view", Message::ViewerCameraPreset("Isometric"), false),
+            dock_item(
+                crate::icons::frame_all(),
+                "Frame all",
+                Message::ViewerResetCamera,
+                false,
+            ),
+            dock_item(
+                crate::icons::view_front(),
+                "Front view",
+                Message::ViewerCameraPreset("Front"),
+                false,
+            ),
+            dock_item(
+                crate::icons::view_right(),
+                "Right view",
+                Message::ViewerCameraPreset("Right"),
+                false,
+            ),
+            dock_item(
+                crate::icons::view_top(),
+                "Top view",
+                Message::ViewerCameraPreset("Top"),
+                false,
+            ),
+            dock_item(
+                crate::icons::view_iso(),
+                "Isometric view",
+                Message::ViewerCameraPreset("Isometric"),
+                false,
+            ),
             dock_item(
                 crate::icons::wireframe(),
-                if state.viewer_wireframe { "Shaded display" } else { "Wireframe display" },
+                if state.viewer_wireframe {
+                    "Shaded display"
+                } else {
+                    "Wireframe display"
+                },
                 Message::ViewerToggleWireframe,
                 state.viewer_wireframe,
             ),
-            dock_item(crate::icons::zoom_out(), "Zoom out", Message::ViewerZoomWheel(-2.0), false),
-            dock_item(crate::icons::zoom_in(), "Zoom in", Message::ViewerZoomWheel(2.0), false),
+            dock_item(
+                crate::icons::zoom_out(),
+                "Zoom out",
+                Message::ViewerZoomWheel(-2.0),
+                false,
+            ),
+            dock_item(
+                crate::icons::zoom_in(),
+                "Zoom in",
+                Message::ViewerZoomWheel(2.0),
+                false,
+            ),
         ],
         state.preferences.reduce_motion,
     );
     let toolbar = row![
         dock,
+        design::button(if state.gallery.open { "Viewport" } else { "Texture gallery" })
+            .style(design::secondary)
+            .on_press(Message::Gallery(crate::gallery::Msg::Toggle)),
         tooltip(
             design::button(if state.viewer_full_textures {
                 "Textures: Full quality"
@@ -2149,7 +2198,8 @@ fn explorer(state: &State) -> Element<'_, Message> {
     let now = std::time::Instant::now();
     for entry in state.viewer_rows.iter().cloned() {
         // Indent guides plus an eased chevron replace the old ▸/▾ glyphs.
-        let open = !(state.viewer_collapsed.contains(&entry.path) && state.viewer_search.is_empty());
+        let open =
+            !(state.viewer_collapsed.contains(&entry.path) && state.viewer_search.is_empty());
         let lead: Element<'_, Message> = if entry.directory {
             crate::ui_kit::chevron(state.ui.folder_turn(&entry.path, open, now))
         } else {
@@ -2262,7 +2312,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
                 })
                 .size(11)
                 .style(design::muted),
-                scrollable(rows).height(Fill),
+                crate::ui_kit::faded_scroll(&state.ui, "viewer-files", rows, state.viewer_rows.len() > 18),
                 row![
                     design::button("◀ Previous").on_press_maybe(
                         (state.viewer_page > 0).then_some(Message::ViewerPreviousPage)
@@ -2703,6 +2753,32 @@ pub(super) fn preferences_view(state: &State) -> Element<'_, Message> {
         .into()
 }
 
+fn dock_item(
+    icon: svg::Handle,
+    label: &'static str,
+    message: Message,
+    active: bool,
+) -> crate::ui_kit::DockItem {
+    crate::ui_kit::DockItem {
+        icon,
+        label,
+        message: Some(message),
+        active,
+    }
+}
+
+/// The picked replacement as a displayable image (PNG/JPEG/WebP only;
+/// DDS replacements cannot be decoded by the preview widget).
+fn replacement_image(state: &State) -> Option<iced::widget::image::Handle> {
+    state.editor_replace_dialog?;
+    let path = std::path::Path::new(state.editor_replace_source.trim());
+    let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp") || !path.is_file() {
+        return None;
+    }
+    Some(iced::widget::image::Handle::from_path(path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2731,32 +2807,4 @@ mod tests {
         assert!(compact_source_name(&"x".repeat(140)).chars().count() <= 100);
         assert_eq!(compact_source_name(""), "No source selected");
     }
-}
-
-fn dock_item(
-    icon: svg::Handle,
-    label: &'static str,
-    message: Message,
-    active: bool,
-) -> crate::ui_kit::DockItem {
-    crate::ui_kit::DockItem {
-        icon,
-        label,
-        message: Some(message),
-        active,
-    }
-}
-
-/// The picked replacement as a displayable image (PNG/JPEG/WebP only;
-/// DDS replacements cannot be decoded by the preview widget).
-fn replacement_image(state: &State) -> Option<iced::widget::image::Handle> {
-    if state.editor_replace_dialog.is_none() {
-        return None;
-    }
-    let path = std::path::Path::new(state.editor_replace_source.trim());
-    let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
-    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp") || !path.is_file() {
-        return None;
-    }
-    Some(iced::widget::image::Handle::from_path(path))
 }

@@ -177,7 +177,10 @@ fn contain(renderer: &Renderer, handle: &iced::widget::image::Handle, size: Size
     let scale = (size.width / image.width).min(size.height / image.height);
     let fitted = Size::new(image.width * scale, image.height * scale);
     Rectangle::new(
-        Point::new((size.width - fitted.width) / 2.0, (size.height - fitted.height) / 2.0),
+        Point::new(
+            (size.width - fitted.width) / 2.0,
+            (size.height - fitted.height) / 2.0,
+        ),
         fitted,
     )
 }
@@ -258,7 +261,11 @@ impl canvas::Program<Message> for ImageCompare {
         });
         for (label, x, align) in [
             ("Original", 10.0, iced::alignment::Horizontal::Left),
-            ("Replacement", size.width - 10.0, iced::alignment::Horizontal::Right),
+            (
+                "Replacement",
+                size.width - 10.0,
+                iced::alignment::Horizontal::Right,
+            ),
         ] {
             frame.fill_text(canvas::Text {
                 content: label.into(),
@@ -309,7 +316,11 @@ impl canvas::Program<Message> for DropZone {
         } else {
             theme.palette().primary
         };
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), design::with_alpha(color, 0.08));
+        frame.fill_rectangle(
+            Point::ORIGIN,
+            bounds.size(),
+            design::with_alpha(color, 0.08),
+        );
         let inset = 10.0;
         let radius = design::radius(theme, design::Radius::Large);
         frame.stroke(
@@ -326,6 +337,77 @@ impl canvas::Program<Message> for DropZone {
                 ..Stroke::default().with_width(2.0).with_color(color)
             },
         );
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Donut chart of storage buckets with the total in the middle. `sweep`
+/// (0..1) reveals the segments clockwise once after an analysis.
+pub struct RingChart {
+    pub values: Vec<u64>,
+    pub colors: Vec<Color>,
+    pub sweep: f32,
+    pub center: String,
+}
+
+impl canvas::Program<Message> for RingChart {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        use std::f32::consts::{FRAC_PI_2, TAU};
+        let mut frame = Frame::new(renderer, bounds.size());
+        let center = frame.center();
+        let radius = bounds.width.min(bounds.height) / 2.0 - 8.0;
+        let width = (radius * 0.28).max(6.0);
+        frame.stroke(
+            &Path::circle(center, radius),
+            Stroke::default()
+                .with_width(width)
+                .with_color(design::field(theme)),
+        );
+        let total: u64 = self.values.iter().sum();
+        if total > 0 {
+            let reveal = TAU * self.sweep.clamp(0.0, 1.0);
+            let mut start = -FRAC_PI_2;
+            for (value, color) in self.values.iter().zip(&self.colors) {
+                let span = TAU * (*value as f32 / total as f32);
+                let visible_end = (start + span).min(-FRAC_PI_2 + reveal);
+                if visible_end > start + 0.002 {
+                    let arc = Path::new(|builder| {
+                        builder.arc(canvas::path::Arc {
+                            center,
+                            radius,
+                            start_angle: iced::Radians(start),
+                            end_angle: iced::Radians(visible_end),
+                        });
+                    });
+                    frame.stroke(
+                        &arc,
+                        Stroke::default()
+                            .with_width(width)
+                            .with_color(*color)
+                            .with_line_cap(canvas::LineCap::Butt),
+                    );
+                }
+                start += span;
+            }
+        }
+        frame.fill_text(canvas::Text {
+            content: self.center.clone(),
+            position: center,
+            color: theme.palette().text,
+            size: 15.0.into(),
+            align_x: iced::alignment::Horizontal::Center.into(),
+            align_y: iced::alignment::Vertical::Center,
+            ..canvas::Text::default()
+        });
         vec![frame.into_geometry()]
     }
 }
@@ -358,10 +440,16 @@ impl canvas::Program<Message> for SwitchKnob {
             track,
         );
         frame.stroke(
-            &Path::rounded_rectangle(Point::new(0.5, 0.5), Size::new(bounds.width - 1.0, height - 1.0), radius.into()),
-            Stroke::default()
-                .with_width(1.0)
-                .with_color(design::mix(design::border(theme), theme.palette().primary, t)),
+            &Path::rounded_rectangle(
+                Point::new(0.5, 0.5),
+                Size::new(bounds.width - 1.0, height - 1.0),
+                radius.into(),
+            ),
+            Stroke::default().with_width(1.0).with_color(design::mix(
+                design::border(theme),
+                theme.palette().primary,
+                t,
+            )),
         );
         let knob = height - 6.0;
         let x = 3.0 + (bounds.width - knob - 6.0) * t;
@@ -400,7 +488,7 @@ pub fn ember(index: usize, time: f32) -> (f32, f32, f32, f32) {
     let phase = hash(seed * 3 + 2);
     let life = (time * speed + phase).fract();
     let x0 = hash(seed * 3 + 3);
-    let sway = (time * (0.3 + hash(seed * 7) * 0.5) + phase * 6.28).sin() * 0.025;
+    let sway = (time * (0.3 + hash(seed * 7) * 0.5) + phase * std::f32::consts::TAU).sin() * 0.025;
     let x = (x0 + sway).rem_euclid(1.0);
     let y = 1.05 - life * 1.15;
     let size = 0.8 + 2.0 * hash(seed * 5 + 4);
@@ -453,7 +541,10 @@ mod tests {
             assert!(point.y >= -0.01 && point.y <= 40.01, "{point:?}");
             // Away from the corner arcs every point lies on an edge.
             if (8.0..=192.0).contains(&point.x) {
-                assert!(point.y.abs() < 0.01 || (point.y - 40.0).abs() < 0.01, "{point:?}");
+                assert!(
+                    point.y.abs() < 0.01 || (point.y - 40.0).abs() < 0.01,
+                    "{point:?}"
+                );
             }
         }
         // Wraps around.

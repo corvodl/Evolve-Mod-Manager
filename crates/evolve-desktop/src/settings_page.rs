@@ -28,17 +28,17 @@ fn health_entry<'a>(title: &'static str, value: &str) -> Element<'a, Message> {
 }
 
 fn health_panel(state: &State) -> Element<'_, Message> {
-    let heading = design::button(if state.health_expanded {
-        "⌄ System Health   ·   On-demand diagnostics"
-    } else {
-        "› System Health   ·   On-demand diagnostics"
-    })
-    .on_press(Message::ToggleSystemHealth)
-    .style(design::secondary)
-    .width(Fill);
-    if !state.health_expanded {
-        return heading.into();
-    }
+    crate::ui_kit::disclosure(
+        &state.ui,
+        "settings:health",
+        text("System Health   ·   On-demand diagnostics"),
+        state.health_expanded,
+        Message::ToggleSystemHealth,
+        || health_body(state),
+    )
+}
+
+fn health_body(state: &State) -> Element<'_, Message> {
     let check = row![
         design::button(if state.health_checking {
             "Checking..."
@@ -53,7 +53,6 @@ fn health_panel(state: &State) -> Element<'_, Message> {
     .spacing(12);
     if let Some(result) = &state.health_report {
         column![
-            heading,
             text("Checks are opt-in. Firewall, registry, dumps and cleanup settings are never changed.")
                 .size(12).style(design::muted),
             check,
@@ -70,7 +69,6 @@ fn health_panel(state: &State) -> Element<'_, Message> {
         ].spacing(10).into()
     } else {
         column![
-            heading,
             text("Nothing is scanned while this panel is closed. Select Check System Health to run read-only checks.")
                 .size(12).style(design::muted),
             check,
@@ -272,7 +270,13 @@ fn storage(state: &State) -> Element<'_, Message> {
         );
     }
     // Bucket sizes count up to their new values when an analysis finishes.
-    const TICKERS: [&str; 5] = ["storage_0", "storage_1", "storage_2", "storage_3", "storage_4"];
+    const TICKERS: [&str; 5] = [
+        "storage_0",
+        "storage_1",
+        "storage_2",
+        "storage_3",
+        "storage_4",
+    ];
     // Legend order follows the sort header (size or name).
     let mut order: Vec<usize> = (0..labels.len()).collect();
     if let Some((column, ascending)) = state.storage_sort {
@@ -286,23 +290,36 @@ fn storage(state: &State) -> Element<'_, Message> {
         });
     }
     let mut legend = row![
-        crate::ui_kit::sort_header("NAME", "name", state.storage_sort, Message::SortBy("storage", "name"), Length::Shrink),
-        crate::ui_kit::sort_header("SIZE", "size", state.storage_sort, Message::SortBy("storage", "size"), Length::Shrink),
+        crate::ui_kit::sort_header(
+            "NAME",
+            "name",
+            state.storage_sort,
+            Message::SortBy("storage", "name"),
+            Length::Shrink
+        ),
+        crate::ui_kit::sort_header(
+            "SIZE",
+            "size",
+            state.storage_sort,
+            Message::SortBy("storage", "size"),
+            Length::Shrink
+        ),
     ]
     .spacing(15);
     for i in order {
         let label = &labels[i];
-        legend = legend.push(
-            text(format!(
-                "{}: {}",
-                label,
-                state.storage_usage.as_ref().map_or("—".into(), |_| mib(
-                    crate::ui_kit::ticked(&state.ui, TICKERS[i], buckets[i] as f64) as u64
+        legend =
+            legend.push(
+                text(format!(
+                    "{}: {}",
+                    label,
+                    state.storage_usage.as_ref().map_or("—".into(), |_| mib(
+                        crate::ui_kit::ticked(&state.ui, TICKERS[i], buckets[i] as f64) as u64
+                    ))
                 ))
-            ))
-            .size(11)
-            .color(colors[i]),
-        );
+                .size(11)
+                .color(colors[i]),
+            );
     }
     let total_label = state.storage_usage.as_ref().map(|_| {
         crate::ui_kit::format_bytes(crate::ui_kit::ticked(
@@ -328,12 +345,23 @@ fn storage(state: &State) -> Element<'_, Message> {
         container(column![
             row![
                 text("STORAGE BREAKDOWN").size(12),
-                text(total_label.map(|total| format!("{total} total")).unwrap_or_default()).size(12),
+                text(total_label.clone().map(|total| format!("{total} total")).unwrap_or_default()).size(12),
                 space().width(Fill),
                 text(if state.storage_analyzing { "Checking storage…" } else if state.storage_usage.is_some() { "Scan complete" } else { "Not yet analyzed" }).size(11).style(design::muted)
             ],
-            strip,
-            legend,
+            row![
+                iced::widget::canvas(crate::fx::RingChart {
+                    values: buckets.to_vec(),
+                    colors: colors.to_vec(),
+                    sweep: state.ui.ring_sweep(std::time::Instant::now()),
+                    center: total_label.clone().unwrap_or_else(|| "—".into()),
+                })
+                .width(Length::Fixed(150.0))
+                .height(Length::Fixed(150.0)),
+                column![strip, legend.wrap()].spacing(10).width(Fill),
+            ]
+            .spacing(16)
+            .align_y(iced::Center),
             row![
                 design::button("Analyze Storage").on_press_maybe((!state.storage_analyzing && !state.busy).then_some(Message::SettingsAnalyzeStorage)).style(design::secondary),
                 text(state.storage_usage.as_ref().map_or("No storage analysis yet.".to_owned(), |r| format!("{} files checked{}", r.files, if r.truncated { " • Scan limit reached; totals incomplete" } else { "" }))).size(11).style(design::muted)
@@ -342,9 +370,13 @@ fn storage(state: &State) -> Element<'_, Message> {
             background: Some(Background::Color(design::field(theme))),
             ..container::Style::default()
         }),
-        design::button(text(if state.settings_advanced_paths { "▾ Advanced folder paths" } else { "▸ Advanced folder paths" }))
-            .on_press(Message::SettingsToggleAdvancedPaths).style(design::text_button),
-        if state.settings_advanced_paths {
+        crate::ui_kit::disclosure(
+            &state.ui,
+            "settings:advanced-paths",
+            text("Advanced folder paths").size(13),
+            state.settings_advanced_paths,
+            Message::SettingsToggleAdvancedPaths,
+            || -> Element<'_, Message> {
             column![
                 text("Future GameSets location").size(12),
                 design::text_input("GameSets folder", &state.preferences.game_storage_root).on_input(Message::PreferenceGameStorage),
@@ -359,9 +391,8 @@ fn storage(state: &State) -> Element<'_, Message> {
                 design::text_input("Current workspace", &state.preferences.current_workspace).on_input(Message::PreferenceWorkspace),
                 text("Paths are saved only when you select Save Settings; no data is automatically moved.").size(11).style(design::muted),
             ].spacing(6).into()
-        } else {
-            Element::<Message>::from(space().height(Length::Fixed(1.0)))
-        },
+            },
+        ),
         row![
             design::button("Set Up Manager").on_press(Message::StartAutomaticSetup).style(design::primary).width(Fill),
             design::button("Check Setup").on_press(Message::StartStageStatus).style(design::secondary).width(Fill),
@@ -894,28 +925,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn system_health_is_a_selectable_settings_tab() {
-        assert!(Tab::ALL.contains(&Tab::SystemHealth));
-        assert_eq!(Tab::SystemHealth.title(), "System Health");
-    }
-
-    #[test]
-    fn shared_and_animation_archive_readiness_counts_unique_exact_names() {
-        let (shared, animations) = required_reference_counts([
-            "characters_monsters_shared.pak".to_owned(),
-            "CHARACTERS_MONSTERS_SHARED.PAK".to_owned(),
-            "animationscaf.pak".to_owned(),
-            "animationsconfig.pak".to_owned(),
-            "fake_characters_monsters_shared.pak".to_owned(),
-        ]);
-        assert_eq!((shared, animations), (1, 2));
-    }
-}
-
 /// Swatch cards: Default, the curated presets, and any colours a preset
 /// parked. Each card previews background, surface, accent and text.
 fn theme_presets(state: &State) -> Element<'_, Message> {
@@ -941,7 +950,10 @@ fn theme_presets(state: &State) -> Element<'_, Message> {
     }
     if let Some(saved) = state.preferences.theme_presets.get("Saved custom colours") {
         let pick = |role: &str, fallback: Color| {
-            saved.get(role).and_then(|value| design::hex(value)).unwrap_or(fallback)
+            saved
+                .get(role)
+                .and_then(|value| design::hex(value))
+                .unwrap_or(fallback)
         };
         let base = design::default_swatch(light);
         cards = cards.push(swatch_card(
@@ -959,7 +971,9 @@ fn theme_presets(state: &State) -> Element<'_, Message> {
     }
     iced::widget::scrollable(cards)
         .direction(iced::widget::scrollable::Direction::Horizontal(
-            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+            iced::widget::scrollable::Scrollbar::new()
+                .width(4)
+                .scroller_width(4),
         ))
         .into()
 }
@@ -1028,4 +1042,26 @@ fn swatch_card<'a>(
     })
     .on_press_maybe(message)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn system_health_is_a_selectable_settings_tab() {
+        assert!(Tab::ALL.contains(&Tab::SystemHealth));
+        assert_eq!(Tab::SystemHealth.title(), "System Health");
+    }
+
+    #[test]
+    fn shared_and_animation_archive_readiness_counts_unique_exact_names() {
+        let (shared, animations) = required_reference_counts([
+            "characters_monsters_shared.pak".to_owned(),
+            "CHARACTERS_MONSTERS_SHARED.PAK".to_owned(),
+            "animationscaf.pak".to_owned(),
+            "animationsconfig.pak".to_owned(),
+            "fake_characters_monsters_shared.pak".to_owned(),
+        ]);
+        assert_eq!((shared, animations), (1, 2));
+    }
 }

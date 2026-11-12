@@ -47,7 +47,12 @@ pub struct Command {
     pub message: Message,
 }
 
-fn command(group: &'static str, label: impl Into<String>, hint: impl Into<String>, message: Message) -> Command {
+fn command(
+    group: &'static str,
+    label: impl Into<String>,
+    hint: impl Into<String>,
+    message: Message,
+) -> Command {
     Command {
         group,
         label: label.into(),
@@ -76,18 +81,42 @@ pub fn commands(state: &State) -> Vec<Command> {
         ));
     }
     let actions: [(&str, &str, Message); 12] = [
-        ("Play with mods", "Build enabled mods and launch", Message::PlayWithMods),
-        ("Play without mods", "Regular client", Message::PlayWithoutMods),
+        (
+            "Play with mods",
+            "Build enabled mods and launch",
+            Message::PlayWithMods,
+        ),
+        (
+            "Play without mods",
+            "Regular client",
+            Message::PlayWithoutMods,
+        ),
         ("Build selected mod", "Modding", Message::ModdingBuild),
         ("Check for updates", "Updates", Message::CheckUpdates),
         ("Open Asset Viewer", "Window", Message::OpenViewer),
-        ("Open Level Editor", "Window", Message::OpenLevelEditorWindow),
+        (
+            "Open Level Editor",
+            "Window",
+            Message::OpenLevelEditorWindow,
+        ),
         ("Show activity", "Window", Message::ToggleActivity),
-        ("Analyze storage", "Settings › Storage", Message::SettingsAnalyzeStorage),
+        (
+            "Analyze storage",
+            "Settings › Storage",
+            Message::SettingsAnalyzeStorage,
+        ),
         ("Refresh news", "What's New", Message::RefreshNews),
         ("Refresh mod projects", "Modding", Message::ModdingRefresh),
-        ("Toggle light / dark", "Appearance", Message::PreferenceAppearance),
-        ("Toggle reduce motion", "Appearance", Message::PreferenceReduceMotion),
+        (
+            "Toggle light / dark",
+            "Appearance",
+            Message::PreferenceAppearance,
+        ),
+        (
+            "Toggle reduce motion",
+            "Appearance",
+            Message::PreferenceReduceMotion,
+        ),
     ];
     for (label, hint, message) in actions {
         list.push(command("Actions", label, hint, message));
@@ -97,7 +126,11 @@ pub fn commands(state: &State) -> Vec<Command> {
             list.push(command(
                 "Projects",
                 project.label.clone(),
-                if project.enabled { "Mod project · enabled" } else { "Mod project" },
+                if project.enabled {
+                    "Mod project · enabled"
+                } else {
+                    "Mod project"
+                },
                 Message::Sequence(vec![
                     Message::Navigate(Page::Files),
                     Message::ModdingSelectProject(index),
@@ -244,12 +277,15 @@ pub fn overlay<'a>(base: Element<'a, Message>, state: &'a State) -> Element<'a, 
         return base;
     }
     let found = results(state, &palette_state.query);
-    let input = design::text_input("Search pages, settings, projects, library and actions…", &palette_state.query)
-        .id(input_id())
-        .on_input(|value| palette(Msg::Query(value)))
-        .on_submit(palette(Msg::Submit))
-        .size(15)
-        .padding([11, 14]);
+    let input = design::text_input(
+        "Search pages, settings, projects, library and actions…",
+        &palette_state.query,
+    )
+    .id(input_id())
+    .on_input(|value| palette(Msg::Query(value)))
+    .on_submit(palette(Msg::Submit))
+    .size(15)
+    .padding([11, 14]);
     let mut rows = column![].spacing(2);
     if found.is_empty() {
         rows = rows.push(
@@ -287,9 +323,7 @@ pub fn overlay<'a>(base: Element<'a, Message>, state: &'a State) -> Element<'a, 
                 style
             })
             .on_press(palette(Msg::Run(index)));
-        rows = rows.push(
-            mouse_area(item).on_enter(palette(Msg::Hover(index))),
-        );
+        rows = rows.push(mouse_area(item).on_enter(palette(Msg::Hover(index))));
     }
     let footer = row![
         text("↑↓ move").size(10).style(design::muted),
@@ -299,43 +333,38 @@ pub fn overlay<'a>(base: Element<'a, Message>, state: &'a State) -> Element<'a, 
         text("Ctrl+K").size(10).style(design::muted),
     ]
     .spacing(14);
-    let card = container(
-        column![
-            input,
-            scrollable(rows).height(Length::Shrink),
-            footer
-        ]
-        .spacing(10),
-    )
-    .padding(12)
-    .width(Length::Fixed(600.0))
-    .max_height(520)
-    .style(|theme: &Theme| container::Style {
-        background: Some(Background::Color(design::surface(theme))),
-        border: Border {
-            color: design::border(theme),
-            width: 1.0,
-            radius: design::radius(theme, Radius::Large).into(),
-        },
-        shadow: iced::Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
-            offset: iced::Vector::new(0.0, 10.0),
-            blur_radius: 30.0,
-        },
-        ..container::Style::default()
-    });
+    let card =
+        container(column![input, scrollable(rows).height(Length::Shrink), footer].spacing(10))
+            .padding(12)
+            .width(Length::Fixed(600.0))
+            .max_height(520)
+            .style(|theme: &Theme| container::Style {
+                background: Some(Background::Color(design::surface(theme))),
+                border: Border {
+                    color: design::border(theme),
+                    width: 1.0,
+                    radius: design::radius(theme, Radius::Large).into(),
+                },
+                shadow: iced::Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+                    offset: iced::Vector::new(0.0, 10.0),
+                    blur_radius: 30.0,
+                },
+                ..container::Style::default()
+            });
     // Clicks on the card are captured by its widgets; clicks on the dimmed
     // backdrop close the palette.
-    let backdrop = mouse_area(
-        container(space())
-            .width(Fill)
-            .height(Fill)
-            .style(|_| container::Style {
-                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.42))),
-                ..container::Style::default()
-            }),
-    )
-    .on_press(palette(Msg::Close));
+    let backdrop =
+        mouse_area(
+            container(space())
+                .width(Fill)
+                .height(Fill)
+                .style(|_| container::Style {
+                    background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.42))),
+                    ..container::Style::default()
+                }),
+        )
+        .on_press(palette(Msg::Close));
     let layer = container(mouse_area(card).on_press(palette(Msg::Hover(palette_state.selected))))
         .width(Fill)
         .center_x(Fill)

@@ -4,8 +4,6 @@
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
 mod anim;
-mod color_picker;
-mod command_palette;
 mod assembly_materials;
 mod asset_cache;
 mod asset_library_page;
@@ -14,16 +12,18 @@ mod audio_tools;
 mod auto_resources;
 mod blender_install;
 mod client_version;
+mod color_picker;
+mod command_palette;
 mod crash_diagnostics;
 mod design;
-mod diff_view;
 mod developer_auth;
 mod developer_hotkeys;
+mod diff_view;
 mod direct_runtime;
 mod discord_presence;
 mod explorer_tree;
 mod fx;
-mod icons;
+mod gallery;
 mod gfx_bundled_tools;
 mod gfx_dependencies;
 mod gfx_editor;
@@ -40,6 +40,7 @@ mod gfx_menu_video;
 mod gfx_mode_images;
 mod gfx_tool_install;
 mod guided_modding;
+mod icons;
 mod initial_setup;
 mod launcher_bridge;
 mod level_atmosphere;
@@ -343,6 +344,7 @@ struct State {
     /// Shared component state: palette, holds, tickers, island, dock.
     ui: ui_kit::UiState,
     color_picker: color_picker::PickerState,
+    gallery: gallery::GalleryState,
     /// Sort orders for the library table, project list and storage legend.
     library_sort: ui_kit::Sort,
     modding_sort: ui_kit::Sort,
@@ -827,7 +829,10 @@ fn release_highlights(notes: &str, limit: usize) -> Vec<String> {
         .lines()
         .map(str::trim)
         .filter(|line| line.starts_with(['-', '*', '•']))
-        .map(|line| line.trim_start_matches(['-', '*', '•', ' ']).replace("**", ""))
+        .map(|line| {
+            line.trim_start_matches(['-', '*', '•', ' '])
+                .replace("**", "")
+        })
         .filter(|line| !line.is_empty())
         .take(limit)
         .collect()
@@ -864,8 +869,7 @@ fn ui_ambient_running(state: &State) -> bool {
     let embers = state.page == Some(Page::Home) && state.preferences.show_home_background;
     let beam = footer_is_working(state)
         && matches!(state.page, Some(Page::Files | Page::Home | Page::Settings));
-    let skeleton = news_loading(state)
-        && matches!(state.page, Some(Page::Home | Page::WhatsNew))
+    let skeleton = news_loading(state) && matches!(state.page, Some(Page::Home | Page::WhatsNew))
         || state.library_startup_loading && state.page == Some(Page::AssetLibrary);
     embers || beam || skeleton
 }
@@ -882,11 +886,15 @@ fn sync_tickers(state: &mut State) {
     let reduce = state.preferences.reduce_motion;
     if let Some(projects) = state.modding_projects.as_ref() {
         let enabled = projects.iter().filter(|project| project.enabled).count();
-        state.ui.set_ticker("enabled_mods", enabled as f64, now, reduce);
+        state
+            .ui
+            .set_ticker("enabled_mods", enabled as f64, now, reduce);
     }
     if let Some(usage) = state.storage_usage.as_ref() {
         let total: u64 = usage.buckets.iter().sum();
-        state.ui.set_ticker("storage_total", total as f64, now, reduce);
+        state
+            .ui
+            .set_ticker("storage_total", total as f64, now, reduce);
         for (index, bytes) in usage.buckets.iter().enumerate() {
             const KEYS: [&str; 5] = [
                 "storage_0",
@@ -901,7 +909,9 @@ fn sync_tickers(state: &mut State) {
     match state.library_import_progress.as_ref() {
         Some(progress) => {
             let files = progress.load(std::sync::atomic::Ordering::Relaxed);
-            state.ui.set_ticker("import_files", files as f64, now, reduce);
+            state
+                .ui
+                .set_ticker("import_files", files as f64, now, reduce);
         }
         None => state.ui.clear_ticker("import_files"),
     }
@@ -2809,6 +2819,9 @@ enum Message {
     OpenSettingsTab(settings_page::Tab),
     TextEditorToggleDiff,
     DismissIntro,
+    Gallery(gallery::Msg),
+    /// Move a mod within the selected profile: `(from, to)`.
+    ProfileModMove(usize, usize),
     /// Sort a table: `(table, column)`; clicking again flips direction.
     SortBy(&'static str, &'static str),
     LibraryChipPicked(String),
@@ -4457,7 +4470,8 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     }
     state.busy = true;
     state.busy_operation = Some(operation_label(&operation).to_owned());
-    state.toasts
+    state
+        .toasts
         .begin(operation_label(&operation), announces_success(&operation));
     state.activity_started = Some(std::time::Instant::now());
     if !matches!(&operation, Operation::BuildStaticCdf(..)) {
@@ -4850,14 +4864,18 @@ fn check_all_updates_task() -> Task<Message> {
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
-                [UpdateChannel::Stable, UpdateChannel::Beta, UpdateChannel::Nightly]
-                    .into_iter()
-                    .map(|channel| {
-                        let result = discover_update(channel, env!("CARGO_PKG_VERSION"))
-                            .map_err(|error| error.to_string());
-                        (channel, result)
-                    })
-                    .collect::<Vec<_>>()
+                [
+                    UpdateChannel::Stable,
+                    UpdateChannel::Beta,
+                    UpdateChannel::Nightly,
+                ]
+                .into_iter()
+                .map(|channel| {
+                    let result = discover_update(channel, env!("CARGO_PKG_VERSION"))
+                        .map_err(|error| error.to_string());
+                    (channel, result)
+                })
+                .collect::<Vec<_>>()
             })
             .await
             .unwrap_or_default()
@@ -5133,8 +5151,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 if hovered { 1.0 } else { 0.0 },
                 Instant::now(),
                 SIDEBAR_REVEAL_DURATION,
-                state.preferences.reduce_motion
-                    || state.preferences.ui_theme != "Evolve Legacy",
+                state.preferences.reduce_motion || state.preferences.ui_theme != "Evolve Legacy",
             );
             return Task::none();
         }
@@ -5257,6 +5274,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::Navigate(page) => {
+            if state.page != Some(page)
+                && state.preferences.ui_theme == "Evolve Legacy"
+                && !state.preferences.reduce_motion
+            {
+                state.ui.start_scramble(Instant::now());
+            }
             state.page = Some(page);
             let mut tasks = Vec::new();
             if page == Page::Home {
@@ -12414,7 +12437,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 // they can be restored from the "Saved custom colours" card.
                 if !prefs.appearance_colors.is_empty() {
                     let saved = std::mem::take(&mut prefs.appearance_colors);
-                    prefs.theme_presets.insert(SAVED_CUSTOM_COLOURS.into(), saved);
+                    prefs
+                        .theme_presets
+                        .insert(SAVED_CUSTOM_COLOURS.into(), saved);
                 }
                 prefs.theme_preset = preset.name.into();
                 prefs.corner_style = preset.corners.into();
@@ -12458,17 +12483,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 persist_preferences(state);
             }
         }
-        Message::SortBy(table, column) => {
-            match table {
-                "library" => {
-                    state.library_sort = ui_kit::next_sort(state.library_sort, column);
-                    refresh_library_matches(state);
-                }
-                "modding" => state.modding_sort = ui_kit::next_sort(state.modding_sort, column),
-                "storage" => state.storage_sort = ui_kit::next_sort(state.storage_sort, column),
-                _ => {}
+        Message::SortBy(table, column) => match table {
+            "library" => {
+                state.library_sort = ui_kit::next_sort(state.library_sort, column);
+                refresh_library_matches(state);
             }
-        }
+            "modding" => state.modding_sort = ui_kit::next_sort(state.modding_sort, column),
+            "storage" => state.storage_sort = ui_kit::next_sort(state.storage_sort, column),
+            _ => {}
+        },
         Message::LibraryChipPicked(chip) => {
             if !state.library_chips.contains(&chip) {
                 state.library_chips.push(chip);
@@ -12509,6 +12532,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.modding_chips.remove(index);
             }
         }
+        Message::ProfileModMove(from, to) => {
+            let stage = PathBuf::from(&state.preferences.stage);
+            let Some(mod_id) = state
+                .profile_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.profiles.iter().find(|p| p.id == state.profile_id))
+                .and_then(|profile| profile.mods.get(from))
+                .map(|item| item.id.clone())
+            else {
+                return Task::none();
+            };
+            // A small JSON rewrite; the catalog is re-read to show the
+            // persisted order rather than an optimistic one.
+            match evolve_core::reorder_profile_mod(&stage, &state.profile_id, &mod_id, to)
+                .and_then(|()| evolve_core::list_mod_profiles(&stage))
+            {
+                Ok(catalog) => {
+                    state.profile_catalog = Some(catalog);
+                    state.profile_feedback = "Profile order saved.".into();
+                }
+                Err(error) => state.profile_feedback = format!("Could not reorder: {error}"),
+            }
+        }
+        Message::Gallery(msg) => return gallery::update(state, msg),
         Message::DismissIntro => {
             state.preferences.last_seen_version = env!("CARGO_PKG_VERSION").into();
             persist_preferences(state);
@@ -14330,6 +14377,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         usage.files
                     );
                     state.storage_usage = Some(usage);
+                    let reduce = state.preferences.reduce_motion;
+                    state.ui.sweep_ring(Instant::now(), reduce);
                 }
                 Ok(Completed::Dependencies(graph)) => {
                     state.status = format!(
@@ -14644,6 +14693,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.input = inventory.root.clone();
                     state.viewer_search.clear();
                     state.inventory = Some(inventory);
+                    state.gallery.reset();
                     state.file_selection.clear();
                     state.pak = None;
                     state.signed_pak = None;
@@ -14660,6 +14710,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         inventory.entries.len()
                     );
                     state.inventory = Some(inventory);
+                    state.gallery.reset();
                     state.pak = None;
                     state.signed_pak = None;
                     state.texture = None;
@@ -16027,6 +16078,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.signed_pak = Some(info);
                     state.pak = None;
                     state.inventory = None;
+                    state.gallery.reset();
                     state.selected = None;
                     state.file_selection.clear();
                     refresh_viewer_rows(state);
@@ -16550,7 +16602,8 @@ fn view(state: &State) -> Element<'_, Message> {
                     ))
                     .width(23)
                     .height(23),
-                    text(page.title()).size(20)
+                    // Legacy titles resolve from random glyphs on page change.
+                    text(state.ui.scrambled(page.title(), Instant::now())).size(20)
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
@@ -16972,9 +17025,15 @@ fn view(state: &State) -> Element<'_, Message> {
                 .width(Fill),
             ui_kit::copy_button(&state.ui, "status", state.status.clone()),
             footer_progress,
-            text(format!("v{}", env!("CARGO_PKG_VERSION")))
-                .size(12)
-                .style(design::muted),
+            text(if state.preferences.ui_theme == "Evolve Legacy" {
+                state
+                    .ui
+                    .scrambled(&format!("v{}", env!("CARGO_PKG_VERSION")), Instant::now())
+            } else {
+                format!("v{}", env!("CARGO_PKG_VERSION"))
+            })
+            .size(12)
+            .style(design::muted),
         ]
         .spacing(12)
         .align_y(iced::Alignment::Center)
@@ -17371,8 +17430,8 @@ impl Desktop {
         match message {
             Message::Ui(ui_kit::UiMsg::Palette(msg)) => {
                 // Ctrl+K from a secondary window brings the main window up.
-                let raise = matches!(msg, command_palette::Msg::Toggle)
-                    && !self.state.ui.palette.open;
+                let raise =
+                    matches!(msg, command_palette::Msg::Toggle) && !self.state.ui.palette.open;
                 let (task, next) = command_palette::update(&mut self.state, msg);
                 let mut tasks = vec![task];
                 if raise {
@@ -17383,6 +17442,18 @@ impl Desktop {
                 }
                 Task::batch(tasks)
             }
+            Message::Ui(ui_kit::UiMsg::CompareNudge(delta))
+                if self.state.gallery.lightbox.is_some() =>
+            {
+                gallery::update(
+                    &mut self.state,
+                    gallery::Msg::Step(if delta < 0.0 { -1 } else { 1 }),
+                )
+            }
+            Message::Ui(ui_kit::UiMsg::Popover(Some(id))) => {
+                self.state.ui.popover = Some(id);
+                iced::widget::operation::focus(ui_kit::popover_input_id(id))
+            }
             Message::Ui(msg) => {
                 let reduce = self.state.preferences.reduce_motion;
                 match ui_kit::update(&mut self.state.ui, msg, reduce) {
@@ -17390,9 +17461,12 @@ impl Desktop {
                     None => Task::none(),
                 }
             }
-            Message::Sequence(messages) => {
-                Task::batch(messages.into_iter().map(|next| self.update(next)).collect::<Vec<_>>())
-            }
+            Message::Sequence(messages) => Task::batch(
+                messages
+                    .into_iter()
+                    .map(|next| self.update(next))
+                    .collect::<Vec<_>>(),
+            ),
             Message::AnimationFrame => {
                 let task = update(&mut self.state, Message::AnimationFrame);
                 // A completed hold-to-confirm fires its action here so it is
@@ -17450,8 +17524,11 @@ impl Desktop {
                 )
             }
             Message::ViewportEscape(id) => {
-                if self.state.ui.palette.open {
-                    self.state.ui.palette.open = false;
+                // Esc closes the topmost transient layer first.
+                let closed_layer = std::mem::take(&mut self.state.ui.palette.open)
+                    || self.state.ui.popover.take().is_some()
+                    || self.state.gallery.lightbox.take().is_some();
+                if closed_layer {
                     Task::none()
                 } else if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
                     self.update(Message::ToggleLevelViewportFullscreen)
@@ -17686,6 +17763,8 @@ impl Desktop {
             );
             if id == self.main_id {
                 command_palette::overlay(content, &self.state)
+            } else if self.viewer_id == Some(id) {
+                gallery::lightbox(&self.state, content)
             } else {
                 content
             }
@@ -17716,7 +17795,10 @@ impl Desktop {
                 format!("Drop to inspect alongside {label} — a folder scans, a file opens"),
                 false,
             ),
-            _ => ("Drop a folder to scan it, or a DDS, PAK or model file to open it".into(), false),
+            _ => (
+                "Drop a folder to scan it, or a DDS, PAK or model file to open it".into(),
+                false,
+            ),
         }
     }
 
@@ -17934,11 +18016,31 @@ impl Desktop {
                             | iced::keyboard::key::Named::ArrowRight),
                         ),
                     ..
-                }) if status == iced::event::Status::Ignored => Some(Message::Ui(
-                    ui_kit::UiMsg::CompareNudge(
-                        if named == iced::keyboard::key::Named::ArrowLeft { -0.02 } else { 0.02 },
-                    ),
-                )),
+                }) if status == iced::event::Status::Ignored => {
+                    Some(Message::Ui(ui_kit::UiMsg::CompareNudge(
+                        if named == iced::keyboard::key::Named::ArrowLeft {
+                            -0.02
+                        } else {
+                            0.02
+                        },
+                    )))
+                }
+                // Alt+↑/↓ moves the focused row of a reorder list.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key:
+                        iced::keyboard::Key::Named(
+                            named @ (iced::keyboard::key::Named::ArrowUp
+                            | iced::keyboard::key::Named::ArrowDown),
+                        ),
+                    modifiers,
+                    ..
+                }) if modifiers.alt() => Some(Message::Ui(ui_kit::UiMsg::ReorderKey(
+                    if named == iced::keyboard::key::Named::ArrowUp {
+                        -1
+                    } else {
+                        1
+                    },
+                ))),
                 // Palette navigation; ignored by the palette while closed.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key:
@@ -17948,9 +18050,11 @@ impl Desktop {
                         ),
                     ..
                 }) => Some(Message::Ui(ui_kit::UiMsg::Palette(
-                    command_palette::Msg::Move(
-                        if named == iced::keyboard::key::Named::ArrowUp { -1 } else { 1 },
-                    ),
+                    command_palette::Msg::Move(if named == iced::keyboard::key::Named::ArrowUp {
+                        -1
+                    } else {
+                        1
+                    }),
                 ))),
                 // Editing shortcuts come before the camera's letter keys, so
                 // Shift+D duplicates rather than strafing.
@@ -18199,13 +18303,17 @@ mod project_edit_tests {
             workspace: PathBuf::from("test-mod"),
             thumb: anim::Tween::settled(0.0),
         };
-        animation.thumb.animate_to(1.0, t0, MOD_TOGGLE_DURATION, false);
+        animation
+            .thumb
+            .animate_to(1.0, t0, MOD_TOGGLE_DURATION, false);
         assert_eq!(animation.position(t0), 0.0);
         let mid = animation.position(t0 + MOD_TOGGLE_DURATION / 2);
         assert!(mid > 0.0 && mid < 1.0);
         let end = t0 + MOD_TOGGLE_DURATION;
         assert_eq!(animation.position(end), 1.0);
-        animation.thumb.animate_to(0.0, end, MOD_TOGGLE_DURATION, false);
+        animation
+            .thumb
+            .animate_to(0.0, end, MOD_TOGGLE_DURATION, false);
         assert_eq!(animation.position(end + MOD_TOGGLE_DURATION), 0.0);
         let mut reduced = anim::Tween::settled(0.0);
         reduced.animate_to(1.0, t0, MOD_TOGGLE_DURATION, true);

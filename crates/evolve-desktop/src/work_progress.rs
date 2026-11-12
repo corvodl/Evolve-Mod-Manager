@@ -119,7 +119,10 @@ pub fn snapshot(state: &State) -> Option<Snapshot> {
             format!("Launch stage {percent}% · {elapsed}"),
             Some(percent),
         );
-        snapshot.steps = Some(crate::ui_kit::Steps::new(&LAUNCH_STEPS, launch_step(percent)));
+        snapshot.steps = Some(crate::ui_kit::Steps::new(
+            &LAUNCH_STEPS,
+            launch_step(percent),
+        ));
         return Some(snapshot);
     }
     if let Some(progress) = &state.library_import_progress {

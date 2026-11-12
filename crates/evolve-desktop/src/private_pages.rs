@@ -404,7 +404,11 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
             .push(crate::ui_kit::skeleton(Fill, 11.0, alpha))
             .push(crate::ui_kit::skeleton(Fill, 11.0, alpha))
             .push(crate::ui_kit::skeleton(Length::FillPortion(2), 11.0, alpha));
-        preview = Some(crate::ui_kit::skeleton(Length::FillPortion(3), 112.0, alpha));
+        preview = Some(crate::ui_kit::skeleton(
+            Length::FillPortion(3),
+            112.0,
+            alpha,
+        ));
     } else {
         details = details.push(
             text("No announcements available yet.")
@@ -735,7 +739,9 @@ fn home_bento(state: &State) -> Element<'_, Message> {
             ticked(&state.ui, "enabled_mods", enabled as f64).round() as usize
         ))
         .size(18),
-        text(format!("of {total} mod project(s)")).size(11).style(design::muted),
+        text(format!("of {total} mod project(s)"))
+            .size(11)
+            .style(design::muted),
     ]
     .spacing(4);
     let storage_total = state
@@ -750,9 +756,10 @@ fn home_bento(state: &State) -> Element<'_, Message> {
         .size(18),
         design::button(text("Analyze").size(11))
             .padding([3, 8])
-            .on_press_maybe((!state.busy && !state.storage_analyzing).then_some(
-                Message::OpenSettingsTab(crate::settings_page::Tab::Storage),
-            )),
+            .on_press_maybe(
+                (!state.busy && !state.storage_analyzing)
+                    .then_some(Message::OpenSettingsTab(crate::settings_page::Tab::Storage),)
+            ),
     ]
     .spacing(4);
     let update = column![
@@ -808,7 +815,9 @@ pub(super) fn whats_new_intro(state: &State) -> Element<'_, Message> {
     container(
         column![
             row![
-                text(format!("What's new in v{installed}")).size(17).width(Fill),
+                text(format!("What's new in v{installed}"))
+                    .size(17)
+                    .width(Fill),
                 design::button("Read all")
                     .style(design::secondary)
                     .on_press(Message::Navigate(Page::WhatsNew)),
@@ -1071,6 +1080,7 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
     // below the fold; the background stays in place while cards scroll.
     let content = scrollable(
         column![
+            whats_new_intro(state),
             hero,
             home_play_surface(quick, wallpaper),
             latest_announcement(state, wallpaper),
@@ -1099,7 +1109,8 @@ fn home_legacy(state: &State) -> Element<'_, Message> {
                 ))),
                 ..container::Style::default()
             });
-        stack![background, shade, content]
+        // Embers drift between the artwork and the controls.
+        stack![background, shade, with_embers(state, content.into())]
             .width(Fill)
             .height(Fill)
             .into()
@@ -1521,50 +1532,52 @@ fn docs_spec(
     }
 }
 
-fn docs_section(section: DocsSection, expanded: bool) -> Element<'static, Message> {
+fn docs_section(state: &State, section: DocsSection, expanded: bool) -> Element<'static, Message> {
     let (title, summary, steps) = docs_spec(section);
-    let arrow = if expanded { "▾" } else { "▸" };
-    let header = design::button(
-        row![text(arrow).size(17), text(title).size(17)]
-            .spacing(10)
-            .align_y(iced::Center),
-    )
-    .on_press(Message::ToggleDocsSection(section))
-    .width(Fill)
-    .style(design::secondary);
-    let mut content = column![header].spacing(11);
-    if expanded {
-        content = content.push(text(summary).size(13).style(design::muted));
-        for (index, (step, details)) in steps.iter().enumerate() {
-            content = content.push(
-                column![
-                    text(format!("{}  {}", index + 1, step)).size(14),
-                    text(*details).size(12).style(design::muted),
-                ]
-                .spacing(4),
-            );
+    let body = move || -> Element<'static, Message> {
+        let mut content = column![].spacing(11);
+        {
+            content = content.push(text(summary).size(13).style(design::muted));
+            for (index, (step, details)) in steps.iter().enumerate() {
+                content = content.push(
+                    column![
+                        text(format!("{}  {}", index + 1, step)).size(14),
+                        text(*details).size(12).style(design::muted),
+                    ]
+                    .spacing(4),
+                );
+            }
+            let destination = match section {
+                DocsSection::GettingStarted
+                | DocsSection::Paths
+                | DocsSection::Updates
+                | DocsSection::Install => Some(("Open Settings", Page::Settings)),
+                DocsSection::Import | DocsSection::Browse | DocsSection::Export => {
+                    Some(("Open Asset Library", Page::AssetLibrary))
+                }
+                DocsSection::Projects | DocsSection::Edit | DocsSection::Gfx => {
+                    Some(("Open Modding", Page::Files))
+                }
+                DocsSection::LaunchMods | DocsSection::LaunchClean | DocsSection::Recovery => {
+                    Some(("Go to Home", Page::Home))
+                }
+                DocsSection::Troubleshoot | DocsSection::Faq => None,
+            };
+            if let Some((label, page)) = destination {
+                content = content.push(design::button(label).on_press(Message::Navigate(page)));
+            }
         }
-        let destination = match section {
-            DocsSection::GettingStarted
-            | DocsSection::Paths
-            | DocsSection::Updates
-            | DocsSection::Install => Some(("Open Settings", Page::Settings)),
-            DocsSection::Import | DocsSection::Browse | DocsSection::Export => {
-                Some(("Open Asset Library", Page::AssetLibrary))
-            }
-            DocsSection::Projects | DocsSection::Edit | DocsSection::Gfx => {
-                Some(("Open Modding", Page::Files))
-            }
-            DocsSection::LaunchMods | DocsSection::LaunchClean | DocsSection::Recovery => {
-                Some(("Go to Home", Page::Home))
-            }
-            DocsSection::Troubleshoot | DocsSection::Faq => None,
-        };
-        if let Some((label, page)) = destination {
-            content = content.push(design::button(label).on_press(Message::Navigate(page)));
-        }
-    }
-    surface(content).into()
+        content.into()
+    };
+    surface(crate::ui_kit::disclosure(
+        &state.ui,
+        &format!("docs:{section:?}"),
+        text(title).size(17),
+        expanded,
+        Message::ToggleDocsSection(section),
+        body,
+    ))
+    .into()
 }
 
 pub(super) fn docs(state: &State) -> Element<'_, Message> {
@@ -1578,6 +1591,7 @@ pub(super) fn docs(state: &State) -> Element<'_, Message> {
         .spacing(8),
         text("Getting Started").size(19),
         docs_section(
+            state,
             DocsSection::GettingStarted,
             state.docs_expanded.contains(&DocsSection::GettingStarted)
         ),
@@ -1586,6 +1600,7 @@ pub(super) fn docs(state: &State) -> Element<'_, Message> {
     .spacing(11);
     for section in DocsSection::ALL.into_iter().skip(1) {
         sections = sections.push(docs_section(
+            state,
             section,
             state.docs_expanded.contains(&section),
         ));
@@ -2282,14 +2297,23 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
 
 fn overlay_controls(state: &State) -> Element<'_, Message> {
     column![
-            iced::widget::checkbox(
-                state.teleport_overlay.is_some() || state.teleport_overlay_pending
-            )
-                .label("Show external overlay and enable shortcuts (windowed fullscreen)")
-                .on_toggle(Message::TeleportOverlayChanged),
-            iced::widget::checkbox(state.teleport_overlay_experimental)
-                .label("Experimental hooked input (Windows keyboard hook)")
-                .on_toggle(Message::TeleportOverlayExperimentalChanged),
+            {
+                let on = state.teleport_overlay.is_some() || state.teleport_overlay_pending;
+                crate::ui_kit::switch(
+                    &state.ui,
+                    "dev-overlay",
+                    "Show external overlay and enable shortcuts (windowed fullscreen)",
+                    on,
+                    Message::TeleportOverlayChanged(!on),
+                )
+            },
+            crate::ui_kit::switch(
+                &state.ui,
+                "dev-hooked-input",
+                "Experimental hooked input (Windows keyboard hook)",
+                state.teleport_overlay_experimental,
+                Message::TeleportOverlayExperimentalChanged(!state.teleport_overlay_experimental),
+            ),
             text("Experimental mode captures F6–F12 hotkeys using a Windows low-level keyboard hook while Evolve is focused. The visual overlay remains external. No game injection; exclusive fullscreen and protected input are not guaranteed.")
                 .size(12)
                 .style(design::muted),
@@ -2326,9 +2350,13 @@ fn network_controls(state: &State) -> Element<'_, Message> {
         text("Developer-only · Firewall policy")
             .size(12)
             .style(design::muted),
-        iced::widget::checkbox(state.developer_online_mods)
-            .label("Allow modded online testing")
-            .on_toggle(Message::DeveloperOnlineMods),
+        crate::ui_kit::switch(
+            &state.ui,
+            "dev-online-mods",
+            "Allow modded online testing",
+            state.developer_online_mods,
+            Message::DeveloperOnlineMods(!state.developer_online_mods),
+        ),
         text(if state.developer_network_busy {
             "Applying network policy..."
         } else if state.developer_online_mods {
@@ -2390,12 +2418,20 @@ fn actor_controls(state: &State) -> Element<'_, Message> {
         )
         .size(12)
         .style(design::muted),
-        iced::widget::checkbox(state.armor_offline_confirmed)
-            .label("Enable guided armor scanning (optional)")
-            .on_toggle(Message::ArmorOfflineChanged),
-        iced::widget::checkbox(state.live_edit_enabled)
-            .label("Enable actor memory writes / Freeze (experimental)")
-            .on_toggle(Message::LiveEditEnabled),
+        crate::ui_kit::switch(
+            &state.ui,
+            "dev-armor-scan",
+            "Enable guided armor scanning (optional)",
+            state.armor_offline_confirmed,
+            Message::ArmorOfflineChanged(!state.armor_offline_confirmed),
+        ),
+        crate::ui_kit::switch(
+            &state.ui,
+            "dev-live-edit",
+            "Enable actor memory writes / Freeze (experimental)",
+            state.live_edit_enabled,
+            Message::LiveEditEnabled(!state.live_edit_enabled),
+        ),
         design::button(if state.actor_busy {
             "Reading actors and perks..."
         } else {

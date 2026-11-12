@@ -472,26 +472,25 @@ fn dependency_order(status: &DependencyStatus) -> u8 {
     }
 }
 
-fn tab_button(
-    label: &'static str,
-    tab: ViewerTab,
-    selected: ViewerTab,
-) -> iced::widget::Button<'static, Message> {
-    design::button(label)
-        .style(if tab == selected {
-            design::primary
-        } else {
-            design::secondary
-        })
-        .on_press(Message::ViewerSelectTab(tab))
-}
-
 pub(super) fn view(state: &State) -> Element<'_, Message> {
+    const TABS: [(&str, ViewerTab); 4] = [
+        ("MODEL", ViewerTab::Model),
+        ("UV0", ViewerTab::Uv),
+        ("DEPENDENCIES", ViewerTab::Dependencies),
+        ("COMPARE", ViewerTab::Compare),
+    ];
     let tabs = row![
-        tab_button("MODEL", ViewerTab::Model, state.viewer_tab),
-        tab_button("UV0", ViewerTab::Uv, state.viewer_tab),
-        tab_button("DEPENDENCIES", ViewerTab::Dependencies, state.viewer_tab),
-        tab_button("COMPARE", ViewerTab::Compare, state.viewer_tab),
+        crate::ui_kit::segmented(
+            &state.ui,
+            "viewer-tabs",
+            TABS.iter()
+                .map(|(label, tab)| (*label, Message::ViewerSelectTab(*tab)))
+                .collect(),
+            TABS.iter()
+                .position(|(_, tab)| *tab == state.viewer_tab)
+                .unwrap_or(0),
+            true,
+        ),
         space().width(Fill),
         design::button(if state.viewer_show_inspector {
             "Hide"
@@ -788,7 +787,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     rows = rows.push(
                         row![
                             text(label).size(11).width(Length::Fixed(120.0)),
-                            text(hash.as_str()).size(11).font(iced::Font::MONOSPACE).width(Fill),
+                            text(hash.as_str())
+                                .size(11)
+                                .font(iced::Font::MONOSPACE)
+                                .width(Fill),
                             crate::ui_kit::copy_button(&state.ui, id, hash.clone()),
                         ]
                         .spacing(8)
@@ -797,8 +799,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 }
                 if let Some((original, modified)) = &state.comparison_text {
                     rows = rows.push(
-                        container(crate::diff_view::view(original, modified, "Original", "Modified"))
-                            .height(Length::Fixed(420.0)),
+                        container(crate::diff_view::view(
+                            original, modified, "Original", "Modified",
+                        ))
+                        .height(Length::Fixed(420.0)),
                     );
                 }
                 rows = rows.push(text("Read-only comparison. Visual pixel and geometry diffs are not implemented yet.")

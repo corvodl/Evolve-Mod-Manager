@@ -11,7 +11,9 @@ fn icon(body: &str) -> svg::Handle {
 }
 
 pub fn frame_all() -> svg::Handle {
-    icon(r#"<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/><circle cx="12" cy="12" r="2.5"/>"#)
+    icon(
+        r#"<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/><circle cx="12" cy="12" r="2.5"/>"#,
+    )
 }
 
 pub fn view_front() -> svg::Handle {
@@ -31,7 +33,9 @@ pub fn view_iso() -> svg::Handle {
 }
 
 pub fn wireframe() -> svg::Handle {
-    icon(r#"<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 3v18M4 7.5l16 9M20 7.5l-16 9"/>"#)
+    icon(
+        r#"<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 3v18M4 7.5l16 9M20 7.5l-16 9"/>"#,
+    )
 }
 
 pub fn zoom_in() -> svg::Handle {
@@ -47,7 +51,9 @@ pub fn overview() -> svg::Handle {
 }
 
 pub fn focus() -> svg::Handle {
-    icon(r#"<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>"#)
+    icon(
+        r#"<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>"#,
+    )
 }
 
 pub fn reset() -> svg::Handle {

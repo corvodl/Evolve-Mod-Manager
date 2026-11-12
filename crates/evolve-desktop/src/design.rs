@@ -65,7 +65,9 @@ pub struct ThemePreset {
 impl ThemePreset {
     pub fn role(&self, light: bool, role: &str) -> Option<&'static str> {
         let set = if light { self.light } else { self.dark };
-        set.iter().find(|(key, _)| *key == role).map(|(_, value)| *value)
+        set.iter()
+            .find(|(key, _)| *key == role)
+            .map(|(_, value)| *value)
     }
 
     /// Preview colours for a swatch card: background, surface, accent, text.

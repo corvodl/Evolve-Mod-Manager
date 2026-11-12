@@ -179,18 +179,52 @@ fn viewport_dock(state: &State) -> Element<'_, Message> {
         &state.ui,
         "level",
         vec![
-            item(icons::view_iso(), "Perspective", Message::ViewerCameraPreset("Isometric"), false),
-            item(icons::view_top(), "Top", Message::ViewerCameraPreset("Top"), false),
-            item(icons::view_front(), "Front", Message::ViewerCameraPreset("Front"), false),
+            item(
+                icons::view_iso(),
+                "Perspective",
+                Message::ViewerCameraPreset("Isometric"),
+                false,
+            ),
+            item(
+                icons::view_top(),
+                "Top",
+                Message::ViewerCameraPreset("Top"),
+                false,
+            ),
+            item(
+                icons::view_front(),
+                "Front",
+                Message::ViewerCameraPreset("Front"),
+                false,
+            ),
             item(
                 icons::overview(),
-                if state.level_show_overview { "Hide 2D overview" } else { "2D overview" },
+                if state.level_show_overview {
+                    "Hide 2D overview"
+                } else {
+                    "2D overview"
+                },
                 Message::LevelToggleOverview,
                 state.level_show_overview,
             ),
-            item(icons::focus(), "Focus selection", Message::LevelCameraFocus, false),
-            item(icons::reset(), "Reset view", Message::LevelCameraReset, false),
-            item(icons::fullscreen(), "Fullscreen viewport", Message::ToggleLevelViewportFullscreen, false),
+            item(
+                icons::focus(),
+                "Focus selection",
+                Message::LevelCameraFocus,
+                false,
+            ),
+            item(
+                icons::reset(),
+                "Reset view",
+                Message::LevelCameraReset,
+                false,
+            ),
+            item(
+                icons::fullscreen(),
+                "Fullscreen viewport",
+                Message::ToggleLevelViewportFullscreen,
+                false,
+            ),
         ],
         state.preferences.reduce_motion,
     )

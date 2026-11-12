@@ -216,16 +216,15 @@ fn card<'a>(toast: &'a Toast, now: Instant, reduce_motion: bool) -> Element<'a, 
     let kind = toast.kind;
     let remaining = toast.remaining_fraction(now);
 
-    let marker = container(space().width(8).height(8)).style(move |theme: &Theme| {
-        container::Style {
+    let marker =
+        container(space().width(8).height(8)).style(move |theme: &Theme| container::Style {
             background: Some(Background::Color(faded(accent(theme, kind), opacity))),
             border: Border {
                 radius: design::radius(theme, design::Radius::Small).into(),
                 ..Border::default()
             },
             ..container::Style::default()
-        }
-    });
+        });
     let title = text(&toast.title)
         .size(14)
         .style(move |theme: &Theme| text::Style {
@@ -267,32 +266,28 @@ fn card<'a>(toast: &'a Toast, now: Instant, reduce_motion: bool) -> Element<'a, 
                 background: Some(Background::Color(faded(accent(theme, kind), opacity * 0.8))),
                 ..container::Style::default()
             }),
-        space()
-            .height(2)
-            .width(iced::Length::FillPortion(
-                (((1.0 - remaining) * 1000.0) as u16).max(1)
-            )),
+        space().height(2).width(iced::Length::FillPortion(
+            (((1.0 - remaining) * 1000.0) as u16).max(1)
+        )),
     ];
     body = body.push(bar);
 
     let card = container(body)
         .padding([10, 12])
         .width(340)
-        .style(move |theme: &Theme| {
-            container::Style {
-                background: Some(Background::Color(faded(design::surface(theme), opacity))),
-                border: Border {
-                    color: faded(accent(theme, kind), opacity * 0.7),
-                    width: 1.0,
-                    radius: design::radius(theme, design::Radius::Large).into(),
-                },
-                shadow: iced::Shadow {
-                    color: faded(Color::from_rgba(0.0, 0.0, 0.0, 0.35), opacity),
-                    offset: iced::Vector::new(0.0, 4.0),
-                    blur_radius: 14.0,
-                },
-                ..container::Style::default()
-            }
+        .style(move |theme: &Theme| container::Style {
+            background: Some(Background::Color(faded(design::surface(theme), opacity))),
+            border: Border {
+                color: faded(accent(theme, kind), opacity * 0.7),
+                width: 1.0,
+                radius: design::radius(theme, design::Radius::Large).into(),
+            },
+            shadow: iced::Shadow {
+                color: faded(Color::from_rgba(0.0, 0.0, 0.0, 0.35), opacity),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 14.0,
+            },
+            ..container::Style::default()
         });
     if toast.action.is_some() {
         // The close button captures its own press, so only clicks on the

@@ -133,10 +133,7 @@ fn apply(state: &mut State) {
     let hex = to_hex(hsv_to_rgb(picker.hue, picker.sat, picker.val));
     let role = picker.role;
     state.color_picker.hex = hex.clone();
-    state
-        .preferences
-        .appearance_colors
-        .insert(role.into(), hex);
+    state.preferences.appearance_colors.insert(role.into(), hex);
 }
 
 /// Returns whether preferences should be persisted.
@@ -221,7 +218,12 @@ pub fn view(state: &State) -> Element<'_, Message> {
                             ..container::Style::default()
                         }
                     }),
-                    text(if custom { format!("{label}*") } else { label.to_owned() }).size(11),
+                    text(if custom {
+                        format!("{label}*")
+                    } else {
+                        label.to_owned()
+                    })
+                    .size(11),
                 ]
                 .spacing(5)
                 .align_y(iced::Center),
@@ -284,7 +286,9 @@ pub fn view(state: &State) -> Element<'_, Message> {
     .spacing(8);
     column![
         iced::widget::scrollable(roles).direction(iced::widget::scrollable::Direction::Horizontal(
-            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+            iced::widget::scrollable::Scrollbar::new()
+                .width(4)
+                .scroller_width(4),
         )),
         row![square, strip, controls].spacing(12),
     ]
@@ -379,7 +383,9 @@ impl canvas::Program<Message> for SatValSquare {
         );
         frame.stroke(
             &Path::rectangle(Point::ORIGIN, bounds.size()),
-            Stroke::default().with_width(1.0).with_color(design::border(theme)),
+            Stroke::default()
+                .with_width(1.0)
+                .with_color(design::border(theme)),
         );
         vec![frame.into_geometry()]
     }
@@ -466,7 +472,9 @@ impl canvas::Program<Message> for HueStrip {
         );
         frame.stroke(
             &Path::rectangle(Point::ORIGIN, bounds.size()),
-            Stroke::default().with_width(1.0).with_color(design::border(theme)),
+            Stroke::default()
+                .with_width(1.0)
+                .with_color(design::border(theme)),
         );
         vec![frame.into_geometry()]
     }
@@ -478,7 +486,12 @@ mod tests {
 
     #[test]
     fn hsv_round_trips_through_rgb() {
-        for (h, s, v) in [(0.0, 1.0, 1.0), (120.0, 0.5, 0.8), (240.0, 0.25, 0.4), (300.0, 0.9, 0.6)] {
+        for (h, s, v) in [
+            (0.0, 1.0, 1.0),
+            (120.0, 0.5, 0.8),
+            (240.0, 0.25, 0.4),
+            (300.0, 0.9, 0.6),
+        ] {
             let (h2, s2, v2) = rgb_to_hsv(hsv_to_rgb(h, s, v));
             assert!((h - h2).abs() < 0.5, "{h} {h2}");
             assert!((s - s2).abs() < 0.01);

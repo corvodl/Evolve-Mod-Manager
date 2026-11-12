@@ -124,7 +124,10 @@ impl Tween {
             return;
         }
         if reduce_motion || full_duration.is_zero() {
-            *self = Self { easing: self.easing, ..Self::settled(to) };
+            *self = Self {
+                easing: self.easing,
+                ..Self::settled(to)
+            };
             return;
         }
         let from = self.value(now);

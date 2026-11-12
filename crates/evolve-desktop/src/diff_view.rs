@@ -154,7 +154,12 @@ fn cell<'a>(value: Option<Line>, tone: Option<Tone>) -> Element<'a, Message> {
 }
 
 /// Render the diff of `old` → `new` with a summary header.
-pub fn view<'a>(old: &str, new: &str, left_title: &'a str, right_title: &'a str) -> Element<'a, Message> {
+pub fn view<'a>(
+    old: &str,
+    new: &str,
+    left_title: &'a str,
+    right_title: &'a str,
+) -> Element<'a, Message> {
     let (rows, summary) = compute(old, new);
     if rows.is_empty() {
         return crate::ui_kit::empty_state(
@@ -187,9 +192,12 @@ pub fn view<'a>(old: &str, new: &str, left_title: &'a str, right_title: &'a str)
     for entry in rows.into_iter().take(MAX_ROWS) {
         let element: Element<'a, Message> = match entry {
             Row::Collapsed(count) => container(
-                text(format!("⋯ {count} unchanged line{}", if count == 1 { "" } else { "s" }))
-                    .size(11)
-                    .style(design::muted),
+                text(format!(
+                    "⋯ {count} unchanged line{}",
+                    if count == 1 { "" } else { "s" }
+                ))
+                .size(11)
+                .style(design::muted),
             )
             .padding([4, 10])
             .width(Fill)
@@ -215,9 +223,12 @@ pub fn view<'a>(old: &str, new: &str, left_title: &'a str, right_title: &'a str)
         };
         list = list.push(element);
     }
-    let mut content = column![row![header, stats].spacing(12), scrollable(list).height(Fill)]
-        .spacing(8)
-        .height(Fill);
+    let mut content = column![
+        row![header, stats].spacing(12),
+        scrollable(list).height(Fill)
+    ]
+    .spacing(8)
+    .height(Fill);
     if truncated {
         content = content.push(crate::ui_kit::callout(
             Tone::Warning,
@@ -243,11 +254,25 @@ mod tests {
         let old: String = (1..=40).map(|n| format!("line {n}\n")).collect();
         let new = old.replace("line 20\n", "line twenty\n") + "extra\n";
         let (rows, summary) = compute(&old, &new);
-        assert_eq!(summary, Summary { added: 2, removed: 1 });
+        assert_eq!(
+            summary,
+            Summary {
+                added: 2,
+                removed: 1
+            }
+        );
         assert!(matches!(rows[0], Row::Collapsed(16)));
         let changed = rows
             .iter()
-            .find(|row| matches!(row, Row::Pair { kind: Kind::Changed, .. }))
+            .find(|row| {
+                matches!(
+                    row,
+                    Row::Pair {
+                        kind: Kind::Changed,
+                        ..
+                    }
+                )
+            })
             .unwrap();
         if let Row::Pair { left, right, .. } = changed {
             assert_eq!(left.as_ref().unwrap().text, "line 20");
@@ -255,10 +280,18 @@ mod tests {
             assert_eq!(right.as_ref().unwrap().text, "line twenty");
         }
         // Collapsed middle section between the two hunks.
-        assert!(rows.iter().filter(|row| matches!(row, Row::Collapsed(_))).count() >= 2);
+        assert!(
+            rows.iter()
+                .filter(|row| matches!(row, Row::Collapsed(_)))
+                .count()
+                >= 2
+        );
         assert!(matches!(
             rows.last(),
-            Some(Row::Pair { kind: Kind::Added, .. })
+            Some(Row::Pair {
+                kind: Kind::Added,
+                ..
+            })
         ));
     }
 }

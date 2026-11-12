@@ -216,13 +216,13 @@ fn sort_projects(state: &State, indices: &mut [usize]) {
     let projects = state.modding_projects.as_deref().unwrap_or(&[]);
     if let Some((column, ascending)) = state.modding_sort {
         indices.sort_by(|&a, &b| {
-                let (a, b) = (&projects[a], &projects[b]);
-                let order = match column {
-                    "pak" => a.target.to_lowercase().cmp(&b.target.to_lowercase()),
-                    "status" => a.status.cmp(&b.status),
-                    "enabled" => b.enabled.cmp(&a.enabled),
-                    _ => a.label.to_lowercase().cmp(&b.label.to_lowercase()),
-                };
+            let (a, b) = (&projects[a], &projects[b]);
+            let order = match column {
+                "pak" => a.target.to_lowercase().cmp(&b.target.to_lowercase()),
+                "status" => a.status.cmp(&b.status),
+                "enabled" => b.enabled.cmp(&a.enabled),
+                _ => a.label.to_lowercase().cmp(&b.label.to_lowercase()),
+            };
             if ascending { order } else { order.reverse() }
         });
     }
@@ -236,8 +236,10 @@ pub(super) fn modding_chip_options(projects: &[ProjectRow]) -> Vec<String> {
         "Enabled only".to_owned(),
         "Disabled only".to_owned(),
     ];
-    let targets: std::collections::BTreeSet<_> =
-        projects.iter().map(|p| format!("PAK: {}", p.target)).collect();
+    let targets: std::collections::BTreeSet<_> = projects
+        .iter()
+        .map(|p| format!("PAK: {}", p.target))
+        .collect();
     options.extend(targets);
     options
 }
@@ -379,7 +381,13 @@ fn dropdown_left(name: Option<&str>) -> f32 {
 
 fn project_header(advanced: bool, sort: crate::ui_kit::Sort) -> Element<'static, Message> {
     let sortable = |label: &'static str, column: &'static str, width: Length| {
-        crate::ui_kit::sort_header(label, column, sort, Message::SortBy("modding", column), width)
+        crate::ui_kit::sort_header(
+            label,
+            column,
+            sort,
+            Message::SortBy("modding", column),
+            width,
+        )
     };
     let mut header = row![
         text("ORDER")
@@ -610,22 +618,21 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
         };
         return panel(state_view).into();
     }
-    let empty: Element<'_, Message> =
-        if count == 0 {
-            text("No projects match this filter.")
-                .size(13)
-                .style(design::muted)
-                .into()
-        } else {
-            text(format!(
-                "{}–{} of {count} matching projects",
-                range.start + 1,
-                range.end
-            ))
-            .size(11)
+    let empty: Element<'_, Message> = if count == 0 {
+        text("No projects match this filter.")
+            .size(13)
             .style(design::muted)
             .into()
-        };
+    } else {
+        text(format!(
+            "{}–{} of {count} matching projects",
+            range.start + 1,
+            range.end
+        ))
+        .size(11)
+        .style(design::muted)
+        .into()
+    };
     panel(
         column![
             scrollable(rows).height(Length::Fixed(300.0)),
@@ -1020,14 +1027,21 @@ fn profiles(state: &State) -> Element<'_, Message> {
         column![
             text("INSTALLED MODS / PROFILES").size(14),
             row![
-                design::text_input("New profile name…", &state.profile_name)
-                    .on_input(Message::ProfileNameChanged)
-                    .width(Fill),
-                design::button("Create profile").on_press(Message::StartProfileCreate),
+                crate::ui_kit::popover_form(
+                    &state.ui,
+                    "new-profile",
+                    "New profile…",
+                    "New profile name…",
+                    &state.profile_name,
+                    Message::ProfileNameChanged,
+                    (!state.profile_name.trim().is_empty()).then_some(Message::StartProfileCreate),
+                ),
+                space().width(Fill),
                 design::button("Refresh").on_press(Message::StartProfileList)
             ]
             .spacing(8),
             scrollable(catalog).height(Length::Fixed(110.0)),
+            profile_mod_order(state),
             text(format!(
                 "Staged target: {}",
                 if state.input.is_empty() {
@@ -1071,6 +1085,55 @@ fn profiles(state: &State) -> Element<'_, Message> {
         ]
         .spacing(7),
     )
+    .into()
+}
+
+/// The selected profile's mods in apply order, reorderable by drag,
+/// ↑/↓ buttons or Alt+↑/↓.
+fn profile_mod_order(state: &State) -> Element<'_, Message> {
+    let Some(profile) = state
+        .profile_catalog
+        .as_ref()
+        .and_then(|catalog| catalog.profiles.iter().find(|p| p.id == state.profile_id))
+    else {
+        return space().height(0).into();
+    };
+    if profile.mods.is_empty() {
+        return text("This profile has no mods yet.")
+            .size(12)
+            .style(design::muted)
+            .into();
+    }
+    let rows = profile
+        .mods
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            row![
+                text(format!("{}.", index + 1))
+                    .size(11)
+                    .style(design::muted)
+                    .width(Length::Fixed(24.0)),
+                text(item.target.as_str()).size(12).width(Fill),
+                if item.enabled {
+                    crate::ui_kit::badge(crate::ui_kit::BadgeKind::Enabled, "Enabled")
+                } else {
+                    crate::ui_kit::badge(crate::ui_kit::BadgeKind::Neutral, "Off")
+                },
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        })
+        .collect();
+    column![
+        text(format!("APPLY ORDER · {}", profile.name)).size(11).style(design::muted),
+        crate::ui_kit::reorder_list(&state.ui, "profile-mods", rows, Message::ProfileModMove),
+        text("Mods apply top to bottom. Enabled mods never share a target PAK, so order does not change which file wins.")
+            .size(11)
+            .style(design::muted),
+    ]
+    .spacing(6)
     .into()
 }
 
@@ -1451,14 +1514,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8)
         .align_y(iced::Center),
-        row![
-            design::text_input("Mod name…", &state.modding_name_input)
-                .on_input(Message::ModdingNameChanged)
-                .width(Length::FillPortion(4)),
-            design::button("Save Name")
-                .style(design::secondary)
-                .on_press_maybe(state.modding_selected.map(|_| Message::ModdingSaveName)),
-        ]
+        row![crate::ui_kit::popover_form(
+            &state.ui,
+            "rename-mod",
+            "Rename mod…",
+            "Mod name…",
+            &state.modding_name_input,
+            Message::ModdingNameChanged,
+            state.modding_selected.map(|_| Message::ModdingSaveName),
+        ),]
         .spacing(8)
         .align_y(iced::Center),
         selected_actions,

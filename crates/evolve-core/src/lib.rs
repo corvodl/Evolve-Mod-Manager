@@ -204,7 +204,7 @@ pub use staging::{
 pub use profiles::{
     ModProfile, ProfileCatalog, ProfileError, ProfileMod, ProfilePlan, add_mod_to_profile,
     create_mod_profile, delete_mod_profile, enable_profile_mod, list_mod_profiles,
-    plan_mod_profile,
+    plan_mod_profile, reorder_profile_mod,
 };
 
 pub use batch::{

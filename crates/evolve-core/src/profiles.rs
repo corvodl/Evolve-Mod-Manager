@@ -350,6 +350,28 @@ pub fn enable_profile_mod(
         .enabled = enabled;
     save(stage, &catalog)
 }
+/// Move a profile's mod to `to` (clamped). Profiles apply their mods in
+/// list order; enabled targets are unique, so this changes the displayed
+/// and applied sequence without changing which file wins.
+pub fn reorder_profile_mod(
+    stage: &Path,
+    profile_id: &str,
+    mod_id: &str,
+    to: usize,
+) -> Result<(), ProfileError> {
+    let mut catalog = list_mod_profiles(stage)?;
+    let profile = selected(&mut catalog, profile_id)?;
+    let from = profile
+        .mods
+        .iter()
+        .position(|m| m.id == mod_id)
+        .ok_or_else(|| ProfileError::Invalid("Unknown mod ID".into()))?;
+    let item = profile.mods.remove(from);
+    let to = to.min(profile.mods.len());
+    profile.mods.insert(to, item);
+    save(stage, &catalog)
+}
+
 pub fn plan_mod_profile(
     stage: &Path,
     profile_id: &str,
@@ -457,6 +479,32 @@ mod tests {
             )
             .is_err()
         );
+        // Reordering persists the new sequence.
+        let mut catalog = list_mod_profiles(&stage).unwrap();
+        let source = fs::canonicalize(&file)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        catalog.profiles[0].mods = ["a", "b", "c"]
+            .iter()
+            .enumerate()
+            .map(|(index, name)| ProfileMod {
+                id: format!("{index:032x}"),
+                target: format!("Game/{name}.pak"),
+                source: source.clone(),
+                sha256: "0".repeat(64),
+                enabled: true,
+            })
+            .collect();
+        save(&stage, &catalog).unwrap();
+        reorder_profile_mod(&stage, &created.id, &format!("{:032x}", 2), 0).unwrap();
+        let order: Vec<_> = list_mod_profiles(&stage).unwrap().profiles[0]
+            .mods
+            .iter()
+            .map(|m| m.target.clone())
+            .collect();
+        assert_eq!(order, ["Game/c.pak", "Game/a.pak", "Game/b.pak"]);
+        assert!(reorder_profile_mod(&stage, &created.id, "missing", 0).is_err());
         delete_mod_profile(&stage, &created.id).unwrap();
         assert!(list_mod_profiles(&stage).unwrap().profiles.is_empty());
         fs::write(stage.join("profiles.json"), b"{invalid").unwrap();

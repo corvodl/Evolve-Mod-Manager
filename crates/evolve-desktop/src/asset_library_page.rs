@@ -791,9 +791,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     })
     .width(Fill);
     let table = panel(
-        column![table_heading, scrollable(rows).height(Fill),]
-            .spacing(0)
-            .height(Fill),
+        column![
+            table_heading,
+            crate::ui_kit::faded_scroll(&state.ui, "library-rows", rows, display_rows.len() > 12),
+        ]
+        .spacing(0)
+        .height(Fill),
     );
     layout = layout.push(table.height(Fill));
     let (count, bytes, ignored) = library
