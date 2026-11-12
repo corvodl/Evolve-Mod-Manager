@@ -195,12 +195,35 @@ pub fn safe_refresh_preflight(stage: &Path, swap: &Path) -> Result<(), String> {
 /// installed game, plus a separate swap folder with a durable restored
 /// journal. This builder creates both using native, verified CryPAK signing.
 /// It never starts the client and does not install files into the game.
+/// Setup phases shown by the multi-step loader. The worker publishes the
+/// current index through [`SETUP_STEP`]; nothing is estimated.
+pub const SETUP_STEPS: [&str; 5] = [
+    "Checking game and client",
+    "Validating signing key and free space",
+    "Verifying installed PAK signatures",
+    "Preparing offline hook and recovery helpers",
+    "Final integrity check",
+];
+
+/// Current setup phase (index into [`SETUP_STEPS`]). Only one setup can run
+/// at a time because the manager is `busy` while it does.
+pub static SETUP_STEP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn step(index: usize) {
+    SETUP_STEP.store(index, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn current_step() -> usize {
+    SETUP_STEP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn create(
     game: &Path,
     client: &Path,
     storage: &Path,
     keep_original_snapshots: bool,
 ) -> Result<InitialSetup, String> {
+    step(0);
     launcher_bridge::games_closed()?;
     let game = play_setup::game_root(&game.to_string_lossy())?;
     let client = if client.as_os_str().is_empty() {
@@ -250,6 +273,7 @@ pub fn create(
     if official.is_some() && !game.join("bin64_SteamRetail/dbghelp.dll").is_file() {
         return Err("Official Stage 2 setup requires an existing original bin64_SteamRetail/dbghelp.dll for reversible swapping. Restore/install the normal game client first.".into());
     }
+    step(1);
     let original_shim = game.join("bin64_SteamRetail").join("inject.dll");
     let shim = fs::read(&original_shim).map_err(|e| e.to_string())?;
     if shim.len() != 4096 {
@@ -332,6 +356,7 @@ pub fn create(
         if !public.is_file() {
             return Err("Configured signing public key is missing".into());
         }
+        step(2);
         let mut entries = Vec::with_capacity(rows.len());
         let mut signed = 0usize;
         let mut plain = 0usize;
@@ -404,6 +429,7 @@ pub fn create(
         if signed == 0 {
             return Err("No signed Stage 2 PAKs were found in the installed game".into());
         }
+        step(3);
         let shim_dst = stage.join("inject-custom.dll");
         let shim_sha = if let Some(tools) = &official {
             write_new(
@@ -463,6 +489,7 @@ pub fn create(
                 "count": 0,
             }),
         )?;
+        step(4);
         launcher_bridge::games_closed()?;
         if sha256(&original_shim)? != installed_shim_sha {
             return Err("Installed original inject.dll changed during signing".into());

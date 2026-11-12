@@ -669,6 +669,76 @@ pub fn edit_level_transform(
     Ok(edited)
 }
 
+/// Set the local transforms of several placements at once, recomputing the
+/// world transforms of each and its descendants, parents before children.
+pub fn edit_level_transforms(
+    scene: &LevelScene,
+    edits: &[(String, Transform)],
+) -> Result<LevelScene, SceneError> {
+    if edits.is_empty() || scene.objects.len() > MAX_OBJECTS {
+        return Err(SceneError::NoMatchingGuid);
+    }
+    let mut edited = scene.clone();
+    let mut index = HashMap::with_capacity(edited.objects.len());
+    for (i, object) in edited.objects.iter().enumerate() {
+        if index.insert(object.id.to_ascii_lowercase(), i).is_some() {
+            return Err(SceneError::DuplicateGuid(object.id.clone()));
+        }
+    }
+    let parent_of = |objects: &[PlacedObject], i: usize| {
+        index.get(&objects[i].parent.to_ascii_lowercase()).copied()
+    };
+    let mut children = vec![Vec::new(); edited.objects.len()];
+    for i in 0..edited.objects.len() {
+        if let Some(parent) = parent_of(&edited.objects, i) {
+            children[parent].push(i);
+        }
+    }
+    let mut dirty = HashSet::new();
+    let mut queue = Vec::new();
+    for (guid, transform) in edits {
+        let selected = index
+            .get(&guid.to_ascii_lowercase())
+            .copied()
+            .ok_or(SceneError::NoMatchingGuid)?;
+        edited.objects[selected].local = transform.normalize()?;
+        queue.push(selected);
+    }
+    while let Some(i) = queue.pop() {
+        if dirty.insert(i) {
+            queue.extend(children[i].iter().copied());
+        }
+        if dirty.len() > MAX_OBJECTS {
+            return Err(SceneError::Limits);
+        }
+    }
+    // Depth below the scene root, so parents are recomputed first.
+    let depth = |i: usize| -> Result<usize, SceneError> {
+        let mut depth = 0;
+        let mut at = i;
+        while let Some(parent) = parent_of(&edited.objects, at) {
+            depth += 1;
+            at = parent;
+            if depth > MAX_OBJECTS {
+                return Err(SceneError::Cycle(edited.objects[i].id.clone()));
+            }
+        }
+        Ok(depth)
+    };
+    let mut order = dirty
+        .into_iter()
+        .map(|i| Ok((depth(i)?, i)))
+        .collect::<Result<Vec<_>, SceneError>>()?;
+    order.sort_unstable();
+    for (_, i) in order {
+        let parent_world = parent_of(&edited.objects, i)
+            .map(|parent| edited.objects[parent].world)
+            .unwrap_or_default();
+        edited.objects[i].world = parent_world.combine(edited.objects[i].local)?;
+    }
+    Ok(edited)
+}
+
 pub fn load_level_scene(path: &Path) -> Result<LevelScene, SceneError> {
     let stat = fs::symlink_metadata(path)?;
     if !stat.file_type().is_file() || stat.len() > MAX_LAYER_BYTES as u64 {

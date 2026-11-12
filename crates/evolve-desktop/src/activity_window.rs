@@ -1,7 +1,7 @@
 //! Detached, non-modal activity monitor. The monitor shows the same live
 //! status transitions as the desktop; closing it never cancels the worker.
 use super::{Message, State, work_progress};
-use iced::widget::{button, column, container, row, scrollable, text};
+use iced::widget::{button, column, container, row, text};
 use iced::{Element, Fill, Length};
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
@@ -15,20 +15,53 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text(snapshot.detail.clone()).size(12),
         ]
         .spacing(6)
+        .push(
+            snapshot
+                .steps
+                .as_ref()
+                .map(|steps| crate::ui_kit::stepper(steps, state.loading_wheel_frame)),
+        )
         .into()
     } else {
         column![].into()
     };
-    let mut lines = column![].spacing(4);
-    for message in state.activity_log.iter().rev().take(250) {
-        lines = lines.push(text(message).size(12));
-    }
+    // The log reads as a timeline, newest first; failures get a red dot.
+    let items = state
+        .activity_log
+        .iter()
+        .rev()
+        .take(250)
+        .map(|message| {
+            let lower = message.to_ascii_lowercase();
+            let tone =
+                if lower.contains("error") || lower.contains("failed") || lower.contains("refused")
+                {
+                    Some(crate::design::Tone::Danger)
+                } else if lower.contains("warning") {
+                    Some(crate::design::Tone::Warning)
+                } else {
+                    None
+                };
+            crate::ui_kit::TimelineItem {
+                title: message.clone(),
+                meta: String::new(),
+                body: None,
+                tone,
+            }
+        })
+        .collect();
+    let lines = crate::ui_kit::timeline(items);
     container(
         column![
             row![
                 text("MANAGER ACTIVITY").size(17),
                 text(active).size(12),
                 iced::widget::space().width(Fill),
+                crate::ui_kit::copy_button(
+                    &state.ui,
+                    "activity-log",
+                    state.activity_log.join("\n")
+                ),
                 button("Clear History").on_press(Message::ClearActivity),
                 button("Cancel Scan")
                     .on_press_maybe(state.scan_cancel.is_some().then_some(Message::CancelScan))
@@ -40,8 +73,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             )
             .size(12),
             meter,
-            container(text(&state.status).size(13)).padding(8),
-            scrollable(lines).height(Fill)
+            container(
+                row![
+                    text(&state.status).size(13).width(Fill),
+                    crate::ui_kit::copy_button(&state.ui, "activity-status", state.status.clone()),
+                ]
+                .spacing(8)
+            )
+            .padding(8),
+            crate::ui_kit::faded_scroll(
+                &state.ui,
+                "activity-log",
+                lines,
+                state.activity_log.len() > 12
+            )
         ]
         .spacing(14)
         .padding(16),

@@ -45,6 +45,16 @@ pub(super) struct LoadedMap {
     /// read-only even in a managed project. Unique IDs stay editable.
     pub duplicate_guids: std::collections::HashSet<String>,
     pub diagnostics: Vec<String>,
+    /// Reloaded after an edit, from the world it had before: the editor
+    /// keeps its camera, selection and panels.
+    pub reloaded: bool,
+    /// A small top-down terrain preview for the map chooser (PNG).
+    pub thumbnail: Option<Vec<u8>>,
+}
+
+/// Records how far a map load got, for the chooser's stepper.
+fn set_load_step(step: usize) {
+    crate::map_chooser::LOAD_STEP.store(step, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Most imported map archives are Levels_*.pak. Other imports can be opened
@@ -921,6 +931,7 @@ fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), Strin
 /// Enumerate verified maps without loading scene geometry. The editor's
 /// chooser uses the same validated inventory and grouping as `open`.
 pub(super) fn list_maps(archive: &ImportedPak) -> Result<Vec<MapCandidate>, String> {
+    set_load_step(0);
     discover_with_companion(archive).map(|(_, _, maps)| maps)
 }
 
@@ -981,6 +992,7 @@ fn discover_with_companion(
 }
 
 pub(super) fn list_project_maps(project: &ProjectRow) -> Result<Vec<MapCandidate>, String> {
+    set_load_step(0);
     let inventory = scan_directory(&project.workspace.join("files")).map_err(|e| e.to_string())?;
     discover_inventory(&inventory).map(|(_, maps)| maps)
 }
@@ -1101,7 +1113,7 @@ pub(super) fn open(archive: ImportedPak, index: usize) -> Result<LoadedMap, Stri
     let selected = archive.name.clone();
     let (archive, root, maps) = discover_with_companion(&archive)?;
     let redirected = !archive.name.eq_ignore_ascii_case(&selected);
-    let mut map = open_selected(archive, root, maps, index, None, None)?;
+    let mut map = open_selected(archive, root, maps, index, None, None, None)?;
     if redirected {
         map.diagnostics.insert(
             0,
@@ -1241,10 +1253,14 @@ fn snapshot_asset_archive(project: &ProjectRow, library_root: &Path) -> Option<I
 /// Open a verified copy owned by the Modding project. The caller supplies the
 /// manager-indexed ProjectRow; this function never treats an arbitrary folder
 /// as an editable project or creates new files.
+/// Open a project's map. `previous`, the world of the same project and map as
+/// it was before a level edit, lets the load reuse its decoded models and
+/// textures instead of decoding them again.
 pub(super) fn open_project(
     project: ProjectRow,
     index: usize,
     library_root: &Path,
+    previous: Option<std::sync::Arc<crate::world_instances::World>>,
 ) -> Result<LoadedMap, String> {
     let inventory = scan_directory(&project.workspace.join("files")).map_err(|e| e.to_string())?;
     let (root, maps) = discover_inventory(&inventory)?;
@@ -1278,7 +1294,15 @@ pub(super) fn open_project(
         warnings: 0,
         builds: build,
     };
-    open_selected(archive, root, maps, index, Some(inventory), Some(project))
+    open_selected(
+        archive,
+        root,
+        maps,
+        index,
+        Some(inventory),
+        Some(project),
+        previous,
+    )
 }
 
 fn open_selected(
@@ -1288,9 +1312,24 @@ fn open_selected(
     index: usize,
     project_inventory: Option<Inventory>,
     project: Option<ProjectRow>,
+    previous: Option<std::sync::Arc<crate::world_instances::World>>,
 ) -> Result<LoadedMap, String> {
+    set_load_step(1);
     let index = index.min(maps.len().saturating_sub(1));
     let chosen = &maps[index];
+    // Reuse decoded assets only within one project's map and build.
+    level_scene_renderer::begin_decode_reuse(
+        project.as_ref().map(|project| {
+            format!(
+                "{}|{}|{}|{:?}",
+                project.workspace.display(),
+                chosen.name,
+                archive.source,
+                archive.builds
+            )
+        }),
+        previous.is_some(),
+    );
     let mut diagnostics = Vec::new();
     // One asset index for the whole load; the steps below all reuse it. Each
     // still reports its own failure if this one could not be built.
@@ -1861,6 +1900,7 @@ fn open_selected(
     let terrain_xml = terrain_xml.ok().flatten();
     let terrain_pak = terrain_pak.ok().flatten();
 
+    set_load_step(2);
     let mut terrain_paint: Option<TerrainPaintMap> = None;
     let terrain = if let Some(relative) = &chosen.terrain {
         let exact = verified_source(&root, relative, 512 * 1024 * 1024)?;
@@ -1891,7 +1931,7 @@ fn open_selected(
                     header.version,
                     header.layers.len(),
                     header.layers.iter().map(|layer| format!(
-                        "{}Ã—{} / format {} / {} bytes",
+                        "{}×{} / format {} / {} bytes",
                         layer.sector_pixels, layer.sector_pixels,
                         layer.texture_format, layer.sector_bytes,
                     )).collect::<Vec<_>>().join("; ")
@@ -1902,7 +1942,7 @@ fn open_selected(
                 )),
             },
             Some(TerrainResource::Rgb24 { paths, side }) => diagnostics.push(format!(
-                "Original map-owned baked terrain RGB24 tile grid: {side}Ã—{side} ({} verified imported raw members).",
+                "Original map-owned baked terrain RGB24 tile grid: {side}×{side} ({} verified imported raw members).",
                 paths.len()
             )),
             None => diagnostics.push(
@@ -1978,9 +2018,68 @@ fn open_selected(
         diagnostics.push("Heightmap.dat was not in this PAK; terrain cannot be shown yet.".into());
         None
     };
+    // A compiled terrain.dat paints each sample with a SurfaceTypeID from the
+    // map's leveldata.xml, whose DetailMaterial is a Terrain.Layer material:
+    // the same layer data a Heightmap.dat carries, so its ground gets the
+    // same per-material detail instead of the baked colour atlas alone.
+    if terrain_paint.is_none()
+        && let Some(compiled) = &compiled_terrain
+    {
+        let leveldata = inventory
+            .entries
+            .iter()
+            .find(|entry| {
+                let lower = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
+                lower.strip_prefix("files/").unwrap_or(&lower) == "leveldata.xml"
+            })
+            .and_then(|entry| {
+                verified_source(&root, Path::new(&entry.relative_path), 16 * 1024 * 1024).ok()
+            })
+            .and_then(|file| fs::read(file).ok());
+        let surfaces = leveldata
+            .as_deref()
+            .map(crate::terrain_material_probe::leveldata_surfaces)
+            .unwrap_or_default();
+        let side = compiled.units + 1;
+        if !surfaces.is_empty() && compiled.surfaces.len() == (side as usize) * (side as usize) {
+            let paint = TerrainPaintMap {
+                width: side,
+                height: side,
+                layer_names: surfaces
+                    .iter()
+                    .map(|(id, name, _)| (*id, name.clone()))
+                    .collect(),
+                layers: surfaces
+                    .iter()
+                    .map(|(id, name, material)| evolve_core::TerrainLayerDefinition {
+                        id: *id,
+                        name: name.clone(),
+                        surface_type: material.clone(),
+                        filter_color: None,
+                        brightness: None,
+                        tiling: None,
+                    })
+                    .collect(),
+                surface_types: Vec::new(),
+                ids: compiled.surfaces.clone(),
+            };
+            diagnostics.push(format!(
+                "terrain.dat surface types: {} SurfaceTypes from leveldata.xml paint {} used IDs.",
+                surfaces.len(),
+                paint
+                    .ids
+                    .iter()
+                    .filter(|&&id| id != evolve_core::HOLE_ID)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+            ));
+            terrain_paint = Some(paint);
+        }
+    }
     if scene.is_none() && terrain.is_none() {
         return Err(diagnostics.join(" "));
     }
+    set_load_step(3);
     let mut full_scene = level_scene_renderer::assemble(
         &archive,
         scene.as_ref(),
@@ -2060,7 +2159,7 @@ fn open_selected(
                     assembled.world = std::sync::Arc::new(world);
                 }
                 diagnostics.push(format!(
-                    "Original baked terrain: decoded {} tiles ({}) into {}Ã—{} ground-color atlas. {}",
+                    "Original baked terrain: decoded {} tiles ({}) into {}×{} ground-color atlas. {}",
                     atlas.decoded_tiles,
                     if atlas.color_format == 3 { "RGB24".to_owned() }
                     else { format!("CRY format {}", atlas.color_format) },
@@ -2103,11 +2202,15 @@ fn open_selected(
         // Map assembly already runs in an operation worker. Hash source
         // image identities here so the first viewport frame never spends
         // time hashing full-resolution decoded DDS and terrain atlases.
-        world.precompute_gpu_source_hashes();
+        world.precompute_gpu_source_hashes_from(previous.as_deref());
         assembled.world = std::sync::Arc::new(world);
         diagnostics.push(assembled.report.status());
     }
+    let thumbnail = terrain
+        .as_ref()
+        .and_then(|(mesh, _)| crate::map_chooser::terrain_thumbnail(&mesh.positions));
     Ok(LoadedMap {
+        thumbnail,
         archive,
         maps,
         index,
@@ -2118,6 +2221,7 @@ fn open_selected(
         project,
         duplicate_guids,
         diagnostics,
+        reloaded: previous.is_some(),
     })
 }
 
@@ -2328,7 +2432,7 @@ mod tests {
             changed_known: true,
             enabled: false,
         };
-        let opened = open_project(project.clone(), 0, library).unwrap();
+        let opened = open_project(project.clone(), 0, library, None).unwrap();
         let scene = opened.scene.as_ref().expect("project scene");
         let object = scene
             .objects
@@ -2376,7 +2480,7 @@ mod tests {
             )
             .unwrap()
         );
-        let reopened = open_project(project, 0, library).unwrap();
+        let reopened = open_project(project, 0, library, None).unwrap();
         let after = reopened.scene.as_ref().unwrap();
         assert_eq!(after.objects.len(), scene.objects.len());
         for (before, now) in scene.objects.iter().zip(&after.objects) {
@@ -2397,7 +2501,14 @@ mod tests {
         );
         // Duplicate, add geometry and sculpt terrain the way the editor's
         // buttons do, committing each through the same project save.
-        let reopen = || open_project(project_row(&workspace, target, archive_name), 0, library);
+        let reopen = || {
+            open_project(
+                project_row(&workspace, target, archive_name),
+                0,
+                library,
+                None,
+            )
+        };
         let commit = |member: &str, original: &[u8], edited: &[u8]| -> Result<(), String> {
             fs::write(
                 workspace.join(".evolve-pak-workspace.json"),
@@ -2597,6 +2708,15 @@ mod tests {
     /// A project created as an imported snapshot (as the app makes them, with
     /// no registered build) must still resolve the game's shared assets.
     /// Opens an existing project folder read-only.
+    fn project_folder_leveldata(map: &LoadedMap) -> PathBuf {
+        map.project
+            .as_ref()
+            .unwrap()
+            .workspace
+            .join("files")
+            .join("leveldata.xml")
+    }
+
     #[test]
     #[ignore = "requires a local snapshot project (EVOLVE_BENCH_PROJECT) and library"]
     fn snapshot_projects_resolve_shared_game_assets() {
@@ -2615,7 +2735,7 @@ mod tests {
         };
         let pak = snapshot_asset_archive(&project, &library).expect("snapshot archive verified");
         assert!(!pak.builds.is_empty());
-        let map = open_project(project, 0, &library).unwrap();
+        let map = open_project(project, 0, &library, None).unwrap();
         let assembled = map.full_scene.as_ref().unwrap();
         println!("{}", assembled.report.status());
         assert!(
@@ -2638,6 +2758,70 @@ mod tests {
             "{} groups",
             assembled.world.groups.len()
         );
+        // A terrain.dat map's SurfaceType materials draw on the GPU, not
+        // only the grey baked atlas.
+        let layers = assembled
+            .world
+            .terrain_gpu
+            .as_ref()
+            .map_or(0, |gpu| gpu.layers.len());
+        println!("{layers} terrain material layers on the GPU");
+        assert!(layers > 16, "{layers}");
+        // The Paint tool's materials resolve their previews.
+        let leveldata = std::fs::read(project_folder_leveldata(&map)).unwrap();
+        let surfaces = crate::terrain_material_probe::leveldata_surfaces(&leveldata);
+        let palette = crate::terrain_material_probe::surface_palette(&map.archive, &surfaces);
+        let previews = palette.iter().filter(|e| e.thumbnail.is_some()).count();
+        println!(
+            "{previews} of {} terrain materials have a preview",
+            palette.len()
+        );
+        assert!(!palette.is_empty() && previews * 2 >= palette.len());
+        // A reload after an edit reuses the decoded models and textures, so
+        // the renderer can keep the GPU groups of everything unchanged.
+        let previous = assembled.world.clone();
+        let project = map.project.clone().unwrap();
+        let started = std::time::Instant::now();
+        let reloaded = open_project(project.clone(), 0, &library, Some(previous.clone())).unwrap();
+        println!("reload with reuse: {:?}", started.elapsed());
+        assert!(reloaded.reloaded);
+        let world = &reloaded.full_scene.as_ref().unwrap().world;
+        let shared = world
+            .groups
+            .iter()
+            .filter(|group| {
+                previous.groups.iter().any(|old| {
+                    std::sync::Arc::ptr_eq(&old.mesh, &group.mesh)
+                        && old.surfaces.len() == group.surfaces.len()
+                        && old.surfaces.iter().zip(&group.surfaces).all(|(a, b)| {
+                            match (&a.diffuse, &b.diffuse) {
+                                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                                (None, None) => true,
+                                _ => false,
+                            }
+                        })
+                })
+            })
+            .count();
+        println!("{shared} of {} groups reused", world.groups.len());
+        // Everything but the ground (rebuilt from the terrain file) is reused.
+        assert!(shared + 1 >= world.groups.len(), "{shared}");
+        // A fresh open decodes again: only the built-in wildlife marker
+        // mesh, shared by every load, is the same.
+        let fresh = open_project(project, 0, &library, None).unwrap();
+        assert!(!fresh.reloaded);
+        let fresh = &fresh.full_scene.as_ref().unwrap().world;
+        let same = fresh
+            .groups
+            .iter()
+            .filter(|group| {
+                previous
+                    .groups
+                    .iter()
+                    .any(|old| std::sync::Arc::ptr_eq(&old.mesh, &group.mesh))
+            })
+            .count();
+        assert!(same <= 1, "{same}");
     }
 
     #[test]

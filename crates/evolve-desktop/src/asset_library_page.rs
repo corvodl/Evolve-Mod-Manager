@@ -16,15 +16,30 @@ fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Containe
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: 12.0.into(),
+                radius: design::radius(theme, design::Radius::Large).into(),
             },
             ..container::Style::default()
         })
 }
 
+fn sort_cell(
+    label: &'static str,
+    column: &'static str,
+    width: u16,
+    state: &State,
+) -> Element<'static, Message> {
+    crate::ui_kit::sort_header(
+        label,
+        column,
+        state.library_sort,
+        Message::SortBy("library", column),
+        Length::FillPortion(width),
+    )
+}
+
 fn header_cell(label: &'static str, width: u16) -> Element<'static, Message> {
     text(label)
-        .size(13)
+        .size(design::BODY)
         .width(Length::FillPortion(width))
         .into()
 }
@@ -173,21 +188,25 @@ fn archive_row<'a>(
     selected: bool,
     compact: bool,
     details: bool,
+    query: &str,
+    accent: iced::Color,
 ) -> Element<'a, Message> {
     let content = row![
         column![
-            text(archive.name.as_str()).size(13),
-            text(archive.group.as_str()).size(11).style(design::muted),
+            crate::forms::highlight(archive.name.as_str(), query, 13.0, accent),
+            text(archive.group.as_str())
+                .size(design::CAPTION)
+                .style(design::muted),
         ]
         .width(Length::FillPortion(6)),
         text(source_label(&archive.source))
-            .size(12)
+            .size(design::LABEL)
             .width(Length::FillPortion(4)),
         text(archive_build_label(archive))
-            .size(12)
+            .size(design::LABEL)
             .width(Length::FillPortion(3)),
         text(archive.entries.to_string())
-            .size(12)
+            .size(design::LABEL)
             .width(Length::FillPortion(1)),
     ]
     .spacing(9)
@@ -201,6 +220,17 @@ fn archive_row<'a>(
         design::button(if details { "Less" } else { "Details" })
             .style(design::text_button)
             .on_press(Message::LibraryToggleDetails(archive.id.clone())),
+        design::tooltip(
+            iced::widget::button(crate::icons::glyph(crate::icons::details(), 15.0))
+                .padding(5)
+                .style(design::text_button)
+                .on_press(Message::Chrome(crate::chrome::Msg::OpenSheet(
+                    crate::chrome::Sheet::Pak(index),
+                ))),
+            "Open in side panel",
+            None,
+            iced::widget::tooltip::Position::Left,
+        ),
     ]
     .spacing(8)
     .align_y(iced::Center);
@@ -209,12 +239,12 @@ fn archive_row<'a>(
         content = content.push(
             container(
                 column![
-                    text(format!("Original source: {}", archive.source)).size(11),
+                    text(format!("Original source: {}", archive.source)).size(design::CAPTION),
                     text(format!(
                         "Archive identity: {}  •  {}",
                         archive.id, archive.description
                     ))
-                    .size(11),
+                    .size(design::CAPTION),
                     text(format!(
                         "Build memberships: {}",
                         if archive.builds.is_empty() {
@@ -223,7 +253,7 @@ fn archive_row<'a>(
                             archive.builds.join(", ")
                         }
                     ))
-                    .size(11),
+                    .size(design::CAPTION),
                 ]
                 .spacing(3),
             )
@@ -259,8 +289,8 @@ fn browser_group_row<'a>(
 ) -> Element<'a, Message> {
     let arrow = if is_open { "▾" } else { "▸" };
     let content = row![
-        text(if nested { "    " } else { "" }).size(12),
-        text(arrow).size(13),
+        text(if nested { "    " } else { "" }).size(design::LABEL),
+        text(arrow).size(design::BODY),
         text(label).size(if nested { 12 } else { 14 }),
     ]
     .spacing(9)
@@ -410,7 +440,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         ""
                     }
                 ))
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             );
         }
@@ -420,7 +450,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     "…and {} other changed/new PAKs",
                     plan.changed.len() - 8
                 ))
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             );
         }
@@ -429,21 +459,21 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         });
         let summary = column![
             row![
-                text("UPDATE IMPORTED BUILD").size(15),
+                text("UPDATE IMPORTED BUILD").size(design::HEADING),
                 space().width(Fill),
                 design::button("Close").style(design::text_button)
                     .on_press_maybe((!state.busy).then_some(Message::LibraryUpdateScanned(
                         Err("Update preview dismissed".into())
                     ))),
             ].spacing(8),
-            text(format!("Source installation: {}", evolve_core::library_paths::ordinary_path(&plan.source_root.to_string_lossy()))).size(12),
+            text(format!("Source installation: {}", evolve_core::library_paths::ordinary_path(&plan.source_root.to_string_lossy()))).size(design::LABEL),
             text(format!(
                 "{} new  •  {} changed  •  {} unchanged  •  {} removed  •  {} reused  •  {:.2} GiB to import",
                 plan.new_count, plan.changed_count, plan.unchanged, plan.removed.len(),
                 plan.reused_count, plan.import_bytes as f64 / 1_073_741_824.0
-            )).size(13),
+            )).size(design::BODY),
             text("SHA-256 scan only: matching archives across other installations reuse the same imported extraction, so only genuinely new/changed PAK bytes are copied. A changed encrypted PAK still needs verification and re-extraction. Installed games and mod projects stay untouched.")
-                .size(11).style(design::muted),
+                .size(design::CAPTION).style(design::muted),
             changed_paths,
             row![
                 design::button(text(if plan.changed.is_empty() && plan.removed.is_empty() {
@@ -463,7 +493,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     format!("Updated import: {progress} / {}", plan.changed.len())
                 } else {
                     "Review this build's changes before importing".to_owned()
-                }).size(11).style(design::muted),
+                }).size(design::CAPTION).style(design::muted),
                 design::button("Cancel after current PAK")
                     .style(design::secondary)
                     .on_press_maybe(importing.then_some(Message::LibraryImportCancel)),
@@ -473,7 +503,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     } else if state.library_import_scanning {
         layout = layout.push(
             text("Scanning this build and hashing original PAKs. No files are being imported.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
         );
     }
@@ -490,7 +520,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .on_press_maybe((!disabled).then_some(Message::LibraryToggleConfiguration)),
             ].spacing(8),
             text("Select individual PAK files here, or use Import or Update Game Build Folder to scan all nested PAKs incrementally. Previously imported copies are reused across game folders. Original PAKs are never modified.")
-                .size(12).style(design::muted),
+                .size(design::LABEL).style(design::muted),
             row![
                 design::button("Add PAK files…").style(design::secondary)
                     .on_press_maybe((!disabled).then_some(Message::LibraryPickFiles)),
@@ -498,12 +528,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .on_press_maybe((!disabled).then_some(Message::LibraryUpdatePickFolder)),
             ].spacing(10),
             text("Each PAK is independently verified using the bundled original public key and configured public keys. Existing complete imports are reused. A corrupt or incompatible archive will be reported without discarding successful imports.")
-                .size(12).style(design::muted),
+                .size(design::LABEL).style(design::muted),
         ].spacing(10);
         if picking {
             importer = importer.push(
                 text("Scanning selected files and building the import preview…")
-                    .size(13)
+                    .size(design::BODY)
                     .style(design::muted),
             );
         }
@@ -523,14 +553,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     text(evolve_core::library_paths::ordinary_path(
                         &path.to_string_lossy(),
                     ))
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
                 );
             }
             if plan.files.len() > 10 {
                 filenames = filenames.push(
                     text(format!("… plus {} more PAKs", plan.files.len() - 10,))
-                        .size(12)
+                        .size(design::LABEL)
                         .style(design::muted),
                 );
             }
@@ -549,7 +579,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         .style(design::primary)
                         .on_press_maybe((!disabled).then_some(Message::LibraryImportStart)),
                     text("Large full-game imports can use significant disk space.")
-                        .size(12)
+                        .size(design::LABEL)
                         .style(design::muted),
                 ]
                 .spacing(12),
@@ -568,7 +598,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .map_or(0, |plan| plan.files.len());
             importer = importer.push(
                 row![
-                    text(format!("Importing: {count} / {total} archives completed")).size(13),
+                    text(format!("Importing: {count} / {total} archives completed"))
+                        .size(design::BODY),
                     design::button("Cancel after current PAK")
                         .on_press(Message::LibraryImportCancel),
                 ]
@@ -630,19 +661,56 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     layout = layout.push(tabs);
     layout = layout.push(
         row![
-            design::text_input(
+            crate::forms::search_field(
                 "Search imported PAKs, names, folders...",
-                &state.library_search
-            )
-            .on_input(Message::LibrarySearchChanged)
-            .width(Fill),
+                &state.library_search,
+                Some(state.library_matches.len()),
+                Message::LibrarySearchChanged,
+            ),
             design::button("Refresh").on_press(Message::LibraryRefresh),
         ]
         .spacing(8),
     );
+    layout = layout.push(crate::ui_kit::chips(
+        &state.library_chips,
+        &state.library_chip_options,
+        &state.library_chip_query,
+        Message::LibraryChipPicked,
+        Message::LibraryChipInput,
+        Message::LibraryChipRemove,
+    ));
+    // Library › Build › PAK for the current selection.
+    if let Some(archive) = selected {
+        let mut crumbs = vec![crate::chrome::Crumb {
+            label: "Library".into(),
+            message: Some(Message::Chrome(crate::chrome::Msg::LibraryRoot)),
+        }];
+        let build = library
+            .filter(|_| state.library_by_build)
+            .and_then(|catalog| catalog.builds.get(state.library_build_index))
+            .or_else(|| archive.builds.first());
+        if let Some(build) = build {
+            crumbs.push(crate::chrome::Crumb {
+                label: build.clone(),
+                message: None,
+            });
+        }
+        if !archive.group.is_empty() {
+            crumbs.push(crate::chrome::Crumb {
+                label: archive.group.clone(),
+                message: None,
+            });
+        }
+        crumbs.push(crate::chrome::Crumb {
+            label: archive.name.clone(),
+            message: None,
+        });
+        layout = layout.push(crate::chrome::breadcrumbs(crumbs, state.chrome.crumb_menu));
+    }
 
     let display_rows = browser_rows(state);
     let matching = state.library_matches.len();
+    let accent = crate::forms::highlight_color(&state.preferences);
     let pages = display_rows.len().div_ceil(PAGE_SIZE).max(1);
     let page = state.library_page.min(pages - 1);
     let mut rows = column![].spacing(0);
@@ -694,6 +762,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                             state.library_selection.indices.contains(index),
                             state.preferences.ui_density == "Compact",
                             state.library_expanded_details.contains(&archive.id),
+                            &state.library_search,
+                            accent,
                         ));
                         shown += 1;
                     }
@@ -702,29 +772,61 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         }
     }
     if matching == 0 {
-        rows = rows.push(
-            container(
-                text(if state.library_startup_loading {
-                    "Indexing imported PAK manifests from the detected manager Asset Library location…"
-                } else if library.is_none() {
-                    "No imported PAKs at the detected manager Asset Library location. Use Import PAKs to add an archive."
-                } else if by_build && build.is_none() {
-                    "No build snapshot is available. Use By Category or import snapshot metadata."
-                } else {
-                    "No imported PAKs match this search."
-                })
-                .size(13)
-                .style(design::muted),
+        rows = rows.push(if state.library_startup_loading {
+            // Skeleton rows pulse while manifests are indexed.
+            let alpha = crate::ui_kit::pulse(
+                state.ui.clock(std::time::Instant::now()),
+                state.preferences.reduce_motion,
+            );
+            let mut skeleton = column![].spacing(10).padding(14);
+            for _ in 0..8 {
+                skeleton = skeleton.push(
+                    row![
+                        column![
+                            crate::ui_kit::skeleton(Fill, 12.0, alpha),
+                            crate::ui_kit::skeleton(Length::Fixed(120.0), 9.0, alpha),
+                        ]
+                        .spacing(5)
+                        .width(Length::FillPortion(6)),
+                        crate::ui_kit::skeleton(Length::FillPortion(4), 11.0, alpha),
+                        crate::ui_kit::skeleton(Length::FillPortion(3), 11.0, alpha),
+                        crate::ui_kit::skeleton(Length::FillPortion(1), 11.0, alpha),
+                    ]
+                    .spacing(9)
+                    .align_y(iced::Center),
+                );
+            }
+            Element::from(skeleton)
+        } else if library.is_none_or(|catalog| catalog.archives.is_empty()) {
+            crate::ui_kit::empty_state(
+                Some(Page::AssetLibrary.icon()),
+                "Your library is empty",
+                "Import original game PAKs to browse, preview and start mod projects from them. Originals stay read-only.",
+                Some(("Import PAKs…", Message::LibraryToggleConfiguration)),
             )
-            .padding(18),
-        );
+        } else if by_build && build.is_none() {
+            container(
+                text("No build snapshot is available. Use By Category or import snapshot metadata.")
+                    .size(design::BODY)
+                    .style(design::muted),
+            )
+            .padding(18)
+            .into()
+        } else {
+            crate::ui_kit::empty_state(
+                None,
+                "No matches",
+                "No imported PAKs match this search.",
+                None,
+            )
+        });
     }
     let table_heading = container(
         row![
-            header_cell("Archive / Category", 6),
-            header_cell("Game", 4),
-            header_cell("Build(s)", 3),
-            header_cell("Files", 1),
+            sort_cell("Archive / Category", "name", 6, state),
+            sort_cell("Game", "game", 4, state),
+            sort_cell("Build(s)", "builds", 3, state),
+            sort_cell("Files", "files", 1, state),
             header_cell("Actions", 1),
         ]
         .spacing(9)
@@ -736,9 +838,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     })
     .width(Fill);
     let table = panel(
-        column![table_heading, scrollable(rows).height(Fill),]
-            .spacing(0)
-            .height(Fill),
+        column![
+            table_heading,
+            crate::ui_kit::faded_scroll(&state.ui, "library-rows", rows, display_rows.len() > 12),
+        ]
+        .spacing(0)
+        .height(Fill),
     );
     layout = layout.push(table.height(Fill));
     let (count, bytes, ignored) = library
@@ -749,13 +854,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             "{count} imported records • {matching} matching • {:.1} GiB manifest-listed extraction • read-only previews{}",
             bytes as f64 / 1_073_741_824.0,
             if ignored > 0 { format!(" • {ignored} invalid manifests skipped") } else { String::new() }
-        )).size(12).style(design::muted).width(Fill),
+        )).size(design::LABEL).style(design::muted).width(Fill),
         design::button("‹").on_press_maybe((page > 0).then_some(Message::LibraryPreviousPage)),
-        text(format!("{} / {}  •  {} shown", page + 1, pages, shown)).size(12),
+        text(format!("{} / {}  •  {} shown", page + 1, pages, shown)).size(design::LABEL),
         design::button("›").on_press_maybe((page + 1 < pages).then_some(Message::LibraryNextPage)),
     ].spacing(10).align_y(iced::Center));
     layout = layout.push(row![
-        text(format!("{} selected", state.library_selection.indices.len())).size(12).style(design::muted),
+        text(format!("{} selected", state.library_selection.indices.len())).size(design::LABEL).style(design::muted),
         design::button("Preview Files").style(design::secondary).on_press_maybe(selected.map(|_| Message::LibraryPreview)),
         design::button("Edit / Add to Mod Project")
             .style(design::primary)
@@ -764,7 +869,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             "Shift: visible range (across pages) • Ctrl: toggle. Expand groups to select individual PAKs. Originals stay read-only."
         } else {
             "Select an imported archive to preview its extracted files."
-        }).size(12).style(design::muted),
+        }).size(design::LABEL).style(design::muted),
     ].spacing(9).align_y(iced::Center));
     let x = match state.library_menu {
         Some("File") => 16.0,
@@ -794,7 +899,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: 8.0.into(),
+                radius: design::radius(theme, design::Radius::Medium).into(),
             },
             ..container::Style::default()
         });
@@ -815,9 +920,9 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
                 .on_press(Message::LibraryManageBuildsToggle),
         ].align_y(iced::Center).spacing(8),
         text("Rename registered builds, refresh imported PAKs or remove obsolete library snapshots. Original game installations and mod projects are never deleted.")
-            .size(12).style(design::muted),
+            .size(design::LABEL).style(design::muted),
         row![
-            text(format!("{} registered build(s)", state.library_managed_builds.len())).size(12),
+            text(format!("{} registered build(s)", state.library_managed_builds.len())).size(design::LABEL),
             space().width(Fill),
             design::button("Import / Update Build…").style(design::secondary)
                 .on_press_maybe((!state.busy && !state.library_import_scanning)
@@ -829,7 +934,7 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
     if state.library_managed_builds.is_empty() {
         content = content.push(
             text("No managed incremental build snapshots found. Older standalone PAK imports remain available in Asset Library.")
-                .size(12).style(design::muted),
+                .size(design::LABEL).style(design::muted),
         );
     }
     for build in &state.library_managed_builds {
@@ -840,15 +945,15 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
                 build.source_root.clone()
             } else {
                 build.display_name.clone()
-            }).size(15),
-            text(format!("Source: {}", build.source_root)).size(12).style(design::muted),
+            }).size(design::HEADING),
+            text(format!("Source: {}", build.source_root)).size(design::LABEL).style(design::muted),
             text(format!(
                 "{} PAKs • {:.2} GiB extracted • {} history ID(s) • {:.2} GiB potentially reclaimable",
                 build.pak_count,
                 build.extracted_bytes as f64 / 1_073_741_824.0,
                 build.aliases,
                 build.reclaimable_bytes as f64 / 1_073_741_824.0
-            )).size(11).style(design::muted),
+            )).size(design::CAPTION).style(design::muted),
         ].spacing(5);
         if editing {
             item = item.push(
@@ -869,7 +974,7 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
             );
         } else if deleting {
             item = item.push(column![
-                text("Remove the imported snapshot history and only proven unshared extractions? Original Evolve files will remain untouched.").size(12),
+                text("Remove the imported snapshot history and only proven unshared extractions? Original Evolve files will remain untouched.").size(design::LABEL),
                 row![
                     design::button("Confirm Remove").style(design::primary)
                         .on_press_maybe((!state.busy).then_some(Message::LibraryDeleteBuildNow(build.id.clone()))),
@@ -885,14 +990,23 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
                             (!state.busy)
                                 .then_some(Message::LibraryRenameBuildBegin(build.id.clone()))
                         ),
-                    design::button("Remove Imported Build")
-                        .style(design::secondary)
-                        .on_press_maybe(
-                            (!state.busy)
-                                .then_some(Message::LibraryDeleteBuildConfirm(build.id.clone()))
-                        ),
+                    // Hold to confirm (two-click with reduce motion): the
+                    // removal starts directly once the hold completes.
+                    crate::ui_kit::hold_button(
+                        &state.ui,
+                        &format!("remove-build:{}", build.id),
+                        "Hold to Remove Build",
+                        Message::LibraryDeleteBuildNow(build.id.clone()),
+                        !state.busy,
+                        state.preferences.reduce_motion,
+                    ),
                 ]
                 .spacing(8),
+            );
+            item = item.push(
+                text("Removing deletes the imported snapshot history and only proven unshared extractions. Original Evolve files remain untouched.")
+                    .size(design::CAPTION)
+                    .style(design::muted),
             );
         }
         content = content.push(panel(container(item).padding(12)));

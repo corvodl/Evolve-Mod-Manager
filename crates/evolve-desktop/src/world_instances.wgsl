@@ -82,14 +82,14 @@ struct SourceLights {
 // saturation mapped to a bounded linear-radiance ACES preview. This does
 // NOT reproduce Evolve's eye-adaptation history or bloom framebuffer.
 @group(0) @binding(14) var<uniform> hdr:vec4<f32>;
-// Native-resolution authored Terrain.Layer diffuse sources. A 16-layer
-// source-verification limit is explicit; no guessed material ID mapping.
+// Authored Terrain.Layer diffuse sources, at most 32 (MAX_TERRAIN_LAYERS);
+// no guessed material ID mapping.
 @group(0) @binding(15) var source_terrain_layers: texture_2d_array<f32>;
 @group(0) @binding(16) var source_terrain_ids: texture_2d<f32>;
 struct SourceTerrainParams {
   info: vec4<f32>, // paint width, height, world unit, decoded layer count
-  layers: array<vec4<f32>, 16>, // actual LayerId, TileU, TileV, detail strength
-  blend: array<vec4<f32>, 16>,  // BlendFactor, BlendFalloff, PomDisplacement
+  layers: array<vec4<f32>, 32>, // actual LayerId, TileU, TileV, detail strength
+  blend: array<vec4<f32>, 32>,  // BlendFactor, BlendFalloff, PomDisplacement
 }
 @group(0) @binding(17) var<uniform> source_terrain: SourceTerrainParams;
 @group(0) @binding(18) var source_terrain_repeat: sampler;
@@ -306,7 +306,7 @@ fn blended_terrain(input:Output,baked:vec3<f32>)->vec3<f32> {
   let a=fract(coord);
   let cells=array<vec2<i32>,4>(lo,vec2<i32>(hi.x,lo.y),vec2<i32>(lo.x,hi.y),hi);
   let corner=array<f32,4>((1.0-a.x)*(1.0-a.y),a.x*(1.0-a.y),(1.0-a.x)*a.y,a.x*a.y);
-  var coverage=array<f32,16>();
+  var coverage=array<f32,32>();
   let count=i32(source_terrain.info.w);
   for (var i:i32=0;i<4;i=i+1) {
     let id=round(textureLoad(source_terrain_ids,cells[i],0).r*255.0);
