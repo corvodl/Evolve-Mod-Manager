@@ -3086,6 +3086,9 @@ enum QuitGuard {
     Quit,
 }
 
+// Legacy developer and experimental message variants remain intentionally
+// available even when the active UI does not construct them.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
