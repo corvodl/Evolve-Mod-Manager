@@ -3,6 +3,7 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
+mod anim;
 mod assembly_materials;
 mod asset_cache;
 mod asset_library_page;
@@ -10,14 +11,21 @@ mod asset_viewer;
 mod audio_tools;
 mod auto_resources;
 mod blender_install;
+mod chrome;
 mod client_version;
+mod color_picker;
+mod command_palette;
 mod crash_diagnostics;
 mod design;
 mod developer_auth;
 mod developer_hotkeys;
+mod diff_view;
 mod direct_runtime;
 mod discord_presence;
 mod explorer_tree;
+mod forms;
+mod fx;
+mod gallery;
 mod gfx_bundled_tools;
 mod gfx_dependencies;
 mod gfx_editor;
@@ -34,6 +42,7 @@ mod gfx_menu_video;
 mod gfx_mode_images;
 mod gfx_tool_install;
 mod guided_modding;
+mod icons;
 mod initial_setup;
 mod launcher_bridge;
 mod level_atmosphere;
@@ -82,11 +91,14 @@ mod staged_library;
 mod standard_user_launch;
 mod storage_usage;
 mod system_health;
+mod system_meters;
 mod terrain_brush;
 mod terrain_material_probe;
 // Native RGB24 source-backed output stage; UI activation awaits verified\n// per-pixel Evolve paint alpha and original multi-layer shader ordering.\n#[allow(dead_code)]\nmod terrain_rebake_project;
 mod text_asset_editor;
 mod textured;
+mod toast;
+mod ui_kit;
 mod updater;
 mod updater_apply;
 mod uv_preview;
@@ -331,10 +343,36 @@ impl ActiveBlendSpace {
 
 #[derive(Default)]
 struct State {
+    toasts: toast::Toasts,
+    /// Shared component state: palette, holds, tickers, island, dock.
+    ui: ui_kit::UiState,
+    color_picker: color_picker::PickerState,
+    gallery: gallery::GalleryState,
+    /// Banners, modal, side sheet and breadcrumb state.
+    chrome: chrome::ChromeState,
+    /// Disk and memory levels from the last System Health check.
+    health_meters: Vec<system_meters::Meter>,
+    /// Cached Settings path checks, refreshed when a path changes.
+    path_checks: forms::PathChecks,
+    /// Last good value per number field.
+    forms: forms::FormState,
+    /// Sort orders for the library table, project list and storage legend.
+    library_sort: ui_kit::Sort,
+    modding_sort: ui_kit::Sort,
+    storage_sort: ui_kit::Sort,
+    /// Filter chips ("Category: X", "Source: Y", "Build: Z").
+    library_chips: Vec<String>,
+    library_chip_query: String,
+    library_chip_options: iced::widget::combo_box::State<String>,
+    /// Catalog fingerprint the chip options were built for.
+    library_chip_options_for: (usize, usize),
+    modding_chips: Vec<String>,
+    modding_chip_query: String,
+    modding_chip_options: iced::widget::combo_box::State<String>,
     level_viewport_fullscreen: bool,
     viewer_viewport_fullscreen: bool,
     sidebar_hovered: bool,
-    sidebar_reveal: f32,
+    sidebar_reveal: anim::Tween,
     input: String,
     output: String,
     replacements: String,
@@ -530,6 +568,8 @@ struct State {
     update_worker_failure: Option<String>,
     retry_update_after_check: bool,
     available_update: Option<ReleaseUpdate>,
+    /// Newer releases on every channel, found by the launch check.
+    launch_updates: Vec<ReleaseUpdate>,
     news: whats_new::NewsState,
     client_version: Option<String>,
     startup_update_checked: bool,
@@ -537,6 +577,8 @@ struct State {
     viewer_rows: Vec<explorer_tree::ExplorerRow>,
     viewer_page: usize,
     viewer_more_rows: bool,
+    /// Files matching the explorer search, across every page.
+    viewer_match_count: Option<usize>,
     // Latest selected asset while an earlier worker is running. Never replay
     // a stale index after the indexed source folder changes.
     viewer_queued_preview: Option<usize>,
@@ -681,6 +723,8 @@ struct State {
     library_matches: Vec<usize>,
     dependency_graph: Option<DependencyGraph>,
     comparison: Option<AssetComparison>,
+    /// Original/modified text for the Compare tab's line diff.
+    comparison_text: Option<(String, String)>,
     compare_original: String,
     compare_modified: String,
     viewer_show_inspector: bool,
@@ -758,24 +802,170 @@ struct State {
     modding_pending_focus: Option<PathBuf>,
 }
 
+/// Both files as UTF-8 text when they are supported text assets within the
+/// text editor's size limit; otherwise `None` (binary assets keep the hash
+/// comparison only).
+fn compare_text_pair(original: &Path, modified: &Path) -> Option<(String, String)> {
+    let read = |path: &Path| -> Option<String> {
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        if !text_asset_editor::compatible(&name) {
+            return None;
+        }
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        if !meta.is_file() || meta.len() > text_asset_editor::MAX_TEXT_BYTES {
+            return None;
+        }
+        let bytes = std::fs::read(path).ok()?;
+        if bytes.contains(&0) {
+            return None;
+        }
+        String::from_utf8(bytes).ok()
+    };
+    Some((read(original)?, read(modified)?))
+}
+
+/// The intro card shows once per update: only when a version was seen
+/// before (so fresh installs skip it) and the installed one is newer.
+fn intro_due(last_seen: &str, installed: &str) -> bool {
+    let (Ok(seen), Ok(now)) = (
+        semver::Version::parse(last_seen.trim_start_matches('v')),
+        semver::Version::parse(installed),
+    ) else {
+        return false;
+    };
+    now > seen
+}
+
+/// First few bullet-like lines of release notes, without Markdown markers.
+fn release_highlights(notes: &str, limit: usize) -> Vec<String> {
+    notes
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(['-', '*', '•']))
+        .map(|line| {
+            line.trim_start_matches(['-', '*', '•', ' '])
+                .replace("**", "")
+        })
+        .filter(|line| !line.is_empty())
+        .take(limit)
+        .collect()
+}
+
+/// `theme_presets` key holding custom colours parked by a theme preset.
+const SAVED_CUSTOM_COLOURS: &str = "Saved custom colours";
+
+/// Full 0→1 sweep of the Legacy sidebar reveal.
+const SIDEBAR_REVEAL_DURATION: Duration = Duration::from_millis(140);
+/// Full off→on travel of a mod toggle thumb.
+const MOD_TOGGLE_DURATION: Duration = Duration::from_millis(280);
+
 /// Visual-only state: the enabled preference is committed before the
 /// thumb animation begins. Never animate a failed preference write.
-const MOD_TOGGLE_FRAMES: u8 = 7;
-
 #[derive(Debug, Clone)]
 struct ModToggleAnimation {
     workspace: PathBuf,
-    from: f32,
-    to: f32,
-    frame: u8,
+    thumb: anim::Tween,
 }
 
 impl ModToggleAnimation {
-    fn position(&self) -> f32 {
-        let t = (f32::from(self.frame) / f32::from(MOD_TOGGLE_FRAMES)).clamp(0.0, 1.0);
-        let eased = t * t * (3.0 - 2.0 * t);
-        self.from + (self.to - self.from) * eased
+    fn position(&self, now: Instant) -> f32 {
+        self.thumb.value(now)
     }
+}
+
+/// True while a looping ambient effect is on screen and motion is allowed:
+/// Home embers, the border beam on busy buttons, and loading skeletons.
+fn ui_ambient_running(state: &State) -> bool {
+    if state.preferences.reduce_motion {
+        return false;
+    }
+    let embers = state.page == Some(Page::Home) && state.preferences.show_home_background;
+    let beam = footer_is_working(state)
+        && matches!(state.page, Some(Page::Files | Page::Home | Page::Settings));
+    let skeleton = news_loading(state) && matches!(state.page, Some(Page::Home | Page::WhatsNew))
+        || state.library_startup_loading && state.page == Some(Page::AssetLibrary);
+    // The Activity button's dot pulses while work runs.
+    let activity = footer_is_working(state);
+    embers || beam || skeleton || activity
+}
+
+/// Writes one bookkeeping field into the saved preferences without also
+/// saving Settings edits the user hasn't saved yet.
+fn persist_saved_field(change: impl FnOnce(&mut Preferences)) {
+    let Ok(path) = settings_path() else {
+        return;
+    };
+    // No saved file yet (or an unreadable one): don't create or replace it.
+    let Ok(mut saved) = load_from(&path) else {
+        return;
+    };
+    change(&mut saved);
+    let _ = save_to(&path, &saved);
+}
+
+/// Remembers the newest announcement as seen, so the What's New count
+/// clears. Saved straight away so it survives a restart.
+fn mark_news_seen(state: &mut State) {
+    if let Some(newest) = chrome::newest_news(state)
+        && newest > state.preferences.news_seen_at
+    {
+        state.preferences.news_seen_at = newest.clone();
+        persist_saved_field(move |saved| saved.news_seen_at = newest);
+    }
+}
+
+/// News has been requested but nothing has arrived yet.
+fn news_loading(state: &State) -> bool {
+    state.news.loading
+}
+
+/// Retarget number tickers from current values. Runs after every message,
+/// so a ticker starts easing the moment its value changes.
+fn sync_tickers(state: &mut State) {
+    let now = Instant::now();
+    let reduce = state.preferences.reduce_motion;
+    if let Some(projects) = state.modding_projects.as_ref() {
+        let enabled = projects.iter().filter(|project| project.enabled).count();
+        state
+            .ui
+            .set_ticker("enabled_mods", enabled as f64, now, reduce);
+    }
+    if let Some(usage) = state.storage_usage.as_ref() {
+        let total: u64 = usage.buckets.iter().sum();
+        state
+            .ui
+            .set_ticker("storage_total", total as f64, now, reduce);
+        for (index, bytes) in usage.buckets.iter().enumerate() {
+            const KEYS: [&str; 5] = [
+                "storage_0",
+                "storage_1",
+                "storage_2",
+                "storage_3",
+                "storage_4",
+            ];
+            state.ui.set_ticker(KEYS[index], *bytes as f64, now, reduce);
+        }
+    }
+    match state.library_import_progress.as_ref() {
+        Some(progress) => {
+            let files = progress.load(std::sync::atomic::Ordering::Relaxed);
+            state
+                .ui
+                .set_ticker("import_files", files as f64, now, reduce);
+        }
+        None => state.ui.clear_ticker("import_files"),
+    }
+}
+
+/// True while any shared UI tween still needs frames.
+fn ui_animation_running(state: &State, now: Instant) -> bool {
+    state.ui.animating(now)
+        || state.chrome.animating(now)
+        || state.sidebar_reveal.is_running(now)
+        || state
+            .mod_toggle_animations
+            .iter()
+            .any(|animation| animation.thumb.is_running(now))
 }
 
 /// Docked tools all share the same resizable sidebar. Files is permanent;
@@ -1093,7 +1283,8 @@ enum Completed {
     ManagedLibraryBuildRenamed(Vec<ManagedLibraryBuild>, ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
-    Comparison(AssetComparison),
+    /// Report plus both files' text when they are small UTF-8 text assets.
+    Comparison(AssetComparison, Option<Box<(String, String)>>),
     Inventory(Inventory),
     Pak(PakInventory),
     Texture(DdsInfo),
@@ -1349,7 +1540,14 @@ impl Operation {
                     .map_err(|e| e.to_string())
             }
             Self::CompareAssets(original, modified) => compare_assets(&original, &modified)
-                .map(Completed::Comparison)
+                .map(|report| {
+                    // Text assets also get a line diff, read here off the UI thread.
+                    let texts = (!report.identical)
+                        .then(|| compare_text_pair(&original, &modified))
+                        .flatten()
+                        .map(Box::new);
+                    Completed::Comparison(report, texts)
+                })
                 .map_err(|e| e.to_string()),
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
@@ -2655,8 +2853,48 @@ impl Operation {
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
+    /// Shared UI component events (palette, hold buttons, island, dock).
+    Ui(ui_kit::UiMsg),
+    /// Run several messages in order (palette commands that navigate first).
+    Sequence(Vec<Message>),
+    OpenSettingsTab(settings_page::Tab),
+    TextEditorToggleDiff,
+    DismissIntro,
+    Gallery(gallery::Msg),
+    Chrome(chrome::Msg),
+    Form(forms::FormMsg),
+    /// Browse for a path setting that has no dedicated picker.
+    BrowsePath(forms::PathKind),
+    BrowsedPath(forms::PathKind, Option<PathBuf>),
+    /// Move a mod within the selected profile: `(from, to)`.
+    ProfileModMove(usize, usize),
+    /// Sort a table: `(table, column)`; clicking again flips direction.
+    SortBy(&'static str, &'static str),
+    LibraryChipPicked(String),
+    LibraryChipInput(String),
+    LibraryChipRemove(usize),
+    ModdingChipPicked(String),
+    ModdingChipInput(String),
+    ModdingChipRemove(usize),
+    /// Files are being dragged over (`true`) or left (`false`) a window.
+    FilesHovered(window::Id, bool),
+    ColorPicker(color_picker::Msg),
+    /// Copy a value from a copy button: `(button id, value)`.
+    CopyToClipboard(String, String),
+    PreferenceThemePreset(&'static str),
+    PreferenceUpdateChannelSet(&'static str),
+    PreferenceAppearanceSet(&'static str),
+    PreferenceCornerStyle(&'static str),
+    ToastTick(std::time::Instant),
+    DismissToast(u64),
+    ToastClicked(u64),
+    OpenUpdatesSettings,
+    CheckAllUpdatesOnLaunch,
+    LaunchUpdatesChecked(Vec<(UpdateChannel, Result<Option<ReleaseUpdate>, String>)>),
+    ApplyLaunchUpdate(String),
     SidebarHover(bool),
-    SidebarAnimationTick,
+    /// Redraw tick for shared `anim::Tween`s; only subscribed while one runs.
+    AnimationFrame,
     LibraryPickFiles,
     LibraryPickFolder,
     LibraryUpdatePickFolder,
@@ -2997,6 +3235,7 @@ enum Message {
     ToggleSystemHealth,
     CheckSystemHealth,
     SystemHealthChecked(system_health::Snapshot),
+    SystemMetersChecked(Vec<system_meters::Meter>),
     DeveloperPasswordChanged(String),
     UnlockDeveloper,
     DeveloperChecked(bool),
@@ -3155,7 +3394,6 @@ enum Message {
     OpenCrashLogs,
     OpenCrashLogsFolder,
     PreferenceUpdateChannel,
-    PreferenceAutoUpdates,
     PreferenceStage(String),
     PreferenceGameStorage(String),
     SettingsToggleAdvancedPaths,
@@ -3429,6 +3667,7 @@ fn submit_level_project_edit(
     let project = state.level_project.clone().unwrap();
     let projects_root = PathBuf::from(&state.preferences.projects);
     let library_root = PathBuf::from(&state.library_root);
+    state.ui.mark_saving("level");
     launch(
         state,
         Operation::SaveProjectSource(project, source, change, projects_root, library_root),
@@ -4225,12 +4464,62 @@ fn operation_label(operation: &Operation) -> &'static str {
     }
 }
 
+/// User actions whose successful completion deserves a toast even when
+/// quick. Background loads and inspections stay quiet unless they fail or
+/// take long enough that the user was likely waiting on them.
+fn announces_success(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::BuildRawProject(..)
+            | Operation::RebuildPak(..)
+            | Operation::StageBuiltOfflineTest(..)
+            | Operation::ImportRawProjectMember(..)
+            | Operation::RestoreRawProjectMember(..)
+            | Operation::UnpackRawProject(..)
+            | Operation::ExtractPak(..)
+            | Operation::ImportSignedLibraryPlan(..)
+            | Operation::ApplyLibraryBuildUpdates(..)
+            | Operation::RemoveManagedLibraryBuild(..)
+            | Operation::RenameManagedLibraryBuild(..)
+            | Operation::CreateProjectFromLibrary(..)
+            | Operation::AnalyzeStorage(..)
+            | Operation::RiggedGlb(..)
+            | Operation::RiggedFbx(..)
+            | Operation::ExportBundle(..)
+            | Operation::ConvertMotion(..)
+            | Operation::SaveProjectLevel(..)
+            | Operation::ExportEditedLevel(..)
+            | Operation::ExtractSignedPak(..)
+            | Operation::ResignSignedPak(..)
+            | Operation::RebuildSignedPak(..)
+            | Operation::PrepareClientHook(..)
+            | Operation::CreateInitialSetup(..)
+            | Operation::CreateTestSetup(..)
+            | Operation::RestoreExistingOfflineLauncher(..)
+            | Operation::ExportLevelGlb(..)
+            | Operation::ExportLevelFbx(..)
+            | Operation::StageInit(..)
+            | Operation::StageImport(..)
+            | Operation::StageApply(..)
+            | Operation::StageRestore(..)
+            | Operation::CreateProfile(..)
+            | Operation::AddProfileMod(..)
+            | Operation::ApplyProfile(..)
+            | Operation::RecoverProfile(..)
+            | Operation::ExportPng(..)
+            | Operation::CompileDds(..)
+    )
+}
+
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     if state.busy {
         return Task::none();
     }
     state.busy = true;
     state.busy_operation = Some(operation_label(&operation).to_owned());
+    state
+        .toasts
+        .begin(operation_label(&operation), announces_success(&operation));
     state.activity_started = Some(std::time::Instant::now());
     if !matches!(&operation, Operation::BuildStaticCdf(..)) {
         state.viewer_load_progress = None;
@@ -4471,6 +4760,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.material_report = None;
     state.dependency_graph = None;
     state.comparison = None;
+    state.comparison_text = None;
     state.character = None;
     state.cdf_dependencies = None;
     state.diffuse = None;
@@ -4597,6 +4887,50 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
     )
 }
 
+fn selected_update_channel(preferences: &settings::Preferences) -> UpdateChannel {
+    if preferences.nightly_updates {
+        UpdateChannel::Nightly
+    } else if preferences.experimental_updates {
+        UpdateChannel::Beta
+    } else {
+        UpdateChannel::Stable
+    }
+}
+
+fn channel_name(channel: UpdateChannel) -> &'static str {
+    match channel {
+        UpdateChannel::Stable => "Stable",
+        UpdateChannel::Beta => "Beta",
+        UpdateChannel::Nightly => "Nightly",
+    }
+}
+
+/// Launch-time check of every channel, so users hear about Stable, Beta
+/// and Nightly releases regardless of the channel they follow.
+fn check_all_updates_task() -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                [
+                    UpdateChannel::Stable,
+                    UpdateChannel::Beta,
+                    UpdateChannel::Nightly,
+                ]
+                .into_iter()
+                .map(|channel| {
+                    let result = discover_update(channel, env!("CARGO_PKG_VERSION"))
+                        .map_err(|error| error.to_string());
+                    (channel, result)
+                })
+                .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default()
+        },
+        Message::LaunchUpdatesChecked,
+    )
+}
+
 fn start_news_images(state: &mut State) -> Task<Message> {
     if state.news.images_loading {
         return Task::none();
@@ -4687,6 +5021,40 @@ fn refresh_library_matches(state: &mut State) {
         state.library_matches.clear();
         return;
     };
+    // Chip options are rebuilt only when the catalog changes, so the combo
+    // box keeps its own state while typing.
+    let fingerprint = (catalog.archives.len(), catalog.builds.len());
+    if state.library_chip_options_for != fingerprint {
+        let mut options = std::collections::BTreeSet::new();
+        for archive in &catalog.archives {
+            if !archive.group.is_empty() {
+                options.insert(format!("Category: {}", archive.group));
+            }
+            if !archive.source.is_empty() {
+                options.insert(format!("Source: {}", archive.source));
+            }
+        }
+        for build in &catalog.builds {
+            options.insert(format!("Build: {build}"));
+        }
+        state.library_chip_options =
+            iced::widget::combo_box::State::new(options.into_iter().collect());
+        state.library_chip_options_for = fingerprint;
+    }
+    let chips = state.library_chips.clone();
+    let chip_match = |entry: &evolve_core::ImportedPak| {
+        chips.iter().all(|chip| {
+            if let Some(value) = chip.strip_prefix("Category: ") {
+                entry.group == value
+            } else if let Some(value) = chip.strip_prefix("Source: ") {
+                entry.source == value
+            } else if let Some(value) = chip.strip_prefix("Build: ") {
+                entry.builds.iter().any(|build| build == value)
+            } else {
+                true
+            }
+        })
+    };
     let needle = state.library_search.to_ascii_lowercase();
     let build = state
         .library_by_build
@@ -4698,6 +5066,9 @@ fn refresh_library_matches(state: &mut State) {
         .enumerate()
         .filter_map(|(i, entry)| {
             if state.library_by_build && !build.is_some_and(|label| entry.builds.contains(label)) {
+                return None;
+            }
+            if !chip_match(entry) {
                 return None;
             }
             if !needle.is_empty()
@@ -4715,6 +5086,20 @@ fn refresh_library_matches(state: &mut State) {
             Some(i)
         })
         .collect();
+    // Sorting happens here (data or column change), never per redraw.
+    if let Some((column, ascending)) = state.library_sort {
+        let archives = &catalog.archives;
+        state.library_matches.sort_by(|&a, &b| {
+            let (a, b) = (&archives[a], &archives[b]);
+            let order = match column {
+                "game" => a.source.to_lowercase().cmp(&b.source.to_lowercase()),
+                "builds" => a.builds.len().cmp(&b.builds.len()),
+                "files" => a.entries.cmp(&b.entries),
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            };
+            if ascending { order } else { order.reverse() }
+        });
+    }
 }
 
 fn refresh_viewer_rows(state: &mut State) {
@@ -4740,6 +5125,12 @@ fn refresh_viewer_rows(state: &mut State) {
     } else {
         Vec::new()
     };
+    let needle = state.viewer_search.trim().to_lowercase();
+    state.viewer_match_count = (!needle.is_empty()).then(|| {
+        rows.iter()
+            .filter(|(_, path, _)| path.to_lowercase().contains(&needle))
+            .count()
+    });
     const PAGE: usize = 350;
     let offset = state.viewer_page.saturating_mul(PAGE);
     let mut visible = explorer_tree::visible_rows_page(
@@ -4808,20 +5199,83 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::SidebarHover(hovered) => {
             state.sidebar_hovered = hovered;
-            if state.preferences.reduce_motion {
-                state.sidebar_reveal = if hovered { 1.0 } else { 0.0 };
+            state.sidebar_reveal = state.sidebar_reveal.with_easing(anim::Easing::EaseOut);
+            state.sidebar_reveal.animate_to(
+                if hovered { 1.0 } else { 0.0 },
+                Instant::now(),
+                SIDEBAR_REVEAL_DURATION,
+                state.preferences.reduce_motion || state.preferences.ui_theme != "Evolve Legacy",
+            );
+            return Task::none();
+        }
+        Message::ToastTick(now) => {
+            state.toasts.tick(now);
+            return Task::none();
+        }
+        Message::DismissToast(id) => {
+            state.toasts.dismiss(id);
+            return Task::none();
+        }
+        Message::ToastClicked(id) => {
+            if let Some(action) = state.toasts.take_action(id) {
+                return update(state, action);
             }
             return Task::none();
         }
-        Message::SidebarAnimationTick => {
-            let target: f32 = if state.sidebar_hovered { 1.0 } else { 0.0 };
-            let delta = target - state.sidebar_reveal;
-            // Stop at exact endpoints so no timer keeps running when idle.
-            state.sidebar_reveal = if delta.abs() <= 0.12 {
-                target
-            } else {
-                (state.sidebar_reveal + delta.signum() * 0.12).clamp(0.0, 1.0)
+        Message::OpenUpdatesSettings => {
+            let task = update(state, Message::Navigate(Page::Settings));
+            state.settings_tab = settings_page::Tab::Updates;
+            return task;
+        }
+        Message::CheckAllUpdatesOnLaunch => {
+            state.startup_update_checked = true;
+            state.update_status = "Checking public GitHub Releases for verified updates...".into();
+            return check_all_updates_task();
+        }
+        Message::LaunchUpdatesChecked(results) => {
+            let selected = selected_update_channel(&state.preferences);
+            state.launch_updates.clear();
+            let mut follow_up = Task::none();
+            for (channel, result) in results {
+                if channel == selected {
+                    // The selected channel keeps driving the existing
+                    // status line and "Update to ... and restart" button.
+                    state.available_update = None;
+                    follow_up = update(state, Message::UpdateChecked(result.clone()));
+                }
+                if let Ok(Some(release)) = result {
+                    state.toasts.push_update(
+                        channel_name(channel),
+                        &release.version,
+                        Message::OpenUpdatesSettings,
+                    );
+                    state.launch_updates.push(release);
+                }
+            }
+            return follow_up;
+        }
+        Message::ApplyLaunchUpdate(version) => {
+            let Some(release) = state
+                .launch_updates
+                .iter()
+                .find(|release| release.version == version)
+                .cloned()
+            else {
+                return Task::none();
             };
+            state.available_update = Some(release);
+            return update(state, Message::ApplyUpdate);
+        }
+        Message::AnimationFrame => {
+            // Values are time-based; this only settles finished tweens so the
+            // subscription stops as soon as nothing is moving.
+            state.ui.start_clock();
+            let now = Instant::now();
+            state.sidebar_reveal.tick(now);
+            state.chrome.tick(now);
+            state
+                .mod_toggle_animations
+                .retain_mut(|animation| animation.thumb.tick(now));
             return Task::none();
         }
         Message::HomeContinueEditing | Message::HomeOpenProject => {
@@ -4874,7 +5328,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::Navigate(page) => {
+            if state.page != Some(page)
+                && state.preferences.ui_theme == "Evolve Legacy"
+                && !state.preferences.reduce_motion
+            {
+                state.ui.start_scramble(Instant::now());
+            }
             state.page = Some(page);
+            if page == Page::WhatsNew {
+                mark_news_seen(state);
+            }
             let mut tasks = Vec::new();
             if page == Page::Home {
                 tasks.push(inspect_client_version_task(
@@ -5174,21 +5637,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Some(enable),
             ) {
                 Ok(()) => {
-                    let from = state
+                    let now = Instant::now();
+                    let mut thumb = state
                         .mod_toggle_animations
                         .iter()
                         .find(|anim| anim.workspace == project.workspace)
-                        .map(ModToggleAnimation::position)
-                        .unwrap_or(if project.enabled { 1.0 } else { 0.0 });
+                        .map(|anim| anim.thumb)
+                        .unwrap_or(anim::Tween::settled(if project.enabled {
+                            1.0
+                        } else {
+                            0.0
+                        }));
+                    thumb.animate_to(
+                        if enable { 1.0 } else { 0.0 },
+                        now,
+                        MOD_TOGGLE_DURATION,
+                        state.preferences.reduce_motion,
+                    );
                     state
                         .mod_toggle_animations
                         .retain(|anim| anim.workspace != project.workspace);
-                    state.mod_toggle_animations.push(ModToggleAnimation {
-                        workspace: project.workspace.clone(),
-                        from,
-                        to: if enable { 1.0 } else { 0.0 },
-                        frame: 0,
-                    });
+                    if thumb.is_running(now) {
+                        state.mod_toggle_animations.push(ModToggleAnimation {
+                            workspace: project.workspace.clone(),
+                            thumb,
+                        });
+                    }
                     if let Some(row) = state
                         .modding_projects
                         .as_mut()
@@ -5566,7 +6040,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "No text asset is open.".into();
                 return Task::none();
             };
-            match doc.save() {
+            let saved = doc.save();
+            state.ui.mark_saved("text", saved.is_ok());
+            let doc = state.text_document.as_mut().expect("checked above");
+            match saved {
                 Ok(changed) => {
                     let member = doc.member.clone();
                     state.status = if changed {
@@ -6828,6 +7305,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let expected = state.level_source_sha.clone();
             let root = PathBuf::from(&state.preferences.projects);
+            state.ui.mark_saving("level");
             return launch(
                 state,
                 Operation::SaveProjectLevel(project, source, expected, edits, root),
@@ -7010,7 +7488,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let game = state.preferences.game_storage_root.clone();
             let stage = state.preferences.stage.clone();
             let projects = state.preferences.projects.clone();
-            return Task::perform(
+            let install = state.preferences.game_installation.clone();
+            let paths = [
+                ("Game drive", install),
+                ("Stage drive", stage.clone()),
+                ("GameSets drive", game.clone()),
+                ("Projects drive", projects.clone()),
+            ];
+            let meters = Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let paths: Vec<(&str, &str)> = paths
+                            .iter()
+                            .map(|(label, path)| (*label, path.as_str()))
+                            .collect();
+                        system_meters::meters(&paths)
+                    })
+                    .await
+                    .unwrap_or_default()
+                },
+                Message::SystemMetersChecked,
+            );
+            let report = Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
                         system_health::inspect(&game, &stage, &projects)
@@ -7027,7 +7526,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 },
                 Message::SystemHealthChecked,
             );
+            return Task::batch([report, meters]);
         }
+        Message::SystemMetersChecked(meters) => state.health_meters = meters,
         Message::SystemHealthChecked(report) => {
             state.health_report = Some(report);
             state.health_checking = false;
@@ -9070,6 +9571,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         | Message::ViewerOpened
         | Message::ActivityOpened
         | Message::WindowClosed(_)
+        | Message::FilesHovered(_, _)
         | Message::FileDropped(_, _) => {}
         Message::CancelScan => {
             if let Some(cancel) = &state.scan_cancel {
@@ -9802,10 +10304,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::CompareOriginalChanged(path) => {
             state.compare_original = path;
             state.comparison = None;
+            state.comparison_text = None;
         }
         Message::CompareModifiedChanged(path) => {
             state.compare_modified = path;
             state.comparison = None;
+            state.comparison_text = None;
         }
         Message::StartAssetCompare => {
             if state.compare_original.is_empty() || state.compare_modified.is_empty() {
@@ -10222,9 +10726,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Err(error) => state.status = error,
         },
         Message::ViewerToggleFolder(path) => {
-            if !state.viewer_collapsed.insert(path.clone()) {
+            let opened = !state.viewer_collapsed.insert(path.clone());
+            if opened {
                 state.viewer_collapsed.remove(&path);
             }
+            let reduce = state.preferences.reduce_motion;
+            state.ui.turn_folder(&path, opened, Instant::now(), reduce);
             state.viewer_context_index = None;
             state.viewer_page = 0;
             refresh_viewer_rows(state);
@@ -11992,6 +12499,195 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             persist_preferences(state);
         }
+        Message::PreferenceThemePreset(name) => {
+            if state.preferences.ui_theme != "Modern" {
+                return Task::none();
+            }
+            let prefs = &mut state.preferences;
+            if name == "Saved custom colours" {
+                if let Some(saved) = prefs.theme_presets.get(SAVED_CUSTOM_COLOURS).cloned() {
+                    prefs.appearance_colors = saved;
+                    prefs.theme_preset.clear();
+                }
+            } else if name == "Default" {
+                prefs.theme_preset.clear();
+                prefs.corner_style = "Rounded".into();
+            } else if let Some(preset) = design::theme_preset(name) {
+                // Park any hand-picked colours so the preset is visible and
+                // they can be restored from the "Saved custom colours" card.
+                if !prefs.appearance_colors.is_empty() {
+                    let saved = std::mem::take(&mut prefs.appearance_colors);
+                    prefs
+                        .theme_presets
+                        .insert(SAVED_CUSTOM_COLOURS.into(), saved);
+                }
+                prefs.theme_preset = preset.name.into();
+                prefs.corner_style = preset.corners.into();
+            } else {
+                return Task::none();
+            }
+            persist_preferences(state);
+            state.settings_status = format!("Theme preset applied: {name}");
+        }
+        Message::PreferenceUpdateChannelSet(channel) => {
+            let prefs = &mut state.preferences;
+            prefs.experimental_updates = channel == "Beta";
+            prefs.nightly_updates = channel == "Nightly";
+            state.available_update = None;
+            persist_preferences(state);
+        }
+        Message::PreferenceAppearanceSet(mode) => {
+            if matches!(mode, "Dark" | "Light") && state.preferences.ui_theme == "Modern" {
+                state.preferences.appearance_mode = mode.into();
+                persist_preferences(state);
+            }
+        }
+        Message::PreferenceCornerStyle(style) => {
+            if matches!(style, "Sharp" | "Rounded" | "Soft") {
+                state.preferences.corner_style = style.into();
+                persist_preferences(state);
+                state.settings_status = format!("Corner style: {style}");
+            }
+        }
+        Message::OpenSettingsTab(tab) => {
+            let task = update(state, Message::Navigate(Page::Settings));
+            state.settings_tab = tab;
+            return task;
+        }
+        Message::CopyToClipboard(id, value) => {
+            state.ui.mark_copied(id);
+            return iced::clipboard::write(value);
+        }
+        Message::ColorPicker(msg) => {
+            if color_picker::update(state, msg) {
+                persist_preferences(state);
+            }
+        }
+        Message::SortBy(table, column) => match table {
+            "library" => {
+                state.library_sort = ui_kit::next_sort(state.library_sort, column);
+                refresh_library_matches(state);
+            }
+            "modding" => state.modding_sort = ui_kit::next_sort(state.modding_sort, column),
+            "storage" => state.storage_sort = ui_kit::next_sort(state.storage_sort, column),
+            _ => {}
+        },
+        Message::LibraryChipPicked(chip) => {
+            if !state.library_chips.contains(&chip) {
+                state.library_chips.push(chip);
+            }
+            state.library_chip_query.clear();
+            state.library_page = 0;
+            refresh_library_matches(state);
+        }
+        Message::LibraryChipInput(value) => {
+            // A second empty input means Backspace in an empty field.
+            if value.is_empty() && state.library_chip_query.is_empty() {
+                state.library_chips.pop();
+                refresh_library_matches(state);
+            }
+            state.library_chip_query = value;
+        }
+        Message::LibraryChipRemove(index) => {
+            if index < state.library_chips.len() {
+                state.library_chips.remove(index);
+                refresh_library_matches(state);
+            }
+        }
+        Message::ModdingChipPicked(chip) => {
+            if !state.modding_chips.contains(&chip) {
+                state.modding_chips.push(chip);
+            }
+            state.modding_chip_query.clear();
+            state.modding_page = 0;
+        }
+        Message::ModdingChipInput(value) => {
+            if value.is_empty() && state.modding_chip_query.is_empty() {
+                state.modding_chips.pop();
+            }
+            state.modding_chip_query = value;
+        }
+        Message::ModdingChipRemove(index) => {
+            if index < state.modding_chips.len() {
+                state.modding_chips.remove(index);
+            }
+        }
+        Message::ProfileModMove(from, to) => {
+            let stage = PathBuf::from(&state.preferences.stage);
+            let Some(mod_id) = state
+                .profile_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.profiles.iter().find(|p| p.id == state.profile_id))
+                .and_then(|profile| profile.mods.get(from))
+                .map(|item| item.id.clone())
+            else {
+                return Task::none();
+            };
+            // A small JSON rewrite; the catalog is re-read to show the
+            // persisted order rather than an optimistic one.
+            match evolve_core::reorder_profile_mod(&stage, &state.profile_id, &mod_id, to)
+                .and_then(|()| evolve_core::list_mod_profiles(&stage))
+            {
+                Ok(catalog) => {
+                    state.profile_catalog = Some(catalog);
+                    state.profile_feedback = "Profile order saved.".into();
+                }
+                Err(error) => state.profile_feedback = format!("Could not reorder: {error}"),
+            }
+        }
+        Message::Gallery(msg) => return gallery::update(state, msg),
+        Message::Chrome(msg) => {
+            return match chrome::update(state, msg) {
+                Some(next) => update(state, next),
+                None => Task::none(),
+            };
+        }
+        Message::Form(msg) => {
+            let next = forms::update(&mut state.forms, msg);
+            return update(state, next);
+        }
+        Message::BrowsePath(kind) => {
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        native_export_picker(if kind.folder() { "folder" } else { "file" })
+                    })
+                    .await
+                    .unwrap_or(None)
+                },
+                move |selection| Message::BrowsedPath(kind, selection),
+            );
+        }
+        Message::BrowsedPath(kind, Some(path)) => {
+            return update(state, kind.set(path.to_string_lossy().into_owned()));
+        }
+        Message::BrowsedPath(_, None) => {}
+        Message::DismissIntro => {
+            let version: String = env!("CARGO_PKG_VERSION").into();
+            state.preferences.last_seen_version = version.clone();
+            persist_saved_field(move |saved| saved.last_seen_version = version);
+        }
+        Message::TextEditorToggleDiff => {
+            if let Some(doc) = state.text_document.as_mut() {
+                doc.show_diff = !doc.show_diff;
+            }
+        }
+        // Routed by `Desktop::update`; reaching here means a direct call
+        // (tests), so handle the parts that need no window access.
+        Message::Ui(msg) => {
+            let reduce = state.preferences.reduce_motion;
+            if let Some(next) = ui_kit::update(&mut state.ui, msg, reduce) {
+                return update(state, next);
+            }
+        }
+        Message::Sequence(messages) => {
+            return Task::batch(
+                messages
+                    .into_iter()
+                    .map(|next| update(state, next))
+                    .collect::<Vec<_>>(),
+            );
+        }
         Message::PreferenceAccentPreset(preset) => {
             if settings::apply_accent_preset(&mut state.preferences, preset) {
                 persist_preferences(state);
@@ -12096,10 +12792,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.preferences.experimental_updates = true;
             }
             state.available_update = None;
-            persist_preferences(state);
-        }
-        Message::PreferenceAutoUpdates => {
-            state.preferences.automatic_update_checks = !state.preferences.automatic_update_checks;
             persist_preferences(state);
         }
         Message::SettingsToggleAdvancedPaths => {
@@ -12570,14 +13262,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.startup_update_checked = true;
             state.update_status = "Checking public GitHub Releases for verified updates...".into();
             state.available_update = None;
-            let channel = if state.preferences.nightly_updates {
-                UpdateChannel::Nightly
-            } else if state.preferences.experimental_updates {
-                UpdateChannel::Beta
-            } else {
-                UpdateChannel::Stable
-            };
-            return check_updates_task(channel);
+            return check_updates_task(selected_update_channel(&state.preferences));
         }
         Message::ClientVersionChecked(path, version) => {
             if state.preferences.client_executable == path {
@@ -12593,6 +13278,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::NewsLoaded(result) => match result {
             Ok(news) => {
                 state.news.apply(news);
+                if state.page == Some(Page::WhatsNew) {
+                    mark_news_seen(state);
+                }
                 if matches!(state.page, Some(Page::Home | Page::WhatsNew)) {
                     return start_news_images(state);
                 }
@@ -13174,12 +13862,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .motion_tick
                 .map(|last| now.saturating_duration_since(last));
             state.motion_tick = state.playing.then_some(now);
-            for animation in &mut state.mod_toggle_animations {
-                animation.frame = animation.frame.saturating_add(1);
-            }
-            state
-                .mod_toggle_animations
-                .retain(|animation| animation.frame < MOD_TOGGLE_FRAMES);
             if state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
                 surfaces.iter().any(|surface| surface.emissive_uv.is_some())
             }) {
@@ -13687,6 +14369,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::Finished(result) => {
+            // A failed worker ends any in-flight save without a new timestamp.
+            if result.is_err() {
+                state.ui.mark_saved("level", false);
+            }
             let launch_notice = state.active_play.take().map(|kind| {
                 match &result {
                     Err(error) => play_dialog::Notice::finished(
@@ -13801,6 +14487,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         usage.files
                     );
                     state.storage_usage = Some(usage);
+                    let reduce = state.preferences.reduce_motion;
+                    state.ui.sweep_ring(Instant::now(), reduce);
                 }
                 Ok(Completed::Dependencies(graph)) => {
                     state.status = format!(
@@ -13812,7 +14500,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.dependency_graph = Some(graph);
                     state.viewer_tab = ViewerTab::Dependencies;
                 }
-                Ok(Completed::Comparison(report)) => {
+                Ok(Completed::Comparison(report, texts)) => {
+                    state.comparison_text = texts.map(|pair| *pair);
                     state.status = if report.identical {
                         "Original and modified files are byte-for-byte identical.".into()
                     } else {
@@ -13923,6 +14612,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                 }
                 Ok(Completed::Projects(projects)) => {
+                    state.modding_chip_options = iced::widget::combo_box::State::new(
+                        modding_page::modding_chip_options(&projects),
+                    );
                     let focus = state.modding_pending_focus.take();
                     let previous = focus
                         .clone()
@@ -14111,6 +14803,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.input = inventory.root.clone();
                     state.viewer_search.clear();
                     state.inventory = Some(inventory);
+                    state.gallery.reset();
                     state.file_selection.clear();
                     state.pak = None;
                     state.signed_pak = None;
@@ -14127,6 +14820,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         inventory.entries.len()
                     );
                     state.inventory = Some(inventory);
+                    state.gallery.reset();
                     state.pak = None;
                     state.signed_pak = None;
                     state.texture = None;
@@ -15035,6 +15729,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
                 Ok(Completed::ProjectLevelSaved(project, saved, revision)) => {
+                    state.ui.mark_saved("level", true);
                     if let Some(revision) = revision {
                         state.level_committed_redo.clear();
                         state.level_committed_undo.push_back(revision);
@@ -15493,6 +16188,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.signed_pak = Some(info);
                     state.pak = None;
                     state.inventory = None;
+                    state.gallery.reset();
                     state.selected = None;
                     state.file_selection.clear();
                     refresh_viewer_rows(state);
@@ -15790,13 +16486,52 @@ fn download_action(state: &State) -> Element<'_, Message> {
     }
 }
 
+/// Releases on other channels found by the launch check, each installable
+/// without changing the channel the user follows.
+fn launch_update_actions(state: &State) -> Element<'_, Message> {
+    let selected = state
+        .available_update
+        .as_ref()
+        .map(|release| release.version.as_str());
+    state
+        .launch_updates
+        .iter()
+        .filter(|release| Some(release.version.as_str()) != selected)
+        .fold(column![].spacing(8), |list, release| {
+            let button = design::button(text(format!(
+                "Install {} {} and restart",
+                channel_name(release.channel),
+                release.version
+            )))
+            .on_press_maybe(
+                (!state.busy).then(|| Message::ApplyLaunchUpdate(release.version.clone())),
+            );
+            list.push(
+                row![
+                    text(format!(
+                        "{} update {} is also available.",
+                        channel_name(release.channel),
+                        release.version
+                    ))
+                    .size(12)
+                    .width(Fill),
+                    button,
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            )
+        })
+        .into()
+}
+
 fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
     // Modern navigation keeps labels visible: no hover-dependent page names
     // or viewport shift. Legacy retains its original expanding icon rail.
     let legacy_nav = state.preferences.ui_theme == "Evolve Legacy";
+    let sidebar_reveal = state.sidebar_reveal.value(Instant::now());
     let labels_visible = !legacy_nav
-        || state.sidebar_reveal >= 0.88
+        || sidebar_reveal >= 0.88
         || state.preferences.reduce_motion && state.sidebar_hovered;
     let navigation = Page::ALL.into_iter().fold(
         column![].spacing(if legacy_nav { 7 } else { 4 }),
@@ -15815,22 +16550,36 @@ fn view(state: &State) -> Element<'_, Message> {
             if !legacy_nav {
                 contents = contents.push(indicator);
             }
-            contents = contents.push(
+            let icon_size = if legacy_nav { 20.0 } else { 18.0 };
+            contents = contents.push(chrome::badge_icon(
                 svg(item.icon())
                     .style(design::icon)
-                    .width(if legacy_nav { 20 } else { 18 })
-                    .height(if legacy_nav { 20 } else { 18 }),
-            );
+                    .width(icon_size)
+                    .height(icon_size),
+                icon_size,
+                chrome::nav_indicator(state, item),
+                1.0,
+            ));
             if labels_visible {
                 contents = contents.push(text(item.title()).size(if legacy_nav { 13 } else { 14 }));
             }
             let nav = design::button(contents)
                 .width(Fill)
                 .height(if legacy_nav { 40 } else { 36 })
-                .padding(if legacy_nav { [8, 11] } else { [8, 12] })
+                .padding(if legacy_nav { [5, 7] } else { [5, 8] })
                 .style(move |theme, status| design::rail(theme, status, active))
                 .on_press(Message::Navigate(item));
-            items.push(nav)
+            // The collapsed Legacy rail shows icons only, so name them.
+            if labels_visible {
+                items.push(nav)
+            } else {
+                items.push(design::tooltip(
+                    nav,
+                    item.title(),
+                    None,
+                    iced::widget::tooltip::Position::Right,
+                ))
+            }
         },
     );
     // Asset Viewer and Level Editor are independent native windows, not manager pages.
@@ -15853,14 +16602,22 @@ fn view(state: &State) -> Element<'_, Message> {
         if labels_visible {
             contents = contents.push(text(label).size(if legacy_nav { 13 } else { 14 }));
         }
-        navigation = navigation.push(
-            design::button(contents)
-                .width(Fill)
-                .height(if legacy_nav { 40 } else { 36 })
-                .padding(if legacy_nav { [8, 11] } else { [8, 12] })
-                .style(|theme, status| design::rail(theme, status, false))
-                .on_press(message),
-        );
+        let launcher = design::button(contents)
+            .width(Fill)
+            .height(if legacy_nav { 40 } else { 36 })
+            .padding(if legacy_nav { [8, 11] } else { [8, 12] })
+            .style(|theme, status| design::rail(theme, status, false))
+            .on_press(message);
+        navigation = navigation.push(if labels_visible {
+            Element::from(launcher)
+        } else {
+            design::tooltip(
+                launcher,
+                label,
+                None,
+                iced::widget::tooltip::Position::Right,
+            )
+        });
     }
     let play_mods_icon = svg(svg::Handle::from_memory(
         include_bytes!("../../../assets/nav/play-mods.svg").to_vec(),
@@ -15886,12 +16643,15 @@ fn view(state: &State) -> Element<'_, Message> {
             },
         ));
     }
-    settings_row = settings_row.push(
+    settings_row = settings_row.push(chrome::badge_icon(
         svg(Page::Settings.icon())
             .style(design::icon)
             .width(20)
             .height(20),
-    );
+        20.0,
+        chrome::nav_indicator(state, Page::Settings),
+        1.0,
+    ));
     if labels_visible {
         play_mods_row = play_mods_row.push(
             text(if legacy_nav {
@@ -15911,21 +16671,37 @@ fn view(state: &State) -> Element<'_, Message> {
         );
         settings_row = settings_row.push(text("Settings").size(if legacy_nav { 13 } else { 14 }));
     }
+    let rail_tip = |button: iced::widget::Button<'static, Message>, label: &'static str| {
+        if labels_visible {
+            Element::from(button)
+        } else {
+            design::tooltip(button, label, None, iced::widget::tooltip::Position::Right)
+        }
+    };
     let lower = column![
-        design::button(play_mods_row)
-            .width(Fill)
-            .height(if legacy_nav { 40 } else { 36 })
-            .on_press(Message::PlayWithMods),
-        design::button(play_clean_row)
-            .width(Fill)
-            .height(if legacy_nav { 40 } else { 36 })
-            .on_press(Message::PlayWithoutMods),
-        design::button(settings_row)
-            .width(Fill)
-            .height(if legacy_nav { 43 } else { 36 })
-            .padding(if legacy_nav { [10, 10] } else { [8, 12] })
-            .style(move |theme, status| design::rail(theme, status, page == Page::Settings))
-            .on_press(Message::Navigate(Page::Settings)),
+        rail_tip(
+            design::button(play_mods_row)
+                .width(Fill)
+                .height(if legacy_nav { 40 } else { 36 })
+                .on_press(Message::PlayWithMods),
+            "Play with Mods",
+        ),
+        rail_tip(
+            design::button(play_clean_row)
+                .width(Fill)
+                .height(if legacy_nav { 40 } else { 36 })
+                .on_press(Message::PlayWithoutMods),
+            "Play without mods",
+        ),
+        rail_tip(
+            design::button(settings_row)
+                .width(Fill)
+                .height(if legacy_nav { 43 } else { 36 })
+                .padding(if legacy_nav { [10, 10] } else { [8, 12] })
+                .style(move |theme, status| design::rail(theme, status, page == Page::Settings))
+                .on_press(Message::Navigate(Page::Settings)),
+            "Settings",
+        ),
     ]
     .spacing(if legacy_nav { 5 } else { 4 });
     let mut sidebar_content = column![].spacing(if legacy_nav { 8 } else { 16 });
@@ -15942,7 +16718,7 @@ fn view(state: &State) -> Element<'_, Message> {
             .padding(if legacy_nav { [12, 9] } else { [16, 12] }),
     )
     .width(Length::Fixed(if legacy_nav {
-        sidebar_width(state.sidebar_reveal)
+        sidebar_width(sidebar_reveal)
     } else {
         240.0
     }))
@@ -15977,21 +16753,37 @@ fn view(state: &State) -> Element<'_, Message> {
                     ))
                     .width(23)
                     .height(23),
-                    text(page.title()).size(20)
+                    // Legacy titles resolve from random glyphs on page change.
+                    text(state.ui.scrambled(page.title(), Instant::now())).size(20)
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
             )
         } else {
-            Element::<Message>::from(text(page.title()).size(28))
+            Element::<Message>::from(design::title(page.title()))
         },
         space().width(Fill),
         design::button("Help")
             .on_press(Message::Navigate(Page::Docs))
             .style(design::secondary),
-        design::button("Activity")
+        design::tooltip(
+            design::button(if footer_is_working(state) {
+                // A pulsing dot while work runs.
+                let pulse = (state.ui.clock(Instant::now()) * 3.5).sin() * 0.5 + 0.5;
+                Element::from(
+                    row![text("Activity"), design::indicator_dot(None, pulse)]
+                        .spacing(7)
+                        .align_y(iced::Center),
+                )
+            } else {
+                Element::from(text("Activity"))
+            })
             .on_press(Message::ToggleActivity)
             .style(design::secondary),
+            "Activity log and running work",
+            None,
+            iced::widget::tooltip::Position::Bottom,
+        ),
     ]
     .spacing(16)
     .align_y(iced::Center);
@@ -16362,19 +17154,55 @@ fn view(state: &State) -> Element<'_, Message> {
     } else {
         container(column![]).into()
     };
-    let footer_progress = work_progress::footer(state);
+    // Status island: current operation + elapsed time; hovering expands it
+    // into the latest activity entries.
+    let working = footer_is_working(state);
+    let footer_progress = ui_kit::status_island(
+        work_progress::snapshot(state).map_or_else(
+            || "Ready".to_owned(),
+            |snap| match snap.percent {
+                Some(percent) => format!("{} · {percent}%", snap.label),
+                None => snap.label,
+            },
+        ),
+        working
+            .then(|| state.activity_started.map(|start| start.elapsed()))
+            .flatten(),
+        state.loading_wheel_frame,
+        working,
+    );
+    let island_panel = ui_kit::island_panel(
+        &state.ui,
+        state
+            .activity_log
+            .iter()
+            .rev()
+            .take(6)
+            .map(|line| compact_footer_status(line))
+            .collect(),
+    );
+    let banners: Element<'_, Message> =
+        chrome::banner_strip(state).unwrap_or_else(|| column![].into());
     let body = column![
         headline,
+        banners,
         tools,
         workspace,
         row![
             text(compact_footer_status(&state.status))
                 .size(12)
                 .width(Fill),
+            ui_kit::copy_button(&state.ui, "status", state.status.clone()),
             footer_progress,
-            text(format!("v{}", env!("CARGO_PKG_VERSION")))
-                .size(12)
-                .style(design::muted),
+            text(if state.preferences.ui_theme == "Evolve Legacy" {
+                state
+                    .ui
+                    .scrambled(&format!("v{}", env!("CARGO_PKG_VERSION")), Instant::now())
+            } else {
+                format!("v{}", env!("CARGO_PKG_VERSION"))
+            })
+            .size(12)
+            .style(design::muted),
         ]
         .spacing(12)
         .align_y(iced::Alignment::Center)
@@ -16385,10 +17213,30 @@ fn view(state: &State) -> Element<'_, Message> {
     .width(Fill)
     .height(Fill);
     // Activity is detached so it never steals space from the working page.
-    container(row![sidebar, body].height(Fill))
+    let body = chrome::sheet_overlay(body.into(), state);
+    let page: Element<'_, Message> = container(row![sidebar, body].height(Fill))
         .width(Fill)
         .height(Fill)
-        .into()
+        .into();
+    match island_panel {
+        // The expanded island floats above the footer instead of resizing it.
+        Some(panel) => iced::widget::stack![
+            page,
+            container(panel)
+                .width(Fill)
+                .height(Fill)
+                .align_right(Fill)
+                .align_bottom(Fill)
+                .padding(iced::Padding {
+                    top: 0.0,
+                    right: 70.0,
+                    bottom: 44.0,
+                    left: 0.0,
+                }),
+        ]
+        .into(),
+        None => page,
+    }
 }
 
 /// Keep the application status bar a small, single-line summary even if
@@ -16461,6 +17309,13 @@ fn initial_state() -> State {
                 result.pitch = saved.saved_pitch;
                 result.zoom = saved.saved_zoom;
                 result.preferences = saved;
+                // Fresh installs (and installs from before the intro card)
+                // start from the current version, so only later updates
+                // show "What's new in this version".
+                if result.preferences.last_seen_version.is_empty() {
+                    result.preferences.last_seen_version = env!("CARGO_PKG_VERSION").into();
+                    let _ = save_to(&path, &result.preferences);
+                }
             }
             Err(error) => {
                 result.settings_status = format!(
@@ -16725,6 +17580,17 @@ impl Desktop {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.route(message);
+        sync_tickers(&mut self.state);
+        // Both only touch the disk when a path changes or work finishes.
+        self.state
+            .path_checks
+            .sync(&self.state.preferences, self.state.busy);
+        chrome::sync(&mut self.state);
+        task
+    }
+
+    fn route(&mut self, message: Message) -> Task<Message> {
         if matches!(
             message,
             Message::DiscordPresenceTick
@@ -16737,6 +17603,68 @@ impl Desktop {
             return task;
         }
         match message {
+            // The page under an open modal ignores global shortcuts.
+            Message::Ui(
+                ui_kit::UiMsg::Palette(_)
+                | ui_kit::UiMsg::ReorderKey(_)
+                | ui_kit::UiMsg::CompareNudge(_),
+            )
+            | Message::LevelDeleteKey(_)
+            | Message::LevelCopyKey(_)
+            | Message::LevelPasteKey(_)
+            | Message::LevelDuplicateKey(_)
+                if self.state.chrome.modal.is_some() =>
+            {
+                Task::none()
+            }
+            Message::Ui(ui_kit::UiMsg::Palette(msg)) => {
+                // Ctrl+K from a secondary window brings the main window up.
+                let raise =
+                    matches!(msg, command_palette::Msg::Toggle) && !self.state.ui.palette.open;
+                let (task, next) = command_palette::update(&mut self.state, msg);
+                let mut tasks = vec![task];
+                if raise {
+                    tasks.push(window::gain_focus(self.main_id));
+                }
+                if let Some(next) = next {
+                    tasks.push(self.update(next));
+                }
+                Task::batch(tasks)
+            }
+            Message::Ui(ui_kit::UiMsg::CompareNudge(delta))
+                if self.state.gallery.lightbox.is_some() =>
+            {
+                gallery::update(
+                    &mut self.state,
+                    gallery::Msg::Step(if delta < 0.0 { -1 } else { 1 }),
+                )
+            }
+            Message::Ui(ui_kit::UiMsg::Popover(Some(id))) => {
+                self.state.ui.popover = Some(id);
+                iced::widget::operation::focus(ui_kit::popover_input_id(id))
+            }
+            Message::Ui(msg) => {
+                let reduce = self.state.preferences.reduce_motion;
+                match ui_kit::update(&mut self.state.ui, msg, reduce) {
+                    Some(next) => self.update(next),
+                    None => Task::none(),
+                }
+            }
+            Message::Sequence(messages) => Task::batch(
+                messages
+                    .into_iter()
+                    .map(|next| self.update(next))
+                    .collect::<Vec<_>>(),
+            ),
+            Message::AnimationFrame => {
+                let task = update(&mut self.state, Message::AnimationFrame);
+                // A completed hold-to-confirm fires its action here so it is
+                // routed exactly like a normal button press.
+                match self.state.ui.frame(Instant::now()) {
+                    Some(action) => Task::batch([task, self.update(action)]),
+                    None => task,
+                }
+            }
             Message::MenuCommand(inner) => {
                 self.state.viewer_menu = None;
                 self.state.modding_menu = None;
@@ -16785,10 +17713,25 @@ impl Desktop {
                 )
             }
             Message::ViewportEscape(id) => {
-                if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
+                // Esc closes the topmost transient layer first: the modal,
+                // palette, popover, lightbox, then the side sheet.
+                let closed_layer = self.state.chrome.modal.take().is_some()
+                    || std::mem::take(&mut self.state.ui.palette.open)
+                    || self.state.ui.popover.take().is_some()
+                    || self.state.gallery.lightbox.take().is_some();
+                let menus_open = self.state.library_menu.is_some()
+                    || self.state.viewer_menu.is_some()
+                    || self.state.modding_menu.is_some();
+                if closed_layer {
+                    Task::none()
+                } else if id == self.main_id && self.state.chrome.sheet_floating() {
+                    self.update(chrome::msg(chrome::Msg::CloseSheet))
+                } else if self.level_id == Some(id) && self.state.level_viewport_fullscreen {
                     self.update(Message::ToggleLevelViewportFullscreen)
                 } else if self.viewer_id == Some(id) && self.state.viewer_viewport_fullscreen {
                     self.update(Message::ToggleViewerViewportFullscreen)
+                } else if !menus_open && let Some(clear) = self.search_clear(id) {
+                    self.update(clear)
                 } else {
                     update(&mut self.state, Message::DismissMenus)
                 }
@@ -16849,7 +17792,16 @@ impl Desktop {
             Message::ActivityOpened => Task::none(),
             Message::InspectorOpened => Task::none(),
             Message::ViewerOpened => Task::none(),
+            Message::FilesHovered(id, hovering) => {
+                self.state.ui.drop_target = if hovering {
+                    Some(id)
+                } else {
+                    self.state.ui.drop_target.filter(|target| *target != id)
+                };
+                Task::none()
+            }
             Message::FileDropped(id, path) => {
+                self.state.ui.drop_target = None;
                 if (self.viewer_id == Some(id) || self.inspector_id == Some(id))
                     && self.state.viewer_from_library
                 {
@@ -16909,6 +17861,14 @@ impl Desktop {
                 let project_scan_done = self.state.modding_open_editor_when_scanned
                     && matches!(&message, Message::Finished(Ok(Completed::Inventory(_))));
                 let finished = matches!(&message, Message::Finished(_));
+                let finished_ok = matches!(&message, Message::Finished(Ok(_)));
+                // Take the pending toast before `update`: a completion may
+                // immediately launch a follow-up operation of its own.
+                let finished_toast = if finished {
+                    self.state.toasts.pending.take()
+                } else {
+                    None
+                };
                 let opens_level = matches!(
                     &message,
                     Message::Finished(Ok(Completed::LevelMaps(_, _)
@@ -16926,7 +17886,25 @@ impl Desktop {
                 let launched_from_library = self.state.page == Some(Page::AssetLibrary);
                 let before = self.state.status.clone();
                 let was_busy = self.state.busy;
+                let was_settings_updates = self.state.page == Some(Page::Settings)
+                    && self.state.settings_tab == settings_page::Tab::Updates;
                 let command = update(&mut self.state, message);
+                // A clicked update toast may live in the viewer or level
+                // window; bring the main window forward to show Settings.
+                let command = if !was_settings_updates
+                    && self.state.page == Some(Page::Settings)
+                    && self.state.settings_tab == settings_page::Tab::Updates
+                {
+                    Task::batch([command, window::gain_focus(self.main_id)])
+                } else {
+                    command
+                };
+                if finished {
+                    let status = self.state.status.clone();
+                    self.state
+                        .toasts
+                        .complete(finished_toast, finished_ok, &status);
+                }
                 if self.state.status != before || self.state.busy != was_busy {
                     let note = if self.state.busy { "RUNNING" } else { "STATUS" };
                     let item = format!("{note}: {}", self.state.status);
@@ -16966,6 +17944,89 @@ impl Desktop {
     }
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
+        let content = self.window_contents(id);
+        let content = if self.state.ui.drop_target == Some(id) {
+            let (label, refused) = self.drop_description(id);
+            ui_kit::drop_zone(content, label, refused)
+        } else {
+            content
+        };
+        // Completion toasts follow the user into the windows where
+        // long-running work is started; small dialogs stay uncluttered.
+        if id == self.main_id || self.viewer_id == Some(id) || self.level_id == Some(id) {
+            let content = toast::overlay(
+                content,
+                &self.state.toasts,
+                self.state.preferences.reduce_motion,
+            );
+            if id == self.main_id {
+                let content = chrome::modal_overlay(content, &self.state);
+                command_palette::overlay(content, &self.state)
+            } else if self.viewer_id == Some(id) {
+                gallery::lightbox(&self.state, content)
+            } else {
+                content
+            }
+        } else {
+            content
+        }
+    }
+
+    /// The message that clears the search box Esc applies to in window
+    /// `id`, if that search has text.
+    fn search_clear(&self, id: window::Id) -> Option<Message> {
+        let state = &self.state;
+        if self.viewer_id == Some(id) {
+            return (!state.viewer_search.is_empty())
+                .then(|| Message::ViewerSearchChanged(String::new()));
+        }
+        if id != self.main_id {
+            return None;
+        }
+        match state.page {
+            Some(Page::AssetLibrary) if !state.library_search.is_empty() => {
+                Some(Message::LibrarySearchChanged(String::new()))
+            }
+            Some(Page::Files) if !state.modding_filter.is_empty() => {
+                Some(Message::ModdingFilterChanged(String::new()))
+            }
+            Some(Page::Files) if !state.search.is_empty() => {
+                Some(Message::SearchChanged(String::new()))
+            }
+            _ => None,
+        }
+    }
+
+    /// What dropping files on window `id` will do, mirroring `FileDropped`.
+    fn drop_description(&self, id: window::Id) -> (String, bool) {
+        let viewer = self.viewer_id == Some(id) || self.inspector_id == Some(id);
+        if viewer && self.state.viewer_from_library {
+            return (
+                "Asset Library originals are read-only — drop files in Modding instead".into(),
+                true,
+            );
+        }
+        if self.state.editor_replace_dialog.is_some() {
+            return ("Drop to use as the replacement source".into(), false);
+        }
+        let project = self
+            .state
+            .modding_selected
+            .and_then(|index| self.state.modding_projects.as_ref()?.get(index))
+            .map(|project| project.label.clone());
+        match project {
+            Some(label) if self.state.page == Some(Page::Files) => (
+                format!("Drop to inspect alongside {label} — a folder scans, a file opens"),
+                false,
+            ),
+            _ => (
+                "Drop a folder to scan it, or a DDS, PAK or model file to open it".into(),
+                false,
+            ),
+        }
+    }
+
+    fn window_contents(&self, id: window::Id) -> Element<'_, Message> {
         if self.export_id == Some(id) {
             asset_viewer::export_dialog(&self.state)
         } else if self.level_id == Some(id) {
@@ -17033,21 +18094,18 @@ impl Desktop {
                 .iter()
                 .any(|surface| surface.visible && surface.emissive_uv.is_some())
         }) && matches!(self.state.page.as_ref(), Some(Page::Models));
-        let playback = if self.state.playing
-            || animate_decal
-            || !self.state.mod_toggle_animations.is_empty()
-        {
+        let playback = if self.state.playing || animate_decal {
             iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
         } else {
             Subscription::none()
         };
-        let sidebar_animation = if self.state.preferences.ui_theme == "Evolve Legacy"
-            && !self.state.preferences.reduce_motion
-            && (self.state.sidebar_reveal - if self.state.sidebar_hovered { 1.0 } else { 0.0 })
-                .abs()
-                > 0.001
-        {
-            iced::time::every(Duration::from_millis(16)).map(|_| Message::SidebarAnimationTick)
+        let now = Instant::now();
+        let sidebar_animation = if ui_animation_running(&self.state, now) {
+            iced::time::every(anim::FRAME).map(|_| Message::AnimationFrame)
+        } else if ui_ambient_running(&self.state) {
+            // Looping effects (embers, border beam, skeleton pulse) only
+            // need ~30 fps and stop as soon as they leave the screen.
+            iced::time::every(anim::AMBIENT_FRAME).map(|_| Message::AnimationFrame)
         } else {
             Subscription::none()
         };
@@ -17076,10 +18134,9 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let startup = if self.state.preferences.automatic_update_checks
-            && !self.state.startup_update_checked
-        {
-            iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckUpdates)
+        // Every launch checks all update channels once.
+        let startup = if !self.state.startup_update_checked {
+            iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckAllUpdatesOnLaunch)
         } else {
             Subscription::none()
         };
@@ -17140,8 +18197,17 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let toast_tick = if self.state.toasts.is_empty() {
+            Subscription::none()
+        } else {
+            iced::time::every(toast::Toasts::tick_interval(
+                self.state.preferences.reduce_motion,
+            ))
+            .map(Message::ToastTick)
+        };
         Subscription::batch([
             iced::time::every(Duration::from_secs(8)).map(|_| Message::DiscordPresenceTick),
+            toast_tick,
             dev_overlay_input,
             actor_freeze,
             news_poll,
@@ -17157,6 +18223,70 @@ impl Desktop {
             wheel,
             window::close_events().map(Message::WindowClosed),
             iced::event::listen_with(|event, status, id| match event {
+                // Ctrl+K opens the command palette from any window, even
+                // while a text field has focus.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    modifiers,
+                    ..
+                }) if modifiers.control() && value.eq_ignore_ascii_case("k") => Some(Message::Ui(
+                    ui_kit::UiMsg::Palette(command_palette::Msg::Toggle),
+                )),
+                // Enter outside a text field confirms an open modal.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                    ..
+                }) if status == iced::event::Status::Ignored => {
+                    Some(Message::Chrome(chrome::Msg::Enter))
+                }
+                // Left/Right nudge an open image comparison split.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key:
+                        iced::keyboard::Key::Named(
+                            named @ (iced::keyboard::key::Named::ArrowLeft
+                            | iced::keyboard::key::Named::ArrowRight),
+                        ),
+                    ..
+                }) if status == iced::event::Status::Ignored => {
+                    Some(Message::Ui(ui_kit::UiMsg::CompareNudge(
+                        if named == iced::keyboard::key::Named::ArrowLeft {
+                            -0.02
+                        } else {
+                            0.02
+                        },
+                    )))
+                }
+                // Alt+↑/↓ moves the focused row of a reorder list.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key:
+                        iced::keyboard::Key::Named(
+                            named @ (iced::keyboard::key::Named::ArrowUp
+                            | iced::keyboard::key::Named::ArrowDown),
+                        ),
+                    modifiers,
+                    ..
+                }) if modifiers.alt() => Some(Message::Ui(ui_kit::UiMsg::ReorderKey(
+                    if named == iced::keyboard::key::Named::ArrowUp {
+                        -1
+                    } else {
+                        1
+                    },
+                ))),
+                // Palette navigation; ignored by the palette while closed.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key:
+                        iced::keyboard::Key::Named(
+                            named @ (iced::keyboard::key::Named::ArrowUp
+                            | iced::keyboard::key::Named::ArrowDown),
+                        ),
+                    ..
+                }) => Some(Message::Ui(ui_kit::UiMsg::Palette(
+                    command_palette::Msg::Move(if named == iced::keyboard::key::Named::ArrowUp {
+                        -1
+                    } else {
+                        1
+                    }),
+                ))),
                 // Editing shortcuts come before the camera's letter keys, so
                 // Shift+D duplicates rather than strafing.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -17216,6 +18346,12 @@ impl Desktop {
                 }
                 iced::Event::Window(window::Event::FileDropped(path)) => {
                     Some(Message::FileDropped(id, path))
+                }
+                iced::Event::Window(window::Event::FileHovered(_)) => {
+                    Some(Message::FilesHovered(id, true))
+                }
+                iced::Event::Window(window::Event::FilesHoveredLeft) => {
+                    Some(Message::FilesHovered(id, false))
                 }
                 _ => None,
             }),
@@ -17393,21 +18529,26 @@ mod project_edit_tests {
 
     #[test]
     fn mod_toggle_thumb_eases_without_changing_persisted_enable_state() {
+        let t0 = Instant::now();
         let mut animation = ModToggleAnimation {
             workspace: PathBuf::from("test-mod"),
-            from: 0.0,
-            to: 1.0,
-            frame: 0,
+            thumb: anim::Tween::settled(0.0),
         };
-        assert_eq!(animation.position(), 0.0);
-        animation.frame = 3;
-        assert!(animation.position() > 0.0 && animation.position() < 1.0);
-        animation.frame = MOD_TOGGLE_FRAMES;
-        assert_eq!(animation.position(), 1.0);
-        animation.from = 1.0;
-        animation.to = 0.0;
-        animation.frame = MOD_TOGGLE_FRAMES;
-        assert_eq!(animation.position(), 0.0);
+        animation
+            .thumb
+            .animate_to(1.0, t0, MOD_TOGGLE_DURATION, false);
+        assert_eq!(animation.position(t0), 0.0);
+        let mid = animation.position(t0 + MOD_TOGGLE_DURATION / 2);
+        assert!(mid > 0.0 && mid < 1.0);
+        let end = t0 + MOD_TOGGLE_DURATION;
+        assert_eq!(animation.position(end), 1.0);
+        animation
+            .thumb
+            .animate_to(0.0, end, MOD_TOGGLE_DURATION, false);
+        assert_eq!(animation.position(end + MOD_TOGGLE_DURATION), 0.0);
+        let mut reduced = anim::Tween::settled(0.0);
+        reduced.animate_to(1.0, t0, MOD_TOGGLE_DURATION, true);
+        assert!(!reduced.is_running(t0));
     }
 
     #[test]

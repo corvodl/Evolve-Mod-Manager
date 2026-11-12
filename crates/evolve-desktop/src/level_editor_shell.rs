@@ -2,20 +2,26 @@
 //! 3D authoring applications. The actual world view remains the existing
 //! Iced/wgpu widget; this only supplies task-specific menus and panels.
 use crate::{Message, State, design, level_workspace, menu_popup};
-use iced::widget::{button, column, container, row, scrollable, space, text};
+use iced::widget::{column, container, row, scrollable, space, text};
 use iced::{Background, Border, Element, Fill, Length};
 
-fn menu_button(name: &'static str, id: &'static str) -> iced::widget::Button<'static, Message> {
-    button(text(name).size(12))
-        .padding([5, 10])
-        .style(design::text_button)
-        .on_press(Message::LibraryMenu(id))
+/// A menubar title; hovering it while another menu is open switches menus.
+fn menu_button<'a>(state: &State, name: &'static str, id: &'static str) -> Element<'a, Message> {
+    crate::chrome::menu_title(
+        crate::chrome::MenuBar::Level,
+        name,
+        id,
+        state.library_menu,
+        Message::LibraryMenu(id),
+        12.0,
+        [5, 10],
+    )
 }
 /// The tool bar of an editable project: Select, Sculpt and Paint, with the
 /// active brush's settings and the unsaved-terrain controls beside them.
 fn tool_bar(state: &State) -> Element<'_, Message> {
     use crate::terrain_brush::{LevelTool, SculptMode};
-    use iced::widget::{slider, text_input};
+    use iced::widget::slider;
     let tool = |label: &'static str, value: LevelTool| {
         design::button(label)
             .style(if state.level_tool == value {
@@ -26,7 +32,7 @@ fn tool_bar(state: &State) -> Element<'_, Message> {
             .on_press(Message::LevelSetTool(value))
     };
     let mut bar = row![
-        text("TOOLS").size(11).style(design::accent),
+        text("TOOLS").size(design::CAPTION).style(design::accent),
         tool("Select", LevelTool::Select),
         tool("Sculpt", LevelTool::Sculpt),
         tool("Paint", LevelTool::Paint),
@@ -35,7 +41,7 @@ fn tool_bar(state: &State) -> Element<'_, Message> {
     .align_y(iced::Alignment::Center);
     let brush = state.terrain_brush;
     if state.level_tool != LevelTool::Select {
-        bar = bar.push(text("│").size(15).style(design::muted));
+        bar = bar.push(text("│").size(design::HEADING).style(design::muted));
         if state.level_tool == LevelTool::Sculpt {
             let mode = |label: &'static str, value: SculptMode| {
                 design::button(label)
@@ -59,11 +65,16 @@ fn tool_bar(state: &State) -> Element<'_, Message> {
                 bar = bar.push(mode("Create", SculptMode::Create));
             }
         } else {
-            bar = bar.push(text("Surface").size(11)).push(
-                text_input("ID", &state.terrain_brush_surface)
-                    .on_input(Message::LevelBrushSurface)
-                    .size(12)
-                    .width(Length::Fixed(48.0)),
+            bar = bar.push(text("Surface").size(design::CAPTION)).push(
+                container(crate::forms::number_field(
+                    &state.forms,
+                    state.keyboard_modifiers,
+                    "terrain.surface",
+                    &state.terrain_brush_surface,
+                    crate::forms::NumberSpec::new(0.0, 255.0, 1.0, 0),
+                    Message::LevelBrushSurface,
+                ))
+                .width(Length::Fixed(120.0)),
             );
         }
         let setting = |label: &'static str,
@@ -73,11 +84,11 @@ fn tool_bar(state: &State) -> Element<'_, Message> {
                        shown: String,
                        on_change: fn(f32) -> Message| {
             row![
-                text(label).size(11),
+                text(label).size(design::CAPTION),
                 slider(range, value, on_change)
                     .step(step)
                     .width(Length::Fixed(90.0)),
-                text(shown).size(11).width(Length::Fixed(44.0)),
+                text(shown).size(design::CAPTION).width(Length::Fixed(44.0)),
             ]
             .spacing(4)
             .align_y(iced::Alignment::Center)
@@ -128,7 +139,7 @@ fn tool_bar(state: &State) -> Element<'_, Message> {
                 LevelTool::Sculpt => "LMB brush · Ctrl+LMB lower · RMB look · WASD fly",
                 LevelTool::Paint => "LMB paint · RMB look · WASD fly",
             })
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
         )
         .push(action(
@@ -165,30 +176,101 @@ fn tool_bar(state: &State) -> Element<'_, Message> {
         .into()
 }
 
-fn command<'a>(caption: &'static str, msg: Message) -> iced::widget::Button<'a, Message> {
-    button(text(caption).size(12))
-        .style(design::text_button)
-        .padding([6, 12])
-        .width(Fill)
-        .on_press(Message::MenuCommand(Box::new(msg)))
+/// Camera and view actions as a dock that magnifies icons near the cursor.
+fn viewport_dock(state: &State) -> Element<'_, Message> {
+    use crate::icons;
+    use crate::ui_kit::{DockItem, dock};
+    let item = |icon, label, message, active| DockItem {
+        icon,
+        label,
+        message: Some(message),
+        active,
+    };
+    dock(
+        &state.ui,
+        "level",
+        vec![
+            item(
+                icons::view_iso(),
+                "Perspective",
+                Message::ViewerCameraPreset("Isometric"),
+                false,
+            ),
+            item(
+                icons::view_top(),
+                "Top",
+                Message::ViewerCameraPreset("Top"),
+                false,
+            ),
+            item(
+                icons::view_front(),
+                "Front",
+                Message::ViewerCameraPreset("Front"),
+                false,
+            ),
+            item(
+                icons::overview(),
+                if state.level_show_overview {
+                    "Hide 2D overview"
+                } else {
+                    "2D overview"
+                },
+                Message::LevelToggleOverview,
+                state.level_show_overview,
+            ),
+            item(
+                icons::focus(),
+                "Focus selection",
+                Message::LevelCameraFocus,
+                false,
+            ),
+            item(
+                icons::reset(),
+                "Reset view",
+                Message::LevelCameraReset,
+                false,
+            ),
+            item(
+                icons::fullscreen(),
+                "Fullscreen viewport",
+                Message::ToggleLevelViewportFullscreen,
+                false,
+            ),
+        ],
+        state.preferences.reduce_motion,
+    )
+}
+
+/// Unsaved • Saving… • Saved 12 s ago for the editable level project.
+fn level_save_status(state: &State) -> Element<'_, Message> {
+    if state.level_project.is_none() || state.level_read_only {
+        return space().width(0).into();
+    }
+    let dirty = state.level_dirty_count != 0
+        || state
+            .terrain_session
+            .as_ref()
+            .is_some_and(|session| session.is_dirty());
+    let (saving, saved_at) = state.ui.save_info("level");
+    crate::ui_kit::save_status(dirty, saving, saved_at)
 }
 
 fn map_chooser(state: &State) -> Element<'_, Message> {
     let mut choices = column![
         text("Choose a map to open").size(24),
         text("Select an imported map archive, then a verified map inside it. Original PAKs remain unchanged.")
-            .size(12).style(design::muted),
+            .size(design::LABEL).style(design::muted),
     ].spacing(12);
 
     if state.busy {
-        choices = choices.push(text("Discovering or loading maps…").size(13));
+        choices = choices.push(text("Discovering or loading maps…").size(design::BODY));
     }
     if let Some((project, maps)) = &state.level_project_choices {
         choices =
             choices.push(text(format!("Maps in editable project {}", project.label)).size(17));
         for (index, map) in maps.iter().enumerate() {
             choices = choices.push(
-                design::button(text(&map.name).size(13))
+                design::button(text(&map.name).size(design::BODY))
                     .on_press_maybe((!state.busy).then_some(Message::LevelChooseProjectMap(index)))
                     .width(Fill),
             );
@@ -200,7 +282,7 @@ fn map_chooser(state: &State) -> Element<'_, Message> {
         choices = choices.push(text(format!("Maps in {}", archive.name)).size(17));
         for (index, map) in maps.iter().enumerate() {
             choices = choices.push(
-                design::button(text(&map.name).size(13))
+                design::button(text(&map.name).size(design::BODY))
                     .on_press_maybe((!state.busy).then_some(Message::LevelChooseMap(index)))
                     .width(Fill),
             );
@@ -228,7 +310,7 @@ fn map_chooser(state: &State) -> Element<'_, Message> {
             choices = choices.push(text("Editable Modding projects").size(17));
             for (index, project) in projects.iter().enumerate() {
                 choices = choices.push(
-                    design::button(text(&project.label).size(13))
+                    design::button(text(&project.label).size(design::BODY))
                         .on_press_maybe((!state.busy).then_some(Message::LevelChooseProject(index)))
                         .width(Fill),
                 );
@@ -242,7 +324,7 @@ fn map_chooser(state: &State) -> Element<'_, Message> {
                 }
                 found = true;
                 choices = choices.push(
-                    design::button(text(&archive.name).size(13))
+                    design::button(text(&archive.name).size(design::BODY))
                         .on_press_maybe((!state.busy).then_some(Message::LevelChooseArchive(index)))
                         .width(Fill),
                 );
@@ -251,7 +333,7 @@ fn map_chooser(state: &State) -> Element<'_, Message> {
         if !found {
             choices = choices.push(
                 text("No imported map archives found. Import a level PAK in Asset Library first.")
-                    .size(12)
+                    .size(design::LABEL)
                     .style(design::muted),
             );
         }
@@ -260,7 +342,11 @@ fn map_chooser(state: &State) -> Element<'_, Message> {
         choices = choices
             .push(design::button("Return to open scene").on_press(Message::LevelDismissMapChooser));
     }
-    choices = choices.push(text(&state.status).size(11).style(design::muted));
+    choices = choices.push(
+        text(&state.status)
+            .size(design::CAPTION)
+            .style(design::muted),
+    );
     container(scrollable(choices).width(Length::Fixed(600.0)).height(Fill))
         .center_x(Fill)
         .padding(32)
@@ -269,81 +355,137 @@ fn map_chooser(state: &State) -> Element<'_, Message> {
         .into()
 }
 fn menu_content(state: &State) -> Option<Element<'_, Message>> {
+    use crate::chrome::menu_item as item;
+    let editable = !state.level_read_only && state.level_project.is_some();
+    let selected = !state.level_selection.indices.is_empty();
+    let scene = state.level_scene.is_some();
     let content: Element<'_, Message> = match state.library_menu? {
         "LevelFile" => column![
-            command("Open as Modding Project", Message::LibraryMakeModProject),
-            command(
+            item(
+                "Open as Modding Project",
+                Some(Message::LibraryMakeModProject)
+            ),
+            item(
                 "Open selected Modding project",
-                Message::LevelOpenSelectedModProject
+                Some(Message::LevelOpenSelectedModProject)
             ),
-            command(
+            item(
                 "Save edited project layer",
-                Message::LevelSaveProjectChanges
+                editable.then_some(Message::LevelSaveProjectChanges)
             ),
-            command("Export edited level copy", Message::LevelExportEdits),
-            command("Show Activity / import log", Message::ToggleActivity),
+            item(
+                "Export edited level copy",
+                editable.then_some(Message::LevelExportEdits)
+            ),
+            item("Show Activity / import log", Some(Message::ToggleActivity)),
         ]
         .spacing(2)
         .into(),
         "LevelEdit" => column![
-            command(
+            item(
+                "Undo transform",
+                (!state.level_read_only && !state.level_undo.is_empty())
+                    .then_some(Message::LevelUndoTransform)
+            ),
+            item(
+                "Redo transform",
+                (!state.level_read_only && !state.level_redo.is_empty())
+                    .then_some(Message::LevelRedoTransform)
+            ),
+            item(
                 "Save selected transform to project",
-                Message::LevelApplyTransform
+                (editable && selected).then_some(Message::LevelApplyTransform)
             ),
             text("Committed source changes have verified editor backups.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         ]
         .spacing(2)
         .into(),
         "LevelWindow" => column![
-            command("Show / hide 2D overview", Message::LevelToggleOverview),
-            command("Activity and importer diagnostics", Message::ToggleActivity),
+            item(
+                "Show / hide 2D overview",
+                Some(Message::LevelToggleOverview)
+            ),
+            item(
+                "Activity and importer diagnostics",
+                Some(Message::ToggleActivity)
+            ),
+            item(
+                "Command palette",
+                Some(Message::Ui(crate::ui_kit::UiMsg::Palette(
+                    crate::command_palette::Msg::Toggle
+                )))
+            ),
         ]
         .spacing(2)
         .into(),
         "LevelTools" => column![
-            command("Focus selected object (F)", Message::LevelCameraFocus),
-            command("Reset camera", Message::LevelCameraReset),
-            command("Top view", Message::ViewerCameraPreset("Top")),
-            command("Front view", Message::ViewerCameraPreset("Front")),
-            command("Perspective view", Message::ViewerCameraPreset("Isometric")),
+            item(
+                "Focus selected object",
+                selected.then_some(Message::LevelCameraFocus)
+            ),
+            item("Reset camera", scene.then_some(Message::LevelCameraReset)),
+            item(
+                "Top view",
+                scene.then_some(Message::ViewerCameraPreset("Top"))
+            ),
+            item(
+                "Front view",
+                scene.then_some(Message::ViewerCameraPreset("Front"))
+            ),
+            item(
+                "Perspective view",
+                scene.then_some(Message::ViewerCameraPreset("Isometric"))
+            ),
         ]
         .spacing(2)
         .into(),
         "LevelBuild" => column![
-            command("Export original scene GLB", Message::StartLevelGlbExport),
-            command("Export original scene FBX", Message::StartLevelFbxExport),
+            item(
+                "Export original scene GLB",
+                (scene && !state.busy).then_some(Message::StartLevelGlbExport)
+            ),
+            item(
+                "Export original scene FBX",
+                (scene && !state.busy).then_some(Message::StartLevelFbxExport)
+            ),
             text("Exports create new external files; original PAKs remain read-only.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         ]
         .spacing(2)
         .into(),
         "LevelSelectMenu" => column![
-            command("Focus selected placement (F)", Message::LevelCameraFocus),
-            command("Show 2D placement overview", Message::LevelToggleOverview),
+            item(
+                "Focus selected placement",
+                selected.then_some(Message::LevelCameraFocus)
+            ),
+            item(
+                "Show 2D placement overview",
+                Some(Message::LevelToggleOverview)
+            ),
         ]
         .spacing(2)
         .into(),
         "LevelActor" => column![
-            command(
+            item(
                 "Apply position / rotation / scale",
-                Message::LevelApplyTransform
+                (editable && selected).then_some(Message::LevelApplyTransform)
             ),
             text("Select an actor in the Outliner or the 3D viewport.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         ]
         .spacing(2)
         .into(),
         "LevelHelp" => column![
-            text("WASD · fly relative to camera").size(12),
-            text("Q / E · descend / ascend").size(12),
-            text("Hold RMB and drag · look around").size(12),
-            text("Wheel · adjust field of view").size(12),
-            text("F · focus selection").size(12),
-            text("File → Open as Modding Project to edit").size(12),
+            text("WASD · fly relative to camera").size(design::LABEL),
+            text("Q / E · descend / ascend").size(design::LABEL),
+            text("Hold RMB and drag · look around").size(design::LABEL),
+            text("Wheel · adjust field of view").size(design::LABEL),
+            text("F · focus selection").size(design::LABEL),
+            text("File → Open as Modding Project to edit").size(design::LABEL),
         ]
         .spacing(7)
         .into(),
@@ -361,16 +503,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     }
     let menus = container(
         row![
-            text("LEVEL EDITOR").size(13),
+            text("LEVEL EDITOR").size(design::BODY),
             space().width(Length::Fixed(16.0)),
-            menu_button("File", "LevelFile"),
-            menu_button("Edit", "LevelEdit"),
-            menu_button("Window", "LevelWindow"),
-            menu_button("Tools", "LevelTools"),
-            menu_button("Build", "LevelBuild"),
-            menu_button("Select", "LevelSelectMenu"),
-            menu_button("Actor", "LevelActor"),
-            menu_button("Help", "LevelHelp"),
+            menu_button(state, "File", "LevelFile"),
+            menu_button(state, "Edit", "LevelEdit"),
+            menu_button(state, "Window", "LevelWindow"),
+            menu_button(state, "Tools", "LevelTools"),
+            menu_button(state, "Build", "LevelBuild"),
+            menu_button(state, "Select", "LevelSelectMenu"),
+            menu_button(state, "Actor", "LevelActor"),
+            menu_button(state, "Help", "LevelHelp"),
             design::button("Choose Map…").on_press(Message::LevelShowMapChooser),
         ]
         .spacing(2)
@@ -390,40 +532,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
 
     let toolbar = container(
         row![
-            text("VIEWPORT").size(11).style(design::accent),
-            button("Perspective")
-                .style(design::secondary)
-                .on_press(Message::ViewerCameraPreset("Isometric")),
-            button("Top")
-                .style(design::secondary)
-                .on_press(Message::ViewerCameraPreset("Top")),
-            button("Front")
-                .style(design::secondary)
-                .on_press(Message::ViewerCameraPreset("Front")),
-            text("│").size(15).style(design::muted),
-            design::button(if state.level_show_overview {
-                "Hide Overview"
-            } else {
-                "2D Overview"
-            })
-            .style(design::secondary)
-            .on_press(Message::LevelToggleOverview),
-            design::button("Focus Selection")
-                .style(design::secondary)
-                .on_press(Message::LevelCameraFocus),
-            design::button("Reset View")
-                .style(design::secondary)
-                .on_press(Message::LevelCameraReset),
-            design::button("Fullscreen Viewport")
-                .style(design::secondary)
-                .on_press(Message::ToggleLevelViewportFullscreen),
+            text("VIEWPORT").size(design::CAPTION).style(design::accent),
+            viewport_dock(state),
             space().width(Fill),
+            level_save_status(state),
             text(if state.level_read_only {
                 "SOURCE: READ ONLY"
             } else {
                 "EDITABLE PROJECT COPY"
             })
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
         ]
         .spacing(5)
@@ -442,14 +560,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     });
 
     let status = row![
-        text("Scene").size(11).style(design::muted),
+        text("Scene").size(design::CAPTION).style(design::muted),
         text(format!(
             "{} scene objects",
             state.level_scene.as_ref().map_or(0, |s| s.objects.len())
         ))
-        .size(11),
-        text(format!("{} selected", state.level_selection.indices.len())).size(11),
-        text(format!("{} diagnostics", state.level_diagnostics.len())).size(11),
+        .size(design::CAPTION),
+        text(format!("{} selected", state.level_selection.indices.len())).size(design::CAPTION),
+        text(format!("{} diagnostics", state.level_diagnostics.len())).size(design::CAPTION),
         space().width(Fill),
         // Edits report success and refusals here; without it a refused edit
         // looked like the button did nothing.
@@ -458,7 +576,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         } else {
             state.status.as_str()
         })
-        .size(11)
+        .size(design::CAPTION)
         .style(design::muted),
     ]
     .spacing(14)

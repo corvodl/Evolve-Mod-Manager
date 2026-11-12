@@ -33,6 +33,16 @@ pub struct Preferences {
     pub appearance_colors: BTreeMap<String, String>,
     pub theme_presets: BTreeMap<String, BTreeMap<String, String>>,
     pub font_family: String,
+    /// Corner rounding for Modern widgets: "Sharp", "Rounded" or "Soft".
+    pub corner_style: String,
+    /// Name of the last curated colour preset applied (informational only;
+    /// the preset's colours live in `appearance_colors`).
+    pub theme_preset: String,
+    /// Last manager version whose "What's new" intro was dismissed.
+    pub last_seen_version: String,
+    /// Timestamp of the newest announcement seen on What's New; newer
+    /// posts count as unread on the sidebar.
+    pub news_seen_at: String,
     pub reduce_motion: bool,
     pub keep_original_snapshots: bool,
     pub show_activity_on_tasks: bool,
@@ -120,6 +130,10 @@ impl Default for Preferences {
             appearance_colors: BTreeMap::new(),
             theme_presets: BTreeMap::new(),
             font_family: "Default".into(),
+            corner_style: "Rounded".into(),
+            theme_preset: String::new(),
+            last_seen_version: String::new(),
+            news_seen_at: String::new(),
             reduce_motion: false,
             keep_original_snapshots: false,
             show_activity_on_tasks: true,
@@ -310,6 +324,18 @@ impl Preferences {
         }
         if !["Dark", "Light"].contains(&self.appearance_mode.as_str()) {
             self.appearance_mode = "Dark".into();
+        }
+        if !["Sharp", "Rounded", "Soft"].contains(&self.corner_style.as_str()) {
+            self.corner_style = "Rounded".into();
+        }
+        if self.theme_preset.len() > 120 {
+            self.theme_preset.clear();
+        }
+        if self.last_seen_version.len() > 64 {
+            self.last_seen_version.clear();
+        }
+        if self.news_seen_at.len() > 64 {
+            self.news_seen_at.clear();
         }
         if !self.discord_application_id.is_empty()
             && (self.discord_application_id.len() < 15

@@ -5,8 +5,8 @@ use super::{Message, State};
 use crate::design;
 use crate::modding_projects::{PakExportMode, ProjectRow};
 use evolve_core::mod_safety::{ModKind, classify};
-use iced::widget::{column, container, row, scrollable, space, svg, text};
-use iced::{Alignment, Background, Color, Element, Fill, Length};
+use iced::widget::{column, container, row, scrollable, space, text};
+use iced::{Alignment, Background, Element, Fill, Length};
 use std::collections::HashMap;
 
 pub(super) const PAGE: usize = 90;
@@ -178,7 +178,7 @@ fn scan_projects(projects: &[ProjectRow]) -> LoadOrderScan {
 
 pub(super) fn matching_projects(state: &State) -> Vec<usize> {
     let query = state.modding_filter.to_lowercase();
-    state
+    let mut matches = state
         .modding_projects
         .as_deref()
         .unwrap_or(&[])
@@ -193,7 +193,55 @@ pub(super) fn matching_projects(state: &State) -> Vec<usize> {
                     .any(|value| value.to_lowercase().contains(&query))))
             .then_some(i)
         })
-        .collect()
+        .filter(|&i| {
+            let p = &state.modding_projects.as_deref().unwrap_or(&[])[i];
+            state.modding_chips.iter().all(|chip| match chip.as_str() {
+                "Modified only" => !p.modified.is_empty(),
+                "Unmodified only" => p.modified.is_empty(),
+                "Enabled only" => p.enabled,
+                "Disabled only" => !p.enabled,
+                _ => chip
+                    .strip_prefix("PAK: ")
+                    .is_none_or(|target| p.target == target),
+            })
+        })
+        .collect::<Vec<_>>();
+    sort_projects(state, &mut matches);
+    matches
+}
+
+/// Apply the project list's header sort (display order only; the load
+/// order number shown in each row is unchanged).
+fn sort_projects(state: &State, indices: &mut [usize]) {
+    let projects = state.modding_projects.as_deref().unwrap_or(&[]);
+    if let Some((column, ascending)) = state.modding_sort {
+        indices.sort_by(|&a, &b| {
+            let (a, b) = (&projects[a], &projects[b]);
+            let order = match column {
+                "pak" => a.target.to_lowercase().cmp(&b.target.to_lowercase()),
+                "status" => a.status.cmp(&b.status),
+                "enabled" => b.enabled.cmp(&a.enabled),
+                _ => a.label.to_lowercase().cmp(&b.label.to_lowercase()),
+            };
+            if ascending { order } else { order.reverse() }
+        });
+    }
+}
+
+/// Options for the project chip filter.
+pub(super) fn modding_chip_options(projects: &[ProjectRow]) -> Vec<String> {
+    let mut options = vec![
+        "Modified only".to_owned(),
+        "Unmodified only".to_owned(),
+        "Enabled only".to_owned(),
+        "Disabled only".to_owned(),
+    ];
+    let targets: std::collections::BTreeSet<_> = projects
+        .iter()
+        .map(|p| format!("PAK: {}", p.target))
+        .collect();
+    options.extend(targets);
+    options
 }
 
 pub(super) fn page_range(count: usize, page: usize) -> std::ops::Range<usize> {
@@ -302,11 +350,16 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
             design::button("Play with mods (existing private helper)").on_press(
                 Message::MenuCommand(Box::new(Message::StartOfflineLauncherLaunch))
             ),
-            design::button("Restore original PAKs + hook").on_press(Message::MenuCommand(
-                Box::new(Message::StartOfflineLauncherRestore)
-            )),
+            crate::ui_kit::hold_button(
+                &state.ui,
+                "restore-original-files-menu",
+                "Hold: restore original PAKs + hook",
+                Message::MenuCommand(Box::new(Message::StartOfflineLauncherRestore)),
+                !state.busy,
+                state.preferences.reduce_motion,
+            ),
             text("Offline only. Launcher and backup checks are verified before use.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         ]
         .spacing(3)
@@ -326,32 +379,29 @@ fn dropdown_left(name: Option<&str>) -> f32 {
     }
 }
 
-fn project_header(advanced: bool) -> Element<'static, Message> {
+fn project_header(advanced: bool, sort: crate::ui_kit::Sort) -> Element<'static, Message> {
+    let sortable = |label: &'static str, column: &'static str, width: Length| {
+        crate::ui_kit::sort_header(
+            label,
+            column,
+            sort,
+            Message::SortBy("modding", column),
+            width,
+        )
+    };
     let mut header = row![
         text("ORDER")
             .size(10)
             .style(design::muted)
             .width(Length::Fixed(48.0)),
-        text("ENABLED")
-            .size(10)
-            .style(design::muted)
-            .width(Length::FillPortion(2)),
-        text("MOD NAME / SOURCE")
-            .size(10)
-            .style(design::muted)
-            .width(Length::FillPortion(7)),
-        text("PAK")
-            .size(10)
-            .style(design::muted)
-            .width(Length::FillPortion(5)),
+        sortable("ENABLED", "enabled", Length::FillPortion(2)),
+        sortable("MOD NAME / SOURCE", "name", Length::FillPortion(7)),
+        sortable("PAK", "pak", Length::FillPortion(5)),
         text("DECLARED COLLISION")
             .size(10)
             .style(design::muted)
             .width(Length::Fixed(132.0)),
-        text("MANIFEST")
-            .size(10)
-            .style(design::muted)
-            .width(Length::FillPortion(2)),
+        sortable("MANIFEST", "status", Length::FillPortion(2)),
     ];
     if advanced {
         header = header
@@ -385,65 +435,37 @@ enum BadgeTone {
     Disabled,
 }
 
-fn badge_color(tone: BadgeTone, theme: &iced::Theme) -> Color {
-    match tone {
-        BadgeTone::Clean => theme.palette().success,
-        BadgeTone::Shared => theme.palette().warning,
-        BadgeTone::Target => theme.palette().danger,
-        BadgeTone::Disabled => theme.extended_palette().background.strongest.text,
-    }
-}
-
-/// Theme-aware badge: no fixed RGB mock palette, so light and legacy themes
-/// stay readable while the semantic color remains obvious.
+/// Project badges use the shared theme-aware `ui_kit::badge`.
 fn badge(label: impl Into<String>, tone: BadgeTone) -> Element<'static, Message> {
-    let label = label.into();
-    container(text(label).size(11).style(move |theme| text::Style {
-        color: Some(badge_color(tone, theme)),
-    }))
-    .padding([2, 7])
-    .style(move |theme| {
-        let color = badge_color(tone, theme);
-        container::Style {
-            background: Some(Background::Color(Color::from_rgba(
-                color.r, color.g, color.b, 0.14,
-            ))),
-            border: iced::border::rounded(5).color(color),
-            ..container::Style::default()
-        }
-    })
-    .into()
+    use crate::ui_kit::BadgeKind;
+    let kind = match tone {
+        BadgeTone::Clean => BadgeKind::Enabled,
+        BadgeTone::Shared => BadgeKind::Modified,
+        BadgeTone::Target => BadgeKind::Conflict,
+        BadgeTone::Disabled => BadgeKind::Neutral,
+    };
+    crate::ui_kit::badge(kind, label.into())
 }
 
 /// Lightweight, vector-sharp sliding switch. No images or theme-specific
 /// assets are bundled; thumb and red track interpolate on the Iced Tick.
 fn mod_toggle_switch(position: f32) -> Element<'static, Message> {
-    let position = position.clamp(0.0, 1.0);
-    let blend = |off: u8, on: u8| -> u8 {
-        (f32::from(off) + (f32::from(on) - f32::from(off)) * position).round() as u8
-    };
-    let red = blend(58, 217);
-    let green = blend(62, 49);
-    let blue = blend(72, 69);
-    let knob_x = 15.0 + 26.0 * position;
-    let graphic = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="56" height="32" viewBox="0 0 56 32">
-<rect x="2" y="3" width="52" height="26" rx="13" fill="#{red:02x}{green:02x}{blue:02x}" />
-<circle cx="{knob_x:.2}" cy="16" r="10" fill="#f4f5f7" />
-</svg>"##
-    );
-    svg(svg::Handle::from_memory(graphic.into_bytes()))
-        .width(Length::Fixed(56.0))
-        .height(Length::Fixed(32.0))
-        .into()
+    // Same themed track/knob as `ui_kit::switch`; position eases via anim.
+    iced::widget::canvas(crate::fx::SwitchKnob {
+        position: position.clamp(0.0, 1.0),
+    })
+    .width(Length::Fixed(40.0))
+    .height(Length::Fixed(22.0))
+    .into()
 }
 
 fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> {
-    let mut rows = column![project_header(state.modding_advanced)].spacing(4);
+    let mut rows = column![project_header(state.modding_advanced, state.modding_sort)].spacing(4);
     let projects = state.modding_projects.as_deref().unwrap_or(&[]);
     let matches = matching_projects(state);
     let count = matches.len();
     let range = page_range(count, state.modding_page);
+    let accent = crate::forms::highlight_color(&state.preferences);
     for &index in &matches[range.clone()] {
         let record = &projects[index];
         let selected = state.project_selection.indices.contains(&index);
@@ -472,18 +494,31 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
         };
         let mut cells = row![
             column![
-                text(record.label.as_str()).size(12),
-                text(source).size(11).style(design::muted),
+                row![crate::forms::highlight(
+                    &record.label,
+                    &state.modding_filter,
+                    12.0,
+                    accent
+                )]
+                .push((!record.modified.is_empty()).then(|| {
+                    crate::ui_kit::badge(
+                        crate::ui_kit::BadgeKind::Modified,
+                        format!("{} modified", record.modified.len()),
+                    )
+                }))
+                .spacing(6)
+                .align_y(Alignment::Center),
+                text(source).size(design::CAPTION).style(design::muted),
             ]
             .width(Length::FillPortion(7)),
             text(record.target.as_str())
-                .size(12)
+                .size(design::LABEL)
                 .width(Length::FillPortion(5)),
             container(collision)
                 .width(Length::Fixed(132.0))
                 .align_x(Alignment::Start),
             text(record.status.as_str())
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted)
                 .width(Length::FillPortion(2)),
         ];
@@ -491,7 +526,7 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
             cells = cells
                 .push(
                     text(record.source_build.as_str())
-                        .size(12)
+                        .size(design::LABEL)
                         .width(Length::FillPortion(2)),
                 )
                 .push(
@@ -502,12 +537,12 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
                         )
                         .label(),
                     )
-                    .size(12)
+                    .size(design::LABEL)
                     .width(Length::FillPortion(2)),
                 )
                 .push(
                     text(record.details.as_str())
-                        .size(12)
+                        .size(design::LABEL)
                         .width(Length::FillPortion(3)),
                 );
         }
@@ -516,19 +551,19 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
             .mod_toggle_animations
             .iter()
             .find(|anim| anim.workspace == record.workspace)
-            .map(super::ModToggleAnimation::position)
+            .map(|anim| anim.position(std::time::Instant::now()))
             .unwrap_or(if record.enabled { 1.0 } else { 0.0 });
         rows = rows.push(
             container(
                 row![
                     text(order)
-                        .size(12)
+                        .size(design::LABEL)
                         .style(design::muted)
                         .width(Length::Fixed(48.0)),
                     design::button(
                         row![
                             mod_toggle_switch(position),
-                            text(if record.enabled { "On" } else { "Off" }).size(11),
+                            text(if record.enabled { "On" } else { "Off" }).size(design::CAPTION),
                         ]
                         .spacing(3)
                         .align_y(Alignment::Center),
@@ -549,6 +584,17 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
                         ])
                         .style(design::text_button)
                         .on_press(Message::ModdingSelectProject(index)),
+                    design::tooltip(
+                        iced::widget::button(crate::icons::glyph(crate::icons::details(), 15.0))
+                            .padding(5)
+                            .style(design::text_button)
+                            .on_press(Message::Chrome(crate::chrome::Msg::OpenSheet(
+                                crate::chrome::Sheet::Project(index),
+                            ))),
+                        "Open in side panel",
+                        None,
+                        iced::widget::tooltip::Position::Left,
+                    ),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -564,28 +610,46 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
             }),
         );
     }
-    let empty: Element<'_, Message> =
-        if projects.is_empty() {
-            text(if state.preferences.projects.trim().is_empty() {
-            "No projects folder configured. Set Projects in Settings, then refresh."
+    if projects.is_empty() {
+        // Empty states point straight at the fix instead of bare text.
+        let state_view = if state.preferences.projects.trim().is_empty() {
+            crate::ui_kit::empty_state(
+                Some(super::Page::Files.icon()),
+                "No projects folder yet",
+                "Choose where mod projects are stored, then refresh this list.",
+                Some((
+                    "Open Settings › Storage",
+                    Message::OpenSettingsTab(crate::settings_page::Tab::Storage),
+                )),
+            )
         } else {
-            "No editable projects found. The Asset Library stores originals, not editing projects."
-        }).size(13).style(design::muted).into()
-        } else if count == 0 {
-            text("No projects match this filter.")
-                .size(13)
-                .style(design::muted)
-                .into()
-        } else {
-            text(format!(
-                "{}–{} of {count} matching projects",
-                range.start + 1,
-                range.end
-            ))
-            .size(11)
+            crate::ui_kit::empty_state(
+                Some(super::Page::Files.icon()),
+                "No mod projects",
+                "The Asset Library stores originals, not editing projects. Start a project from gameplay values or a model.",
+                Some((
+                    "Create a mod…",
+                    Message::GuidedEdit(crate::guided_modding::Action::Open(false)),
+                )),
+            )
+        };
+        return panel(state_view).into();
+    }
+    let empty: Element<'_, Message> = if count == 0 {
+        text("No projects match this filter.")
+            .size(design::BODY)
             .style(design::muted)
             .into()
-        };
+    } else {
+        text(format!(
+            "{}–{} of {count} matching projects",
+            range.start + 1,
+            range.end
+        ))
+        .size(design::CAPTION)
+        .style(design::muted)
+        .into()
+    };
     panel(
         column![
             scrollable(rows).height(Length::Fixed(300.0)),
@@ -615,7 +679,7 @@ fn modifications(state: &State) -> Element<'_, Message> {
     let mut rows = column![
         row![
             text("MODIFIED FILES IN SELECTED PROJECT")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             space().width(Fill),
             design::button("Review Changes")
@@ -644,17 +708,17 @@ fn modifications(state: &State) -> Element<'_, Message> {
             .spacing(8),
         );
         rows = rows.push(text("Opt-in: place the file under this project's files/ directory, then register its exact archive path. Unregister leaves your file untouched. Existing members remain strict replacements; unregistered files are ignored. Build Mod signs up to 64 combined changes.")
-            .size(11).style(design::muted));
+            .size(design::CAPTION).style(design::muted));
         let range = page_range(record.modified.len(), state.modding_changes_page);
         for changed in &record.modified[range.clone()] {
             rows = rows.push(
                 row![
                     text(changed.as_str())
                         .width(Length::FillPortion(3))
-                        .size(12),
+                        .size(design::LABEL),
                     text(evolve_core::mod_safety::member_kind(changed).label())
                         .width(Length::FillPortion(2))
-                        .size(11)
+                        .size(design::CAPTION)
                         .style(design::muted),
                 ]
                 .spacing(12),
@@ -669,7 +733,7 @@ fn modifications(state: &State) -> Element<'_, Message> {
                         range.end,
                         record.modified.len()
                     ))
-                    .size(12),
+                    .size(design::LABEL),
                     space().width(Fill),
                     design::button("Previous").on_press_maybe(
                         (range.start > 0).then_some(Message::ModdingChangesPage(false))
@@ -686,12 +750,12 @@ fn modifications(state: &State) -> Element<'_, Message> {
                 "No modified files detected in this project."
             } else {
                 "Some files could not be checked; review the source and project before building."
-            }).size(12).style(design::muted));
+            }).size(design::LABEL).style(design::muted));
         }
     } else {
         rows = rows.push(
             text("Select an editable project above to see changed files.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
         );
     }
@@ -718,9 +782,11 @@ fn archive_browser(state: &State) -> Element<'_, Message> {
                 let selected = state.file_selection.indices.contains(&index);
                 list = list.push(
                     design::button(row![
-                        text(file.relative_path.as_str()).size(12).width(Fill),
+                        text(file.relative_path.as_str())
+                            .size(design::LABEL)
+                            .width(Fill),
                         text(format!("{} KiB", file.byte_size / 1024))
-                            .size(12)
+                            .size(design::LABEL)
                             .style(design::muted)
                     ])
                     .width(Fill)
@@ -737,12 +803,16 @@ fn archive_browser(state: &State) -> Element<'_, Message> {
     }
     panel(column![
         row![
-            design::text_input("Search PAKs, maps and dependency groups…", &state.search)
-                .on_input(Message::SearchChanged).width(Fill),
+            crate::forms::search_field(
+                "Search PAKs, maps and dependency groups…",
+                &state.search,
+                Some(count),
+                Message::SearchChanged,
+            ),
             design::button("Refresh").style(design::secondary).on_press(Message::ModdingBrowsePaks)
         ].spacing(8),
         scrollable(list).height(Length::Fixed(180.0)),
-        text(format!("{count} matching staged PAK(s)")).size(12).style(design::muted),
+        text(format!("{count} matching staged PAK(s)")).size(design::LABEL).style(design::muted),
         row![
             design::button("Verify PAK").style(design::secondary)
                 .on_press(Message::StartSignedInspection),
@@ -753,7 +823,7 @@ fn archive_browser(state: &State) -> Element<'_, Message> {
             design::button("Level Editor").style(design::secondary)
                 .on_press(Message::Navigate(super::Page::Levels)),
         ].spacing(8),
-        text("SPECIALIST · REBUILD ONE SIGNED MEMBER").size(12).style(design::muted),
+        text("SPECIALIST · REBUILD ONE SIGNED MEMBER").size(design::LABEL).style(design::muted),
         row![
             design::text_input("Exact archive member path…", &state.signed_entry)
                 .on_input(Message::SignedMemberChanged).width(Fill),
@@ -767,7 +837,7 @@ fn archive_browser(state: &State) -> Element<'_, Message> {
                 .on_press(Message::StartSignedRebuild),
         ].spacing(7),
         text("Signing keys and the signed basename are resolved from your prepared stage and selected archive.")
-            .size(12).style(design::muted),
+            .size(design::LABEL).style(design::muted),
     ].spacing(8)).into()
 }
 
@@ -794,8 +864,10 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
             rows = rows.push(
                 design::button(
                     row![
-                        text(archive.name.as_str()).size(12).width(Fill),
-                        text(archive.group.as_str()).size(11).style(design::muted)
+                        text(archive.name.as_str()).size(design::LABEL).width(Fill),
+                        text(archive.group.as_str())
+                            .size(design::CAPTION)
+                            .style(design::muted)
                     ]
                     .spacing(8),
                 )
@@ -816,7 +888,7 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
     if matching == 0 && state.library_catalog.is_some() {
         rows = rows.push(
             text("No imported PAKs match the current search.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
         );
     }
@@ -830,10 +902,10 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
     panel(
         column![
             row![
-                text("IMPORTED PAKS").size(13),
+                text("IMPORTED PAKS").size(design::BODY),
                 space().width(Fill),
                 text(format!("{matching} match(es)"))
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
                 design::button("Reload saved library")
                     .on_press_maybe(
@@ -843,7 +915,7 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
             ]
             .spacing(8)
             .align_y(iced::Center),
-            text(description).size(11).style(design::muted),
+            text(description).size(design::CAPTION).style(design::muted),
             scrollable(rows).height(Length::Fixed(120.0)),
             row![
                 design::button("Create Editable Project")
@@ -864,13 +936,24 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
 /// user opt them into the *same* Play with Mods pipeline without rebuilding.
 fn signed_paks(state: &State) -> Element<'_, Message> {
     let mut entries = column![].spacing(6);
-    if let Some(ui) = &state.signed_ui {
+    if state.preferences.stage.trim().is_empty() {
+        // Without a signing stage nothing here can work; go straight to setup.
+        entries = entries.push(crate::ui_kit::empty_state(
+            Some(crate::icons::view_iso()),
+            "No signing stage",
+            "Signed PAKs are verified and staged from a protected signing stage. Run game setup to create one.",
+            Some((
+                "Open Settings › Storage",
+                Message::OpenSettingsTab(crate::settings_page::Tab::Storage),
+            )),
+        ));
+    } else if let Some(ui) = &state.signed_ui {
         let mut count = 0;
         for profile in &ui.catalog.profiles {
             if profile.mods.is_empty() {
                 continue;
             }
-            entries = entries.push(text(profile.name.as_str()).size(13));
+            entries = entries.push(text(profile.name.as_str()).size(design::BODY));
             for item in &profile.mods {
                 count += 1;
                 let choice = crate::mod_play::SignedChoice {
@@ -894,9 +977,10 @@ fn signed_paks(state: &State) -> Element<'_, Message> {
                                     !enabled
                                 )
                             )),
-                        text(target).size(12).width(Fill),
+                        text(target).size(design::LABEL).width(Fill),
+                        crate::ui_kit::badge(crate::ui_kit::BadgeKind::Signed, "Signed"),
                         text(if enabled { "Selected" } else { "Not selected" })
-                            .size(11)
+                            .size(design::CAPTION)
                             .style(design::muted),
                     ]
                     .spacing(8)
@@ -905,23 +989,24 @@ fn signed_paks(state: &State) -> Element<'_, Message> {
             }
         }
         if count == 0 {
-            entries = entries.push(
-                text("No registered signed PAKs yet.")
-                    .size(12)
-                    .style(design::muted),
-            );
+            entries = entries.push(crate::ui_kit::empty_state(
+                None,
+                "No signed PAKs yet",
+                "Build a mod project or register a signed PAK to choose it for play.",
+                Some(("Refresh", Message::SignedProfilesReload)),
+            ));
         }
     } else {
         entries = entries.push(
             text("Refresh Mods to load registered signed PAKs.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
         );
     }
     panel(
         column![
             row![
-                text("SIGNED PAKS FOR PLAY").size(13),
+                text("SIGNED PAKS FOR PLAY").size(design::BODY),
                 space().width(Fill),
                 design::button("Refresh")
                     .style(design::secondary)
@@ -932,11 +1017,11 @@ fn signed_paks(state: &State) -> Element<'_, Message> {
             text(
                 "Selected archives are verified and staged when you play; originals stay untouched."
             )
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
-            scrollable(entries).height(Length::Fixed(165.0)),
+            scrollable(entries).height(Length::Fixed(205.0)),
             text(state.signed_status.as_str())
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         ]
         .spacing(7),
@@ -950,7 +1035,8 @@ fn profiles(state: &State) -> Element<'_, Message> {
         for profile in data.profiles.iter().take(40) {
             catalog = catalog.push(
                 design::button(
-                    text(format!("{} · {} mod(s)", profile.name, profile.mods.len())).size(12),
+                    text(format!("{} · {} mod(s)", profile.name, profile.mods.len()))
+                        .size(design::LABEL),
                 )
                 .style(design::text_button)
                 .on_press(Message::SelectProfile(profile.id.clone())),
@@ -959,7 +1045,7 @@ fn profiles(state: &State) -> Element<'_, Message> {
     } else {
         catalog = catalog.push(
             text("Select Refresh to browse offline profiles.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
         );
     }
@@ -967,14 +1053,21 @@ fn profiles(state: &State) -> Element<'_, Message> {
         column![
             text("INSTALLED MODS / PROFILES").size(14),
             row![
-                design::text_input("New profile name…", &state.profile_name)
-                    .on_input(Message::ProfileNameChanged)
-                    .width(Fill),
-                design::button("Create profile").on_press(Message::StartProfileCreate),
+                crate::ui_kit::popover_form(
+                    &state.ui,
+                    "new-profile",
+                    "New profile…",
+                    "New profile name…",
+                    &state.profile_name,
+                    Message::ProfileNameChanged,
+                    (!state.profile_name.trim().is_empty()).then_some(Message::StartProfileCreate),
+                ),
+                space().width(Fill),
                 design::button("Refresh").on_press(Message::StartProfileList)
             ]
             .spacing(8),
             scrollable(catalog).height(Length::Fixed(110.0)),
+            profile_mod_order(state),
             text(format!(
                 "Staged target: {}",
                 if state.input.is_empty() {
@@ -983,7 +1076,7 @@ fn profiles(state: &State) -> Element<'_, Message> {
                     &state.input
                 }
             ))
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             design::text_input(
                 "Signed PAK file to add to selected staged target…",
@@ -1000,7 +1093,13 @@ fn profiles(state: &State) -> Element<'_, Message> {
                     .on_press(Message::StartProfilePlan),
                 design::button("Apply to offline stage")
                     .style(design::secondary)
-                    .on_press(Message::StartProfileApply),
+                    .on_press(crate::chrome::confirm(
+                        format!("Apply profile “{}”?", state.profile_id),
+                        "Every enabled PAK in this profile is checked (sources and signatures) before anything changes, then swapped into the offline signing stage under a recovery journal. Your original game files are not touched. If it is interrupted, Check recovery repairs the stage.",
+                        "Apply profile",
+                        crate::design::Tone::Info,
+                        Message::StartProfileApply,
+                    )),
                 design::button("Check recovery")
                     .style(design::secondary)
                     .on_press(Message::StartProfileStatus),
@@ -1010,10 +1109,10 @@ fn profiles(state: &State) -> Element<'_, Message> {
             ]
             .spacing(8),
             text("A signed PAK with added members can be registered here. Verify and apply it to the isolated stage, then use Tools → Play with mods (existing private helper). The main Play with Mods button builds enabled projects instead. The launcher still requires authenticated original game PAKs; never overwrite a live PAK to make this check pass.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
             text(state.profile_feedback.as_str())
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted)
         ]
         .spacing(7),
@@ -1021,13 +1120,62 @@ fn profiles(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-fn create_mod_card() -> Element<'static, Message> {
-    panel(
+/// The selected profile's mods in apply order, reorderable by drag,
+/// ↑/↓ buttons or Alt+↑/↓.
+fn profile_mod_order(state: &State) -> Element<'_, Message> {
+    let Some(profile) = state
+        .profile_catalog
+        .as_ref()
+        .and_then(|catalog| catalog.profiles.iter().find(|p| p.id == state.profile_id))
+    else {
+        return space().height(0).into();
+    };
+    if profile.mods.is_empty() {
+        return text("This profile has no mods yet.")
+            .size(design::LABEL)
+            .style(design::muted)
+            .into();
+    }
+    let rows = profile
+        .mods
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            row![
+                text(format!("{}.", index + 1))
+                    .size(design::CAPTION)
+                    .style(design::muted)
+                    .width(Length::Fixed(24.0)),
+                text(item.target.as_str()).size(design::LABEL).width(Fill),
+                if item.enabled {
+                    crate::ui_kit::badge(crate::ui_kit::BadgeKind::Enabled, "Enabled")
+                } else {
+                    crate::ui_kit::badge(crate::ui_kit::BadgeKind::Neutral, "Off")
+                },
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        })
+        .collect();
+    column![
+        text(format!("APPLY ORDER · {}", profile.name)).size(design::CAPTION).style(design::muted),
+        crate::ui_kit::reorder_list(&state.ui, "profile-mods", rows, Message::ProfileModMove),
+        text("Mods apply top to bottom. Enabled mods never share a target PAK, so order does not change which file wins.")
+            .size(design::CAPTION)
+            .style(design::muted),
+    ]
+    .spacing(6)
+    .into()
+}
+
+fn create_mod_card(state: &State) -> Element<'_, Message> {
+    let card = panel(
         column![
             text("CREATE A MOD").size(10).style(design::muted),
             text("Author New Project").size(16),
             text("Create isolated workspace overrides for gameplay values or visual assets.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             space().height(Length::Fixed(6.0)),
             row![
@@ -1045,27 +1193,41 @@ fn create_mod_card() -> Element<'static, Message> {
             .spacing(8),
         ]
         .spacing(6),
+    );
+    crate::ui_kit::spotlight(
+        &state.ui,
+        "card:create".into(),
+        card,
+        state.preferences.reduce_motion,
     )
-    .into()
 }
 
-fn play_mods_card(state: &State, scan: &LoadOrderScan) -> Element<'static, Message> {
+fn play_mods_card<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> {
     let signed = state.signed_ui.as_ref().map_or(0, |ui| ui.selected.len());
-    panel(
+    // Eases when mods are toggled; falls back to the scan before first sync.
+    let enabled = crate::ui_kit::ticked(&state.ui, "enabled_mods", scan.enabled_count() as f64)
+        .round() as usize;
+    let working = super::footer_is_working(state);
+    let card = panel(
         column![
             text("PLAY WITH MODS").size(10).style(design::accent),
             text("Stage 2 Sandbox Launch").size(16),
             text(format!(
-                "Offline only · {} enabled project(s) and {signed} selected signed PAK(s).",
-                scan.enabled_count()
+                "Offline only · {enabled} enabled project(s) and {signed} selected signed PAK(s)."
             ))
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
             space().height(Length::Fixed(6.0)),
             row![
-                design::button("Play with Mods")
-                    .style(design::primary)
-                    .on_press(Message::PlayWithMods),
+                // A beam circles the button while a build or launch runs.
+                crate::ui_kit::beam(
+                    &state.ui,
+                    design::button("Play with Mods")
+                        .style(design::primary)
+                        .on_press(Message::PlayWithMods),
+                    working,
+                    state.preferences.reduce_motion,
+                ),
                 design::button("Refresh Mods")
                     .style(design::secondary)
                     .on_press(Message::ModdingRefresh),
@@ -1073,11 +1235,16 @@ fn play_mods_card(state: &State, scan: &LoadOrderScan) -> Element<'static, Messa
             .spacing(8),
         ]
         .spacing(6),
+    );
+    crate::ui_kit::spotlight(
+        &state.ui,
+        "card:play".into(),
+        card,
+        state.preferences.reduce_motion,
     )
-    .into()
 }
 
-fn conflict_hub_card(scan: &LoadOrderScan) -> Element<'static, Message> {
+fn conflict_hub_card<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> {
     let first_conflict = scan
         .target_conflicts
         .first()
@@ -1093,7 +1260,7 @@ fn conflict_hub_card(scan: &LoadOrderScan) -> Element<'static, Message> {
     } else {
         BadgeTone::Shared
     };
-    panel(
+    let card = panel(
         column![
             row![
                 text("LOAD ORDER & CONFLICT HUB").size(10).style(design::muted),
@@ -1108,10 +1275,10 @@ fn conflict_hub_card(scan: &LoadOrderScan) -> Element<'static, Message> {
                 scan.member_collisions.len(),
                 scan.target_conflicts.len()
             ))
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
             text("Derived from project manifests; this is not a live game VFS read and no winning copy is written.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             space().height(Length::Fixed(6.0)),
             row![
@@ -1125,8 +1292,13 @@ fn conflict_hub_card(scan: &LoadOrderScan) -> Element<'static, Message> {
             .spacing(8),
         ]
         .spacing(6),
+    );
+    crate::ui_kit::spotlight(
+        &state.ui,
+        "card:conflicts".into(),
+        card,
+        state.preferences.reduce_motion,
     )
-    .into()
 }
 
 fn collision_owner<'a>(projects: &'a [ProjectRow], index: usize) -> Element<'a, Message> {
@@ -1135,7 +1307,7 @@ fn collision_owner<'a>(projects: &'a [ProjectRow], index: usize) -> Element<'a, 
     };
     container(
         column![
-            text(record.label.as_str()).size(12),
+            text(record.label.as_str()).size(design::LABEL),
             text(record.target.as_str()).size(10).style(design::muted),
             row![
                 design::button("Open")
@@ -1169,7 +1341,7 @@ fn target_conflict_group<'a>(
     container(
         column![
             row![
-                text(target.to_owned()).size(11),
+                text(target.to_owned()).size(design::CAPTION),
                 space().width(Fill),
                 badge("PAK target clash", BadgeTone::Target),
             ]
@@ -1198,7 +1370,7 @@ fn member_collision_group<'a>(
     container(
         column![
             row![
-                text(path.to_owned()).size(11),
+                text(path.to_owned()).size(design::CAPTION),
                 space().width(Fill),
                 badge(format!("{} sources", owners.len()), BadgeTone::Shared),
             ]
@@ -1221,7 +1393,7 @@ fn conflict_inspector<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a,
     if scan.enabled_count() == 0 {
         body = body.push(
             text("No enabled projects. Enable a project to add it to the effective Play order.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
         );
     }
@@ -1243,7 +1415,7 @@ fn conflict_inspector<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a,
     if scan.conflict_count() == 0 && scan.enabled_count() > 0 {
         body = body.push(
             text("No declared shared changed-member paths or duplicate PAK targets among enabled projects.")
-                .size(12)
+                .size(design::LABEL)
                 .style(design::muted),
         );
     }
@@ -1288,13 +1460,13 @@ fn conflict_inspector<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a,
     panel(
         column![
             row![
-                text("COLLISION INSPECTOR").size(13),
+                text("COLLISION INSPECTOR").size(design::BODY),
                 space().width(Fill),
                 badge(format!("{} group(s)", scan.conflict_count()), tone),
             ]
             .align_y(Alignment::Center),
             text("Effective Play order is this project-list order: Play with Mods walks the registry and keeps enabled projects. Disabled projects are not loaded.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
             scrollable(body).height(Length::Fixed(300.0)),
             text(format!(
@@ -1362,26 +1534,27 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .align_y(iced::Center);
     let mut selected_content = column![
         row![
-            text("SELECTED PROJECT").size(13),
+            text("SELECTED PROJECT").size(design::BODY),
             space().width(Fill),
             text(
                 chosen
                     .map(|p| p.target.as_str())
                     .unwrap_or("Select a project above")
             )
-            .size(12)
+            .size(design::LABEL)
             .style(design::muted),
         ]
         .spacing(8)
         .align_y(iced::Center),
-        row![
-            design::text_input("Mod name…", &state.modding_name_input)
-                .on_input(Message::ModdingNameChanged)
-                .width(Length::FillPortion(4)),
-            design::button("Save Name")
-                .style(design::secondary)
-                .on_press_maybe(state.modding_selected.map(|_| Message::ModdingSaveName)),
-        ]
+        row![crate::ui_kit::popover_form(
+            &state.ui,
+            "rename-mod",
+            "Rename mod…",
+            "Mod name…",
+            &state.modding_name_input,
+            Message::ModdingNameChanged,
+            state.modding_selected.map(|_| Message::ModdingSaveName),
+        ),]
         .spacing(8)
         .align_y(iced::Center),
         selected_actions,
@@ -1390,7 +1563,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .style(design::primary)
                 .on_press_maybe(state.modding_selected.map(|_| Message::ModdingExportPak)),
             text("Choose an export format, then Save As to any folder.")
-                .size(11)
+                .size(design::CAPTION)
                 .style(design::muted),
         ]
         .spacing(8)
@@ -1400,7 +1573,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     if state.modding_export_options_open && chosen.is_some() {
         selected_content = selected_content.push(
             column![
-                text("EXPORT FORMAT").size(12).style(design::muted),
+                text("EXPORT FORMAT")
+                    .size(design::LABEL)
+                    .style(design::muted),
                 design::button("zz_[modname].pak — changed files only")
                     .style(design::secondary)
                     .on_press(Message::ModdingExportChoose(PakExportMode::ChangedZz)),
@@ -1438,18 +1613,18 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let review_count = mod_kind_count(project_list, ModKind::NeedsReview);
     let selected_project = panel(selected_content);
     let top_cards = row![
-        container(create_mod_card()).width(Length::FillPortion(1)),
+        container(create_mod_card(state)).width(Length::FillPortion(1)),
         container(play_mods_card(state, &scan)).width(Length::FillPortion(1)),
-        container(conflict_hub_card(&scan)).width(Length::FillPortion(1)),
+        container(conflict_hub_card(state, &scan)).width(Length::FillPortion(1)),
     ]
     .spacing(12);
     let filter_bar = panel(
         column![
             row![
-                text("YOUR PROJECTS").size(15),
+                text("YOUR PROJECTS").size(design::HEADING),
                 space().width(Fill),
                 text(format!("{} matching", matching_projects(state).len()))
-                    .size(11)
+                    .size(design::CAPTION)
                     .style(design::muted),
                 badge(
                     format!("{} enabled", scan.enabled_count()),
@@ -1463,40 +1638,50 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .spacing(8)
             .align_y(Alignment::Center),
             row![
-                design::text_input(
+                crate::forms::search_field(
                     "Find project, target PAK or imported source…",
-                    &state.modding_filter
-                )
-                .on_input(Message::ModdingFilterChanged)
-                .width(Fill),
-                design::button(text(format!("All mods ({all_count})")).size(11))
+                    &state.modding_filter,
+                    Some(matching_projects(state).len()),
+                    Message::ModdingFilterChanged,
+                ),
+                crate::ui_kit::chips(
+                    &state.modding_chips,
+                    &state.modding_chip_options,
+                    &state.modding_chip_query,
+                    Message::ModdingChipPicked,
+                    Message::ModdingChipInput,
+                    Message::ModdingChipRemove,
+                ),
+                design::button(text(format!("All mods ({all_count})")).size(design::CAPTION))
                     .style(if state.modding_kind.is_none() {
                         design::primary
                     } else {
                         design::secondary
                     })
                     .on_press(Message::ModdingKind(None)),
-                design::button(text(format!("Cosmetic ({cosmetic_count})")).size(11))
+                design::button(text(format!("Cosmetic ({cosmetic_count})")).size(design::CAPTION))
                     .style(if state.modding_kind == Some(ModKind::CosmeticCandidate) {
                         design::primary
                     } else {
                         design::secondary
                     })
                     .on_press(Message::ModdingKind(Some(ModKind::CosmeticCandidate))),
-                design::button(text(format!("Gameplay ({gameplay_count})")).size(11))
+                design::button(text(format!("Gameplay ({gameplay_count})")).size(design::CAPTION))
                     .style(if state.modding_kind == Some(ModKind::Gameplay) {
                         design::primary
                     } else {
                         design::secondary
                     })
                     .on_press(Message::ModdingKind(Some(ModKind::Gameplay))),
-                design::button(text(format!("Needs review ({review_count})")).size(11))
-                    .style(if state.modding_kind == Some(ModKind::NeedsReview) {
-                        design::primary
-                    } else {
-                        design::secondary
-                    })
-                    .on_press(Message::ModdingKind(Some(ModKind::NeedsReview))),
+                design::button(
+                    text(format!("Needs review ({review_count})")).size(design::CAPTION)
+                )
+                .style(if state.modding_kind == Some(ModKind::NeedsReview) {
+                    design::primary
+                } else {
+                    design::secondary
+                })
+                .on_press(Message::ModdingKind(Some(ModKind::NeedsReview))),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1518,20 +1703,25 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         selected_project,
         modifications(state),
         text("Cosmetic candidates require content verification before online use. Gameplay, mixed and unverified mods stay offline.")
-            .size(11)
+            .size(design::CAPTION)
             .style(design::muted),
-        text("OTHER MOD SOURCES").size(15),
+        text("OTHER MOD SOURCES").size(design::HEADING),
         row![
             imported_paks(state),
             signed_paks(state),
         ]
         .spacing(12),
         panel(column![
-            text("RECOVERY").size(13),
+            text("RECOVERY").size(design::BODY),
             row![
-                design::button("Restore original game files")
-                    .style(design::secondary)
-                    .on_press(Message::StartOfflineLauncherRestore),
+                crate::ui_kit::hold_button(
+                    &state.ui,
+                    "restore-original-files",
+                    "Hold to Restore Original Files",
+                    Message::StartOfflineLauncherRestore,
+                    !state.busy,
+                    state.preferences.reduce_motion,
+                ),
                 design::button("Restore staged profile")
                     .style(design::secondary)
                     .on_press(Message::StartProfileRecover),
@@ -1561,9 +1751,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         let mut lines = column![text(format!(
             "INSTALLED ORIGINAL PAK AUDIT — {} verified, {} failed, {} verified but different from baseline (no files changed)",
             report.verified, report.failed, report.baseline_differences
-        )).size(12)];
+        )).size(design::LABEL)];
         for issue in &report.issues {
-            lines = lines.push(text(issue.as_str()).size(11));
+            lines = lines.push(text(issue.as_str()).size(design::CAPTION));
         }
         main = main.push(scrollable(lines.spacing(4)).height(Length::Fixed(145.0)));
     }

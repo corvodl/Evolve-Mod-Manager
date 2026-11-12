@@ -25,6 +25,17 @@ pub(super) struct CommittedRevision {
     disk_bytes: u64,
 }
 
+impl CommittedRevision {
+    /// Edited archive member, for the undo history timeline.
+    pub(super) fn member(&self) -> &str {
+        &self.member
+    }
+
+    pub(super) fn target(&self) -> &str {
+        &self.target
+    }
+}
+
 fn sha(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }

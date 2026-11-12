@@ -32,7 +32,7 @@ pub fn overlay<'a>(
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: 2.0.into(),
+                radius: design::radius(theme, design::Radius::Small).into(),
             },
             ..container::Style::default()
         });
