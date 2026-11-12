@@ -87,6 +87,7 @@ mod terrain_material_probe;
 // Native RGB24 source-backed output stage; UI activation awaits verified\n// per-pixel Evolve paint alpha and original multi-layer shader ordering.\n#[allow(dead_code)]\nmod terrain_rebake_project;
 mod text_asset_editor;
 mod textured;
+mod toast;
 mod updater;
 mod updater_apply;
 mod uv_preview;
@@ -331,6 +332,7 @@ impl ActiveBlendSpace {
 
 #[derive(Default)]
 struct State {
+    toasts: toast::Toasts,
     level_viewport_fullscreen: bool,
     viewer_viewport_fullscreen: bool,
     sidebar_hovered: bool,
@@ -530,6 +532,8 @@ struct State {
     update_worker_failure: Option<String>,
     retry_update_after_check: bool,
     available_update: Option<ReleaseUpdate>,
+    /// Newer releases on every channel, found by the launch check.
+    launch_updates: Vec<ReleaseUpdate>,
     news: whats_new::NewsState,
     client_version: Option<String>,
     startup_update_checked: bool,
@@ -2655,6 +2659,13 @@ impl Operation {
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
+    ToastTick(std::time::Instant),
+    DismissToast(u64),
+    ToastClicked(u64),
+    OpenUpdatesSettings,
+    CheckAllUpdatesOnLaunch,
+    LaunchUpdatesChecked(Vec<(UpdateChannel, Result<Option<ReleaseUpdate>, String>)>),
+    ApplyLaunchUpdate(String),
     SidebarHover(bool),
     SidebarAnimationTick,
     LibraryPickFiles,
@@ -3155,7 +3166,6 @@ enum Message {
     OpenCrashLogs,
     OpenCrashLogsFolder,
     PreferenceUpdateChannel,
-    PreferenceAutoUpdates,
     PreferenceStage(String),
     PreferenceGameStorage(String),
     SettingsToggleAdvancedPaths,
@@ -4225,12 +4235,61 @@ fn operation_label(operation: &Operation) -> &'static str {
     }
 }
 
+/// User actions whose successful completion deserves a toast even when
+/// quick. Background loads and inspections stay quiet unless they fail or
+/// take long enough that the user was likely waiting on them.
+fn announces_success(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::BuildRawProject(..)
+            | Operation::RebuildPak(..)
+            | Operation::StageBuiltOfflineTest(..)
+            | Operation::ImportRawProjectMember(..)
+            | Operation::RestoreRawProjectMember(..)
+            | Operation::UnpackRawProject(..)
+            | Operation::ExtractPak(..)
+            | Operation::ImportSignedLibraryPlan(..)
+            | Operation::ApplyLibraryBuildUpdates(..)
+            | Operation::RemoveManagedLibraryBuild(..)
+            | Operation::RenameManagedLibraryBuild(..)
+            | Operation::CreateProjectFromLibrary(..)
+            | Operation::AnalyzeStorage(..)
+            | Operation::RiggedGlb(..)
+            | Operation::RiggedFbx(..)
+            | Operation::ExportBundle(..)
+            | Operation::ConvertMotion(..)
+            | Operation::SaveProjectLevel(..)
+            | Operation::ExportEditedLevel(..)
+            | Operation::ExtractSignedPak(..)
+            | Operation::ResignSignedPak(..)
+            | Operation::RebuildSignedPak(..)
+            | Operation::PrepareClientHook(..)
+            | Operation::CreateInitialSetup(..)
+            | Operation::CreateTestSetup(..)
+            | Operation::RestoreExistingOfflineLauncher(..)
+            | Operation::ExportLevelGlb(..)
+            | Operation::ExportLevelFbx(..)
+            | Operation::StageInit(..)
+            | Operation::StageImport(..)
+            | Operation::StageApply(..)
+            | Operation::StageRestore(..)
+            | Operation::CreateProfile(..)
+            | Operation::AddProfileMod(..)
+            | Operation::ApplyProfile(..)
+            | Operation::RecoverProfile(..)
+            | Operation::ExportPng(..)
+            | Operation::CompileDds(..)
+    )
+}
+
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     if state.busy {
         return Task::none();
     }
     state.busy = true;
     state.busy_operation = Some(operation_label(&operation).to_owned());
+    state.toasts
+        .begin(operation_label(&operation), announces_success(&operation));
     state.activity_started = Some(std::time::Instant::now());
     if !matches!(&operation, Operation::BuildStaticCdf(..)) {
         state.viewer_load_progress = None;
@@ -4597,6 +4656,46 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
     )
 }
 
+fn selected_update_channel(preferences: &settings::Preferences) -> UpdateChannel {
+    if preferences.nightly_updates {
+        UpdateChannel::Nightly
+    } else if preferences.experimental_updates {
+        UpdateChannel::Beta
+    } else {
+        UpdateChannel::Stable
+    }
+}
+
+fn channel_name(channel: UpdateChannel) -> &'static str {
+    match channel {
+        UpdateChannel::Stable => "Stable",
+        UpdateChannel::Beta => "Beta",
+        UpdateChannel::Nightly => "Nightly",
+    }
+}
+
+/// Launch-time check of every channel, so users hear about Stable, Beta
+/// and Nightly releases regardless of the channel they follow.
+fn check_all_updates_task() -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                [UpdateChannel::Stable, UpdateChannel::Beta, UpdateChannel::Nightly]
+                    .into_iter()
+                    .map(|channel| {
+                        let result = discover_update(channel, env!("CARGO_PKG_VERSION"))
+                            .map_err(|error| error.to_string());
+                        (channel, result)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default()
+        },
+        Message::LaunchUpdatesChecked,
+    )
+}
+
 fn start_news_images(state: &mut State) -> Task<Message> {
     if state.news.images_loading {
         return Task::none();
@@ -4812,6 +4911,64 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.sidebar_reveal = if hovered { 1.0 } else { 0.0 };
             }
             return Task::none();
+        }
+        Message::ToastTick(now) => {
+            state.toasts.tick(now);
+            return Task::none();
+        }
+        Message::DismissToast(id) => {
+            state.toasts.dismiss(id);
+            return Task::none();
+        }
+        Message::ToastClicked(id) => {
+            if let Some(action) = state.toasts.take_action(id) {
+                return update(state, action);
+            }
+            return Task::none();
+        }
+        Message::OpenUpdatesSettings => {
+            let task = update(state, Message::Navigate(Page::Settings));
+            state.settings_tab = settings_page::Tab::Updates;
+            return task;
+        }
+        Message::CheckAllUpdatesOnLaunch => {
+            state.startup_update_checked = true;
+            state.update_status = "Checking public GitHub Releases for verified updates...".into();
+            return check_all_updates_task();
+        }
+        Message::LaunchUpdatesChecked(results) => {
+            let selected = selected_update_channel(&state.preferences);
+            state.launch_updates.clear();
+            let mut follow_up = Task::none();
+            for (channel, result) in results {
+                if channel == selected {
+                    // The selected channel keeps driving the existing
+                    // status line and "Update to ... and restart" button.
+                    state.available_update = None;
+                    follow_up = update(state, Message::UpdateChecked(result.clone()));
+                }
+                if let Ok(Some(release)) = result {
+                    state.toasts.push_update(
+                        channel_name(channel),
+                        &release.version,
+                        Message::OpenUpdatesSettings,
+                    );
+                    state.launch_updates.push(release);
+                }
+            }
+            return follow_up;
+        }
+        Message::ApplyLaunchUpdate(version) => {
+            let Some(release) = state
+                .launch_updates
+                .iter()
+                .find(|release| release.version == version)
+                .cloned()
+            else {
+                return Task::none();
+            };
+            state.available_update = Some(release);
+            return update(state, Message::ApplyUpdate);
         }
         Message::SidebarAnimationTick => {
             let target: f32 = if state.sidebar_hovered { 1.0 } else { 0.0 };
@@ -12098,10 +12255,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.available_update = None;
             persist_preferences(state);
         }
-        Message::PreferenceAutoUpdates => {
-            state.preferences.automatic_update_checks = !state.preferences.automatic_update_checks;
-            persist_preferences(state);
-        }
         Message::SettingsToggleAdvancedPaths => {
             state.settings_advanced_paths = !state.settings_advanced_paths
         }
@@ -12570,14 +12723,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.startup_update_checked = true;
             state.update_status = "Checking public GitHub Releases for verified updates...".into();
             state.available_update = None;
-            let channel = if state.preferences.nightly_updates {
-                UpdateChannel::Nightly
-            } else if state.preferences.experimental_updates {
-                UpdateChannel::Beta
-            } else {
-                UpdateChannel::Stable
-            };
-            return check_updates_task(channel);
+            return check_updates_task(selected_update_channel(&state.preferences));
         }
         Message::ClientVersionChecked(path, version) => {
             if state.preferences.client_executable == path {
@@ -15790,6 +15936,44 @@ fn download_action(state: &State) -> Element<'_, Message> {
     }
 }
 
+/// Releases on other channels found by the launch check, each installable
+/// without changing the channel the user follows.
+fn launch_update_actions(state: &State) -> Element<'_, Message> {
+    let selected = state
+        .available_update
+        .as_ref()
+        .map(|release| release.version.as_str());
+    state
+        .launch_updates
+        .iter()
+        .filter(|release| Some(release.version.as_str()) != selected)
+        .fold(column![].spacing(8), |list, release| {
+            let button = design::button(text(format!(
+                "Install {} {} and restart",
+                channel_name(release.channel),
+                release.version
+            )))
+            .on_press_maybe(
+                (!state.busy).then(|| Message::ApplyLaunchUpdate(release.version.clone())),
+            );
+            list.push(
+                row![
+                    text(format!(
+                        "{} update {} is also available.",
+                        channel_name(release.channel),
+                        release.version
+                    ))
+                    .size(12)
+                    .width(Fill),
+                    button,
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            )
+        })
+        .into()
+}
+
 fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
     // Modern navigation keeps labels visible: no hover-dependent page names
@@ -16909,6 +17093,14 @@ impl Desktop {
                 let project_scan_done = self.state.modding_open_editor_when_scanned
                     && matches!(&message, Message::Finished(Ok(Completed::Inventory(_))));
                 let finished = matches!(&message, Message::Finished(_));
+                let finished_ok = matches!(&message, Message::Finished(Ok(_)));
+                // Take the pending toast before `update`: a completion may
+                // immediately launch a follow-up operation of its own.
+                let finished_toast = if finished {
+                    self.state.toasts.pending.take()
+                } else {
+                    None
+                };
                 let opens_level = matches!(
                     &message,
                     Message::Finished(Ok(Completed::LevelMaps(_, _)
@@ -16926,7 +17118,25 @@ impl Desktop {
                 let launched_from_library = self.state.page == Some(Page::AssetLibrary);
                 let before = self.state.status.clone();
                 let was_busy = self.state.busy;
+                let was_settings_updates = self.state.page == Some(Page::Settings)
+                    && self.state.settings_tab == settings_page::Tab::Updates;
                 let command = update(&mut self.state, message);
+                // A clicked update toast may live in the viewer or level
+                // window; bring the main window forward to show Settings.
+                let command = if !was_settings_updates
+                    && self.state.page == Some(Page::Settings)
+                    && self.state.settings_tab == settings_page::Tab::Updates
+                {
+                    Task::batch([command, window::gain_focus(self.main_id)])
+                } else {
+                    command
+                };
+                if finished {
+                    let status = self.state.status.clone();
+                    self.state
+                        .toasts
+                        .complete(finished_toast, finished_ok, &status);
+                }
                 if self.state.status != before || self.state.busy != was_busy {
                     let note = if self.state.busy { "RUNNING" } else { "STATUS" };
                     let item = format!("{note}: {}", self.state.status);
@@ -16966,6 +17176,21 @@ impl Desktop {
     }
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
+        let content = self.window_contents(id);
+        // Completion toasts follow the user into the windows where
+        // long-running work is started; small dialogs stay uncluttered.
+        if id == self.main_id || self.viewer_id == Some(id) || self.level_id == Some(id) {
+            toast::overlay(
+                content,
+                &self.state.toasts,
+                self.state.preferences.reduce_motion,
+            )
+        } else {
+            content
+        }
+    }
+
+    fn window_contents(&self, id: window::Id) -> Element<'_, Message> {
         if self.export_id == Some(id) {
             asset_viewer::export_dialog(&self.state)
         } else if self.level_id == Some(id) {
@@ -17076,10 +17301,9 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let startup = if self.state.preferences.automatic_update_checks
-            && !self.state.startup_update_checked
-        {
-            iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckUpdates)
+        // Every launch checks all update channels once.
+        let startup = if !self.state.startup_update_checked {
+            iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckAllUpdatesOnLaunch)
         } else {
             Subscription::none()
         };
@@ -17140,8 +17364,17 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let toast_tick = if self.state.toasts.is_empty() {
+            Subscription::none()
+        } else {
+            iced::time::every(toast::Toasts::tick_interval(
+                self.state.preferences.reduce_motion,
+            ))
+            .map(Message::ToastTick)
+        };
         Subscription::batch([
             iced::time::every(Duration::from_secs(8)).map(|_| Message::DiscordPresenceTick),
+            toast_tick,
             dev_overlay_input,
             actor_freeze,
             news_poll,
