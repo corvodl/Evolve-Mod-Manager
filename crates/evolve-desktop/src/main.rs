@@ -615,6 +615,15 @@ struct State {
     developer_password: String,
     /// Show the developer password as plain text while typing.
     developer_show_password: bool,
+    /// Open research disclosures on the Developer page.
+    developer_open: HashSet<&'static str>,
+    developer_collapsed_actors: HashSet<u32>,
+    actor_field_search: String,
+    /// Keybind waiting for its next key press.
+    developer_capture: Option<developer_hotkeys::Action>,
+    teleport_nudge_step: String,
+    /// The last crosshair preview target.
+    teleport_aim_result: Option<runtime_teleport::Position>,
     developer_status: String,
     developer_unlocked: bool,
     /// Session-only opt-in, never restored from settings; does not modify client authentication.
@@ -3472,6 +3481,17 @@ enum Message {
     /// Ctrl+1–6: the Developer tab by position.
     DeveloperTabKey(usize),
     DeveloperShowPassword(bool),
+    DeveloperDisclose(&'static str),
+    DeveloperToggleActor(u32),
+    ActorFieldSearch(String),
+    /// Start (or with `None` stop) capturing a key for a keybind.
+    DeveloperCaptureKey(Option<developer_hotkeys::Action>),
+    DeveloperKeyEvent(iced::keyboard::Event),
+    TeleportNudgeStep(String),
+    TeleportUseAim,
+    TeleportSlotSave,
+    TeleportSlotGo(usize),
+    TeleportSlotDelete(usize),
     ClearActivity,
     ToggleSystemHealth,
     CheckSystemHealth,
@@ -7235,7 +7255,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LibraryManageBuildsToggle => {
             state.library_manage_builds_open = !state.library_manage_builds_open;
-                        state.library_rename_build = None;
+            state.library_rename_build = None;
             if !state.library_manage_builds_open {
                 return Task::none();
             }
@@ -7245,7 +7265,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.busy || state.library_import_scanning || !state.library_manage_builds_open {
                 return Task::none();
             }
-                        let root = PathBuf::from(&state.library_root);
+            let root = PathBuf::from(&state.library_root);
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || managed_library_builds(&root))
@@ -7281,7 +7301,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     build.display_name.clone()
                 };
                 state.library_rename_build = Some(id);
-                            }
+            }
         }
         Message::LibraryRenameBuildValue(value) => state.library_rename_value = value,
         Message::LibraryRenameBuildCancel => {
@@ -7340,7 +7360,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Refresh managed builds before deletion.".into();
                 return Task::none();
             };
-                        state.library_update_plan = None;
+            state.library_update_plan = None;
             return launch(
                 state,
                 Operation::RemoveManagedLibraryBuild(
@@ -8800,6 +8820,117 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::DeveloperShowPassword(show) => state.developer_show_password = show,
+        Message::DeveloperDisclose(key) => {
+            if !state.developer_open.remove(key) {
+                state.developer_open.insert(key);
+            }
+        }
+        Message::DeveloperToggleActor(id) => {
+            if !state.developer_collapsed_actors.remove(&id) {
+                state.developer_collapsed_actors.insert(id);
+            }
+        }
+        Message::ActorFieldSearch(value) => state.actor_field_search = value,
+        Message::DeveloperCaptureKey(action) => state.developer_capture = action,
+        Message::DeveloperKeyEvent(event) => {
+            let Some(action) = state.developer_capture else {
+                return Task::none();
+            };
+            let iced::keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+                return Task::none();
+            };
+            use iced::keyboard::key::Named;
+            let bind = match key {
+                iced::keyboard::Key::Named(Named::Escape) => {
+                    state.developer_capture = None;
+                    return Task::none();
+                }
+                iced::keyboard::Key::Named(Named::Backspace | Named::Delete) => {
+                    Some(developer_hotkeys::Keybind(0))
+                }
+                iced::keyboard::Key::Named(named) => {
+                    let function = match named {
+                        Named::F6 => Some(0),
+                        Named::F7 => Some(1),
+                        Named::F8 => Some(2),
+                        Named::F9 => Some(3),
+                        Named::F10 => Some(4),
+                        Named::F11 => Some(5),
+                        Named::F12 => Some(6),
+                        _ => None,
+                    };
+                    function.map(|offset| {
+                        let group = if modifiers.control() {
+                            0
+                        } else if modifiers.alt() {
+                            1
+                        } else if modifiers.shift() {
+                            2
+                        } else {
+                            3
+                        };
+                        developer_hotkeys::Keybind(1 + group * 7 + offset)
+                    })
+                }
+                _ => None,
+            };
+            // The fixed option list still decides what is allowed.
+            match bind.filter(|bind| developer_hotkeys::Keybind::OPTIONS.contains(bind)) {
+                Some(bind) => {
+                    state.developer_capture = None;
+                    return update(state, Message::DeveloperKeybindChanged(action, bind));
+                }
+                None => {
+                    state.developer_hotkey_status =
+                        "Use F6–F12, optionally with Ctrl, Alt or Shift.".into();
+                }
+            }
+        }
+        Message::TeleportNudgeStep(value) => state.teleport_nudge_step = value,
+        Message::TeleportUseAim => {
+            if let Some(target) = state.teleport_aim_result {
+                state.teleport_x = format!("{:.2}", target.x);
+                state.teleport_y = format!("{:.2}", target.y);
+                state.teleport_z = format!("{:.2}", target.z);
+            }
+        }
+        Message::TeleportSlotSave => {
+            let parse = |value: &str| value.trim().parse::<f32>().ok().filter(|v| v.is_finite());
+            match (
+                parse(&state.teleport_x),
+                parse(&state.teleport_y),
+                parse(&state.teleport_z),
+            ) {
+                (Some(x), Some(y), Some(z)) => {
+                    let name = format!("Position {}", state.preferences.teleport_slots.len() + 1);
+                    state
+                        .preferences
+                        .teleport_slots
+                        .push(settings::TeleportSlot { name, x, y, z });
+                    state.preferences.teleport_slots.truncate(32);
+                    let slots = state.preferences.teleport_slots.clone();
+                    persist_saved_field(move |saved| saved.teleport_slots = slots);
+                }
+                _ => {
+                    state.teleport_status = "Read a position or enter X, Y and Z first".into();
+                }
+            }
+        }
+        Message::TeleportSlotGo(index) => {
+            if let Some(slot) = state.preferences.teleport_slots.get(index).cloned() {
+                state.teleport_x = format!("{:.2}", slot.x);
+                state.teleport_y = format!("{:.2}", slot.y);
+                state.teleport_z = format!("{:.2}", slot.z);
+                return update(state, Message::TeleportAbsolute);
+            }
+        }
+        Message::TeleportSlotDelete(index) => {
+            if index < state.preferences.teleport_slots.len() {
+                state.preferences.teleport_slots.remove(index);
+                let slots = state.preferences.teleport_slots.clone();
+                persist_saved_field(move |saved| saved.teleport_slots = slots);
+            }
+        }
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
                 state.developer_password = value;
@@ -9509,6 +9640,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             match result {
                 Ok(pos) => {
+                    state.teleport_aim_result = Some(pos);
                     state.teleport_status =
                         format!("Approximate camera-directed destination: {}", pos.label())
                 }
@@ -16004,7 +16136,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         report.failed_cleanup.len()
                     );
                     state.library_managed_builds = builds;
-                                        state.library_catalog = Some(catalog);
+                    state.library_catalog = Some(catalog);
                     state.library_selection.clear();
                     state.library_selected = None;
                     state.library_page = 0;
@@ -18646,6 +18778,7 @@ fn compact_footer_status(status: &str) -> String {
 
 fn initial_state() -> State {
     let mut result = State {
+        teleport_nudge_step: "20".into(),
         library_page_size: 110,
         yaw: orientation_gizmo::FRONT_YAW,
         zoom: 1.0,
@@ -19693,6 +19826,11 @@ impl Desktop {
             scan_progress,
             wheel,
             window::close_events().map(Message::WindowClosed),
+            if self.state.developer_capture.is_some() {
+                iced::keyboard::listen().map(Message::DeveloperKeyEvent)
+            } else {
+                Subscription::none()
+            },
             iced::event::listen_with(|event, status, id| match event {
                 // Ctrl+K opens the command palette from any window, even
                 // while a text field has focus.

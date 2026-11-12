@@ -231,6 +231,10 @@ pub fn chevron_left() -> svg::Handle {
     icon(r#"<path d="m15 6-6 6 6 6"/>"#)
 }
 
+pub fn chevron_up() -> svg::Handle {
+    icon(r#"<path d="m6 15 6-6 6 6"/>"#)
+}
+
 pub fn chevron_down() -> svg::Handle {
     icon(r#"<path d="m6 9 6 6 6-6"/>"#)
 }
