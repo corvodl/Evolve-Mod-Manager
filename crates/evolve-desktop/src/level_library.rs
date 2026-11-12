@@ -48,6 +48,13 @@ pub(super) struct LoadedMap {
     /// Reloaded after an edit, from the world it had before: the editor
     /// keeps its camera, selection and panels.
     pub reloaded: bool,
+    /// A small top-down terrain preview for the map chooser (PNG).
+    pub thumbnail: Option<Vec<u8>>,
+}
+
+/// Records how far a map load got, for the chooser's stepper.
+fn set_load_step(step: usize) {
+    crate::map_chooser::LOAD_STEP.store(step, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Most imported map archives are Levels_*.pak. Other imports can be opened
@@ -924,6 +931,7 @@ fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), Strin
 /// Enumerate verified maps without loading scene geometry. The editor's
 /// chooser uses the same validated inventory and grouping as `open`.
 pub(super) fn list_maps(archive: &ImportedPak) -> Result<Vec<MapCandidate>, String> {
+    set_load_step(0);
     discover_with_companion(archive).map(|(_, _, maps)| maps)
 }
 
@@ -984,6 +992,7 @@ fn discover_with_companion(
 }
 
 pub(super) fn list_project_maps(project: &ProjectRow) -> Result<Vec<MapCandidate>, String> {
+    set_load_step(0);
     let inventory = scan_directory(&project.workspace.join("files")).map_err(|e| e.to_string())?;
     discover_inventory(&inventory).map(|(_, maps)| maps)
 }
@@ -1305,6 +1314,7 @@ fn open_selected(
     project: Option<ProjectRow>,
     previous: Option<std::sync::Arc<crate::world_instances::World>>,
 ) -> Result<LoadedMap, String> {
+    set_load_step(1);
     let index = index.min(maps.len().saturating_sub(1));
     let chosen = &maps[index];
     // Reuse decoded assets only within one project's map and build.
@@ -1890,6 +1900,7 @@ fn open_selected(
     let terrain_xml = terrain_xml.ok().flatten();
     let terrain_pak = terrain_pak.ok().flatten();
 
+    set_load_step(2);
     let mut terrain_paint: Option<TerrainPaintMap> = None;
     let terrain = if let Some(relative) = &chosen.terrain {
         let exact = verified_source(&root, relative, 512 * 1024 * 1024)?;
@@ -2068,6 +2079,7 @@ fn open_selected(
     if scene.is_none() && terrain.is_none() {
         return Err(diagnostics.join(" "));
     }
+    set_load_step(3);
     let mut full_scene = level_scene_renderer::assemble(
         &archive,
         scene.as_ref(),
@@ -2194,7 +2206,11 @@ fn open_selected(
         assembled.world = std::sync::Arc::new(world);
         diagnostics.push(assembled.report.status());
     }
+    let thumbnail = terrain
+        .as_ref()
+        .and_then(|(mesh, _)| crate::map_chooser::terrain_thumbnail(&mesh.positions));
     Ok(LoadedMap {
+        thumbnail,
         archive,
         maps,
         index,

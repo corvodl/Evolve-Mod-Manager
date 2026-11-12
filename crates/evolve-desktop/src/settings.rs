@@ -43,6 +43,8 @@ pub struct Preferences {
     /// Timestamp of the newest announcement seen on What's New; newer
     /// posts count as unread on the sidebar.
     pub news_seen_at: String,
+    /// The last few maps opened in the Level Editor, newest first.
+    pub recent_maps: Vec<RecentMap>,
     pub reduce_motion: bool,
     pub keep_original_snapshots: bool,
     pub show_activity_on_tasks: bool,
@@ -134,6 +136,7 @@ impl Default for Preferences {
             theme_preset: String::new(),
             last_seen_version: String::new(),
             news_seen_at: String::new(),
+            recent_maps: Vec::new(),
             reduce_motion: false,
             keep_original_snapshots: false,
             show_activity_on_tasks: true,
@@ -179,6 +182,17 @@ impl Default for Preferences {
             previous_options: BTreeMap::new(),
         }
     }
+}
+
+/// A map opened in the Level Editor, to reopen from the chooser.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecentMap {
+    pub archive_id: String,
+    pub map: String,
+    /// Project workspace for an editable project; empty for an archive.
+    pub project: String,
+    pub label: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -337,6 +351,13 @@ impl Preferences {
         if self.news_seen_at.len() > 64 {
             self.news_seen_at.clear();
         }
+        self.recent_maps.truncate(5);
+        self.recent_maps.retain(|recent| {
+            recent.map.len() <= 200
+                && recent.archive_id.len() <= 200
+                && recent.project.len() <= 1024
+                && recent.label.len() <= 400
+        });
         if !self.discord_application_id.is_empty()
             && (self.discord_application_id.len() < 15
                 || self.discord_application_id.len() > 25

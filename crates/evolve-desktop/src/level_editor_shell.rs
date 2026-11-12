@@ -600,105 +600,6 @@ fn level_save_status(state: &State) -> Element<'_, Message> {
     crate::ui_kit::save_status(dirty, saving, saved_at)
 }
 
-fn map_chooser(state: &State) -> Element<'_, Message> {
-    let mut choices = column![
-        text("Choose a map to open").size(24),
-        text("Select an imported map archive, then a verified map inside it. Original PAKs remain unchanged.")
-            .size(design::LABEL).style(design::muted),
-    ].spacing(12);
-
-    if state.busy {
-        choices = choices.push(text("Discovering or loading maps…").size(design::BODY));
-    }
-    if let Some((project, maps)) = &state.level_project_choices {
-        choices =
-            choices.push(text(format!("Maps in editable project {}", project.label)).size(17));
-        for (index, map) in maps.iter().enumerate() {
-            choices = choices.push(
-                design::button(text(&map.name).size(design::BODY))
-                    .on_press_maybe((!state.busy).then_some(Message::LevelChooseProjectMap(index)))
-                    .width(Fill),
-            );
-        }
-        choices = choices.push(
-            design::button("Choose a different source").on_press(Message::LevelShowMapChooser),
-        );
-    } else if let Some((archive, maps)) = &state.level_map_choices {
-        choices = choices.push(text(format!("Maps in {}", archive.name)).size(17));
-        for (index, map) in maps.iter().enumerate() {
-            choices = choices.push(
-                design::button(text(&map.name).size(design::BODY))
-                    .on_press_maybe((!state.busy).then_some(Message::LevelChooseMap(index)))
-                    .width(Fill),
-            );
-        }
-        choices = choices.push(
-            design::button("Choose a different archive").on_press(Message::LevelShowMapChooser),
-        );
-    } else {
-        if let Some((_, maps, current)) = &state.library_map {
-            choices = choices.push(text("Current source / project maps").size(17));
-            for (index, map) in maps.iter().enumerate() {
-                choices = choices.push(
-                    design::button(text(format!(
-                        "{}{}",
-                        if index == *current { "✓ " } else { "" },
-                        map.name
-                    )))
-                    .on_press_maybe((!state.busy).then_some(Message::LevelMapSelect(index)))
-                    .width(Fill),
-                );
-            }
-        }
-        choices = choices.push(text("Imported map archives").size(17));
-        if let Some(projects) = &state.modding_projects {
-            choices = choices.push(text("Editable Modding projects").size(17));
-            for (index, project) in projects.iter().enumerate() {
-                choices = choices.push(
-                    design::button(text(&project.label).size(design::BODY))
-                        .on_press_maybe((!state.busy).then_some(Message::LevelChooseProject(index)))
-                        .width(Fill),
-                );
-            }
-        }
-        let mut found = false;
-        if let Some(catalog) = &state.library_catalog {
-            for (index, archive) in catalog.archives.iter().enumerate() {
-                if !crate::level_library::likely_level_pak(archive) {
-                    continue;
-                }
-                found = true;
-                choices = choices.push(
-                    design::button(text(&archive.name).size(design::BODY))
-                        .on_press_maybe((!state.busy).then_some(Message::LevelChooseArchive(index)))
-                        .width(Fill),
-                );
-            }
-        }
-        if !found {
-            choices = choices.push(
-                text("No imported map archives found. Import a level PAK in Asset Library first.")
-                    .size(design::LABEL)
-                    .style(design::muted),
-            );
-        }
-    }
-    if state.level_scene.is_some() || state.library_map.is_some() {
-        choices = choices
-            .push(design::button("Return to open scene").on_press(Message::LevelDismissMapChooser));
-    }
-    choices = choices.push(
-        text(&state.status)
-            .size(design::CAPTION)
-            .style(design::muted),
-    );
-    container(scrollable(choices).width(Length::Fixed(600.0)).height(Fill))
-        .center_x(Fill)
-        .padding(32)
-        .width(Fill)
-        .height(Fill)
-        .into()
-}
 fn menu_content(state: &State) -> Option<Element<'_, Message>> {
     use crate::chrome::menu_item as item;
     let editable = !state.level_read_only && state.level_project.is_some();
@@ -877,7 +778,7 @@ fn menu_content(state: &State) -> Option<Element<'_, Message>> {
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     if state.level_map_prompt {
-        return map_chooser(state);
+        return crate::map_chooser::view(state);
     }
     if state.level_viewport_fullscreen {
         return level_workspace::fullscreen_view(state);

@@ -65,6 +65,7 @@ mod level_transform;
 mod level_workspace;
 mod library_picker;
 mod loading_wheel;
+mod map_chooser;
 mod menu_popup;
 mod mod_play;
 mod modding_keys;
@@ -360,6 +361,8 @@ struct State {
     path_checks: forms::PathChecks,
     /// Last good value per number field.
     forms: forms::FormState,
+    /// Level Editor map chooser: search, filters, focus and thumbnails.
+    map_chooser: map_chooser::ChooserState,
     /// Sort orders for the library table, project list and storage legend.
     library_sort: ui_kit::Sort,
     modding_sort: ui_kit::Sort,
@@ -928,6 +931,39 @@ fn persist_saved_field(change: impl FnOnce(&mut Preferences)) {
     };
     change(&mut saved);
     let _ = save_to(&path, &saved);
+}
+
+/// Saves the opened map's thumbnail and puts it at the front of the
+/// chooser's recents.
+fn remember_opened_map(state: &mut State, loaded: &mut level_library::LoadedMap) {
+    let map_name = loaded.maps[loaded.index].name.clone();
+    let mut keys = vec![map_chooser::thumb_key(&loaded.archive.id, &map_name)];
+    if let Some(project) = &loaded.project {
+        keys.push(map_chooser::thumb_key(
+            &project.workspace.display().to_string(),
+            &map_name,
+        ));
+    }
+    if let Some(png) = loaded.thumbnail.take() {
+        map_chooser::save_thumb(&png, &keys);
+        let handle = image::Handle::from_bytes(png);
+        for key in keys {
+            state.map_chooser.thumbs.insert(key, handle.clone());
+        }
+    }
+    let recent = map_chooser::remember(
+        &mut state.preferences,
+        &loaded.archive.id,
+        loaded
+            .project
+            .as_ref()
+            .map_or(loaded.archive.name.as_str(), |project| project.label.as_str()),
+        &map_name,
+        loaded.project.as_ref().map(|project| project.workspace.as_path()),
+    );
+    let recents = state.preferences.recent_maps.clone();
+    let _ = recent;
+    persist_saved_field(move |saved| saved.recent_maps = recents);
 }
 
 /// Remembers the newest announcement as seen, so the What's New count
@@ -2972,6 +3008,7 @@ enum Message {
     Gallery(gallery::Msg),
     Chrome(chrome::Msg),
     Form(forms::FormMsg),
+    Map(map_chooser::Msg),
     /// Browse for a path setting that has no dedicated picker.
     BrowsePath(forms::PathKind),
     BrowsedPath(forms::PathKind, Option<PathBuf>),
@@ -13795,6 +13832,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::Gallery(msg) => return gallery::update(state, msg),
+        Message::Map(msg) => return map_chooser::update(state, msg),
         Message::Chrome(msg) => {
             return match chrome::update(state, msg) {
                 Some(next) => update(state, next),
@@ -16959,14 +16997,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return reload_project_level(state, project);
                 }
                 Ok(Completed::LevelMaps(archive, maps)) => {
+                    // A recent map opens straight away once its archive lists it.
+                    let next = map_chooser::take_pending(state, &maps, false);
                     state.level_map_choices = Some((archive, maps));
                     state.level_project_choices = None;
                     state.level_map_prompt = true;
+                    if let Some(next) = next {
+                        return update(state, next);
+                    }
                 }
                 Ok(Completed::ProjectMaps(project, maps)) => {
+                    let next = map_chooser::take_pending(state, &maps, true);
                     state.level_project_choices = Some((project, maps));
                     state.level_map_choices = None;
                     state.level_map_prompt = true;
+                    if let Some(next) = next {
+                        return update(state, next);
+                    }
                 }
                 Ok(Completed::LevelWildlife(scene, wildlife, report)) => {
                     if state
@@ -17011,7 +17058,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_map_prompt = false;
                     state.level_map_choices = None;
                     state.level_project_choices = None;
-                    let loaded = *loaded;
+                    let mut loaded = *loaded;
+                    remember_opened_map(state, &mut loaded);
                     state.level_draft = None;
                     state.level_surface_palette = None;
                     state.level_vegetation_palette = None;
@@ -18828,6 +18876,33 @@ impl Desktop {
             {
                 Task::none()
             }
+            // Arrow keys and Enter move through the map chooser's cards.
+            Message::Ui(ui_kit::UiMsg::Palette(command_palette::Msg::Move(delta)))
+                if self.state.level_map_prompt && !self.state.ui.palette.open =>
+            {
+                map_chooser::update(&mut self.state, map_chooser::Msg::MoveRow(delta))
+            }
+            Message::Ui(ui_kit::UiMsg::CompareNudge(delta))
+                if self.state.level_map_prompt
+                    && self.state.gallery.lightbox.is_none()
+                    && self.state.ui.compare_split.is_none() =>
+            {
+                map_chooser::update(
+                    &mut self.state,
+                    map_chooser::Msg::Move(if delta < 0.0 { -1 } else { 1 }),
+                )
+            }
+            Message::Chrome(chrome::Msg::Enter)
+                if self.state.chrome.modal.is_none()
+                    && self.state.level_map_prompt
+                    && self.state.map_chooser.focus.is_some() =>
+            {
+                map_chooser::update(&mut self.state, map_chooser::Msg::OpenFocused)
+            }
+            Message::LevelShowMapChooser => {
+                let shown = update(&mut self.state, Message::LevelShowMapChooser);
+                Task::batch([shown, map_chooser::ensure_thumbs(&mut self.state)])
+            }
             Message::Ui(ui_kit::UiMsg::Palette(msg)) => {
                 // Ctrl+K from a secondary window brings the main window up.
                 let raise =
@@ -18883,17 +18958,12 @@ impl Desktop {
                 self.update(*inner)
             }
             Message::OpenViewer => self.open_viewer(),
-            Message::Navigate(Page::Levels) => {
+            Message::Navigate(Page::Levels) | Message::OpenLevelEditorWindow => {
                 self.state.level_map_prompt = true;
                 self.state.level_map_choices = None;
                 self.state.level_project_choices = None;
-                self.open_level_editor()
-            }
-            Message::OpenLevelEditorWindow => {
-                self.state.level_map_prompt = true;
-                self.state.level_map_choices = None;
-                self.state.level_project_choices = None;
-                self.open_level_editor()
+                let thumbs = map_chooser::ensure_thumbs(&mut self.state);
+                Task::batch([self.open_level_editor(), thumbs])
             }
             Message::ToggleLevelViewportFullscreen => {
                 let Some(id) = self.level_id else {
@@ -18935,6 +19005,13 @@ impl Desktop {
                     || self.state.modding_menu.is_some();
                 if closed_layer {
                     Task::none()
+                } else if self.state.map_chooser.lightbox.take().is_some() {
+                    Task::none()
+                } else if self.level_id == Some(id)
+                    && self.state.level_map_prompt
+                    && (self.state.level_scene.is_some() || self.state.library_map.is_some())
+                {
+                    update(&mut self.state, Message::LevelDismissMapChooser)
                 } else if id == self.main_id && self.state.chrome.sheet_floating() {
                     self.update(chrome::msg(chrome::Msg::CloseSheet))
                 } else if self.level_id == Some(id) && self.state.level_transform.is_some() {
