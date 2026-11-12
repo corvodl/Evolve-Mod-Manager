@@ -781,6 +781,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     ]
                     .spacing(16),
                 );
+                if let Some((original, modified)) = &state.comparison_text {
+                    rows = rows.push(
+                        container(crate::diff_view::view(original, modified, "Original", "Modified"))
+                            .height(Length::Fixed(420.0)),
+                    );
+                }
                 rows = rows.push(text("Read-only comparison. Visual pixel and geometry diffs are not implemented yet.")
                     .size(12).style(design::muted));
             } else {

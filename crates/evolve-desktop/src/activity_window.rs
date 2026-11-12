@@ -15,14 +15,40 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text(snapshot.detail.clone()).size(12),
         ]
         .spacing(6)
+        .push(
+            snapshot
+                .steps
+                .as_ref()
+                .map(|steps| crate::ui_kit::stepper(steps, state.loading_wheel_frame)),
+        )
         .into()
     } else {
         column![].into()
     };
-    let mut lines = column![].spacing(4);
-    for message in state.activity_log.iter().rev().take(250) {
-        lines = lines.push(text(message).size(12));
-    }
+    // The log reads as a timeline, newest first; failures get a red dot.
+    let items = state
+        .activity_log
+        .iter()
+        .rev()
+        .take(250)
+        .map(|message| {
+            let lower = message.to_ascii_lowercase();
+            let tone = if lower.contains("error") || lower.contains("failed") || lower.contains("refused") {
+                Some(crate::design::Tone::Danger)
+            } else if lower.contains("warning") {
+                Some(crate::design::Tone::Warning)
+            } else {
+                None
+            };
+            crate::ui_kit::TimelineItem {
+                title: message.clone(),
+                meta: String::new(),
+                body: None,
+                tone,
+            }
+        })
+        .collect();
+    let lines = crate::ui_kit::timeline(items);
     container(
         column![
             row![

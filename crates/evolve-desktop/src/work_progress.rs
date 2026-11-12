@@ -3,8 +3,8 @@
 //! is measured in files/bytes/elapsed time and uses an animated (unknown
 //! completion) bar, not a fictional percent.
 use super::{Message, State};
-use iced::widget::{container, progress_bar, row, svg, text};
-use iced::{Alignment, Element, Length};
+use iced::widget::{container, progress_bar};
+use iced::{Element, Length};
 use std::sync::atomic::Ordering;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -15,6 +15,37 @@ pub struct Snapshot {
     pub percent: Option<u32>,
     /// Animation is only an activity indicator, never a completion estimate.
     pub position: f32,
+    /// Named phases for workers that publish their current step.
+    pub steps: Option<crate::ui_kit::Steps>,
+}
+
+/// Project copy phases, matching `ProjectCopyProgress::phase`.
+pub const COPY_STEPS: [&str; 4] = [
+    "Checking imported assets",
+    "Copying and verifying assets",
+    "Saving project",
+    "Opening project",
+];
+
+/// Play-with-mods phases, keyed from the launch worker's percentage.
+pub const LAUNCH_STEPS: [&str; 6] = [
+    "Build enabled mods",
+    "Prepare signed PAKs",
+    "Verify staged archives",
+    "Prepare controlled launch",
+    "Launcher ready — press Play",
+    "Confirm PAK swap and game release",
+];
+
+pub fn launch_step(percent: u32) -> usize {
+    match percent {
+        0..=24 => 0,
+        25..=69 => 1,
+        70..=84 => 2,
+        85..=94 => 3,
+        95..=97 => 4,
+        _ => 5,
+    }
 }
 
 fn elapsed(state: &State) -> String {
@@ -41,6 +72,7 @@ pub fn snapshot(state: &State) -> Option<Snapshot> {
         detail,
         percent,
         position,
+        steps: None,
     };
     if let Some(progress) = &state.project_copy_progress {
         let phase = progress.phase.load(Ordering::Relaxed);
@@ -68,7 +100,9 @@ pub fn snapshot(state: &State) -> Option<Snapshot> {
         } else {
             format!("{done}/{total} files · {elapsed}")
         };
-        return Some(make(label.into(), detail, percent));
+        let mut snapshot = make(label.into(), detail, percent);
+        snapshot.steps = Some(crate::ui_kit::Steps::new(&COPY_STEPS, phase.min(3)));
+        return Some(snapshot);
     }
     if let Some(progress) = &state.mod_launch_progress {
         let percent = progress.load(Ordering::Relaxed).min(99) as u32;
@@ -80,19 +114,21 @@ pub fn snapshot(state: &State) -> Option<Snapshot> {
             95..=97 => "Launcher ready — press Play",
             _ => "Confirming PAK swap and game release",
         };
-        return Some(make(
+        let mut snapshot = make(
             label.into(),
             format!("Launch stage {percent}% · {elapsed}"),
             Some(percent),
-        ));
+        );
+        snapshot.steps = Some(crate::ui_kit::Steps::new(&LAUNCH_STEPS, launch_step(percent)));
+        return Some(snapshot);
     }
     if let Some(progress) = &state.library_import_progress {
+        // The ticker eases between the worker's counter updates.
+        let raw = progress.load(Ordering::Relaxed) as f64;
+        let files = crate::ui_kit::ticked(&state.ui, "import_files", raw).round() as u64;
         return Some(make(
             "Importing or updating PAKs".into(),
-            format!(
-                "{} files processed · {elapsed}",
-                progress.load(Ordering::Relaxed)
-            ),
+            format!("{files} files processed · {elapsed}"),
             None,
         ));
     }
@@ -133,7 +169,16 @@ pub fn snapshot(state: &State) -> Option<Snapshot> {
     } else {
         "Processing game assets".to_owned()
     };
-    Some(make(label, elapsed, None))
+    let mut snapshot = make(label, elapsed, None);
+    if state.busy_operation.as_deref().is_some_and(|op| {
+        op == "Creating isolated offline setup" || op == "Creating isolated Test Game mod setup"
+    }) {
+        snapshot.steps = Some(crate::ui_kit::Steps::new(
+            &crate::initial_setup::SETUP_STEPS,
+            crate::initial_setup::current_step(),
+        ));
+    }
+    Some(snapshot)
 }
 
 pub fn bar<'a>(snapshot: &Snapshot, width: Length, height: f32) -> Element<'a, Message> {
@@ -147,26 +192,6 @@ pub fn bar<'a>(snapshot: &Snapshot, width: Length, height: f32) -> Element<'a, M
     )
     .width(width)
     .height(Length::Fixed(height))
-    .into()
-}
-
-pub fn footer(state: &State) -> Element<'_, Message> {
-    let Some(status) = snapshot(state) else {
-        return row![].into();
-    };
-    let metric = status.percent.map_or_else(
-        || status.detail.clone(),
-        |value| format!("{value}% · {}", status.detail),
-    );
-    row![
-        svg(super::loading_wheel::handle(state.loading_wheel_frame, 1.0))
-            .width(Length::Fixed(26.0))
-            .height(Length::Fixed(26.0)),
-        text(status.label.clone()).size(12),
-        text(metric).size(11)
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center)
     .into()
 }
 
@@ -198,6 +223,9 @@ mod tests {
         let measured = snapshot(&state).unwrap();
         assert!(measured.label.contains("press Play"));
         assert_eq!(measured.percent, Some(95));
+        let steps = measured.steps.unwrap();
+        assert_eq!(steps.current, 4);
+        assert_eq!(steps.state(3), crate::ui_kit::StepState::Done);
     }
 
     #[test]

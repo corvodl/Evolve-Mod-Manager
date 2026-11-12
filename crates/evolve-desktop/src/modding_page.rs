@@ -302,9 +302,14 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
             design::button("Play with mods (existing private helper)").on_press(
                 Message::MenuCommand(Box::new(Message::StartOfflineLauncherLaunch))
             ),
-            design::button("Restore original PAKs + hook").on_press(Message::MenuCommand(
-                Box::new(Message::StartOfflineLauncherRestore)
-            )),
+            crate::ui_kit::hold_button(
+                &state.ui,
+                "restore-original-files-menu",
+                "Hold: restore original PAKs + hook",
+                Message::MenuCommand(Box::new(Message::StartOfflineLauncherRestore)),
+                !state.busy,
+                state.preferences.reduce_motion,
+            ),
             text("Offline only. Launcher and backup checks are verified before use.")
                 .size(11)
                 .style(design::muted),
@@ -564,14 +569,33 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
             }),
         );
     }
-    let empty: Element<'_, Message> =
-        if projects.is_empty() {
-            text(if state.preferences.projects.trim().is_empty() {
-            "No projects folder configured. Set Projects in Settings, then refresh."
+    if projects.is_empty() {
+        // Empty states point straight at the fix instead of bare text.
+        let state_view = if state.preferences.projects.trim().is_empty() {
+            crate::ui_kit::empty_state(
+                Some(super::Page::Files.icon()),
+                "No projects folder yet",
+                "Choose where mod projects are stored, then refresh this list.",
+                Some((
+                    "Open Settings › Storage",
+                    Message::OpenSettingsTab(crate::settings_page::Tab::Storage),
+                )),
+            )
         } else {
-            "No editable projects found. The Asset Library stores originals, not editing projects."
-        }).size(13).style(design::muted).into()
-        } else if count == 0 {
+            crate::ui_kit::empty_state(
+                Some(super::Page::Files.icon()),
+                "No mod projects",
+                "The Asset Library stores originals, not editing projects. Start a project from gameplay values or a model.",
+                Some((
+                    "Create a mod…",
+                    Message::GuidedEdit(crate::guided_modding::Action::Open(false)),
+                )),
+            )
+        };
+        return panel(state_view).into();
+    }
+    let empty: Element<'_, Message> =
+        if count == 0 {
             text("No projects match this filter.")
                 .size(13)
                 .style(design::muted)
@@ -864,7 +888,18 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
 /// user opt them into the *same* Play with Mods pipeline without rebuilding.
 fn signed_paks(state: &State) -> Element<'_, Message> {
     let mut entries = column![].spacing(6);
-    if let Some(ui) = &state.signed_ui {
+    if state.preferences.stage.trim().is_empty() {
+        // Without a signing stage nothing here can work; go straight to setup.
+        entries = entries.push(crate::ui_kit::empty_state(
+            Some(crate::icons::view_iso()),
+            "No signing stage",
+            "Signed PAKs are verified and staged from a protected signing stage. Run game setup to create one.",
+            Some((
+                "Open Settings › Storage",
+                Message::OpenSettingsTab(crate::settings_page::Tab::Storage),
+            )),
+        ));
+    } else if let Some(ui) = &state.signed_ui {
         let mut count = 0;
         for profile in &ui.catalog.profiles {
             if profile.mods.is_empty() {
@@ -905,11 +940,12 @@ fn signed_paks(state: &State) -> Element<'_, Message> {
             }
         }
         if count == 0 {
-            entries = entries.push(
-                text("No registered signed PAKs yet.")
-                    .size(12)
-                    .style(design::muted),
-            );
+            entries = entries.push(crate::ui_kit::empty_state(
+                None,
+                "No signed PAKs yet",
+                "Build a mod project or register a signed PAK to choose it for play.",
+                Some(("Refresh", Message::SignedProfilesReload)),
+            ));
         }
     } else {
         entries = entries.push(
@@ -934,7 +970,7 @@ fn signed_paks(state: &State) -> Element<'_, Message> {
             )
             .size(11)
             .style(design::muted),
-            scrollable(entries).height(Length::Fixed(165.0)),
+            scrollable(entries).height(Length::Fixed(205.0)),
             text(state.signed_status.as_str())
                 .size(11)
                 .style(design::muted),
@@ -1021,8 +1057,8 @@ fn profiles(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-fn create_mod_card() -> Element<'static, Message> {
-    panel(
+fn create_mod_card(state: &State) -> Element<'_, Message> {
+    let card = panel(
         column![
             text("CREATE A MOD").size(10).style(design::muted),
             text("Author New Project").size(16),
@@ -1045,27 +1081,41 @@ fn create_mod_card() -> Element<'static, Message> {
             .spacing(8),
         ]
         .spacing(6),
+    );
+    crate::ui_kit::spotlight(
+        &state.ui,
+        "card:create".into(),
+        card,
+        state.preferences.reduce_motion,
     )
-    .into()
 }
 
-fn play_mods_card(state: &State, scan: &LoadOrderScan) -> Element<'static, Message> {
+fn play_mods_card<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> {
     let signed = state.signed_ui.as_ref().map_or(0, |ui| ui.selected.len());
-    panel(
+    // Eases when mods are toggled; falls back to the scan before first sync.
+    let enabled = crate::ui_kit::ticked(&state.ui, "enabled_mods", scan.enabled_count() as f64)
+        .round() as usize;
+    let working = super::footer_is_working(state);
+    let card = panel(
         column![
             text("PLAY WITH MODS").size(10).style(design::accent),
             text("Stage 2 Sandbox Launch").size(16),
             text(format!(
-                "Offline only · {} enabled project(s) and {signed} selected signed PAK(s).",
-                scan.enabled_count()
+                "Offline only · {enabled} enabled project(s) and {signed} selected signed PAK(s)."
             ))
             .size(11)
             .style(design::muted),
             space().height(Length::Fixed(6.0)),
             row![
-                design::button("Play with Mods")
-                    .style(design::primary)
-                    .on_press(Message::PlayWithMods),
+                // A beam circles the button while a build or launch runs.
+                crate::ui_kit::beam(
+                    &state.ui,
+                    design::button("Play with Mods")
+                        .style(design::primary)
+                        .on_press(Message::PlayWithMods),
+                    working,
+                    state.preferences.reduce_motion,
+                ),
                 design::button("Refresh Mods")
                     .style(design::secondary)
                     .on_press(Message::ModdingRefresh),
@@ -1073,11 +1123,16 @@ fn play_mods_card(state: &State, scan: &LoadOrderScan) -> Element<'static, Messa
             .spacing(8),
         ]
         .spacing(6),
+    );
+    crate::ui_kit::spotlight(
+        &state.ui,
+        "card:play".into(),
+        card,
+        state.preferences.reduce_motion,
     )
-    .into()
 }
 
-fn conflict_hub_card(scan: &LoadOrderScan) -> Element<'static, Message> {
+fn conflict_hub_card<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> {
     let first_conflict = scan
         .target_conflicts
         .first()
@@ -1093,7 +1148,7 @@ fn conflict_hub_card(scan: &LoadOrderScan) -> Element<'static, Message> {
     } else {
         BadgeTone::Shared
     };
-    panel(
+    let card = panel(
         column![
             row![
                 text("LOAD ORDER & CONFLICT HUB").size(10).style(design::muted),
@@ -1125,8 +1180,13 @@ fn conflict_hub_card(scan: &LoadOrderScan) -> Element<'static, Message> {
             .spacing(8),
         ]
         .spacing(6),
+    );
+    crate::ui_kit::spotlight(
+        &state.ui,
+        "card:conflicts".into(),
+        card,
+        state.preferences.reduce_motion,
     )
-    .into()
 }
 
 fn collision_owner<'a>(projects: &'a [ProjectRow], index: usize) -> Element<'a, Message> {
@@ -1438,9 +1498,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let review_count = mod_kind_count(project_list, ModKind::NeedsReview);
     let selected_project = panel(selected_content);
     let top_cards = row![
-        container(create_mod_card()).width(Length::FillPortion(1)),
+        container(create_mod_card(state)).width(Length::FillPortion(1)),
         container(play_mods_card(state, &scan)).width(Length::FillPortion(1)),
-        container(conflict_hub_card(&scan)).width(Length::FillPortion(1)),
+        container(conflict_hub_card(state, &scan)).width(Length::FillPortion(1)),
     ]
     .spacing(12);
     let filter_bar = panel(
@@ -1529,9 +1589,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         panel(column![
             text("RECOVERY").size(13),
             row![
-                design::button("Restore original game files")
-                    .style(design::secondary)
-                    .on_press(Message::StartOfflineLauncherRestore),
+                crate::ui_kit::hold_button(
+                    &state.ui,
+                    "restore-original-files",
+                    "Hold to Restore Original Files",
+                    Message::StartOfflineLauncherRestore,
+                    !state.busy,
+                    state.preferences.reduce_motion,
+                ),
                 design::button("Restore staged profile")
                     .style(design::secondary)
                     .on_press(Message::StartProfileRecover),

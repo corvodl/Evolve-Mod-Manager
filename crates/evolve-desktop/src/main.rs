@@ -4,6 +4,7 @@
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
 mod anim;
+mod color_picker;
 mod command_palette;
 mod assembly_materials;
 mod asset_cache;
@@ -341,6 +342,7 @@ struct State {
     toasts: toast::Toasts,
     /// Shared component state: palette, holds, tickers, island, dock.
     ui: ui_kit::UiState,
+    color_picker: color_picker::PickerState,
     level_viewport_fullscreen: bool,
     viewer_viewport_fullscreen: bool,
     sidebar_hovered: bool,
@@ -693,6 +695,8 @@ struct State {
     library_matches: Vec<usize>,
     dependency_graph: Option<DependencyGraph>,
     comparison: Option<AssetComparison>,
+    /// Original/modified text for the Compare tab's line diff.
+    comparison_text: Option<(String, String)>,
     compare_original: String,
     compare_modified: String,
     viewer_show_inspector: bool,
@@ -768,6 +772,52 @@ struct State {
     modding_profiles: bool,
     modding_open_editor_when_scanned: bool,
     modding_pending_focus: Option<PathBuf>,
+}
+
+/// Both files as UTF-8 text when they are supported text assets within the
+/// text editor's size limit; otherwise `None` (binary assets keep the hash
+/// comparison only).
+fn compare_text_pair(original: &Path, modified: &Path) -> Option<(String, String)> {
+    let read = |path: &Path| -> Option<String> {
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        if !text_asset_editor::compatible(&name) {
+            return None;
+        }
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        if !meta.is_file() || meta.len() > text_asset_editor::MAX_TEXT_BYTES {
+            return None;
+        }
+        let bytes = std::fs::read(path).ok()?;
+        if bytes.contains(&0) {
+            return None;
+        }
+        String::from_utf8(bytes).ok()
+    };
+    Some((read(original)?, read(modified)?))
+}
+
+/// The intro card shows once per update: only when a version was seen
+/// before (so fresh installs skip it) and the installed one is newer.
+fn intro_due(last_seen: &str, installed: &str) -> bool {
+    let (Ok(seen), Ok(now)) = (
+        semver::Version::parse(last_seen.trim_start_matches('v')),
+        semver::Version::parse(installed),
+    ) else {
+        return false;
+    };
+    now > seen
+}
+
+/// First few bullet-like lines of release notes, without Markdown markers.
+fn release_highlights(notes: &str, limit: usize) -> Vec<String> {
+    notes
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(['-', '*', '•']))
+        .map(|line| line.trim_start_matches(['-', '*', '•', ' ']).replace("**", ""))
+        .filter(|line| !line.is_empty())
+        .take(limit)
+        .collect()
 }
 
 /// `theme_presets` key holding custom colours parked by a theme preset.
@@ -1169,7 +1219,8 @@ enum Completed {
     ManagedLibraryBuildRenamed(Vec<ManagedLibraryBuild>, ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
-    Comparison(AssetComparison),
+    /// Report plus both files' text when they are small UTF-8 text assets.
+    Comparison(AssetComparison, Option<Box<(String, String)>>),
     Inventory(Inventory),
     Pak(PakInventory),
     Texture(DdsInfo),
@@ -1425,7 +1476,14 @@ impl Operation {
                     .map_err(|e| e.to_string())
             }
             Self::CompareAssets(original, modified) => compare_assets(&original, &modified)
-                .map(Completed::Comparison)
+                .map(|report| {
+                    // Text assets also get a line diff, read here off the UI thread.
+                    let texts = (!report.identical)
+                        .then(|| compare_text_pair(&original, &modified))
+                        .flatten()
+                        .map(Box::new);
+                    Completed::Comparison(report, texts)
+                })
                 .map_err(|e| e.to_string()),
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
@@ -2737,7 +2795,13 @@ enum Message {
     Sequence(Vec<Message>),
     OpenSettingsTab(settings_page::Tab),
     TextEditorToggleDiff,
+    DismissIntro,
+    ColorPicker(color_picker::Msg),
+    /// Copy a value from a copy button: `(button id, value)`.
+    CopyToClipboard(String, String),
     PreferenceThemePreset(&'static str),
+    PreferenceUpdateChannelSet(&'static str),
+    PreferenceAppearanceSet(&'static str),
     PreferenceCornerStyle(&'static str),
     ToastTick(std::time::Instant),
     DismissToast(u64),
@@ -4612,6 +4676,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.material_report = None;
     state.dependency_graph = None;
     state.comparison = None;
+    state.comparison_text = None;
     state.character = None;
     state.cdf_dependencies = None;
     state.diffuse = None;
@@ -10061,10 +10126,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::CompareOriginalChanged(path) => {
             state.compare_original = path;
             state.comparison = None;
+            state.comparison_text = None;
         }
         Message::CompareModifiedChanged(path) => {
             state.compare_modified = path;
             state.comparison = None;
+            state.comparison_text = None;
         }
         Message::StartAssetCompare => {
             if state.compare_original.is_empty() || state.compare_modified.is_empty() {
@@ -10481,9 +10548,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Err(error) => state.status = error,
         },
         Message::ViewerToggleFolder(path) => {
-            if !state.viewer_collapsed.insert(path.clone()) {
+            let opened = !state.viewer_collapsed.insert(path.clone());
+            if opened {
                 state.viewer_collapsed.remove(&path);
             }
+            let reduce = state.preferences.reduce_motion;
+            state.ui.turn_folder(&path, opened, Instant::now(), reduce);
             state.viewer_context_index = None;
             state.viewer_page = 0;
             refresh_viewer_rows(state);
@@ -12279,6 +12349,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             persist_preferences(state);
             state.settings_status = format!("Theme preset applied: {name}");
         }
+        Message::PreferenceUpdateChannelSet(channel) => {
+            let prefs = &mut state.preferences;
+            prefs.experimental_updates = channel == "Beta";
+            prefs.nightly_updates = channel == "Nightly";
+            state.available_update = None;
+            persist_preferences(state);
+        }
+        Message::PreferenceAppearanceSet(mode) => {
+            if matches!(mode, "Dark" | "Light") && state.preferences.ui_theme == "Modern" {
+                state.preferences.appearance_mode = mode.into();
+                persist_preferences(state);
+            }
+        }
         Message::PreferenceCornerStyle(style) => {
             if matches!(style, "Sharp" | "Rounded" | "Soft") {
                 state.preferences.corner_style = style.into();
@@ -12290,6 +12373,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let task = update(state, Message::Navigate(Page::Settings));
             state.settings_tab = tab;
             return task;
+        }
+        Message::CopyToClipboard(id, value) => {
+            state.ui.mark_copied(id);
+            return iced::clipboard::write(value);
+        }
+        Message::ColorPicker(msg) => {
+            if color_picker::update(state, msg) {
+                persist_preferences(state);
+            }
+        }
+        Message::DismissIntro => {
+            state.preferences.last_seen_version = env!("CARGO_PKG_VERSION").into();
+            persist_preferences(state);
         }
         Message::TextEditorToggleDiff => {
             if let Some(doc) = state.text_document.as_mut() {
@@ -14119,7 +14215,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.dependency_graph = Some(graph);
                     state.viewer_tab = ViewerTab::Dependencies;
                 }
-                Ok(Completed::Comparison(report)) => {
+                Ok(Completed::Comparison(report, texts)) => {
+                    state.comparison_text = texts.map(|pair| *pair);
                     state.status = if report.identical {
                         "Original and modified files are byte-for-byte identical.".into()
                     } else {
@@ -16709,7 +16806,33 @@ fn view(state: &State) -> Element<'_, Message> {
     } else {
         container(column![]).into()
     };
-    let footer_progress = work_progress::footer(state);
+    // Status island: current operation + elapsed time; hovering expands it
+    // into the latest activity entries.
+    let working = footer_is_working(state);
+    let footer_progress = ui_kit::status_island(
+        work_progress::snapshot(state).map_or_else(
+            || "Ready".to_owned(),
+            |snap| match snap.percent {
+                Some(percent) => format!("{} · {percent}%", snap.label),
+                None => snap.label,
+            },
+        ),
+        working
+            .then(|| state.activity_started.map(|start| start.elapsed()))
+            .flatten(),
+        state.loading_wheel_frame,
+        working,
+    );
+    let island_panel = ui_kit::island_panel(
+        &state.ui,
+        state
+            .activity_log
+            .iter()
+            .rev()
+            .take(6)
+            .map(|line| compact_footer_status(line))
+            .collect(),
+    );
     let body = column![
         headline,
         tools,
@@ -16732,10 +16855,29 @@ fn view(state: &State) -> Element<'_, Message> {
     .width(Fill)
     .height(Fill);
     // Activity is detached so it never steals space from the working page.
-    container(row![sidebar, body].height(Fill))
+    let page: Element<'_, Message> = container(row![sidebar, body].height(Fill))
         .width(Fill)
         .height(Fill)
-        .into()
+        .into();
+    match island_panel {
+        // The expanded island floats above the footer instead of resizing it.
+        Some(panel) => iced::widget::stack![
+            page,
+            container(panel)
+                .width(Fill)
+                .height(Fill)
+                .align_right(Fill)
+                .align_bottom(Fill)
+                .padding(iced::Padding {
+                    top: 0.0,
+                    right: 70.0,
+                    bottom: 44.0,
+                    left: 0.0,
+                }),
+        ]
+        .into(),
+        None => page,
+    }
 }
 
 /// Keep the application status bar a small, single-line summary even if
@@ -16808,6 +16950,13 @@ fn initial_state() -> State {
                 result.pitch = saved.saved_pitch;
                 result.zoom = saved.saved_zoom;
                 result.preferences = saved;
+                // Fresh installs (and installs from before the intro card)
+                // start from the current version, so only later updates
+                // show "What's new in this version".
+                if result.preferences.last_seen_version.is_empty() {
+                    result.preferences.last_seen_version = env!("CARGO_PKG_VERSION").into();
+                    let _ = save_to(&path, &result.preferences);
+                }
             }
             Err(error) => {
                 result.settings_status = format!(

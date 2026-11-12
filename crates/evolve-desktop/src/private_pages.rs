@@ -392,15 +392,24 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
                 details = details.push(text("Loading image…").size(11).style(design::muted));
             }
         }
+    } else if news.loading {
+        // Pulsing placeholders instead of a bare "Loading…" line.
+        let alpha = crate::ui_kit::pulse(
+            state.ui.clock(std::time::Instant::now()),
+            state.preferences.reduce_motion,
+        );
+        details = details
+            .push(crate::ui_kit::skeleton(Length::FillPortion(3), 16.0, alpha))
+            .push(crate::ui_kit::skeleton(Length::Fixed(160.0), 10.0, alpha))
+            .push(crate::ui_kit::skeleton(Fill, 11.0, alpha))
+            .push(crate::ui_kit::skeleton(Fill, 11.0, alpha))
+            .push(crate::ui_kit::skeleton(Length::FillPortion(2), 11.0, alpha));
+        preview = Some(crate::ui_kit::skeleton(Length::FillPortion(3), 112.0, alpha));
     } else {
         details = details.push(
-            text(if news.loading {
-                "Loading the latest announcement…"
-            } else {
-                "No announcements available yet."
-            })
-            .size(12)
-            .style(design::muted),
+            text("No announcements available yet.")
+                .size(12)
+                .style(design::muted),
         );
     }
 
@@ -645,6 +654,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         ),
     ]
     .spacing(14);
+    let dashboard = home_bento(state);
     let tools = column![
         text("QUICK TOOL ACCESS").size(11).style(design::muted),
         design::button("CryPAK Archive Explorer  →")
@@ -662,9 +672,11 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     ]
     .spacing(9)
     .width(Length::FillPortion(1));
-    scrollable(
+    let content = scrollable(
         column![
+            whats_new_intro(state),
             hero,
+            dashboard,
             launchpads,
             row![
                 container(latest_announcement(state, wallpaper)).width(Length::FillPortion(2)),
@@ -676,7 +688,143 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         .padding(24),
     )
     .width(Fill)
-    .height(Fill)
+    .height(Fill);
+    with_embers(state, content.into())
+}
+
+/// Slow embers drift up behind Home's translucent panels. Only drawn with
+/// the wallpaper on and motion allowed; the frame clock stops off Home.
+fn with_embers<'a>(state: &State, content: Element<'a, Message>) -> Element<'a, Message> {
+    if !state.preferences.show_home_background || state.preferences.reduce_motion {
+        return content;
+    }
+    iced::widget::stack![
+        iced::widget::canvas(crate::fx::Embers {
+            time: state.ui.clock(std::time::Instant::now()),
+        })
+        .width(Fill)
+        .height(Fill),
+        content,
+    ]
+    .into()
+}
+
+/// Bento dashboard: small at-a-glance tiles laid out with FillPortion.
+fn home_bento(state: &State) -> Element<'_, Message> {
+    use crate::ui_kit::{bento_tile, ticked};
+    let client = column![
+        text(state.client_version.as_deref().unwrap_or("Unknown")).size(18),
+        text(if state.preferences.client_executable.is_empty() {
+            "Client not configured"
+        } else {
+            "Installed client"
+        })
+        .size(11)
+        .style(design::muted),
+    ]
+    .spacing(4);
+    let enabled = state
+        .modding_projects
+        .as_ref()
+        .map(|projects| projects.iter().filter(|p| p.enabled).count())
+        .unwrap_or(0);
+    let total = state.modding_projects.as_ref().map_or(0, Vec::len);
+    let mods = column![
+        text(format!(
+            "{} enabled",
+            ticked(&state.ui, "enabled_mods", enabled as f64).round() as usize
+        ))
+        .size(18),
+        text(format!("of {total} mod project(s)")).size(11).style(design::muted),
+    ]
+    .spacing(4);
+    let storage_total = state
+        .storage_usage
+        .as_ref()
+        .map(|usage| usage.buckets.iter().sum::<u64>() as f64);
+    let storage = column![
+        text(storage_total.map_or_else(
+            || "Not analyzed".to_owned(),
+            |bytes| crate::ui_kit::format_bytes(ticked(&state.ui, "storage_total", bytes)),
+        ))
+        .size(18),
+        design::button(text("Analyze").size(11))
+            .padding([3, 8])
+            .on_press_maybe((!state.busy && !state.storage_analyzing).then_some(
+                Message::OpenSettingsTab(crate::settings_page::Tab::Storage),
+            )),
+    ]
+    .spacing(4);
+    let update = column![
+        text(format!("v{}", env!("CARGO_PKG_VERSION"))).size(18),
+        text(if state.available_update.is_some() {
+            "Update available"
+        } else {
+            "Manager version"
+        })
+        .size(11)
+        .style(design::muted),
+    ]
+    .spacing(4);
+    row![
+        bento_tile("GAME CLIENT", client, 2),
+        bento_tile("MODS", mods, 2),
+        bento_tile("STORAGE", storage, 2),
+        bento_tile("MANAGER", update, 1),
+    ]
+    .spacing(14)
+    .height(Length::Fixed(104.0))
+    .into()
+}
+
+/// Shown once after the manager updates: highlights from this version's
+/// release notes, dismissed into `last_seen_version`.
+pub(super) fn whats_new_intro(state: &State) -> Element<'_, Message> {
+    let installed = env!("CARGO_PKG_VERSION");
+    if !super::intro_due(&state.preferences.last_seen_version, installed) {
+        return iced::widget::space().height(0).into();
+    }
+    let release = state
+        .news
+        .cache
+        .release
+        .as_ref()
+        .filter(|release| release.version.trim_start_matches('v') == installed);
+    let mut highlights = column![].spacing(4);
+    match release {
+        Some(release) => {
+            for line in super::release_highlights(&release.notes, 5) {
+                highlights = highlights.push(text(format!("•  {line}")).size(12));
+            }
+        }
+        None => {
+            highlights = highlights.push(
+                text("Release notes for this version will appear in What's New.")
+                    .size(12)
+                    .style(design::muted),
+            );
+        }
+    }
+    container(
+        column![
+            row![
+                text(format!("What's new in v{installed}")).size(17).width(Fill),
+                design::button("Read all")
+                    .style(design::secondary)
+                    .on_press(Message::Navigate(Page::WhatsNew)),
+                design::button("Dismiss")
+                    .style(design::primary)
+                    .on_press(Message::DismissIntro),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+            highlights,
+        ]
+        .spacing(10),
+    )
+    .padding([14, 18])
+    .width(Fill)
+    .style(|theme| design::tinted(theme, design::Tone::Info))
     .into()
 }
 
@@ -1485,16 +1633,10 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
             .spacing(9),
         )
         .into()
+    } else if news.loading {
+        news_skeleton(state, 4)
     } else {
-        surface(
-            text(if news.loading {
-                "Loading release notes from GitHub Releases..."
-            } else {
-                "No published release notes available yet."
-            })
-            .size(13),
-        )
-        .into()
+        surface(text("No published release notes available yet.").size(13)).into()
     };
     cards = cards.push(release_card);
     if !news.release_status.is_empty() {
@@ -1502,24 +1644,23 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
     }
     cards = cards.push(text("DISCORD ANNOUNCEMENTS").size(14).style(design::accent));
 
-    if news.cache.announcements.is_empty() {
-        cards = cards.push(surface(text(if news.loading {
-            "Loading Discord channel messages..."
-        } else {
-            "No Discord channel messages available. Post an update in the configured channel and verify the GitHub Pages feed."
-        }).size(13)));
+    if news.cache.announcements.is_empty() && news.loading {
+        for _ in 0..3 {
+            cards = cards.push(news_skeleton(state, 3));
+        }
+    } else if news.cache.announcements.is_empty() {
+        cards = cards.push(crate::ui_kit::empty_state(
+            Some(Page::WhatsNew.icon()),
+            "No announcements yet",
+            "Discord channel messages appear here once the GitHub Pages feed publishes them.",
+            Some(("Refresh", Message::RefreshNews)),
+        ));
     } else {
+        // Announcements read as a timeline: newest first, one dot per post.
+        let mut items = Vec::new();
         let displayable_images = crate::whats_new::image_urls(&news.cache.announcements);
         for post in news.cache.announcements.iter().take(20) {
             let mut details = column![].spacing(8);
-            if !post.title.is_empty() {
-                details = details.push(text(&post.title).size(17));
-            }
-            details = details.push(
-                text(format!("{}  ·  {}", post.author, post.timestamp))
-                    .size(12)
-                    .style(design::muted),
-            );
             if !post.content.is_empty() {
                 details = details.push(text(&post.content).size(13));
             }
@@ -1549,13 +1690,44 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
                     details = details.push(text("Loading image…").size(11).style(design::muted));
                 }
             }
-            cards = cards.push(surface(details));
+            items.push(crate::ui_kit::TimelineItem {
+                title: if post.title.is_empty() {
+                    post.author.clone()
+                } else {
+                    post.title.clone()
+                },
+                meta: format!("{}  ·  {}", post.author, post.timestamp),
+                body: Some(surface(details).into()),
+                tone: None,
+            });
         }
+        cards = cards.push(crate::ui_kit::timeline(items));
     }
     if !news.discord_status.is_empty() {
         cards = cards.push(text(&news.discord_status).size(11).style(design::muted));
     }
     scrollable(cards.padding(12)).height(Fill).into()
+}
+
+/// Placeholder card with pulsing lines while news loads.
+fn news_skeleton(state: &State, lines: usize) -> Element<'_, Message> {
+    let alpha = crate::ui_kit::pulse(
+        state.ui.clock(std::time::Instant::now()),
+        state.preferences.reduce_motion,
+    );
+    let mut column = column![
+        crate::ui_kit::skeleton(Length::FillPortion(2), 16.0, alpha),
+        crate::ui_kit::skeleton(Length::Fixed(180.0), 10.0, alpha),
+    ]
+    .spacing(9);
+    for index in 0..lines {
+        column = column.push(if index + 1 == lines {
+            crate::ui_kit::skeleton(Length::FillPortion(3), 11.0, alpha)
+        } else {
+            crate::ui_kit::skeleton(Fill, 11.0, alpha)
+        });
+    }
+    surface(column).into()
 }
 
 pub(super) fn credits() -> Element<'static, Message> {

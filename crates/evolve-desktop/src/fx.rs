@@ -153,6 +153,51 @@ impl canvas::Program<Message> for BorderBeam {
     }
 }
 
+/// Track and knob for `ui_kit::switch`; `position` 0 = off, 1 = on.
+pub struct SwitchKnob {
+    pub position: f32,
+}
+
+impl canvas::Program<Message> for SwitchKnob {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let t = self.position.clamp(0.0, 1.0);
+        let legacy = design::is_legacy(theme);
+        let height = bounds.height;
+        let radius = if legacy { 1.0 } else { height / 2.0 };
+        let off = design::field(theme);
+        let track = design::mix(off, theme.palette().primary, t);
+        frame.fill(
+            &Path::rounded_rectangle(Point::ORIGIN, bounds.size(), radius.into()),
+            track,
+        );
+        frame.stroke(
+            &Path::rounded_rectangle(Point::new(0.5, 0.5), Size::new(bounds.width - 1.0, height - 1.0), radius.into()),
+            Stroke::default()
+                .with_width(1.0)
+                .with_color(design::mix(design::border(theme), theme.palette().primary, t)),
+        );
+        let knob = height - 6.0;
+        let x = 3.0 + (bounds.width - knob - 6.0) * t;
+        let knob_path = if legacy {
+            Path::rectangle(Point::new(x, 3.0), Size::new(knob, knob))
+        } else {
+            Path::circle(Point::new(x + knob / 2.0, height / 2.0), knob / 2.0)
+        };
+        frame.fill(&knob_path, Color::WHITE);
+        vec![frame.into_geometry()]
+    }
+}
+
 /// Slow rising embers behind the Home wallpaper.
 pub struct Embers {
     pub time: f32,

@@ -702,22 +702,54 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         }
     }
     if matching == 0 {
-        rows = rows.push(
-            container(
-                text(if state.library_startup_loading {
-                    "Indexing imported PAK manifests from the detected manager Asset Library location…"
-                } else if library.is_none() {
-                    "No imported PAKs at the detected manager Asset Library location. Use Import PAKs to add an archive."
-                } else if by_build && build.is_none() {
-                    "No build snapshot is available. Use By Category or import snapshot metadata."
-                } else {
-                    "No imported PAKs match this search."
-                })
-                .size(13)
-                .style(design::muted),
+        rows = rows.push(if state.library_startup_loading {
+            // Skeleton rows pulse while manifests are indexed.
+            let alpha = crate::ui_kit::pulse(
+                state.ui.clock(std::time::Instant::now()),
+                state.preferences.reduce_motion,
+            );
+            let mut skeleton = column![].spacing(10).padding(14);
+            for _ in 0..8 {
+                skeleton = skeleton.push(
+                    row![
+                        column![
+                            crate::ui_kit::skeleton(Fill, 12.0, alpha),
+                            crate::ui_kit::skeleton(Length::Fixed(120.0), 9.0, alpha),
+                        ]
+                        .spacing(5)
+                        .width(Length::FillPortion(6)),
+                        crate::ui_kit::skeleton(Length::FillPortion(4), 11.0, alpha),
+                        crate::ui_kit::skeleton(Length::FillPortion(3), 11.0, alpha),
+                        crate::ui_kit::skeleton(Length::FillPortion(1), 11.0, alpha),
+                    ]
+                    .spacing(9)
+                    .align_y(iced::Center),
+                );
+            }
+            Element::from(skeleton)
+        } else if library.is_none_or(|catalog| catalog.archives.is_empty()) {
+            crate::ui_kit::empty_state(
+                Some(Page::AssetLibrary.icon()),
+                "Your library is empty",
+                "Import original game PAKs to browse, preview and start mod projects from them. Originals stay read-only.",
+                Some(("Import PAKs…", Message::LibraryToggleConfiguration)),
             )
-            .padding(18),
-        );
+        } else if by_build && build.is_none() {
+            container(
+                text("No build snapshot is available. Use By Category or import snapshot metadata.")
+                    .size(13)
+                    .style(design::muted),
+            )
+            .padding(18)
+            .into()
+        } else {
+            crate::ui_kit::empty_state(
+                None,
+                "No matches",
+                "No imported PAKs match this search.",
+                None,
+            )
+        });
     }
     let table_heading = container(
         row![
@@ -885,14 +917,23 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
                             (!state.busy)
                                 .then_some(Message::LibraryRenameBuildBegin(build.id.clone()))
                         ),
-                    design::button("Remove Imported Build")
-                        .style(design::secondary)
-                        .on_press_maybe(
-                            (!state.busy)
-                                .then_some(Message::LibraryDeleteBuildConfirm(build.id.clone()))
-                        ),
+                    // Hold to confirm (two-click with reduce motion): the
+                    // removal starts directly once the hold completes.
+                    crate::ui_kit::hold_button(
+                        &state.ui,
+                        &format!("remove-build:{}", build.id),
+                        "Hold to Remove Build",
+                        Message::LibraryDeleteBuildNow(build.id.clone()),
+                        !state.busy,
+                        state.preferences.reduce_motion,
+                    ),
                 ]
                 .spacing(8),
+            );
+            item = item.push(
+                text("Removing deletes the imported snapshot history and only proven unshared extractions. Original Evolve files remain untouched.")
+                    .size(11)
+                    .style(design::muted),
             );
         }
         content = content.push(panel(container(item).padding(12)));

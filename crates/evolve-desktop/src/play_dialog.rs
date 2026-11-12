@@ -132,6 +132,7 @@ pub fn view(state: &State) -> Element<'_, Message> {
             detail: "Waiting for launch worker".into(),
             percent: None,
             position: 0.0,
+            steps: None,
         })
     } else {
         work_progress::Snapshot {
@@ -151,6 +152,23 @@ pub fn view(state: &State) -> Element<'_, Message> {
             },
             percent: (notice.phase == Phase::Success).then_some(100),
             position: 0.0,
+            // A finished modded launch shows every phase done, or the
+            // phase it stopped at as failed.
+            steps: (notice.kind == Kind::Modded).then(|| match notice.phase {
+                Phase::Success => crate::ui_kit::Steps::all_done(&work_progress::LAUNCH_STEPS),
+                _ => {
+                    let reached = state
+                        .mod_launch_progress
+                        .as_ref()
+                        .map_or(0, |value| value.load(Ordering::Relaxed) as u32);
+                    let mut steps = crate::ui_kit::Steps::new(
+                        &work_progress::LAUNCH_STEPS,
+                        work_progress::launch_step(reached),
+                    );
+                    steps.failed = true;
+                    steps
+                }
+            }),
         }
     };
     let label = progress.label.clone();
@@ -168,11 +186,26 @@ pub fn view(state: &State) -> Element<'_, Message> {
             meter,
             text(detail).size(12).style(design::muted),
         ]
-        .spacing(7),
+        .spacing(7)
+        .push(
+            progress
+                .steps
+                .as_ref()
+                .map(|steps| crate::ui_kit::stepper(steps, state.loading_wheel_frame)),
+        ),
         scrollable(
             column![
                 text(notice.message.as_str()).size(14),
-                text(explanation).size(12).style(design::muted),
+                // Safety guidance as a callout whose tone follows the outcome.
+                crate::ui_kit::callout(
+                    match notice.phase {
+                        Phase::Success => design::Tone::Success,
+                        Phase::Warning => design::Tone::Warning,
+                        Phase::Error => design::Tone::Danger,
+                        Phase::Preparing => design::Tone::Info,
+                    },
+                    explanation,
+                ),
             ]
             .spacing(16)
         )

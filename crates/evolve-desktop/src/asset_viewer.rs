@@ -2132,26 +2132,23 @@ fn explorer(state: &State) -> Element<'_, Message> {
     } else {
         state.pak.as_ref().map_or(0, |pak| pak.entries.len())
     };
+    let now = std::time::Instant::now();
     for entry in state.viewer_rows.iter().cloned() {
-        let indent = "  ".repeat(entry.depth.min(20));
-        let title = if entry.directory {
-            format!(
-                "{indent}{} 📁 {}",
-                if state.viewer_collapsed.contains(&entry.path) && state.viewer_search.is_empty() {
-                    "▸"
-                } else {
-                    "▾"
-                },
-                entry.name
-            )
+        // Indent guides plus an eased chevron replace the old ▸/▾ glyphs.
+        let open = !(state.viewer_collapsed.contains(&entry.path) && state.viewer_search.is_empty());
+        let lead: Element<'_, Message> = if entry.directory {
+            crate::ui_kit::chevron(state.ui.folder_turn(&entry.path, open, now))
         } else {
-            let label = if entry.name.to_ascii_lowercase().ends_with(".cdf") {
-                format!("◇ {} · Character assembly", entry.name)
-            } else {
-                entry.name.clone()
-            };
-            format!("{indent}  {label}")
+            iced::widget::space().width(14).into()
         };
+        let title = if entry.directory {
+            format!("📁 {}", entry.name)
+        } else if entry.name.to_ascii_lowercase().ends_with(".cdf") {
+            format!("◇ {} · Character assembly", entry.name)
+        } else {
+            entry.name.clone()
+        };
+        let depth = entry.depth;
         let action = if entry.directory {
             Message::ViewerToggleFolder(entry.path)
         } else if entry.path.starts_with("@assemblies/") {
@@ -2161,6 +2158,8 @@ fn explorer(state: &State) -> Element<'_, Message> {
         };
         let item = design::button(
             row![
+                crate::ui_kit::indent_guides(depth),
+                lead,
                 text(title).size(12).width(Fill),
                 text(if entry.directory {
                     String::new()

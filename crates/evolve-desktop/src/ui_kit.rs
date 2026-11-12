@@ -23,6 +23,10 @@ pub const HOLD_DURATION: Duration = Duration::from_millis(900);
 const ARM_WINDOW: Duration = Duration::from_secs(4);
 const TICKER_DURATION: Duration = Duration::from_millis(400);
 const ISLAND_DURATION: Duration = Duration::from_millis(180);
+const FOLDER_DURATION: Duration = Duration::from_millis(150);
+const SEGMENT_DURATION: Duration = Duration::from_millis(220);
+const SWITCH_DURATION: Duration = Duration::from_millis(160);
+const COPIED_FOR: Duration = Duration::from_millis(1500);
 /// Skeleton pulse period.
 const PULSE_PERIOD: f32 = 1.4;
 
@@ -40,6 +44,10 @@ pub enum UiMsg {
     DockExit(&'static str),
     /// Cursor position over a spotlight card, or `None` when it leaves.
     Spotlight(String, Option<Point>),
+    /// Segmented control selection: `(control id, index, message to run)`.
+    Segment(&'static str, usize, Box<Message>),
+    /// Switch flipped: `(switch key, new value, message to run)`.
+    Switch(String, bool, Box<Message>),
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +106,14 @@ pub struct UiState {
     /// Last successful save, keyed by editor ("text", "level").
     saved_at: BTreeMap<&'static str, Instant>,
     saving: BTreeMap<&'static str, bool>,
+    /// Folder chevron turn (0 closed → 1 open), keyed by folder path.
+    folders: BTreeMap<String, Tween>,
+    /// Segmented-control highlight position (segment index as f32).
+    segments: BTreeMap<&'static str, Tween>,
+    /// Switch knob position (0 off → 1 on).
+    switches: BTreeMap<String, Tween>,
+    /// Copy buttons show ✓ for a moment after copying.
+    copied: Option<(String, Instant)>,
 }
 
 impl UiState {
@@ -112,9 +128,58 @@ impl UiState {
         self.epoch.get_or_insert_with(Instant::now);
     }
 
+    /// Ease a folder chevron toward open or closed.
+    pub fn turn_folder(&mut self, path: &str, open: bool, now: Instant, reduce: bool) {
+        let tween = self
+            .folders
+            .entry(path.to_owned())
+            .or_insert_with(|| Tween::settled(if open { 0.0 } else { 1.0 }));
+        *tween = tween.with_easing(Easing::EaseOut);
+        tween.animate_to(if open { 1.0 } else { 0.0 }, now, FOLDER_DURATION, reduce);
+    }
+
+    /// Chevron turn for a folder; unknown folders follow `open`.
+    pub fn folder_turn(&self, path: &str, open: bool, now: Instant) -> f32 {
+        self.folders
+            .get(path)
+            .map_or(if open { 1.0 } else { 0.0 }, |tween| tween.value(now))
+    }
+
+    /// Highlight position for a segmented control. A selection changed
+    /// elsewhere (palette, keyboard) shows immediately.
+    pub fn segment_position(&self, id: &str, selected: usize, now: Instant) -> f32 {
+        match self.segments.get(id) {
+            Some(tween) if tween.to == selected as f32 => tween.value(now),
+            _ => selected as f32,
+        }
+    }
+
+    pub fn switch_position(&self, key: &str, value: bool, now: Instant) -> f32 {
+        let target = if value { 1.0 } else { 0.0 };
+        match self.switches.get(key) {
+            Some(tween) if tween.to == target => tween.value(now),
+            _ => target,
+        }
+    }
+
+    pub fn mark_copied(&mut self, id: String) {
+        self.copied = Some((id, Instant::now()));
+    }
+
+    pub fn recently_copied(&self, id: &str, now: Instant) -> bool {
+        self.copied.as_ref().is_some_and(|(copied, at)| {
+            copied == id && now.saturating_duration_since(*at) < COPIED_FOR
+        })
+    }
+
     /// True while a tween-driven element needs ~60 fps frames.
     pub fn animating(&self, now: Instant) -> bool {
-        self.hold.is_some()
+        self.segments.values().any(|tween| tween.is_running(now))
+            || self.switches.values().any(|tween| tween.is_running(now))
+            // The ✓ needs a frame to revert after COPIED_FOR.
+            || self.copied.as_ref().is_some_and(|(_, at)| now.saturating_duration_since(*at) < COPIED_FOR)
+            || self.folders.values().any(|tween| tween.is_running(now))
+            || self.hold.is_some()
             || self.island.is_running(now)
             || self
                 .tickers
@@ -145,6 +210,19 @@ impl UiState {
     /// finished tweens. Returns the confirmed action, if any.
     pub fn frame(&mut self, now: Instant) -> Option<Message> {
         self.island.tick(now);
+        // Settled chevrons need no entry: `folder_turn` falls back to state.
+        self.folders.retain(|_, tween| tween.tick(now));
+        self.switches.retain(|_, tween| tween.tick(now));
+        for tween in self.segments.values_mut() {
+            tween.tick(now);
+        }
+        if self
+            .copied
+            .as_ref()
+            .is_some_and(|(_, at)| now.saturating_duration_since(*at) >= COPIED_FOR)
+        {
+            self.copied = None;
+        }
         for ticker in self.tickers.values_mut() {
             ticker.progress.tick(now);
         }
@@ -248,6 +326,26 @@ pub fn update(ui: &mut UiState, message: UiMsg, reduce_motion: bool) -> Option<M
         }
         UiMsg::Spotlight(key, point) => {
             ui.spotlight = point.map(|point| (key, point));
+        }
+        UiMsg::Segment(id, index, message) => {
+            let tween = ui
+                .segments
+                .entry(id)
+                .or_insert_with(|| Tween::settled(index as f32));
+            // Width-relative travel: one segment step is one "unit".
+            let distance = (tween.value(now) - index as f32).abs().max(1.0);
+            *tween = tween.with_easing(Easing::EaseOut);
+            tween.animate_to(index as f32, now, SEGMENT_DURATION.mul_f32(distance.min(3.0)), reduce_motion);
+            return Some(*message);
+        }
+        UiMsg::Switch(key, value, message) => {
+            let tween = ui
+                .switches
+                .entry(key)
+                .or_insert_with(|| Tween::settled(if value { 0.0 } else { 1.0 }));
+            *tween = tween.with_easing(Easing::EaseInOut);
+            tween.animate_to(if value { 1.0 } else { 0.0 }, now, SWITCH_DURATION, reduce_motion);
+            return Some(*message);
         }
     }
     None
@@ -801,18 +899,14 @@ pub fn bento_tile<'a>(
 // Status island
 // ---------------------------------------------------------------------------
 
-/// Footer pill showing the current operation and elapsed time. On hover it
-/// expands upward into the last few activity entries.
+/// Footer pill showing the current operation and elapsed time. Hovering it
+/// opens [`island_panel`], which the page lays over itself with `stack!`.
 pub fn status_island<'a>(
-    ui_state: &UiState,
     label: String,
     elapsed: Option<Duration>,
-    recent: Vec<String>,
     wheel_frame: u32,
     working: bool,
 ) -> Element<'a, Message> {
-    let now = Instant::now();
-    let open = ui_state.island_value(now);
     let mut head = row![].spacing(8).align_y(Alignment::Center);
     if working {
         head = head.push(
@@ -830,33 +924,256 @@ pub fn status_island<'a>(
                 .style(design::muted),
         );
     }
-    let mut body = column![].spacing(8);
-    if open > 0.02 && !recent.is_empty() {
-        let shown = ((recent.len() as f32) * open).ceil() as usize;
-        let mut lines = column![].spacing(3);
-        for line in recent.into_iter().take(shown.max(1)) {
-            lines = lines.push(
-                text(line)
-                    .size(11)
-                    .style(move |theme: &Theme| text::Style {
-                        color: Some(design::with_alpha(
-                            theme.extended_palette().background.strongest.text,
-                            open,
-                        )),
-                    }),
-            );
-        }
-        body = body.push(lines);
-    }
-    let body = body.push(head);
-    let width = 220.0 + 200.0 * open;
-    let island = container(body)
-        .padding([5, 12])
-        .max_width(width)
-        .style(design::pill);
+    let island = container(head).padding([2, 12]).style(design::pill);
     mouse_area(island)
         .on_enter(ui(UiMsg::IslandHover(true)))
         .on_exit(ui(UiMsg::IslandHover(false)))
+        .into()
+}
+
+/// The expanded island: recent activity entries that grow in on hover.
+/// Returns `None` while closed so nothing is layered over the page.
+pub fn island_panel<'a>(ui_state: &UiState, recent: Vec<String>) -> Option<Element<'a, Message>> {
+    let open = ui_state.island_value(Instant::now());
+    if open <= 0.02 || recent.is_empty() {
+        return None;
+    }
+    let shown = ((recent.len() as f32) * open).ceil() as usize;
+    let mut lines = column![text("RECENT ACTIVITY").size(10).style(design::muted)].spacing(4);
+    for line in recent.into_iter().rev().take(shown.max(1)) {
+        lines = lines.push(text(line).size(11).style(move |theme: &Theme| text::Style {
+            color: Some(design::with_alpha(theme.palette().text, open)),
+        }));
+    }
+    let panel = container(lines)
+        .padding([10, 14])
+        .width(Length::Fixed(260.0 + 160.0 * open))
+        .style(move |theme: &Theme| {
+            let mut style = design::panel(theme);
+            style.shadow = iced::Shadow {
+                color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.35 * open),
+                offset: iced::Vector::new(0.0, 6.0),
+                blur_radius: 18.0,
+            };
+            style
+        });
+    Some(
+        mouse_area(panel)
+            .on_enter(ui(UiMsg::IslandHover(true)))
+            .on_exit(ui(UiMsg::IslandHover(false)))
+            .into(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Segmented control
+// ---------------------------------------------------------------------------
+
+/// Equal-width segments with a highlight that slides to the selection.
+/// The highlight is laid out with `FillPortion`s, so it needs no pixel
+/// measurement: left gap = position, highlight = 1, right gap = rest.
+pub fn segmented<'a>(
+    ui_state: &UiState,
+    id: &'static str,
+    options: Vec<(&'a str, Message)>,
+    selected: usize,
+    enabled: bool,
+) -> Element<'a, Message> {
+    const UNIT: f32 = 1000.0;
+    let count = options.len().max(1);
+    let position = ui_state
+        .segment_position(id, selected, Instant::now())
+        .clamp(0.0, (count - 1) as f32);
+    let left = (position * UNIT) as u16;
+    let right = (((count - 1) as f32 - position) * UNIT) as u16;
+    let mut track = row![].height(Fill);
+    if left > 0 {
+        track = track.push(space().width(Length::FillPortion(left)));
+    }
+    track = track.push(
+        container(space())
+            .width(Length::FillPortion(UNIT as u16))
+            .height(Fill)
+            .style(|theme: &Theme| container::Style {
+                background: Some(Background::Color(theme.palette().primary)),
+                border: Border {
+                    radius: design::radius(theme, Radius::Medium).into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            }),
+    );
+    if right > 0 {
+        track = track.push(space().width(Length::FillPortion(right)));
+    }
+    let mut buttons = row![].height(Fill);
+    for (index, (label, message)) in options.into_iter().enumerate() {
+        let active = index == selected;
+        buttons = buttons.push(
+            iced::widget::button(
+                container(text(label).size(12).style(move |theme: &Theme| text::Style {
+                    color: Some(if active {
+                        theme.extended_palette().primary.base.text
+                    } else {
+                        theme.palette().text
+                    }),
+                }))
+                .center_x(Fill)
+                .center_y(Fill),
+            )
+            .width(Length::FillPortion(1))
+            .height(Fill)
+            .padding(0)
+            .style(|_, _| iced::widget::button::Style::default())
+            .on_press_maybe(enabled.then(|| ui(UiMsg::Segment(id, index, Box::new(message))))),
+        );
+    }
+    container(iced::widget::stack![track, buttons])
+        .padding(3)
+        .height(34)
+        .width(Length::Fixed(110.0 * count as f32))
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(design::field(theme))),
+            border: Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: design::radius(theme, Radius::Medium).into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+// ---------------------------------------------------------------------------
+// Switch
+// ---------------------------------------------------------------------------
+
+/// Labelled on/off switch. The whole row is clickable; the 36×20 knob
+/// slides across with a short animation.
+pub fn switch<'a>(
+    ui_state: &UiState,
+    key: &str,
+    label: impl text::IntoFragment<'a>,
+    value: bool,
+    message: Message,
+) -> Element<'a, Message> {
+    let position = ui_state.switch_position(key, value, Instant::now());
+    let knob = iced::widget::canvas(crate::fx::SwitchKnob { position })
+        .width(36)
+        .height(20);
+    iced::widget::button(
+        row![knob, text(label).size(13)]
+            .spacing(10)
+            .align_y(Alignment::Center),
+    )
+    .padding([4, 6])
+    .style(design::text_button)
+    .on_press(ui(UiMsg::Switch(key.to_owned(), !value, Box::new(message))))
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// Copy button
+// ---------------------------------------------------------------------------
+
+/// Copies `value` to the clipboard; shows ✓ "Copied" for 1.5 s.
+pub fn copy_button<'a>(ui_state: &UiState, id: &str, value: String) -> Element<'a, Message> {
+    let copied = ui_state.recently_copied(id, Instant::now());
+    iced::widget::tooltip(
+        design::button(text(if copied { "✓" } else { "⧉" }).size(12))
+            .padding([2, 7])
+            .style(design::text_button)
+            .on_press(Message::CopyToClipboard(id.to_owned(), value)),
+        container(text(if copied { "Copied" } else { "Copy" }).size(11))
+            .padding([3, 7])
+            .style(design::pill),
+        iced::widget::tooltip::Position::Top,
+    )
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// Badge
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadgeKind {
+    Enabled,
+    Modified,
+    Signed,
+    Conflict,
+    ReadOnly,
+    Nightly,
+    Neutral,
+}
+
+impl BadgeKind {
+    fn color(self, theme: &Theme) -> iced::Color {
+        let palette = theme.palette();
+        match self {
+            BadgeKind::Enabled | BadgeKind::Signed => palette.success,
+            BadgeKind::Conflict => palette.danger,
+            BadgeKind::Modified | BadgeKind::Nightly => palette.warning,
+            BadgeKind::ReadOnly | BadgeKind::Neutral => {
+                theme.extended_palette().background.strongest.text
+            }
+        }
+    }
+}
+
+/// Small pill with a faint fill and coloured text, following the theme.
+pub fn badge<'a>(kind: BadgeKind, label: impl text::IntoFragment<'a>) -> Element<'a, Message> {
+    container(text(label).size(10).style(move |theme: &Theme| text::Style {
+        color: Some(kind.color(theme)),
+    }))
+    .padding([2, 8])
+    .style(move |theme: &Theme| {
+        let color = kind.color(theme);
+        container::Style {
+            background: Some(Background::Color(design::with_alpha(color, 0.14))),
+            border: Border {
+                color: design::with_alpha(color, 0.45),
+                width: 1.0,
+                radius: design::radius(theme, Radius::Pill).into(),
+            },
+            ..container::Style::default()
+        }
+    })
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// File tree
+// ---------------------------------------------------------------------------
+
+/// Faint vertical guides, one per indent level, for tree rows.
+pub fn indent_guides<'a>(depth: usize) -> Element<'a, Message> {
+    let mut guides = row![].spacing(0);
+    for _ in 0..depth.min(20) {
+        guides = guides.push(
+            container(
+                container(space().width(1).height(18)).style(|theme: &Theme| container::Style {
+                    background: Some(Background::Color(design::with_alpha(
+                        design::border(theme),
+                        0.8,
+                    ))),
+                    ..container::Style::default()
+                }),
+            )
+            .width(14)
+            .center_x(14),
+        );
+    }
+    guides.into()
+}
+
+/// A chevron rotated from ▸ (0) to ▾ (1).
+pub fn chevron<'a>(turn: f32) -> Element<'a, Message> {
+    svg(crate::icons::chevron())
+        .width(14)
+        .height(14)
+        .style(design::icon)
+        .rotation(iced::Radians(turn.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2))
         .into()
 }
 
@@ -968,18 +1285,32 @@ pub fn spotlight<'a>(
         .into()
 }
 
-/// Thin accent progress line, used under headers while something loads.
-pub fn hairline<'a>(color_alpha: f32) -> Element<'a, Message> {
-    container(space().height(1))
-        .width(Fill)
-        .style(move |theme: &Theme| container::Style {
-            background: Some(Background::Color(design::with_alpha(
-                theme.palette().primary,
-                color_alpha,
-            ))),
-            ..container::Style::default()
+// ---------------------------------------------------------------------------
+// Border beam
+// ---------------------------------------------------------------------------
+
+/// While `active`, a bright segment travels around `content`'s border. The
+/// content keeps all of its own interaction; the beam layer never captures.
+pub fn beam<'a>(
+    ui_state: &UiState,
+    content: impl Into<Element<'a, Message>>,
+    active: bool,
+    reduce_motion: bool,
+) -> Element<'a, Message> {
+    let content = content.into();
+    if !active || reduce_motion {
+        return content;
+    }
+    iced::widget::stack![
+        content,
+        iced::widget::canvas(crate::fx::BorderBeam {
+            time: ui_state.clock(Instant::now()),
+            period: 2.4,
         })
-        .into()
+        .width(Fill)
+        .height(Fill),
+    ]
+    .into()
 }
 
 #[cfg(test)]

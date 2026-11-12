@@ -100,8 +100,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .on_press(Message::PreferenceGameLaunchMode("Direct Launch"))
                     .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
             ].spacing(8),
-            text("Recommended: Client Launch for authenticated profiles, relay and Shift+Tab friends. Direct Launch currently uses a Stage 2 smoke host and does not establish the full relay/overlay session. Explicit Direct selection is preserved.")
-                .size(13).style(design::muted),
+            crate::ui_kit::callout(crate::design::Tone::Info, "Recommended: Client Launch for authenticated profiles, relay and Shift+Tab friends. Direct Launch currently uses a Stage 2 smoke host and does not establish the full relay/overlay session. Explicit Direct selection is preserved."),
             text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
             row![
                 design::text_input(
@@ -151,9 +150,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .style(design::secondary),
             ]
             .spacing(8),
-            text("Creates a lightweight signing inventory. Only PAKs edited by enabled mods are copied/signed into the stage. Original game PAKs remain in place.")
-                .size(11)
-                .style(design::muted),
+            crate::ui_kit::callout(crate::design::Tone::Info, "Creates a lightweight signing inventory. Only PAKs edited by enabled mods are copied/signed into the stage. Original game PAKs remain in place."),
             row![
                 design::button(if state.busy {
                     "Preparing Offline Setup…"
@@ -221,7 +218,7 @@ fn test_environment_setup(state: &State) -> Element<'_, Message> {
                     .on_press_maybe((!state.busy && valid).then_some(Message::StartTestAutomaticSetup))
                     .style(design::secondary),
             ].spacing(8),
-            text("Modded test launches use an independent Test signing stage and swap journal. Creating a Test Mod Setup uses the existing signed-PAK setup workflow; unsupported test archive formats will be reported, not silently replaced.").size(11).style(design::muted),
+            crate::ui_kit::callout(crate::design::Tone::Info, "Modded test launches use an independent Test signing stage and swap journal. Creating a Test Mod Setup uses the existing signed-PAK setup workflow; unsupported test archive formats will be reported, not silently replaced."),
             text("Test signing stage (separate from production)").size(12),
             design::text_input("Test stage folder", &state.preferences.test_stage)
                 .on_input(Message::PreferenceTestStage),
@@ -274,21 +271,29 @@ fn storage(state: &State) -> Element<'_, Message> {
                 }),
         );
     }
+    // Bucket sizes count up to their new values when an analysis finishes.
+    const TICKERS: [&str; 5] = ["storage_0", "storage_1", "storage_2", "storage_3", "storage_4"];
     let mut legend = row![].spacing(15);
     for (i, label) in labels.iter().enumerate() {
         legend = legend.push(
             text(format!(
                 "{}: {}",
                 label,
-                state
-                    .storage_usage
-                    .as_ref()
-                    .map_or("—".into(), |_| mib(buckets[i]))
+                state.storage_usage.as_ref().map_or("—".into(), |_| mib(
+                    crate::ui_kit::ticked(&state.ui, TICKERS[i], buckets[i] as f64) as u64
+                ))
             ))
             .size(11)
             .color(colors[i]),
         );
     }
+    let total_label = state.storage_usage.as_ref().map(|_| {
+        crate::ui_kit::format_bytes(crate::ui_kit::ticked(
+            &state.ui,
+            "storage_total",
+            total as f64,
+        ))
+    });
     panel(column![
         text("GAME STORAGE").size(15),
         row![
@@ -300,11 +305,12 @@ fn storage(state: &State) -> Element<'_, Message> {
             }),
             design::button("Change…").on_press(Message::SettingsToggleAdvancedPaths).style(design::secondary)
         ].spacing(9).align_y(iced::Center),
-        text("Changing this location affects FUTURE setups only. Existing signing and recovery files are not moved.").size(11).style(design::muted),
+        crate::ui_kit::callout(crate::design::Tone::Warning, "Changing this location affects FUTURE setups only. Existing signing and recovery files are not moved."),
         text(format!("Active stage: {}", if state.preferences.stage.is_empty() { "Not configured" } else { &state.preferences.stage })).size(11),
         container(column![
             row![
                 text("STORAGE BREAKDOWN").size(12),
+                text(total_label.map(|total| format!("{total} total")).unwrap_or_default()).size(12),
                 space().width(Fill),
                 text(if state.storage_analyzing { "Checking storage…" } else if state.storage_usage.is_some() { "Scan complete" } else { "Not yet analyzed" }).size(11).style(design::muted)
             ],
@@ -347,10 +353,8 @@ fn storage(state: &State) -> Element<'_, Message> {
         design::button("Update Staged / Original PAKs after Game Update")
             .on_press_maybe((!state.busy).then_some(Message::RefreshGamePakBaseline))
             .style(design::secondary),
-        text("Set Up Manager creates a fresh signing stage and recovery folder from your installed game; you do not need to provide private-manager Stage or Swap paths.")
-            .size(11).style(design::muted),
-        text("Creates a new verified signing baseline from the updated game. Existing stages and mod projects are preserved; edits must be reviewed against the new game files before deployment.")
-            .size(11).style(design::muted),
+        crate::ui_kit::callout(crate::design::Tone::Info, "Set Up Manager creates a fresh signing stage and recovery folder from your installed game; you do not need to provide private-manager Stage or Swap paths."),
+        crate::ui_kit::callout(crate::design::Tone::Warning, "Creates a new verified signing baseline from the updated game. Existing stages and mod projects are preserved; edits must be reviewed against the new game files before deployment."),
     ].spacing(11))
     .into()
 }
@@ -471,17 +475,19 @@ impl Tab {
 }
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
-    let tabs = Tab::ALL.into_iter().fold(row![].spacing(8), |tabs, tab| {
-        tabs.push(
-            design::button(tab.title())
-                .style(if state.settings_tab == tab {
-                    design::primary
-                } else {
-                    design::secondary
-                })
-                .on_press(Message::SettingsTab(tab)),
-        )
-    });
+    let tabs = crate::ui_kit::segmented(
+        &state.ui,
+        "settings-tabs",
+        Tab::ALL
+            .into_iter()
+            .map(|tab| (tab.title(), Message::SettingsTab(tab)))
+            .collect(),
+        Tab::ALL
+            .iter()
+            .position(|tab| *tab == state.settings_tab)
+            .unwrap_or(0),
+        true,
+    );
     let content: Element<'_, Message> = match state.settings_tab {
         Tab::Appearance => column![
         heading("Appearance"),
@@ -501,11 +507,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 "Modern theme: original color choices and rounder panels. Choose Evolve Legacy to preview the alternative instantly; switching back preserves your Modern colors."
             }).size(11).style(design::muted),
             row![
-                design::button(text(format!("Appearance: {}", state.preferences.appearance_mode))).on_press_maybe((state.preferences.ui_theme == "Modern").then_some(Message::PreferenceAppearance)).style(design::secondary),
+                crate::ui_kit::segmented(
+                    &state.ui,
+                    "appearance-mode",
+                    vec![
+                        ("Dark", Message::PreferenceAppearanceSet("Dark")),
+                        ("Light", Message::PreferenceAppearanceSet("Light")),
+                    ],
+                    usize::from(state.preferences.appearance_mode == "Light"),
+                    state.preferences.ui_theme == "Modern",
+                ),
                 design::button(text(format!("Density: {}", state.preferences.ui_density))).on_press(Message::PreferenceDensity).style(design::secondary),
                 design::button(text(format!("Explorer: {}", state.preferences.file_explorer_side))).on_press(Message::PreferenceExplorerSide).style(design::secondary)
             ].spacing(8),
-            design::button(text(format!("Reduce menu animation: {}", if state.preferences.reduce_motion { "On" } else { "Off" }))).on_press(Message::PreferenceReduceMotion).style(design::secondary),
+            crate::ui_kit::switch(&state.ui, "reduce-motion", "Reduce motion", state.preferences.reduce_motion, Message::PreferenceReduceMotion),
             text("HOME SCREEN ARTWORK").size(12),
             row![
                 design::button("Background On")
@@ -517,6 +532,30 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             ].spacing(8),
             text("Off hides the Evolve artwork and restores opaque Home panels. This only affects Home, keeps other themes and pages unchanged, and is saved automatically.")
                 .size(11).style(design::muted),
+            text("THEME PRESETS").size(12),
+            theme_presets(state),
+            row![
+                text("Corners").size(12),
+                crate::ui_kit::segmented(
+                    &state.ui,
+                    "corner-style",
+                    vec![
+                        ("Sharp", Message::PreferenceCornerStyle("Sharp")),
+                        ("Rounded", Message::PreferenceCornerStyle("Rounded")),
+                        ("Soft", Message::PreferenceCornerStyle("Soft")),
+                    ],
+                    match state.preferences.corner_style.as_str() {
+                        "Sharp" => 0,
+                        "Soft" => 2,
+                        _ => 1,
+                    },
+                    state.preferences.ui_theme == "Modern",
+                ),
+            ]
+            .spacing(12)
+            .align_y(iced::Center),
+            text("CUSTOM COLOURS").size(12),
+            crate::color_picker::view(state),
             text("MODERN THEME ACCENT COLOR").size(12),
             row![
                 design::button("Default")
@@ -542,7 +581,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text(format!("Installed version: {}", env!("CARGO_PKG_VERSION"))).size(12),
             row![
                 design::button("Check for Updates").on_press(Message::CheckUpdates).style(design::primary),
-                design::button(text(format!("Channel: {}", if state.preferences.nightly_updates { "Nightly" } else if state.preferences.experimental_updates { "Beta" } else { "Stable" }))).on_press(Message::PreferenceUpdateChannel).style(design::secondary),
+                crate::ui_kit::segmented(
+                    &state.ui,
+                    "update-channel",
+                    vec![
+                        ("Stable", Message::PreferenceUpdateChannelSet("Stable")),
+                        ("Beta", Message::PreferenceUpdateChannelSet("Beta")),
+                        ("Nightly", Message::PreferenceUpdateChannelSet("Nightly")),
+                    ],
+                    if state.preferences.nightly_updates { 2 } else if state.preferences.experimental_updates { 1 } else { 0 },
+                    true,
+                ),
             ].spacing(8),
             text("Beta and Nightly builds are prereleases. Every channel is checked automatically when the manager starts.").size(11).style(design::muted),
             text(state.update_status.as_str()).size(12).style(design::muted),
@@ -563,7 +612,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             },
             super::download_action(state),
             super::launch_update_actions(state),
-            text("Updates are downloaded, SHA-256 verified and installed when you select Update and restart. Portable downloads remain portable; your game files and preferences are preserved.").size(12).style(design::muted),
+            crate::ui_kit::callout(crate::design::Tone::Success, "Updates are downloaded, SHA-256 verified and installed when you select Update and restart. Portable downloads remain portable; your game files and preferences are preserved."),
         ].spacing(8)),
         ].spacing(12).into(),
         Tab::Integration => {
@@ -576,29 +625,22 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     text("DISCORD RICH PRESENCE · LOCAL ONLY").size(15),
                     text("No account linking, OAuth, bot, or token. Uses the desktop Discord app through local IPC. Discord's own Activity Privacy settings also control visibility.")
                         .size(12).style(design::muted),
-                    design::button(if state.preferences.discord_presence_enabled { "Rich Presence: On" } else { "Rich Presence: Off" })
-                        .on_press(Message::PreferenceDiscordToggle("enabled")).style(design::secondary),
+                    crate::ui_kit::switch(&state.ui, "discord-enabled", "Rich Presence", state.preferences.discord_presence_enabled, Message::PreferenceDiscordToggle("enabled")),
                     text("Manager: 1563784115785048114 (Evolve Mod Manager). Game: 1565093139616763987 (Evolve). Automatically switches when Evolve starts/closes. Override below applies only to the manager.")
                         .size(11).style(design::muted),
                     design::text_input("Manager application ID (optional developer override)", &state.preferences.discord_application_id)
                         .on_input(Message::PreferenceDiscordAppId),
                     row![
-                        design::button(if state.preferences.discord_show_game { "Gameplay: On" } else { "Gameplay: Off" })
-                            .on_press(Message::PreferenceDiscordToggle("game")).style(design::secondary),
-                        design::button(if state.preferences.discord_show_manager { "Manager: On" } else { "Manager: Off" })
-                            .on_press(Message::PreferenceDiscordToggle("manager")).style(design::secondary),
+                        crate::ui_kit::switch(&state.ui, "discord-game", "Gameplay", state.preferences.discord_show_game, Message::PreferenceDiscordToggle("game")),
+                        crate::ui_kit::switch(&state.ui, "discord-manager", "Manager", state.preferences.discord_show_manager, Message::PreferenceDiscordToggle("manager")),
                     ].spacing(8),
                     row![
-                        design::button(if state.preferences.discord_show_character { "Character / Stage: On" } else { "Character / Stage: Off" })
-                            .on_press(Message::PreferenceDiscordToggle("character")).style(design::secondary),
-                        design::button(if state.preferences.discord_show_stats { "Health / Armor: On" } else { "Health / Armor: Off" })
-                            .on_press(Message::PreferenceDiscordToggle("stats")).style(design::secondary),
+                        crate::ui_kit::switch(&state.ui, "discord-character", "Character / Stage", state.preferences.discord_show_character, Message::PreferenceDiscordToggle("character")),
+                        crate::ui_kit::switch(&state.ui, "discord-stats", "Health / Armor", state.preferences.discord_show_stats, Message::PreferenceDiscordToggle("stats")),
                     ].spacing(8),
                     row![
-                        design::button(if state.preferences.discord_show_profile { "Mod Profile: On" } else { "Mod Profile: Off" })
-                            .on_press(Message::PreferenceDiscordToggle("profile")).style(design::secondary),
-                        design::button(if state.preferences.discord_minimal { "Privacy: Minimal" } else { "Privacy: Detailed" })
-                            .on_press(Message::PreferenceDiscordToggle("minimal")).style(design::secondary),
+                        crate::ui_kit::switch(&state.ui, "discord-profile", "Mod Profile", state.preferences.discord_show_profile, Message::PreferenceDiscordToggle("profile")),
+                        crate::ui_kit::switch(&state.ui, "discord-minimal", "Minimal privacy", state.preferences.discord_minimal, Message::PreferenceDiscordToggle("minimal")),
                     ].spacing(8),
                     text("Character names use the read-only local IEntity resolver and known aliases; unknown names are hidden. Health is available when validated. Armor and evolution are monster-only. Maps, modes and game art still need verified sources. Discord may prioritize the game's own presence over the manager's activity.")
                         .size(11).style(design::muted),
@@ -760,8 +802,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                             .on_press(Message::GfxPickRuffle)
                             .style(design::secondary),
                     ].spacing(8).align_y(iced::Center),
-                    text("An installed manager under Program Files may require administrator permission to install missing integrations. You can also rerun the installer with optional GFX Tools enabled. Native Evolve game callbacks remain unavailable in Ruffle.")
-                        .size(11).style(design::muted),
+                    crate::ui_kit::callout(crate::design::Tone::Warning, "An installed manager under Program Files may require administrator permission to install missing integrations. You can also rerun the installer with optional GFX Tools enabled. Native Evolve game callbacks remain unavailable in Ruffle."),
                 ].spacing(8)),
                 if state.gfx_install_busy {
                     Element::from(text("Downloading and verifying GFX integration files…")
@@ -784,19 +825,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         heading("Backups & Recovery"),
         text("Recovery copies are needed only for modified PAKs being swapped.").size(12).style(design::muted),
         panel(column![
-            design::button(text(format!("Keep full-game snapshots (extra disk use): {}", if state.preferences.keep_original_snapshots { "On" } else { "Off" }))).on_press(Message::PreferenceSnapshots).style(design::secondary),
-            design::button(text(format!("Show activity during tasks: {}", if state.preferences.show_activity_on_tasks { "On" } else { "Off" }))).on_press(Message::PreferenceActivity).style(design::secondary),
+            crate::ui_kit::switch(&state.ui, "snapshots", "Keep full-game snapshots (extra disk use)", state.preferences.keep_original_snapshots, Message::PreferenceSnapshots),
+            crate::ui_kit::switch(&state.ui, "activity", "Show activity during tasks", state.preferences.show_activity_on_tasks, Message::PreferenceActivity),
             text("Crash reports").size(15),
             text("Local diagnostics for model loading, GPU uploads, and Rust crashes. Enabled by default; logs may include local asset names and file paths.")
                 .size(12).style(design::muted),
-            design::button(text(format!("Crash logging: {}", if state.preferences.crash_logging_enabled { "On" } else { "Off" })))
-                .on_press(Message::PreferenceCrashLogging).style(design::secondary),
+            crate::ui_kit::switch(&state.ui, "crash-logging", "Crash logging", state.preferences.crash_logging_enabled, Message::PreferenceCrashLogging),
             row![
                 design::button("Open crash log").on_press(Message::OpenCrashLogs).style(design::secondary),
                 design::button("Open logs folder").on_press(Message::OpenCrashLogsFolder).style(design::secondary),
             ].spacing(8),
-            text("Disabling logging stops new entries but does not delete existing logs. A native Windows fail-fast may not produce a Rust panic entry.")
-                .size(11).style(design::muted),
+            crate::ui_kit::callout(crate::design::Tone::Warning, "Disabling logging stops new entries but does not delete existing logs. A native Windows fail-fast may not produce a Rust panic entry."),
             text("Recovery settings do not imply that every private-manager swap operation has been ported.").size(11).style(design::muted),
         ].spacing(8)),
         ].spacing(12).into(),
@@ -846,4 +885,118 @@ mod tests {
         ]);
         assert_eq!((shared, animations), (1, 2));
     }
+}
+
+/// Swatch cards: Default, the curated presets, and any colours a preset
+/// parked. Each card previews background, surface, accent and text.
+fn theme_presets(state: &State) -> Element<'_, Message> {
+    let light = state.preferences.appearance_mode == "Light";
+    let modern = state.preferences.ui_theme == "Modern";
+    let active = state.preferences.theme_preset.as_str();
+    let mut cards = row![].spacing(10);
+    cards = cards.push(swatch_card(
+        "Default",
+        "Built-in Evolve palette.",
+        design::default_swatch(light),
+        active.is_empty() && state.preferences.appearance_colors.is_empty(),
+        modern.then_some(Message::PreferenceThemePreset("Default")),
+    ));
+    for preset in design::THEME_PRESETS {
+        cards = cards.push(swatch_card(
+            preset.name,
+            preset.blurb,
+            preset.swatch(light),
+            active == preset.name,
+            modern.then_some(Message::PreferenceThemePreset(preset.name)),
+        ));
+    }
+    if let Some(saved) = state.preferences.theme_presets.get("Saved custom colours") {
+        let pick = |role: &str, fallback: Color| {
+            saved.get(role).and_then(|value| design::hex(value)).unwrap_or(fallback)
+        };
+        let base = design::default_swatch(light);
+        cards = cards.push(swatch_card(
+            "Saved custom colours",
+            "Your colours from before a preset.",
+            [
+                pick("background", base[0]),
+                pick("surface", base[1]),
+                pick("accent", base[2]),
+                pick("text", base[3]),
+            ],
+            false,
+            modern.then_some(Message::PreferenceThemePreset("Saved custom colours")),
+        ));
+    }
+    iced::widget::scrollable(cards)
+        .direction(iced::widget::scrollable::Direction::Horizontal(
+            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+        ))
+        .into()
+}
+
+fn swatch_card<'a>(
+    name: &'a str,
+    blurb: &'a str,
+    colors: [Color; 4],
+    selected: bool,
+    message: Option<Message>,
+) -> Element<'a, Message> {
+    let [background, surface, accent, foreground] = colors;
+    let preview = container(
+        column![
+            container(space().height(6).width(Length::Fixed(46.0))).style(move |theme| {
+                container::Style {
+                    background: Some(Background::Color(accent)),
+                    border: Border {
+                        radius: design::radius(theme, design::Radius::Small).into(),
+                        ..Border::default()
+                    },
+                    ..container::Style::default()
+                }
+            }),
+            container(text("Aa").size(13).color(foreground))
+                .padding([4, 8])
+                .width(Fill)
+                .style(move |theme| container::Style {
+                    background: Some(Background::Color(surface)),
+                    border: Border {
+                        radius: design::radius(theme, design::Radius::Small).into(),
+                        ..Border::default()
+                    },
+                    ..container::Style::default()
+                }),
+        ]
+        .spacing(6),
+    )
+    .padding(8)
+    .width(Fill)
+    .style(move |theme| container::Style {
+        background: Some(Background::Color(background)),
+        border: Border {
+            radius: design::radius(theme, design::Radius::Medium).into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    });
+    iced::widget::button(
+        column![
+            preview,
+            text(name).size(12),
+            text(blurb).size(10).style(design::muted),
+        ]
+        .spacing(6),
+    )
+    .width(Length::Fixed(150.0))
+    .padding(8)
+    .style(move |theme, status| {
+        let mut style = design::secondary(theme, status);
+        if selected {
+            style.border.color = theme.palette().primary;
+            style.border.width = 2.0;
+        }
+        style
+    })
+    .on_press_maybe(message)
+    .into()
 }

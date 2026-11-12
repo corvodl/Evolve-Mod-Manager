@@ -38,6 +38,8 @@ pub struct Preferences {
     /// Name of the last curated colour preset applied (informational only;
     /// the preset's colours live in `appearance_colors`).
     pub theme_preset: String,
+    /// Last manager version whose "What's new" intro was dismissed.
+    pub last_seen_version: String,
     pub reduce_motion: bool,
     pub keep_original_snapshots: bool,
     pub show_activity_on_tasks: bool,
@@ -127,6 +129,7 @@ impl Default for Preferences {
             font_family: "Default".into(),
             corner_style: "Rounded".into(),
             theme_preset: String::new(),
+            last_seen_version: String::new(),
             reduce_motion: false,
             keep_original_snapshots: false,
             show_activity_on_tasks: true,
@@ -323,6 +326,9 @@ impl Preferences {
         }
         if self.theme_preset.len() > 120 {
             self.theme_preset.clear();
+        }
+        if self.last_seen_version.len() > 64 {
+            self.last_seen_version.clear();
         }
         if !self.discord_application_id.is_empty()
             && (self.discord_application_id.len() < 15
