@@ -83,13 +83,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
 pub const LEVEL_SHORTCUTS: &[(&str, &[&str])] = &[
     (
         "Tools",
-        &[
-            "Select",
-            "Sculpt",
-            "Paint",
-            "Vegetation",
-            "Command palette",
-        ],
+        &["Select", "Sculpt", "Paint", "Vegetation", "Command palette"],
     ),
     (
         "Select and transform",

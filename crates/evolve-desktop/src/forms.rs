@@ -934,10 +934,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let good = dir.path().join("objects.pak");
         let wrong = dir.path().join("other.pak");
-        assert!(check_rebuild_output(good.to_str().unwrap(), Some("Objects.pak")).unwrap().ok);
-        assert!(!check_rebuild_output(wrong.to_str().unwrap(), Some("objects.pak")).unwrap().ok);
+        assert!(
+            check_rebuild_output(good.to_str().unwrap(), Some("Objects.pak"))
+                .unwrap()
+                .ok
+        );
+        assert!(
+            !check_rebuild_output(wrong.to_str().unwrap(), Some("objects.pak"))
+                .unwrap()
+                .ok
+        );
         std::fs::write(&good, b"x").unwrap();
-        assert!(!check_rebuild_output(good.to_str().unwrap(), Some("objects.pak")).unwrap().ok);
+        assert!(
+            !check_rebuild_output(good.to_str().unwrap(), Some("objects.pak"))
+                .unwrap()
+                .ok
+        );
         assert!(check_rebuild_output("", None).is_none());
         assert!(check_existing_file(good.to_str().unwrap()).unwrap().ok);
     }

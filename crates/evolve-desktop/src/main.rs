@@ -21,8 +21,8 @@ mod developer_auth;
 mod developer_hotkeys;
 mod diff_view;
 mod direct_runtime;
-mod docs_page;
 mod discord_presence;
+mod docs_page;
 mod explorer_tree;
 mod forms;
 mod fx;
@@ -964,9 +964,14 @@ fn remember_opened_map(state: &mut State, loaded: &mut level_library::LoadedMap)
         loaded
             .project
             .as_ref()
-            .map_or(loaded.archive.name.as_str(), |project| project.label.as_str()),
+            .map_or(loaded.archive.name.as_str(), |project| {
+                project.label.as_str()
+            }),
         &map_name,
-        loaded.project.as_ref().map(|project| project.workspace.as_path()),
+        loaded
+            .project
+            .as_ref()
+            .map(|project| project.workspace.as_path()),
     );
     let recents = state.preferences.recent_maps.clone();
     let _ = recent;
@@ -987,9 +992,11 @@ fn selected_staged_pak_name(state: &State) -> Option<String> {
 /// Specialist rebuild path checks, re-run only when a value changes.
 fn sync_rebuild_checks(state: &mut State) {
     let replacement = state.signed_replacement.clone();
-    state.path_checks.sync_extra("rebuild-replacement", replacement.clone(), || {
-        forms::check_existing_file(&replacement)
-    });
+    state
+        .path_checks
+        .sync_extra("rebuild-replacement", replacement.clone(), || {
+            forms::check_existing_file(&replacement)
+        });
     let original = selected_staged_pak_name(state);
     let output = state.output.clone();
     state.path_checks.sync_extra(
@@ -8747,7 +8754,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.docs_search.clear();
             // Roughly where the step sits in the section's scroll range.
             let steps = private_pages::docs_spec(hit.section).2.len().max(1) as f32;
-            let at = hit.step.map_or(0.0, |step| (step as f32 / steps).clamp(0.0, 1.0));
+            let at = hit
+                .step
+                .map_or(0.0, |step| (step as f32 / steps).clamp(0.0, 1.0));
             return iced::widget::operation::snap_to(
                 docs_page::scroll_id(),
                 iced::widget::operation::RelativeOffset { x: 0.0, y: at },
@@ -19100,9 +19109,9 @@ impl Desktop {
                 let menus_open = self.state.library_menu.is_some()
                     || self.state.viewer_menu.is_some()
                     || self.state.modding_menu.is_some();
+                // The map thumbnail lightbox is the level window's top layer.
+                let closed_layer = closed_layer || self.state.map_chooser.lightbox.take().is_some();
                 if closed_layer {
-                    Task::none()
-                } else if self.state.map_chooser.lightbox.take().is_some() {
                     Task::none()
                 } else if self.level_id == Some(id)
                     && self.state.level_map_prompt
@@ -21400,25 +21409,24 @@ mod project_edit_tests {
     }
 
     #[test]
-    fn docs_sections_can_expand_and_collapse_independently() {
+    fn docs_open_on_getting_started_and_search_jumps_to_a_section() {
         let mut state = initial_state();
-        assert!(
-            state
-                .docs_expanded
-                .contains(&private_pages::DocsSection::GettingStarted)
-        );
-        let section = private_pages::DocsSection::Projects;
-        let _ = update(&mut state, Message::ToggleDocsSection(section));
-        assert!(state.docs_expanded.contains(&section));
-        let _ = update(&mut state, Message::ToggleDocsSection(section));
-        assert!(!state.docs_expanded.contains(&section));
-        let _ = update(&mut state, Message::DocsExpandAll(true));
         assert_eq!(
-            state.docs_expanded.len(),
-            private_pages::DocsSection::ALL.len()
+            state.docs_selected,
+            private_pages::DocsSection::GettingStarted
         );
-        let _ = update(&mut state, Message::DocsExpandAll(false));
-        assert!(state.docs_expanded.is_empty());
+        let _ = update(
+            &mut state,
+            Message::DocsSelect(private_pages::DocsSection::Projects),
+        );
+        assert_eq!(state.docs_selected, private_pages::DocsSection::Projects);
+        let _ = update(
+            &mut state,
+            Message::DocsSearch("ModdedEvolveLauncher".into()),
+        );
+        let _ = update(&mut state, Message::DocsOpenResult(0));
+        assert!(state.docs_search.is_empty());
+        assert_ne!(state.docs_selected, private_pages::DocsSection::Projects);
     }
 
     #[test]

@@ -66,7 +66,13 @@ pub struct Card {
 pub fn thumb_key(source: &str, map: &str) -> String {
     let raw = format!("{source}__{map}");
     raw.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(150)
         .collect()
 }
@@ -171,20 +177,32 @@ pub fn terrain_thumbnail(positions: &[[f32; 3]]) -> Option<Vec<u8>> {
                 continue;
             }
             let neighbour = sample(x.saturating_sub(1), y.saturating_sub(1));
-            let slope = if neighbour.is_nan() { 0.0 } else { (h - neighbour) / range };
+            let slope = if neighbour.is_nan() {
+                0.0
+            } else {
+                (h - neighbour) / range
+            };
             let level = (h - low) / range;
             let shade = (0.25 + 0.6 * level + 6.0 * slope).clamp(0.05, 1.0);
             let value = (shade * 255.0) as u8;
             pixels.put_pixel(
                 x as u32,
                 y as u32,
-                ::image::Rgba([value, (value as f32 * 0.96) as u8, (value as f32 * 0.88) as u8, 255]),
+                ::image::Rgba([
+                    value,
+                    (value as f32 * 0.96) as u8,
+                    (value as f32 * 0.88) as u8,
+                    255,
+                ]),
             );
         }
     }
     let mut png = Vec::new();
     ::image::DynamicImage::ImageRgba8(pixels)
-        .write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png)
+        .write_to(
+            &mut std::io::Cursor::new(&mut png),
+            ::image::ImageFormat::Png,
+        )
         .ok()?;
     Some(png)
 }
@@ -390,7 +408,10 @@ pub fn update(state: &mut State, message: Msg) -> iced::Task<Message> {
                 }
             }
             let archive = state.library_catalog.as_ref().and_then(|catalog| {
-                catalog.archives.iter().position(|a| a.id == recent.archive_id)
+                catalog
+                    .archives
+                    .iter()
+                    .position(|a| a.id == recent.archive_id)
             });
             match archive {
                 Some(index) => {
@@ -443,9 +464,11 @@ pub fn remember(
         project: project.map(|p| p.display().to_string()).unwrap_or_default(),
         label: format!("{map} · {archive_name}"),
     };
-    prefs
-        .recent_maps
-        .retain(|old| !(old.map == recent.map && old.archive_id == recent.archive_id && old.project == recent.project));
+    prefs.recent_maps.retain(|old| {
+        !(old.map == recent.map
+            && old.archive_id == recent.archive_id
+            && old.project == recent.project)
+    });
     prefs.recent_maps.insert(0, recent.clone());
     prefs.recent_maps.truncate(MAX_RECENT);
     recent
@@ -454,11 +477,13 @@ pub fn remember(
 fn card_view<'a>(state: &'a State, card: Card, focused: bool) -> Element<'a, Message> {
     let busy = state.busy;
     let accent = card.current || focused;
-    let thumb: Element<'a, Message> = match card
-        .thumb
-        .as_ref()
-        .and_then(|key| state.map_chooser.thumbs.get(key).map(|handle| (key, handle)))
-    {
+    let thumb: Element<'a, Message> = match card.thumb.as_ref().and_then(|key| {
+        state
+            .map_chooser
+            .thumbs
+            .get(key)
+            .map(|handle| (key, handle))
+    }) {
         Some((key, handle)) => mouse_area(
             image(handle.clone())
                 .width(Fill)
@@ -476,7 +501,11 @@ fn card_view<'a>(state: &'a State, card: Card, focused: bool) -> Element<'a, Mes
             stack![
                 crate::ui_kit::skeleton(Length::Fill, 110.0, alpha),
                 container(icons::glyph(
-                    if card.kind == "project" { icons::pencil() } else { icons::map() },
+                    if card.kind == "project" {
+                        icons::pencil()
+                    } else {
+                        icons::map()
+                    },
                     28.0
                 ))
                 .center(Fill)
@@ -548,7 +577,11 @@ fn flush<'a>(
 ) -> iced::widget::Column<'a, Message> {
     match title {
         Some(title) if !batch.is_empty() => sections.push(
-            column![text(title).size(design::HEADING), grid(state, batch, columns)].spacing(8),
+            column![
+                text(title).size(design::HEADING),
+                grid(state, batch, columns)
+            ]
+            .spacing(8),
         ),
         _ => sections,
     }
@@ -649,7 +682,13 @@ pub fn view(state: &State) -> Element<'_, Message> {
         let mut batch: Vec<(usize, Card)> = Vec::new();
         for (index, card) in cards(state).into_iter().enumerate() {
             if current != Some(card.section) {
-                sections = flush(state, sections, current, std::mem::take(&mut batch), columns);
+                sections = flush(
+                    state,
+                    sections,
+                    current,
+                    std::mem::take(&mut batch),
+                    columns,
+                );
                 current = Some(card.section);
             }
             batch.push((index, card));
@@ -667,17 +706,18 @@ pub fn view(state: &State) -> Element<'_, Message> {
     } else {
         page = page.push(container(grids).height(Fill));
     }
-    let mut footer = row![design::caption(
-        "←/→/↑/↓ move · Enter opens · Esc returns to the open scene"
-    )
-    .width(Fill)]
+    let mut footer = row![
+        design::caption("←/→/↑/↓ move · Enter opens · Esc returns to the open scene").width(Fill)
+    ]
     .spacing(10)
     .align_y(iced::Alignment::Center);
     if state.level_scene.is_some() || state.library_map.is_some() {
         footer = footer
             .push(design::button("Return to open scene").on_press(Message::LevelDismissMapChooser));
     }
-    page = page.push(footer).push(design::caption(state.status.as_str()));
+    page = page
+        .push(footer)
+        .push(design::caption(state.status.as_str()));
     let base: Element<'_, Message> = container(page.max_width(1180))
         .center_x(Fill)
         .padding(28)
@@ -707,7 +747,10 @@ mod tests {
     #[test]
     fn thumb_keys_are_file_safe() {
         let key = thumb_key("abc/def", "Ice Alpine");
-        assert!(key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+        assert!(
+            key.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        );
         assert!(key.starts_with(&thumb_key("abc/def", "")));
     }
 
@@ -734,7 +777,11 @@ mod tests {
         assert_eq!(prefs.recent_maps.len(), MAX_RECENT);
         assert_eq!(prefs.recent_maps[0].map, "Map 3");
         assert_eq!(
-            prefs.recent_maps.iter().filter(|r| r.map == "Map 3").count(),
+            prefs
+                .recent_maps
+                .iter()
+                .filter(|r| r.map == "Map 3")
+                .count(),
             1
         );
     }

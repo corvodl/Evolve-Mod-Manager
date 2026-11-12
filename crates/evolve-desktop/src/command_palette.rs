@@ -136,7 +136,12 @@ pub fn commands(state: &State) -> Vec<Command> {
     // Everything in the Modding menus, while it's available.
     for (menu, label, action) in crate::modding_page::menu_commands(state) {
         if let Some(message) = action {
-            list.push(command("Modding", label, format!("Modding › {menu}"), message));
+            list.push(command(
+                "Modding",
+                label,
+                format!("Modding › {menu}"),
+                message,
+            ));
         }
     }
     if let Some(projects) = state.modding_projects.as_ref() {

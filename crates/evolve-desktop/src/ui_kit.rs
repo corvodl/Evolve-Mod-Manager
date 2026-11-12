@@ -1319,19 +1319,17 @@ pub fn segmented_tabs<'a>(
         .spacing(6)
         .align_y(Alignment::Center);
         if let Some(tone) = item.dot {
-            content = content.push(
-                container(space().width(7).height(7)).style(move |theme: &Theme| {
-                    container::Style {
-                        background: Some(Background::Color(design::tone_color(theme, tone))),
-                        border: Border {
-                            radius: 4.0.into(),
-                            color: theme.palette().background,
-                            width: 1.0,
-                        },
-                        ..container::Style::default()
-                    }
-                }),
-            );
+            content = content.push(container(space().width(7).height(7)).style(
+                move |theme: &Theme| container::Style {
+                    background: Some(Background::Color(design::tone_color(theme, tone))),
+                    border: Border {
+                        radius: 4.0.into(),
+                        color: theme.palette().background,
+                        width: 1.0,
+                    },
+                    ..container::Style::default()
+                },
+            ));
         }
         buttons = buttons.push(
             iced::widget::button(container(content).center_x(Fill).center_y(Fill))

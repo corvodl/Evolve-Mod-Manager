@@ -830,7 +830,9 @@ pub(super) fn whats_new_intro(state: &State) -> Element<'_, Message> {
     match release {
         Some(release) if !release.notes.trim().is_empty() => {
             highlights = highlights.push(
-                container(super::release_notes_view(state)).max_height(260.0).clip(true),
+                container(super::release_notes_view(state))
+                    .max_height(260.0)
+                    .clip(true),
             );
         }
         Some(_) => {
@@ -2491,9 +2493,7 @@ fn developer_tab_status(state: &State, section: DeveloperSection) -> Option<desi
         lower.contains("failed") || lower.contains("error")
     };
     match section {
-        DeveloperSection::Network => state
-            .developer_online_mods
-            .then_some(design::Tone::Warning),
+        DeveloperSection::Network => state.developer_online_mods.then_some(design::Tone::Warning),
         DeveloperSection::Actors => {
             if failed(&state.actor_status) || failed(&state.runtime_result) {
                 Some(design::Tone::Danger)
@@ -2564,13 +2564,19 @@ pub(super) fn keybind_conflicts(keys: &[u8]) -> std::collections::BTreeSet<usize
 /// button for the PID and the lock button.
 fn developer_header(state: &State) -> Element<'_, Message> {
     use crate::ui_kit::{BadgeKind, badge};
-    let pid = state.runtime_snapshot.as_ref().and_then(|snapshot| snapshot.pid);
+    let pid = state
+        .runtime_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.pid);
     let mut strip = row![design::title("Developer")]
         .spacing(10)
         .align_y(iced::Center);
     strip = strip.push(match pid {
         Some(pid) => row![
-            badge(BadgeKind::Enabled, format!("Attached to Evolve.exe · PID {pid}")),
+            badge(
+                BadgeKind::Enabled,
+                format!("Attached to Evolve.exe · PID {pid}")
+            ),
             crate::ui_kit::copy_button(&state.ui, "developer-pid", pid.to_string()),
         ]
         .spacing(4)
@@ -2675,7 +2681,11 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                 .padding(4)
                 .style(design::text_button)
                 .on_press(Message::DeveloperShowPassword(!show)),
-                if show { "Hide password" } else { "Show password" },
+                if show {
+                    "Hide password"
+                } else {
+                    "Show password"
+                },
                 None,
                 iced::widget::tooltip::Position::Top,
             ),

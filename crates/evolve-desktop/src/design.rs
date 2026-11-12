@@ -585,10 +585,14 @@ fn kbd_style(theme: &Theme) -> container::Style {
 
 /// One key cap, e.g. `kbd("Ctrl")`.
 pub fn kbd<'a, M: 'a>(key: &str) -> iced::Element<'a, M> {
-    container(iced::widget::text(key.to_owned()).size(10).font(iced::Font::MONOSPACE))
-        .padding([1, 5])
-        .style(kbd_style)
-        .into()
+    container(
+        iced::widget::text(key.to_owned())
+            .size(10)
+            .font(iced::Font::MONOSPACE),
+    )
+    .padding([1, 5])
+    .style(kbd_style)
+    .into()
 }
 
 /// A shortcut such as `"Ctrl+K"` drawn as key caps joined by `+`.

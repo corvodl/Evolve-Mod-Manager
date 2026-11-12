@@ -13,7 +13,11 @@ use iced::{Element, Fill, Length};
 pub const GROUPS: &[(&str, &[DocsSection])] = &[
     (
         "Getting Started",
-        &[DocsSection::GettingStarted, DocsSection::Install, DocsSection::Paths],
+        &[
+            DocsSection::GettingStarted,
+            DocsSection::Install,
+            DocsSection::Paths,
+        ],
     ),
     (
         "How To",
@@ -31,13 +35,20 @@ pub const GROUPS: &[(&str, &[DocsSection])] = &[
     ),
     (
         "Help",
-        &[DocsSection::Recovery, DocsSection::Troubleshoot, DocsSection::Faq],
+        &[
+            DocsSection::Recovery,
+            DocsSection::Troubleshoot,
+            DocsSection::Faq,
+        ],
     ),
 ];
 
 /// The section after `section` in rail order.
 pub fn next_section(section: DocsSection) -> Option<DocsSection> {
-    let order: Vec<DocsSection> = GROUPS.iter().flat_map(|(_, items)| items.iter().copied()).collect();
+    let order: Vec<DocsSection> = GROUPS
+        .iter()
+        .flat_map(|(_, items)| items.iter().copied())
+        .collect();
     let at = order.iter().position(|item| *item == section)?;
     order.get(at + 1).copied()
 }
@@ -97,9 +108,10 @@ fn destination(section: DocsSection) -> Option<(&'static str, Message)> {
             "Open Settings › Storage (paths)",
             Message::OpenSettingsTab(Tab::Storage),
         ),
-        DocsSection::Install | DocsSection::Updates => {
-            ("Open Settings › Updates", Message::OpenSettingsTab(Tab::Updates))
-        }
+        DocsSection::Install | DocsSection::Updates => (
+            "Open Settings › Updates",
+            Message::OpenSettingsTab(Tab::Updates),
+        ),
         DocsSection::Import | DocsSection::Browse | DocsSection::Export => {
             ("Open Asset Library", Message::Navigate(Page::AssetLibrary))
         }
@@ -246,7 +258,12 @@ fn rail(state: &State) -> Element<'_, Message> {
             rail = rail.push(
                 design::button(
                     column![
-                        crate::forms::highlight(hit.title, &state.docs_search, design::LABEL, accent),
+                        crate::forms::highlight(
+                            hit.title,
+                            &state.docs_search,
+                            design::LABEL,
+                            accent
+                        ),
                         text(docs_spec(hit.section).0)
                             .size(design::CAPTION)
                             .style(design::muted),
@@ -321,7 +338,11 @@ fn checklist_view(state: &State) -> Element<'_, Message> {
 
 fn section_view(state: &State, section: DocsSection) -> Element<'_, Message> {
     let (title, summary, steps) = docs_spec(section);
-    let mut body = column![design::title(title), design::body(summary).style(design::muted)].spacing(14);
+    let mut body = column![
+        design::title(title),
+        design::body(summary).style(design::muted)
+    ]
+    .spacing(14);
     if section == DocsSection::GettingStarted {
         body = body.push(checklist_view(state));
     }
@@ -366,7 +387,11 @@ fn section_view(state: &State, section: DocsSection) -> Element<'_, Message> {
     }
     let mut footer = row![].spacing(10).align_y(iced::Center);
     if let Some((label, message)) = destination(section) {
-        footer = footer.push(design::button(label).style(design::secondary).on_press(message));
+        footer = footer.push(
+            design::button(label)
+                .style(design::secondary)
+                .on_press(message),
+        );
     }
     footer = footer.push(space().width(Fill));
     if let Some(next) = next_section(section) {
@@ -416,7 +441,10 @@ mod tests {
 
     #[test]
     fn next_follows_rail_order_and_ends() {
-        assert_eq!(next_section(DocsSection::GettingStarted), Some(DocsSection::Install));
+        assert_eq!(
+            next_section(DocsSection::GettingStarted),
+            Some(DocsSection::Install)
+        );
         assert_eq!(next_section(DocsSection::Faq), None);
     }
 

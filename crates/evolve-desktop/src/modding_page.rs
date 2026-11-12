@@ -264,17 +264,41 @@ pub(super) fn menu_commands(state: &State) -> Vec<(&'static str, &'static str, O
     let idle = !state.busy;
     vec![
         ("File", "Refresh Projects", Some(Message::ModdingRefresh)),
-        ("File", "Browse staged PAKs", Some(Message::ModdingBrowsePaks)),
-        ("File", "Installed Mods / Profiles", Some(Message::ModdingToggleProfiles)),
-        ("Edit", "Continue Editing", selected.then_some(Message::ModdingOpenProject)),
+        (
+            "File",
+            "Browse staged PAKs",
+            Some(Message::ModdingBrowsePaks),
+        ),
+        (
+            "File",
+            "Installed Mods / Profiles",
+            Some(Message::ModdingToggleProfiles),
+        ),
+        (
+            "Edit",
+            "Continue Editing",
+            selected.then_some(Message::ModdingOpenProject),
+        ),
         (
             "Edit",
             "Open Level Editor",
             selected.then_some(Message::LevelOpenSelectedModProject),
         ),
-        ("Edit", "Review Changes", selected.then_some(Message::ModdingReviewChanges)),
-        ("Edit", "Build Mod", (selected && idle).then_some(Message::ModdingBuild)),
-        ("Edit", "Export Mod…", (selected && idle).then_some(Message::ModdingExportPak)),
+        (
+            "Edit",
+            "Review Changes",
+            selected.then_some(Message::ModdingReviewChanges),
+        ),
+        (
+            "Edit",
+            "Build Mod",
+            (selected && idle).then_some(Message::ModdingBuild),
+        ),
+        (
+            "Edit",
+            "Export Mod…",
+            (selected && idle).then_some(Message::ModdingExportPak),
+        ),
         (
             "View",
             if state.modding_advanced {
@@ -290,11 +314,31 @@ pub(super) fn menu_commands(state: &State) -> Vec<(&'static str, &'static str, O
             "Verify selected signed PAK",
             (pak && idle).then_some(Message::StartSignedInspection),
         ),
-        ("Tools", "Initialize isolated stage", idle.then_some(Message::StartStageInit)),
-        ("Tools", "Check stage", idle.then_some(Message::StartStageStatus)),
-        ("Tools", "Restore backup", idle.then_some(Message::StartStageRestore)),
-        ("Tools", "Import signed original", idle.then_some(Message::StartStageImport)),
-        ("Tools", "Apply signed replacement", idle.then_some(Message::StartStageApply)),
+        (
+            "Tools",
+            "Initialize isolated stage",
+            idle.then_some(Message::StartStageInit),
+        ),
+        (
+            "Tools",
+            "Check stage",
+            idle.then_some(Message::StartStageStatus),
+        ),
+        (
+            "Tools",
+            "Restore backup",
+            idle.then_some(Message::StartStageRestore),
+        ),
+        (
+            "Tools",
+            "Import signed original",
+            idle.then_some(Message::StartStageImport),
+        ),
+        (
+            "Tools",
+            "Apply signed replacement",
+            idle.then_some(Message::StartStageApply),
+        ),
         (
             "Tools",
             "Asset Library",
@@ -330,10 +374,16 @@ fn menu(state: &State) -> Element<'_, Message> {
             [6, 11],
         )
     };
-    row![title("File"), title("Edit"), title("View"), title("Tools"), space().width(Fill)]
-        .spacing(3)
-        .align_y(iced::Center)
-        .into()
+    row![
+        title("File"),
+        title("Edit"),
+        title("View"),
+        title("Tools"),
+        space().width(Fill)
+    ]
+    .spacing(3)
+    .align_y(iced::Center)
+    .into()
 }
 
 fn dropdown(state: &State) -> Option<Element<'_, Message>> {
@@ -374,7 +424,12 @@ fn dropdown_left(name: Option<&str>) -> f32 {
 }
 
 /// "Page 2 of 7" between previous and next icon buttons.
-fn pager<'a>(page: usize, pages: usize, previous: Option<Message>, next: Option<Message>) -> Element<'a, Message> {
+fn pager<'a>(
+    page: usize,
+    pages: usize,
+    previous: Option<Message>,
+    next: Option<Message>,
+) -> Element<'a, Message> {
     row![
         crate::ui_kit::icon_button(
             crate::icons::chevron_left(),
@@ -819,28 +874,37 @@ fn archive_browser(state: &State) -> Element<'_, Message> {
             }
         }
     }
-    panel(column![
-        row![
-            crate::forms::search_field(
-                "Search PAKs, maps and dependency groups…",
-                &state.search,
-                Some(count),
-                Message::SearchChanged,
+    panel(
+        column![
+            row![
+                crate::forms::search_field(
+                    "Search PAKs, maps and dependency groups…",
+                    &state.search,
+                    Some(count),
+                    Message::SearchChanged,
+                ),
+                design::button("Refresh")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingBrowsePaks)
+            ]
+            .spacing(8),
+            scrollable(list).height(Length::Fixed(180.0)),
+            text(format!("{count} matching staged PAK(s)"))
+                .size(design::LABEL)
+                .style(design::muted),
+            archive_actions(state),
+            crate::ui_kit::disclosure(
+                &state.ui,
+                "modding:specialist",
+                text("Specialist · rebuild one signed member").size(design::LABEL),
+                state.modding_specialist_open,
+                Message::ModdingToggleSpecialist,
+                || specialist_rebuild(state),
             ),
-            design::button("Refresh").style(design::secondary).on_press(Message::ModdingBrowsePaks)
-        ].spacing(8),
-        scrollable(list).height(Length::Fixed(180.0)),
-        text(format!("{count} matching staged PAK(s)")).size(design::LABEL).style(design::muted),
-        archive_actions(state),
-        crate::ui_kit::disclosure(
-            &state.ui,
-            "modding:specialist",
-            text("Specialist · rebuild one signed member").size(design::LABEL),
-            state.modding_specialist_open,
-            Message::ModdingToggleSpecialist,
-            || specialist_rebuild(state),
-        ),
-    ].spacing(8)).into()
+        ]
+        .spacing(8),
+    )
+    .into()
 }
 
 /// Verify / Unpack / Edit Files / Level Editor for the selected staged PAK.
@@ -857,16 +921,35 @@ fn archive_actions(state: &State) -> Element<'_, Message> {
         let enabled = pak && idle;
         crate::ui_kit::why_disabled(
             crate::ui_kit::icon_label_button(icon, label)
-                .style(if primary { design::primary } else { design::secondary })
+                .style(if primary {
+                    design::primary
+                } else {
+                    design::secondary
+                })
                 .on_press_maybe(enabled.then_some(message)),
             !enabled,
             reason,
         )
     };
     row![
-        action(crate::icons::shield(), "Verify", false, Message::StartSignedInspection),
-        action(crate::icons::unpack(), "Unpack", false, Message::ModdingUnpackPak),
-        action(crate::icons::pencil(), "Edit Files", true, Message::ModdingOpenProject),
+        action(
+            crate::icons::shield(),
+            "Verify",
+            false,
+            Message::StartSignedInspection
+        ),
+        action(
+            crate::icons::unpack(),
+            "Unpack",
+            false,
+            Message::ModdingUnpackPak
+        ),
+        action(
+            crate::icons::pencil(),
+            "Edit Files",
+            true,
+            Message::ModdingOpenProject
+        ),
         action(
             crate::icons::map(),
             "Level Editor",
@@ -1614,7 +1697,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         crate::ui_kit::why_disabled(
             crate::ui_kit::icon_label_button(
                 crate::icons::export(),
-                if last_format.is_some() { "Export Mod" } else { "Export Mod…" },
+                if last_format.is_some() {
+                    "Export Mod"
+                } else {
+                    "Export Mod…"
+                },
             )
             .style(design::primary)
             .on_press_maybe(export_ready.then(|| match last_format {
@@ -1669,30 +1756,25 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(10);
     if state.modding_export_options_open && chosen.is_some() {
-        selected_content = selected_content.push(
-            PakExportMode::ALL.into_iter().fold(
-                column![text("EXPORT FORMAT").size(design::LABEL).style(design::muted)].spacing(4),
-                |menu, mode| {
-                    let last = last_format == Some(mode);
-                    menu.push(
-                        design::button(
-                            row![
-                                text(mode.description()).size(design::LABEL).width(Fill),
-                            ]
-                            .push(last.then(|| crate::ui_kit::badge(
-                                crate::ui_kit::BadgeKind::Neutral,
-                                "Last used",
-                            )))
+        selected_content = selected_content.push(PakExportMode::ALL.into_iter().fold(
+            column![text("EXPORT FORMAT").size(design::LABEL).style(design::muted)].spacing(4),
+            |menu, mode| {
+                let last = last_format == Some(mode);
+                menu.push(
+                    design::button(
+                        row![text(mode.description()).size(design::LABEL).width(Fill),]
+                            .push(last.then(|| {
+                                crate::ui_kit::badge(crate::ui_kit::BadgeKind::Neutral, "Last used")
+                            }))
                             .spacing(8)
                             .align_y(iced::Center),
-                        )
-                        .width(Fill)
-                        .style(design::secondary)
-                        .on_press(Message::ModdingExportChoose(mode)),
                     )
-                },
-            ),
-        );
+                    .width(Fill)
+                    .style(design::secondary)
+                    .on_press(Message::ModdingExportChoose(mode)),
+                )
+            },
+        ));
     }
     if state.modding_advanced {
         selected_content = selected_content.push(

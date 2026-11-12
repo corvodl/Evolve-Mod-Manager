@@ -128,14 +128,12 @@ fn tool_bar(state: &State) -> iced::widget::Row<'_, Message> {
                     || format!("Surface {}", brush.surface),
                     |item| item.name.clone(),
                 );
-            bar = bar.push(
-                design::tooltip(
-                    text(name).size(design::LABEL),
-                    format!("Surface ID {}", brush.surface),
-                    None,
-                    iced::widget::tooltip::Position::Bottom,
-                ),
-            );
+            bar = bar.push(design::tooltip(
+                text(name).size(design::LABEL),
+                format!("Surface ID {}", brush.surface),
+                None,
+                iced::widget::tooltip::Position::Bottom,
+            ));
         }
         LevelTool::Vegetation => {}
     }
@@ -238,7 +236,9 @@ fn brush_panel(state: &State) -> Option<Element<'_, Message>> {
     }
     let brush = state.terrain_brush;
     let modifiers = state.keyboard_modifiers;
-    let line = |label: &'static str, control: Element<'static, Message>, field: Element<'static, Message>| {
+    let line = |label: &'static str,
+                control: Element<'static, Message>,
+                field: Element<'static, Message>| {
         row![
             text(label).size(design::LABEL).width(Length::Fixed(78.0)),
             container(control).width(Length::Fixed(170.0)),
@@ -316,9 +316,13 @@ fn brush_panel(state: &State) -> Option<Element<'_, Message>> {
             panel = panel
                 .push(line(
                     "Density",
-                    slider(1.0..=50.0, state.vegetation_density, Message::LevelVegetationDensity)
-                        .step(1.0_f32)
-                        .into(),
+                    slider(
+                        1.0..=50.0,
+                        state.vegetation_density,
+                        Message::LevelVegetationDensity,
+                    )
+                    .step(1.0_f32)
+                    .into(),
                     bound_number(
                         &state.forms,
                         modifiers,
@@ -330,9 +334,13 @@ fn brush_panel(state: &State) -> Option<Element<'_, Message>> {
                 ))
                 .push(line(
                     "Size ± %",
-                    slider(0.0..=0.8, state.vegetation_jitter, Message::LevelVegetationJitter)
-                        .step(0.05_f32)
-                        .into(),
+                    slider(
+                        0.0..=0.8,
+                        state.vegetation_jitter,
+                        Message::LevelVegetationJitter,
+                    )
+                    .step(0.05_f32)
+                    .into(),
                     bound_number(
                         &state.forms,
                         modifiers,
@@ -393,7 +401,9 @@ fn shortcut_sheet(state: &State) -> Option<Element<'_, Message>> {
             if let Some(keys) = crate::chrome::shortcut_for(action) {
                 list = list.push(
                     row![
-                        text(*action).size(design::LABEL).width(Length::Fixed(150.0)),
+                        text(*action)
+                            .size(design::LABEL)
+                            .width(Length::Fixed(150.0)),
                         design::key_hint(keys),
                     ]
                     .spacing(8)
@@ -404,9 +414,11 @@ fn shortcut_sheet(state: &State) -> Option<Element<'_, Message>> {
         groups = groups.push(list);
     }
     Some(
-        container(scrollable(groups).direction(scrollable::Direction::Horizontal(
-            scrollable::Scrollbar::new(),
-        )))
+        container(
+            scrollable(groups).direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::new(),
+            )),
+        )
         .padding([12, 14])
         .width(Fill)
         .style(|theme| container::Style {
@@ -598,7 +610,10 @@ fn menu_content(state: &State) -> Option<Element<'_, Message>> {
                 "Perspective view",
                 scene.then_some(Message::ViewerCameraPreset("Isometric"))
             ),
-            item("Top view", scene.then_some(Message::ViewerCameraPreset("Top"))),
+            item(
+                "Top view",
+                scene.then_some(Message::ViewerCameraPreset("Top"))
+            ),
             item(
                 "Front view",
                 scene.then_some(Message::ViewerCameraPreset("Front"))
@@ -697,7 +712,9 @@ fn menu_content(state: &State) -> Option<Element<'_, Message>> {
         "LevelHelp" => column![
             item(
                 "All level editor shortcuts",
-                Some(Message::Ui(crate::ui_kit::UiMsg::Popover(Some(KEYS_POPOVER))))
+                Some(Message::Ui(crate::ui_kit::UiMsg::Popover(Some(
+                    KEYS_POPOVER
+                ))))
             ),
             text("Hold RMB and drag to look around; WASD and Q/E fly while it is held.")
                 .size(design::LABEL),
@@ -764,7 +781,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         text(format!("{} selected", state.level_selection.indices.len())).size(11),
         text(format!("{} diagnostics", state.level_diagnostics.len())).size(11),
         if state.level_read_only {
-            Element::from(text("Source: read only").size(design::CAPTION).style(design::muted))
+            Element::from(
+                text("Source: read only")
+                    .size(design::CAPTION)
+                    .style(design::muted),
+            )
         } else {
             tool_hints(state)
         },

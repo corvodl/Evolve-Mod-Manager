@@ -563,12 +563,9 @@ impl Tab {
     fn status(self, state: &State) -> Option<crate::design::Tone> {
         use crate::forms::PathKind;
         let failing = |kinds: &[PathKind]| {
-            kinds.iter().any(|kind| {
-                state
-                    .path_checks
-                    .get(*kind)
-                    .is_some_and(|check| !check.ok)
-            })
+            kinds
+                .iter()
+                .any(|kind| state.path_checks.get(*kind).is_some_and(|check| !check.ok))
         };
         match self {
             Self::Updates => (!state.launch_updates.is_empty() || state.available_update.is_some())
