@@ -49,6 +49,7 @@ mod handles;
 mod icons;
 mod initial_setup;
 mod launcher_bridge;
+mod level_archive;
 mod level_atmosphere;
 mod level_authoring;
 mod level_camera;
@@ -1003,15 +1004,14 @@ fn remember_opened_map(state: &mut State, loaded: &mut level_library::LoadedMap)
             state.map_chooser.thumbs.insert(key, handle.clone());
         }
     }
+    let archive_label = loaded.project.as_ref().map_or_else(
+        || level_archive::display_title(&loaded.archive),
+        |project| project.label.clone(),
+    );
     let recent = map_chooser::remember(
         &mut state.preferences,
         &loaded.archive.id,
-        loaded
-            .project
-            .as_ref()
-            .map_or(loaded.archive.name.as_str(), |project| {
-                project.label.as_str()
-            }),
+        &archive_label,
         &map_name,
         loaded
             .project
@@ -6128,7 +6128,9 @@ fn refresh_library_matches(state: &mut State) {
                 "game" => a.source.to_lowercase().cmp(&b.source.to_lowercase()),
                 "builds" => a.builds.len().cmp(&b.builds.len()),
                 "files" => a.entries.cmp(&b.entries),
-                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                _ => level_archive::display_title(a)
+                    .to_lowercase()
+                    .cmp(&level_archive::display_title(b).to_lowercase()),
             };
             if ascending { order } else { order.reverse() }
         });
@@ -7827,6 +7829,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Finish the current operation before opening a map.".into();
                 return Task::none();
             }
+            if level_archive::is_terrain_texture_pak(&archive) {
+                state.status =
+                    "TerrainTexture.pak holds baked terrain color tiles, not a level.".into();
+                return Task::none();
+            }
             state.level_map_prompt = true;
             state.level_map_choices = None;
             return launch(state, Operation::DiscoverLevelMaps(archive));
@@ -7866,6 +7873,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             if state.busy {
+                return Task::none();
+            }
+            if !level_archive::offers_as_map(&archive) {
+                state.status =
+                    "That PAK is not a level archive; open a map-owned level.pak.".into();
                 return Task::none();
             }
             state.level_map_prompt = true;
@@ -8652,7 +8664,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .as_ref()
                         .and_then(|c| c.archives.get(index))
                         .cloned()
-                    && level_library::likely_level_pak(&archive)
+                    && level_archive::offers_as_map(&archive)
                     && !state.busy
                 {
                     state.level_map_prompt = true;
