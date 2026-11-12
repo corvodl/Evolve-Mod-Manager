@@ -351,9 +351,8 @@ fn client_version_card<'a>(version: Option<&str>) -> Element<'a, Message> {
     .into()
 }
 
-/// A horizontal announcement preview uses the wide panel efficiently, with
-/// one small uncropped attachment alongside the excerpt. Full images and
-/// additional embeds remain available on What's New.
+/// Show the complete first attachment beside the excerpt. Additional embeds
+/// remain available on What's New.
 fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
     let news = &state.news;
     let heading = row![
@@ -388,14 +387,14 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
             .find(|url| crate::whats_new::allowed_image_url(url))
         {
             if let Some(handle) = news.image_handles.get(url) {
-                // A compact filled thumbnail keeps the workspace visible on
-                // Home; clicking opens the complete original attachment.
+                // Contain, rather than Cover, keeps every edge of the image
+                // visible. The scrollable Home card can grow to fit it.
                 preview = Some(
                     button(
                         image(handle.clone())
                             .width(Fill)
-                            .height(Length::Fixed(112.0))
-                            .content_fit(iced::ContentFit::Cover),
+                            .height(Length::Fixed(240.0))
+                            .content_fit(iced::ContentFit::Contain),
                     )
                     .width(Length::FillPortion(3))
                     .padding(0)
