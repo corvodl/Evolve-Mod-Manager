@@ -138,8 +138,12 @@ pub fn signed_basename(path: &Path) -> Result<String, String> {
 pub fn staged_target(stage: &Path, source: &Path) -> Result<String, String> {
     let root = fs::canonicalize(stage.join("paks"))
         .map_err(|_| "Configure a prepared signing stage with a paks/ directory")?;
-    let metadata =
-        fs::symlink_metadata(source).map_err(|_| "Choose an existing staged original PAK")?;
+    let metadata = fs::symlink_metadata(source).map_err(|_| {
+        format!(
+            "Choose an existing staged original PAK ({} is missing)",
+            source.display()
+        )
+    })?;
     if !metadata.file_type().is_file() {
         return Err("A staged PAK must be an actual regular file".into());
     }

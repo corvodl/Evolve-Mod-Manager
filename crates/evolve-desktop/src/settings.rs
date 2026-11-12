@@ -252,6 +252,34 @@ pub fn game_storage_directory(
     Ok(profile.join("Data").join("GameSets"))
 }
 
+/// The one signing setup under the GameSets folder, for a settings file whose
+/// stage path is empty (setups made into GameSets/Setup_*/staged were not
+/// found by the older Data/Setup check). A setup used as the separate test
+/// stage is skipped; with more than one remaining nothing is guessed.
+pub fn discover_game_set(games: &Path, test_stage: &str) -> Option<PathBuf> {
+    let test = (!test_stage.trim().is_empty())
+        .then(|| fs::canonicalize(test_stage).ok())
+        .flatten();
+    let mut found = None;
+    for entry in fs::read_dir(games).ok()?.flatten() {
+        let setup = entry.path();
+        let stage = setup.join("staged");
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir())
+            || !stage.join("rekey_plan.json").is_file()
+            || !stage.join("stage_status.json").is_file()
+            || test
+                .as_ref()
+                .is_some_and(|test| fs::canonicalize(&stage).is_ok_and(|s| &s == test))
+        {
+            continue;
+        }
+        if found.replace(setup).is_some() {
+            return None;
+        }
+    }
+    found
+}
+
 /// Resolve the destination for automatic setup, independent of legacy stages
 /// and without relying on the process working directory. A missing GameSets
 /// value (or an old relative UI label) means the Rust manager's per-user
@@ -502,6 +530,31 @@ pub fn save_to(path: &Path, prefs: &Preferences) -> Result<(), SettingsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_only_game_set_stage_but_not_the_test_one() {
+        let home = tempfile::tempdir().unwrap();
+        let games = home.path().join("GameSets");
+        let setup = |name: &str| {
+            let stage = games.join(name).join("staged");
+            fs::create_dir_all(&stage).unwrap();
+            fs::write(stage.join("rekey_plan.json"), b"{}").unwrap();
+            fs::write(stage.join("stage_status.json"), b"{}").unwrap();
+            stage
+        };
+        assert_eq!(discover_game_set(&games, ""), None);
+        setup("Setup_main");
+        assert_eq!(
+            discover_game_set(&games, ""),
+            Some(games.join("Setup_main"))
+        );
+        let test = setup("Setup_test");
+        assert_eq!(discover_game_set(&games, ""), None);
+        assert_eq!(
+            discover_game_set(&games, &test.to_string_lossy()),
+            Some(games.join("Setup_main"))
+        );
+    }
 
     #[test]
     fn viewer_texture_quality_defaults_full_and_survives_settings_reload() {

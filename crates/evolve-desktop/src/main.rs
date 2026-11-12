@@ -18738,6 +18738,26 @@ fn initial_state() -> State {
             result.preferences.swap = setup.join("swap").to_string_lossy().into_owned();
         }
     }
+    if result.preferences.stage.trim().is_empty()
+        && let Ok(settings) = settings_path()
+        && let Ok(games) =
+            settings::game_storage_directory(&settings, &result.preferences.game_storage_root)
+        && let Some(setup) = settings::discover_game_set(&games, &result.preferences.test_stage)
+    {
+        result.preferences.stage = setup.join("staged").to_string_lossy().into_owned();
+    }
+    // A setup keeps its recovery helpers in swap/ beside staged/; use them
+    // when the stage was found above or chosen without its swap folder.
+    if result.preferences.swap.trim().is_empty()
+        && let Some(setup) = Path::new(result.preferences.stage.trim())
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("staged"))
+            .then(|| Path::new(result.preferences.stage.trim()).parent())
+            .flatten()
+        && setup.join("swap/controlled_swap.py").is_file()
+    {
+        result.preferences.swap = setup.join("swap").to_string_lossy().into_owned();
+    }
     // Automatic Blender discovery is intentionally ephemeral: do not save a
     // machine-specific detected path into user preferences.
     if let Ok(path) = blender_install::resolve_blender(&result.blender_path) {

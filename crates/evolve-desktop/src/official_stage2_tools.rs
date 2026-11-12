@@ -81,13 +81,20 @@ pub fn discover(storage: &Path) -> Result<Option<OfficialTools>, String> {
     }))
 }
 
+pub const NO_STAGE: &str = "No signing setup is selected. Choose your setup's staged folder under Settings → Storage, or run Set Up Manager.";
+
 /// Official stages require their original local tool installation; never
 /// silently fall back to a different keypair.
 pub fn for_stage(stage: &Path) -> Result<Option<OfficialTools>, String> {
+    if stage.as_os_str().is_empty() {
+        return Err(NO_STAGE.into());
+    }
     let status = stage.join("stage_status.json");
-    let doc: serde_json::Value =
-        serde_json::from_slice(&fs::read(&status).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+    let doc: serde_json::Value = serde_json::from_slice(
+        &fs::read(&status)
+            .map_err(|e| format!("Cannot read the signing stage {}: {e}", status.display()))?,
+    )
+    .map_err(|e| e.to_string())?;
     if doc["signer"].as_str() != Some("official-2025") {
         return Ok(None);
     }
