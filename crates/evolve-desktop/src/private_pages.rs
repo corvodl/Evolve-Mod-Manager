@@ -311,14 +311,12 @@ fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
     .into()
 }
 
-/// The long +build identifier remains available on hover, but never
-/// dominates the narrow At a Glance column.
+/// The release part only; the +build identifier stays available on hover.
 fn short_client_version(version: &str) -> String {
-    if let Some((release, build)) = version.split_once('+') {
-        let prefix: String = build.chars().take(8).collect();
-        if !release.is_empty() && !prefix.is_empty() {
-            return format!("v{release} · {prefix}");
-        }
+    if let Some((release, _)) = version.split_once('+')
+        && !release.is_empty()
+    {
+        return format!("v{release}");
     }
     if version.chars().count() > 28 {
         return format!("v{}…", version.chars().take(24).collect::<String>());
@@ -746,7 +744,15 @@ fn with_embers<'a>(state: &State, content: Element<'a, Message>) -> Element<'a, 
 fn home_bento(state: &State) -> Element<'_, Message> {
     use crate::ui_kit::{bento_tile, ticked};
     let client = column![
-        text(state.client_version.as_deref().unwrap_or("Unknown")).size(18),
+        match state.client_version.as_deref() {
+            Some(version) => design::tooltip(
+                text(short_client_version(version)).size(18),
+                format!("Full client version: v{version}"),
+                None,
+                iced::widget::tooltip::Position::Bottom,
+            ),
+            None => text("Unknown").size(18).into(),
+        },
         text(if state.preferences.client_executable.is_empty() {
             "Client not configured"
         } else {
@@ -1742,253 +1748,660 @@ pub(super) fn credits() -> Element<'static, Message> {
     ].spacing(12).padding(12)).height(Fill).into()
 }
 
+// --- Developer tab building blocks -----------------------------------------
+
+/// A titled card inside a Developer tab, with an optional ⓘ note.
+fn dev_card<'a>(
+    title: &'static str,
+    note: Option<&'static str>,
+    trailing: Option<Element<'a, Message>>,
+    body: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let mut head = row![design::heading(title)]
+        .spacing(8)
+        .align_y(iced::Center);
+    if let Some(note) = note {
+        head = head.push(design::tooltip(
+            crate::icons::glyph(crate::icons::info(), 15.0),
+            note,
+            None,
+            iced::widget::tooltip::Position::Top,
+        ));
+    }
+    head = head.push(iced::widget::space().width(Fill));
+    if let Some(trailing) = trailing {
+        head = head.push(trailing);
+    }
+    container(column![head, body.into()].spacing(10))
+        .padding(12)
+        .width(Fill)
+        .style(|theme: &iced::Theme| container::Style {
+            background: Some(Background::Color(design::field(theme))),
+            border: Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: design::radius(theme, design::Radius::Medium).into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A labelled button that explains itself while disabled.
+fn dev_action<'a>(
+    label: impl text::IntoFragment<'a>,
+    message: Option<Message>,
+    reason: &'a str,
+) -> Element<'a, Message> {
+    let disabled = message.is_none();
+    crate::ui_kit::why_disabled(
+        design::button(text(label)).on_press_maybe(message),
+        disabled,
+        reason,
+    )
+}
+
+/// Key / value line; values are monospaced and optionally copyable.
+fn dev_value<'a>(
+    state: &'a State,
+    key: &'static str,
+    value: String,
+    copy: Option<&str>,
+) -> Element<'a, Message> {
+    let mut line = row![
+        design::caption(key).width(Length::Fixed(170.0)),
+        design::mono(value.clone()).width(Fill),
+    ]
+    .spacing(8)
+    .align_y(iced::Center);
+    if let Some(id) = copy {
+        line = line.push(crate::ui_kit::copy_button(&state.ui, id, value));
+    }
+    line.into()
+}
+
+fn muted_line<'a>(content: impl text::IntoFragment<'a>) -> Element<'a, Message> {
+    text(content)
+        .size(design::LABEL)
+        .style(design::muted)
+        .into()
+}
+
+/// Why teleport actions are unavailable, or `""` when they are available.
+fn teleport_reason(state: &State) -> &'static str {
+    if !state.developer_unlocked {
+        "Unlock the developer area first"
+    } else if state.teleport_busy {
+        "A teleport action is running"
+    } else if state.teleport_detect_pending {
+        "Detecting Evolve.exe…"
+    } else if state.teleport_hold_cancel.is_some() {
+        "Stop the current hold first"
+    } else if !state.live_edit_enabled {
+        "Enable actor memory writes on Actors & Memory first"
+    } else {
+        ""
+    }
+}
+
+/// `0x1234ABCD` or `Evolve.exe+0x1234`.
+pub(super) fn ai_address_valid(value: &str) -> bool {
+    let value = value.trim();
+    let offset = match value.split_once('+') {
+        Some((module, offset)) => {
+            if !module.trim().eq_ignore_ascii_case("evolve.exe") {
+                return false;
+            }
+            offset.trim()
+        }
+        None => value,
+    };
+    offset
+        .strip_prefix("0x")
+        .or_else(|| offset.strip_prefix("0X"))
+        .is_some_and(|hex| !hex.is_empty() && usize::from_str_radix(hex, 16).is_ok())
+}
+
+// --- Actors & Memory ---------------------------------------------------------
+
 fn research_rows(state: &State) -> Element<'_, Message> {
+    use crate::ui_kit::{BadgeKind, badge, disclosure};
     let mut body = column![
-        text("Runtime memory research · READ-ONLY").size(17),
-        text(if state.runtime_research_status.is_empty() {
+        row![
+            design::heading("Runtime memory research"),
+            badge(BadgeKind::ReadOnly, "Read-only"),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
+        muted_line(if state.runtime_research_status.is_empty() {
             "Refresh actors to validate the current process and research layouts."
         } else {
             state.runtime_research_status.as_str()
-        })
-        .size(design::LABEL)
-        .style(design::muted),
+        }),
     ]
     .spacing(8);
     let Some(report) = &state.runtime_research else {
         return body.into();
     };
-    body = body.push(
-        text(format!(
-            "PID {} · Base 0x{:X} · Local actor ID 0x{:X}",
-            report.pid, report.base, report.local_id
-        ))
-        .size(design::LABEL),
-    );
-    body = body.push(
-        text(format!(
-            "Running executable SHA256: {} (fingerprint only; no hash allowlist supplied)",
-            report.image_sha256
-        ))
-        .size(design::LABEL)
-        .style(design::muted),
-    );
-    body = body.push(text(&report.slots).size(design::LABEL));
-    if let Some(perks) = &state.match_perks {
-        let logged = perks
+    let open = |key: &str| state.developer_open.contains(key);
+    let roster = state.match_perks.as_ref().map(|perks| {
+        perks
             .players
             .iter()
             .filter(|player| player.slot.starts_with("PlayerSlot_monster_"))
             .map(|player| player.slot.as_str())
-            .collect::<Vec<_>>();
-        body = body.push(
-            text(format!(
-                "Verified matching roster log: {} monster slot(s) [{}]. This is logged roster evidence, not a live allocation API.",
-                logged.len(), logged.join(", ")
-            ))
-            .size(design::LABEL)
-            .style(design::muted),
-        );
-    }
-    body = body.push(text("Monster resources · local actor · READ-ONLY").size(design::HEADING));
-    body = body.push(text(&report.evolution_energy).size(design::LABEL));
-    body = body.push(text(&report.traversal_energy).size(design::LABEL));
-    body = body.push(text("Decoded with a fresh process key and verified actor/entity/movement links. Snapshot only; offline match authority and write safety are not established.").size(design::LABEL).style(design::muted));
-    body = body.push(text(&report.character_gravity).size(design::LABEL));
-    body = body.push(
-        text(&report.world_gravity)
-            .size(design::LABEL)
-            .style(design::muted),
-    );
-    body = body.push(text(&report.jetpack).size(design::LABEL));
-    body = body.push(
-        text("Inventory · actor identity, owner and item-list bounds checked")
-            .size(design::HEADING),
-    );
-    for inv in &report.inventory {
-        let items = inv
-            .item_ids
-            .iter()
-            .map(|id| format!("0x{id:X}"))
             .collect::<Vec<_>>()
-            .join(", ");
-        let occupied = inv.loadout.iter().filter(|(id, _)| *id != 0).count();
-        let flags = inv
-            .loadout
-            .iter()
-            .enumerate()
-            .filter(|(_, (id, _))| *id != 0)
-            .map(|(index, (id, flag))| format!("{index}:0x{id:X}/0x{flag:X}"))
-            .collect::<Vec<_>>()
-            .join(" · ");
-        body = body.push(surface(
-            column![
-                text(format!(
-                    "{} · Actor ID 0x{:X} · Inventory 0x{:X}",
-                    inv.actor_name, inv.actor_id, inv.inventory_address
-                )).size(design::BODY),
-                text(format!(
-                    "Item IDs ({}, live registry IDs {}): [{}]",
-                    inv.item_ids.len(), inv.registered_ids, items
-                )).size(design::LABEL),
-                text(format!(
-                    "Selected item ID 0x{:X}; previous 0x{:X}; selected in list: {}; actor mirrors match: {}",
-                    inv.current, inv.previous,
-                    inv.selected_in_list, inv.actor_mirrors_match
-                )).size(design::LABEL),
-                text(format!("Loadout entries {occupied}/16 · item ID/flag: {flags}"))
-                    .size(design::LABEL)
-                    .style(design::muted),
+    });
+    body = body.push(disclosure(
+        &state.ui,
+        "research-process",
+        design::heading("Process"),
+        open("research-process"),
+        Message::DeveloperDisclose("research-process"),
+        move || {
+            let mut list = column![
+                dev_value(state, "PID", report.pid.to_string(), None),
+                dev_value(
+                    state,
+                    "Module base",
+                    format!("0x{:X}", report.base),
+                    Some("research-base")
+                ),
+                dev_value(
+                    state,
+                    "Local actor ID",
+                    format!("0x{:X}", report.local_id),
+                    Some("research-local")
+                ),
+                dev_value(
+                    state,
+                    "Executable SHA-256",
+                    report.image_sha256.clone(),
+                    Some("research-sha")
+                ),
+                text(&report.slots).size(design::LABEL),
             ]
-            .spacing(5)
-            .padding(8)
-        ));
-    }
-    for err in report.inventory_errors.iter().take(16) {
-        body = body.push(
-            text(format!("Inventory not verified: {err}"))
-                .size(design::LABEL)
-                .style(design::muted),
-        );
-    }
-    body = body
-        .push(text("Projectile physics research · no generic speed write").size(design::HEADING));
-    for note in &report.projectiles {
-        body = body.push(text(note).size(design::LABEL).style(design::muted));
-    }
-    body.push(
-        text(&report.feature_status)
-            .size(design::LABEL)
-            .style(design::muted),
-    )
-    .into()
+            .spacing(6);
+            if let Some(slots) = roster {
+                list = list.push(muted_line(format!(
+                    "Logged roster: {} monster slot(s) [{}]. Roster evidence, not a live allocation API.",
+                    slots.len(),
+                    slots.join(", ")
+                )));
+            }
+            list.into()
+        },
+    ));
+    body = body.push(disclosure(
+        &state.ui,
+        "research-resources",
+        design::heading("Monster resources"),
+        open("research-resources"),
+        Message::DeveloperDisclose("research-resources"),
+        move || {
+            column![
+                design::mono(report.evolution_energy.as_str()),
+                design::mono(report.traversal_energy.as_str()),
+                muted_line("Decoded with a fresh process key and verified actor, entity and movement links. Snapshot only; write safety is not established."),
+            ]
+            .spacing(6)
+            .into()
+        },
+    ));
+    body = body.push(disclosure(
+        &state.ui,
+        "research-gravity",
+        design::heading("Gravity & jetpack"),
+        open("research-gravity"),
+        Message::DeveloperDisclose("research-gravity"),
+        move || {
+            column![
+                design::mono(report.character_gravity.as_str()),
+                design::mono(report.world_gravity.as_str()),
+                design::mono(report.jetpack.as_str()),
+            ]
+            .spacing(6)
+            .into()
+        },
+    ));
+    let errors = report.inventory_errors.len();
+    body = body.push(disclosure(
+        &state.ui,
+        "research-inventory",
+        row![
+            design::heading("Inventory"),
+            badge(BadgeKind::Neutral, report.inventory.len().to_string()),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
+        open("research-inventory"),
+        Message::DeveloperDisclose("research-inventory"),
+        move || {
+            let mut list = column![].spacing(8);
+            for (index, inv) in report.inventory.iter().enumerate() {
+                let items = inv
+                    .item_ids
+                    .iter()
+                    .map(|id| format!("0x{id:X}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let occupied = inv.loadout.iter().filter(|(id, _)| *id != 0).count();
+                let flags = inv
+                    .loadout
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (id, _))| *id != 0)
+                    .map(|(slot, (id, flag))| format!("{slot}:0x{id:X}/0x{flag:X}"))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                list = list.push(
+                    container(
+                        column![
+                            text(inv.actor_name.as_str()).size(design::BODY),
+                            dev_value(
+                                state,
+                                "Actor ID",
+                                format!("0x{:X}", inv.actor_id),
+                                Some(&format!("inv-actor-{index}")),
+                            ),
+                            dev_value(
+                                state,
+                                "Inventory",
+                                format!("0x{:X}", inv.inventory_address),
+                                Some(&format!("inv-addr-{index}")),
+                            ),
+                            dev_value(
+                                state,
+                                "Items",
+                                format!(
+                                    "{} ({} registered) [{items}]",
+                                    inv.item_ids.len(),
+                                    inv.registered_ids
+                                ),
+                                None,
+                            ),
+                            dev_value(
+                                state,
+                                "Selected / previous",
+                                format!(
+                                    "0x{:X} / 0x{:X} · in list: {} · mirrors match: {}",
+                                    inv.current,
+                                    inv.previous,
+                                    inv.selected_in_list,
+                                    inv.actor_mirrors_match
+                                ),
+                                None,
+                            ),
+                            dev_value(state, "Loadout", format!("{occupied}/16 · {flags}"), None),
+                        ]
+                        .spacing(4),
+                    )
+                    .padding(8)
+                    .width(Fill)
+                    .style(|theme: &iced::Theme| container::Style {
+                        background: Some(Background::Color(design::surface(theme))),
+                        ..container::Style::default()
+                    }),
+                );
+            }
+            if errors > 0 {
+                let detail = report
+                    .inventory_errors
+                    .iter()
+                    .take(16)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                list = list.push(crate::ui_kit::callout(
+                    design::Tone::Danger,
+                    format!("{errors} inventory record(s) not verified:\n{detail}"),
+                ));
+            }
+            list.into()
+        },
+    ));
+    body = body.push(disclosure(
+        &state.ui,
+        "research-projectiles",
+        design::heading("Projectiles"),
+        open("research-projectiles"),
+        Message::DeveloperDisclose("research-projectiles"),
+        move || {
+            let mut list = column![].spacing(5);
+            for note in &report.projectiles {
+                list = list.push(muted_line(note.as_str()));
+            }
+            list.push(muted_line(report.feature_status.as_str())).into()
+        },
+    ));
+    body.into()
 }
 
 fn actor_rows(state: &State) -> Element<'_, Message> {
+    use crate::ui_kit::{BadgeKind, badge};
     let Some(listing) = &state.actor_listing else {
-        return text("No actor snapshot. Detect Evolve and refresh actors.")
-            .size(design::LABEL)
-            .style(design::muted)
-            .into();
+        return crate::ui_kit::empty_state(
+            Some(crate::icons::actors()),
+            "No actor snapshot",
+            "Detect Evolve.exe, then refresh actors.",
+            None,
+        );
     };
+    let query = state.actor_field_search.trim().to_ascii_lowercase();
+    let field_count: usize = listing
+        .actors
+        .iter()
+        .map(|actor| {
+            actor
+                .fields
+                .iter()
+                .filter(|entry| {
+                    query.is_empty() || entry.field.title().to_ascii_lowercase().contains(&query)
+                })
+                .count()
+        })
+        .sum();
     let mut list = column![
-        text(format!(
-            "{} actor(s), PID {}",
-            listing.actors.len(),
-            listing.pid
-        ))
-        .size(design::BODY)
+        row![
+            design::heading(format!("{} actor(s)", listing.actors.len())),
+            iced::widget::space().width(Fill),
+            container(crate::forms::search_field(
+                "Filter fields…",
+                &state.actor_field_search,
+                Some(field_count),
+                Message::ActorFieldSearch,
+            ))
+            .width(Length::Fixed(260.0)),
+        ]
+        .spacing(8)
+        .align_y(iced::Center)
     ]
     .spacing(10);
+    let editable = state.developer_unlocked && !state.actor_busy;
     for actor in &listing.actors {
-        let mut rows = column![
-            text(format!(
-                "{}{}  |  ID 0x{:X}  |  Actor 0x{:X}",
-                actor.name,
-                if actor.local { " (Local)" } else { "" },
-                actor.id,
-                actor.address
-            ))
-            .size(14)
+        let collapsed = state.developer_collapsed_actors.contains(&actor.id);
+        let mut head = row![
+            crate::icons::glyph(
+                if collapsed {
+                    crate::icons::chevron()
+                } else {
+                    crate::icons::chevron_down()
+                },
+                14.0
+            ),
+            text(actor.name.as_str()).size(14),
         ]
-        .spacing(5);
-        for entry in &actor.fields {
-            let field = entry.field;
-            let selected = state.actor_edit.is_some_and(|(id, addr, f, _)| {
-                id == actor.id && addr == actor.address && f == field
-            });
-            let key = (actor.id, actor.address, field);
-            let frozen = state.actor_frozen.get(&key);
-            let editable = state.developer_unlocked && !state.actor_busy;
-            let value_cell: Element<'_, Message> = if selected {
-                design::text_input("Value", &state.actor_edit_value)
-                    .on_input(Message::ActorEditValue)
-                    .on_submit(Message::ActorWrite)
-                    .width(90)
-                    .into()
-            } else {
-                design::button(entry.display.as_str())
-                    .on_press_maybe(editable.then_some(Message::ActorEdit(
-                        actor.id,
-                        actor.address,
-                        field,
-                        entry.bits,
-                    )))
-                    .width(90)
-                    .into()
-            };
-            rows = rows.push(
+        .spacing(8)
+        .align_y(iced::Center);
+        if actor.local {
+            head = head.push(badge(BadgeKind::Enabled, "Local"));
+        }
+        let header = row![
+            design::button(head)
+                .style(design::text_button)
+                .padding([4, 6])
+                .on_press(Message::DeveloperToggleActor(actor.id)),
+            design::mono(format!("ID 0x{:X}", actor.id)),
+            crate::ui_kit::copy_button(
+                &state.ui,
+                &format!("actor-id-{}-{}", actor.id, actor.address),
+                format!("0x{:X}", actor.id),
+            ),
+            iced::widget::space().width(Fill),
+            design::caption(format!("Actor 0x{:X}", actor.address)),
+        ]
+        .spacing(8)
+        .align_y(iced::Center);
+        let mut table = column![header].spacing(2);
+        if !collapsed {
+            table = table.push(
                 row![
-                    text(format!(
-                        "{}  +0x{:X}  ({})",
-                        field.title(),
-                        field.offset(),
-                        field.kind()
-                    ))
-                    .size(design::LABEL)
-                    .width(Fill),
-                    value_cell,
-                    iced::widget::checkbox(frozen.is_some())
-                        .label("Freeze")
-                        .on_toggle(move |checked| Message::ActorFreeze(
+                    design::caption("Field").width(Length::FillPortion(4)),
+                    design::caption("Offset").width(Length::FillPortion(2)),
+                    design::caption("Type").width(Length::FillPortion(2)),
+                    design::caption("Value").width(Length::Fixed(110.0)),
+                    design::caption("Freeze").width(Length::Fixed(52.0)),
+                ]
+                .spacing(8)
+                .padding([4, 6]),
+            );
+            for entry in &actor.fields {
+                let field = entry.field;
+                if !query.is_empty() && !field.title().to_ascii_lowercase().contains(&query) {
+                    continue;
+                }
+                let selected = state.actor_edit.is_some_and(|(id, addr, f, _)| {
+                    id == actor.id && addr == actor.address && f == field
+                });
+                let frozen = state
+                    .actor_frozen
+                    .contains_key(&(actor.id, actor.address, field));
+                let value_cell: Element<'_, Message> = if selected {
+                    design::text_input("Value", &state.actor_edit_value)
+                        .on_input(Message::ActorEditValue)
+                        .on_submit(Message::ActorWrite)
+                        .width(Length::Fixed(110.0))
+                        .into()
+                } else {
+                    dev_action(
+                        entry.display.as_str(),
+                        editable.then_some(Message::ActorEdit(
                             actor.id,
                             actor.address,
                             field,
-                            checked
+                            entry.bits,
                         )),
-                ]
-                .align_y(iced::Alignment::Center)
-                .spacing(8),
-            );
+                        "Reading actors…",
+                    )
+                };
+                let pin = design::tooltip(
+                    iced::widget::button(crate::icons::glyph(crate::icons::pin(), 15.0))
+                        .padding(5)
+                        .style(if frozen {
+                            design::primary
+                        } else {
+                            design::text_button
+                        })
+                        .on_press(Message::ActorFreeze(
+                            actor.id,
+                            actor.address,
+                            field,
+                            !frozen,
+                        )),
+                    if frozen {
+                        "Unfreeze"
+                    } else {
+                        "Freeze the current value"
+                    },
+                    None,
+                    iced::widget::tooltip::Position::Left,
+                );
+                table = table.push(
+                    container(
+                        row![
+                            text(field.title())
+                                .size(design::LABEL)
+                                .width(Length::FillPortion(4)),
+                            design::mono(format!("+0x{:X}", field.offset()))
+                                .width(Length::FillPortion(2)),
+                            design::caption(field.kind().to_string()).width(Length::FillPortion(2)),
+                            container(value_cell).width(Length::Fixed(110.0)),
+                            container(pin).width(Length::Fixed(52.0)),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Center),
+                    )
+                    .padding([2, 6])
+                    .style(move |theme: &iced::Theme| container::Style {
+                        background: frozen.then(|| Background::Color(design::selection(theme))),
+                        ..container::Style::default()
+                    }),
+                );
+            }
         }
-        list = list.push(surface(rows.padding(10)));
+        list = list.push(surface(table).padding(10));
     }
-    list.into()
+    list.push(muted_line(
+        "Click a value to edit it · Enter writes · the pin holds the current value",
+    ))
+    .into()
 }
 
 fn match_perk_rows(state: &State) -> Element<'_, Message> {
+    use crate::ui_kit::{BadgeKind, badge};
     let mut rows = column![
-        text("Current match · character perks").size(19),
-        text(if state.match_perks_status.is_empty() {
-            "Refresh all actors to verify the round-start log against live perk entities."
+        design::heading("Current match · character perks"),
+        muted_line(if state.match_perks_status.is_empty() {
+            "Refresh actors to verify the round-start log against live perk entities."
         } else {
             state.match_perks_status.as_str()
-        })
-        .size(design::LABEL)
-        .style(design::muted),
+        }),
     ]
-    .spacing(7);
+    .spacing(8);
     if let Some(listing) = &state.match_perks {
+        let mut grid = row![].spacing(8);
         for player in &listing.players {
-            let actor = match player.actor_id {
-                Some(id) => format!(
-                    " · Actor ID 0x{id:X}{}",
-                    if player.local { " (Local)" } else { "" }
-                ),
-                None => " · Actor not identified".to_owned(),
-            };
-            let perks = if player.perks.is_empty() {
-                "No selected perks".to_owned()
-            } else {
-                player.perks.join(" · ")
-            };
-            rows = rows.push(surface(
-                column![
-                    text(format!(
-                        "{} · {} ({}){actor}",
-                        player.class, player.display, player.character
-                    ))
-                    .size(design::BODY),
-                    text(format!("{}: {perks}", player.slot))
-                        .size(design::LABEL)
-                        .style(design::muted),
-                ]
-                .spacing(4)
-                .padding(8),
-            ));
+            let mut tags = row![badge(BadgeKind::Neutral, player.class.as_str())].spacing(5);
+            match player.actor_id {
+                Some(id) => {
+                    if player.local {
+                        tags = tags.push(badge(BadgeKind::Enabled, "Local"));
+                    }
+                    tags = tags.push(design::mono(format!("0x{id:X}")));
+                }
+                None => tags = tags.push(badge(BadgeKind::Conflict, "Actor not identified")),
+            }
+            let mut perks = row![].spacing(5);
+            if player.perks.is_empty() {
+                perks = perks.push(design::caption("No selected perks"));
+            }
+            for perk in &player.perks {
+                perks = perks.push(badge(BadgeKind::Signed, perk.as_str()));
+            }
+            grid = grid.push(
+                container(
+                    column![
+                        text(player.display.as_str()).size(design::BODY),
+                        design::caption(format!("{} · {}", player.character, player.slot)),
+                        tags.wrap(),
+                        perks.wrap(),
+                    ]
+                    .spacing(6),
+                )
+                .padding(10)
+                .width(Length::Fixed(270.0))
+                .style(|theme: &iced::Theme| container::Style {
+                    background: Some(Background::Color(design::field(theme))),
+                    border: Border {
+                        color: design::border(theme),
+                        width: 1.0,
+                        radius: design::radius(theme, design::Radius::Medium).into(),
+                    },
+                    ..container::Style::default()
+                }),
+            );
         }
+        rows = rows.push(grid.wrap().vertical_spacing(8));
     }
     rows.into()
 }
+
+fn actor_controls(state: &State) -> Element<'_, Message> {
+    use crate::ui_kit::{BadgeKind, badge, switch};
+    let detected = state
+        .runtime_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.pid)
+        .is_some();
+    let process = dev_card(
+        "Process",
+        None,
+        Some(crate::ui_kit::icon_button(
+            crate::icons::refresh(),
+            "Detect Evolve.exe",
+            (!state.runtime_checking).then_some(Message::RuntimeDetect),
+            Some("Detecting…"),
+        )),
+        column![
+            row![badge(
+                if detected {
+                    BadgeKind::Enabled
+                } else {
+                    BadgeKind::Neutral
+                },
+                state
+                    .runtime_snapshot
+                    .as_ref()
+                    .map_or("Not detected", |snapshot| snapshot.status.as_str()),
+            ),],
+            design::caption(
+                state
+                    .runtime_snapshot
+                    .as_ref()
+                    .map_or("Executable not checked", |snapshot| {
+                        snapshot.executable.as_str()
+                    }),
+            ),
+        ]
+        .spacing(6),
+    );
+    let safety = dev_card(
+        "Safety",
+        Some("Offline memory only. Validate fields before editing."),
+        state
+            .live_edit_enabled
+            .then(|| badge(BadgeKind::Conflict, "Writes armed")),
+        column![
+            switch(
+                &state.ui,
+                "dev-armor-scan",
+                "Guided armor scanning",
+                state.armor_offline_confirmed,
+                Message::ArmorOfflineChanged(!state.armor_offline_confirmed),
+            ),
+            design::caption("Optional. Scans for armor values step by step."),
+            switch(
+                &state.ui,
+                "dev-live-edit",
+                "Actor memory writes and Freeze",
+                state.live_edit_enabled,
+                Message::LiveEditEnabled(!state.live_edit_enabled),
+            ),
+            design::caption("Experimental. Needed for editing values, teleporting and holds."),
+        ]
+        .spacing(6),
+    );
+    let refresh_reason = if state.actor_busy {
+        "Reading actors…"
+    } else {
+        "Detect Evolve.exe first"
+    };
+    column![
+        process,
+        safety,
+        row![
+            dev_action(
+                if state.actor_busy {
+                    "Reading actors and perks…"
+                } else {
+                    "Refresh actors and match perks"
+                },
+                (!state.actor_busy && detected).then_some(Message::ActorRefresh),
+                refresh_reason,
+            ),
+            muted_line(state.actor_status.as_str()),
+        ]
+        .spacing(10)
+        .align_y(iced::Center),
+        match_perk_rows(state),
+        research_rows(state),
+        actor_rows(state),
+    ]
+    .spacing(12)
+    .into()
+}
+
+// --- Keybinds ---------------------------------------------------------------
 
 fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
     let assigned = state
@@ -1998,45 +2411,52 @@ fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
         .filter(|&&k| k != 0)
         .count();
     let mut rows = column![
-        text("Keybind assignments").size(17),
-        text(format!("{assigned}/10 shortcuts assigned. Shortcuts require the overlay and enabled actor writes for movement."))
-            .size(design::LABEL)
-            .style(design::muted),
-        crate::ui_kit::hold_button(
-            &state.ui,
-            "developer-keybind-defaults",
-            "Hold: reset to defaults (F6–F12, Ctrl+F6/F7/F8)",
-            Message::DeveloperKeybindDefaults,
-            true,
-            state.preferences.reduce_motion,
-        ),
-        text(if assigned == 0 {
-            "No shortcuts assigned yet. Click the button above or select keys below."
-        } else {
-            "Custom bindings are preserved unless you select Load suggested shortcuts."
-        })
-            .size(design::LABEL)
-            .style(design::muted),
+        row![
+            design::caption(format!("{assigned} / 10 shortcuts assigned"))
+                .width(Length::Fixed(200.0)),
+            iced::widget::progress_bar(0.0..=10.0, assigned as f32).girth(6),
+        ]
+        .spacing(10)
+        .align_y(iced::Center),
+        muted_line("Shortcuts need the external overlay, and actor memory writes for movement."),
+        row![
+            crate::ui_kit::hold_button(
+                &state.ui,
+                "developer-keybind-defaults",
+                "Hold: reset to defaults (F6–F12, Ctrl+F6/F7/F8)",
+                Message::DeveloperKeybindDefaults,
+                true,
+                state.preferences.reduce_motion,
+            ),
+            muted_line("Click a key to change it · Esc cancels · Backspace clears"),
+        ]
+        .spacing(10)
+        .align_y(iced::Center),
     ]
-    .spacing(7);
+    .spacing(8);
     let conflicts = keybind_conflicts(&state.preferences.developer_hotkeys);
     for action in developer_hotkeys::Action::ALL {
         let current =
             developer_hotkeys::Keybind(state.preferences.developer_hotkeys[action.index()]);
-        let caps: Element<'_, Message> = if current.0 == 0 {
-            design::caption("Disabled").into()
+        let capturing = state.developer_capture == Some(action);
+        let cap: Element<'_, Message> = if capturing {
+            design::button(text("Press a key…").size(design::LABEL))
+                .style(design::primary)
+                .on_press(Message::DeveloperCaptureKey(None))
+                .into()
         } else {
-            design::key_hint(&current.to_string())
+            design::button(if current.0 == 0 {
+                Element::from(design::caption("Not set"))
+            } else {
+                design::key_hint(&current.to_string())
+            })
+            .style(design::text_button)
+            .on_press(Message::DeveloperCaptureKey(Some(action)))
+            .into()
         };
         let mut line = row![
-            text(action.label()).width(Length::Fixed(185.0)),
-            container(caps).width(Length::Fixed(120.0)),
-            iced::widget::pick_list(
-                developer_hotkeys::Keybind::OPTIONS,
-                Some(current),
-                move |key| Message::DeveloperKeybindChanged(action, key),
-            )
-            .width(Length::Fixed(145.0)),
+            text(action.label()).width(Length::Fixed(200.0)),
+            container(cap).width(Length::Fixed(150.0)),
         ]
         .align_y(iced::Alignment::Center)
         .spacing(8);
@@ -2048,445 +2468,695 @@ fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
         }
         rows = rows.push(line);
     }
-    rows = rows.push(
-        text(state.developer_hotkey_status.as_str())
-            .size(design::LABEL)
-            .style(design::muted),
-    );
+    if !state.developer_hotkey_status.is_empty() {
+        rows = rows.push(muted_line(state.developer_hotkey_status.as_str()));
+    }
     rows.into()
 }
 
+// --- AI Controls ------------------------------------------------------------
+
 fn ai_pause_controls(state: &State) -> Element<'_, Message> {
+    use crate::ui_kit::{BadgeKind, badge};
+    let detected = state
+        .runtime_snapshot
+        .as_ref()
+        .and_then(|s| s.pid)
+        .is_some();
     let ready = state.developer_unlocked
         && state.live_edit_enabled
         && !state.developer_online_mods
         && !state.ai_pause_busy
-        && state
-            .runtime_snapshot
-            .as_ref()
-            .and_then(|s| s.pid)
-            .is_some();
+        && detected;
     let can_pause = ready
         && !state.ai_pause_owned
         && state.ai_pause_probe.is_some_and(|probe| probe.value == 0);
     let can_resume = ready && state.ai_pause_owned;
-
-    surface(
-        column![
-            text("Global AI pause").size(19),
-            text("Experimental · For isolated testing · ai_NoUpdate Int32")
-                .size(design::LABEL).style(design::muted),
-            text("Enter a separately verified CVar VALUE address. A readable 0/1 alone does not prove the address is ai_NoUpdate. No automatic detection yet.")
-                .size(design::LABEL).style(design::muted),
-            row![
-                design::text_input("0x... or Evolve.exe+0x...", &state.ai_pause_address)
-                    .on_input(Message::AiAddressChanged),
-                design::button("Read Int32").on_press_maybe(
-                    (state.developer_unlocked && !state.developer_online_mods
-                        && !state.ai_pause_busy && !state.ai_pause_owned)
-                        .then_some(Message::AiInspect)
-                ),
-            ].spacing(8),
-            row![
-                design::button("Pause all AI").on_press_maybe(
-                    can_pause.then_some(Message::AiChange(true))
-                ),
-                design::button("Resume AI").on_press_maybe(
-                    can_resume.then_some(Message::AiChange(false))
-                ),
-                design::button("Clear ended session").on_press_maybe(
-                    (!state.ai_pause_busy && state.ai_pause_probe.is_some())
-                        .then_some(Message::AiForget)
-                ),
-            ].spacing(8),
-            text(if state.ai_pause_busy {
-                "Reading or writing AI update flag..."
-            } else if state.ai_pause_status.is_empty() {
-                "Read an externally verified address to enable pause; original 0 is restored on Resume."
-            } else {
-                state.ai_pause_status.as_str()
-            }).size(design::LABEL).style(design::muted),
-        ].spacing(8).padding(10),
-    ).into()
+    let reason = if state.developer_online_mods {
+        "Turn off modded online testing first"
+    } else if !detected {
+        "Evolve.exe not detected"
+    } else if !state.live_edit_enabled {
+        "Enable actor memory writes on Actors & Memory first"
+    } else if state.ai_pause_busy {
+        "Reading or writing the AI flag…"
+    } else {
+        "Read a verified address first"
+    };
+    let address = state.ai_pause_address.trim();
+    let invalid = !address.is_empty() && !ai_address_valid(address);
+    let can_read = state.developer_unlocked
+        && !state.developer_online_mods
+        && !state.ai_pause_busy
+        && !state.ai_pause_owned
+        && !address.is_empty()
+        && !invalid;
+    let field = design::text_input("0x… or Evolve.exe+0x…", &state.ai_pause_address)
+        .on_input(Message::AiAddressChanged)
+        .style(move |theme: &iced::Theme, status| {
+            let mut style = iced::widget::text_input::default(theme, status);
+            style.background = Background::Color(design::field(theme));
+            if invalid {
+                style.border.color = theme.palette().danger;
+                style.border.width = 1.0;
+            }
+            style
+        });
+    let mut address_block = column![
+        row![
+            field,
+            dev_action(
+                "Read Int32",
+                can_read.then_some(Message::AiInspect),
+                if invalid || address.is_empty() {
+                    "Enter a valid address first"
+                } else {
+                    reason
+                },
+            ),
+        ]
+        .spacing(8)
+        .align_y(iced::Center)
+    ]
+    .spacing(4);
+    if invalid {
+        address_block = address_block.push(
+            text("Expected 0x… or Evolve.exe+0x…")
+                .size(design::CAPTION)
+                .style(|theme: &iced::Theme| text::Style {
+                    color: Some(theme.palette().danger),
+                }),
+        );
+    }
+    let pill = state.ai_pause_probe.map(|probe| {
+        if probe.value == 0 {
+            badge(BadgeKind::Enabled, "Value 0 · Running")
+        } else {
+            badge(
+                BadgeKind::Conflict,
+                format!("Value {} · Paused", probe.value),
+            )
+        }
+    });
+    let toggle = if state.ai_pause_owned {
+        crate::ui_kit::why_disabled(
+            design::button(text("Resume AI").size(15))
+                .padding([10, 22])
+                .style(design::primary)
+                .on_press_maybe(can_resume.then_some(Message::AiChange(false))),
+            !can_resume,
+            reason,
+        )
+    } else {
+        crate::ui_kit::why_disabled(
+            design::button(text("Pause all AI").size(15))
+                .padding([10, 22])
+                .style(design::primary)
+                .on_press_maybe(can_pause.then_some(Message::AiChange(true))),
+            !can_pause,
+            reason,
+        )
+    };
+    column![
+        crate::ui_kit::callout(
+            design::Tone::Warning,
+            "Experimental, for isolated testing (ai_NoUpdate, Int32). Enter a separately verified CVar value address: a readable 0 or 1 alone does not prove it is ai_NoUpdate. The original 0 is restored on Resume.",
+        ),
+        dev_card(
+            "Global AI pause",
+            None,
+            pill,
+            column![
+                address_block,
+                row![
+                    toggle,
+                    iced::widget::space().width(Fill),
+                    crate::ui_kit::icon_button(
+                        crate::icons::discard(),
+                        "Clear ended session",
+                        (!state.ai_pause_busy && state.ai_pause_probe.is_some())
+                            .then_some(Message::AiForget),
+                        Some("Nothing to clear"),
+                    ),
+                ]
+                .align_y(iced::Center),
+                muted_line(if state.ai_pause_busy {
+                    "Reading or writing the AI update flag…"
+                } else if state.ai_pause_status.is_empty() {
+                    "Read an externally verified address to enable pause."
+                } else {
+                    state.ai_pause_status.as_str()
+                }),
+            ]
+            .spacing(10),
+        ),
+    ]
+    .spacing(12)
+    .into()
 }
 
+// --- Teleport & Fly -----------------------------------------------------------
+
 fn teleport_controls(state: &State) -> Element<'_, Message> {
-    // Guided armor scanning is unrelated to teleporting. Process detection
-    // happens automatically on the first action if no snapshot is available.
+    use runtime_teleport::{HoldMode, MovementFrame};
     let can_read = state.developer_unlocked
         && !state.teleport_busy
         && !state.teleport_detect_pending
         && state.teleport_hold_cancel.is_none();
     let enabled = can_read && state.live_edit_enabled;
+    let reason = teleport_reason(state);
+    // Reading never needs armed writes, so it skips that last reason.
+    let read_reason = if can_read { "" } else { reason };
 
-    column![
-            text("Teleport").size(19),
-            text("Teleport & freeze · read position without arming writes; enable actor memory writes to move")
-                .size(design::LABEL)
-                .style(design::muted),
-            text(if state.teleport_detect_pending {
-                "Detecting Evolve.exe before the requested action..."
-            } else if state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_none() {
-                "Running Evolve.exe will be detected automatically on the first teleport action."
-            } else {
-                "Evolve.exe detected · action status and errors appear below."
-            })
-            .size(design::LABEL)
-            .style(design::muted),
-            {
-                const TELEPORT: crate::forms::NumberSpec =
-                    crate::forms::NumberSpec::new(-100_000.0, 100_000.0, 1.0, 2);
-                let axis = |label: &'static str, index: usize, value: &str| {
-                    column![
-                        text(label).size(design::CAPTION).style(design::muted),
-                        crate::forms::number_field(
-                            &state.forms,
-                            state.keyboard_modifiers,
-                            format!("teleport.{index}"),
-                            value,
-                            TELEPORT,
-                            move |v| Message::TeleportXYZChanged(index, v),
-                        ),
-                    ]
-                    .spacing(3)
-                    .width(Fill)
-                };
+    // Status: one island for every teleport message.
+    let working = state.teleport_busy
+        || state.teleport_detect_pending
+        || state.teleport_aim_preview_busy
+        || state.teleport_hold_releasing;
+    let status = if state.teleport_detect_pending {
+        "Detecting Evolve.exe before the requested action…".to_owned()
+    } else if state.teleport_busy {
+        "Teleport operation running…".to_owned()
+    } else if !state.teleport_hold_status.is_empty() && state.teleport_hold_mode.is_some() {
+        state.teleport_hold_status.clone()
+    } else if !state.teleport_status.is_empty() {
+        state.teleport_status.clone()
+    } else if state
+        .runtime_snapshot
+        .as_ref()
+        .and_then(|s| s.pid)
+        .is_none()
+    {
+        "Evolve.exe is detected automatically on the first action".to_owned()
+    } else {
+        "Ready".to_owned()
+    };
+    let island = crate::ui_kit::status_island(status, None, state.loading_wheel_frame, working);
+
+    const TELEPORT: crate::forms::NumberSpec =
+        crate::forms::NumberSpec::new(-100_000.0, 100_000.0, 1.0, 2);
+    let axis = |label: &'static str, index: usize, value: &str| {
+        column![
+            design::caption(label),
+            crate::forms::number_field(
+                &state.forms,
+                state.keyboard_modifiers,
+                format!("teleport.{index}"),
+                value,
+                TELEPORT,
+                move |v| Message::TeleportXYZChanged(index, v),
+            ),
+        ]
+        .spacing(3)
+        .width(Fill)
+    };
+    let position = dev_card(
+        "Position",
+        Some("Reading needs no armed writes. Teleporting needs actor memory writes."),
+        None,
+        column![
+            row![
+                axis("X", 0, &state.teleport_x),
+                axis("Y", 1, &state.teleport_y),
+                axis("Z", 2, &state.teleport_z),
+            ]
+            .spacing(8),
+            row![
+                dev_action(
+                    "Read position",
+                    can_read.then_some(Message::TeleportCapture(false)),
+                    read_reason,
+                ),
+                dev_action(
+                    "Save position",
+                    can_read.then_some(Message::TeleportCapture(true)),
+                    read_reason,
+                ),
+                dev_action(
+                    "Teleport XYZ",
+                    enabled.then_some(Message::TeleportAbsolute),
+                    reason,
+                ),
+                dev_action(
+                    "Return to saved",
+                    (enabled && state.teleport_saved.is_some())
+                        .then_some(Message::TeleportReturnSaved),
+                    if reason.is_empty() {
+                        "Save a position first"
+                    } else {
+                        reason
+                    },
+                ),
+            ]
+            .spacing(8),
+        ]
+        .spacing(10),
+    );
+
+    let mut slots = column![].spacing(4);
+    if state.preferences.teleport_slots.is_empty() {
+        slots = slots.push(design::caption(
+            "No saved positions. Enter or read X, Y and Z, then add them here.",
+        ));
+    }
+    for (index, slot) in state.preferences.teleport_slots.iter().enumerate() {
+        let coords = format!("{:.2}, {:.2}, {:.2}", slot.x, slot.y, slot.z);
+        slots = slots.push(
+            row![
+                text(slot.name.as_str())
+                    .size(design::BODY)
+                    .width(Length::Fixed(140.0)),
+                design::mono(coords.clone()).width(Fill),
+                crate::ui_kit::copy_button(&state.ui, &format!("teleport-slot-{index}"), coords),
+                crate::ui_kit::icon_button(
+                    crate::icons::teleport(),
+                    "Teleport here",
+                    enabled.then_some(Message::TeleportSlotGo(index)),
+                    (!reason.is_empty()).then_some(reason),
+                ),
+                crate::ui_kit::icon_button(
+                    crate::icons::discard(),
+                    "Delete position",
+                    Some(Message::TeleportSlotDelete(index)),
+                    None,
+                ),
+            ]
+            .spacing(6)
+            .align_y(iced::Center),
+        );
+    }
+    let saved = dev_card(
+        "Saved positions",
+        Some("Kept between sessions, up to 32."),
+        Some(crate::ui_kit::icon_button(
+            crate::icons::plus(),
+            "Save the X, Y and Z fields",
+            Some(Message::TeleportSlotSave),
+            None,
+        )),
+        slots,
+    );
+
+    let holding = state.teleport_hold_cancel.is_some();
+    let mode_index = match state.teleport_hold_mode {
+        None => 0,
+        Some(HoldMode::Z) => 1,
+        Some(HoldMode::Xyz) => 2,
+        Some(HoldMode::Fly) => 3,
+    };
+    let modes = crate::ui_kit::segmented(
+        &state.ui,
+        "teleport-hold-mode",
+        vec![
+            ("Off", Message::TeleportHoldRelease),
+            ("Hover (Z)", Message::TeleportHold(HoldMode::Z)),
+            ("Lock XYZ", Message::TeleportHold(HoldMode::Xyz)),
+            ("Fly", Message::TeleportHold(HoldMode::Fly)),
+        ],
+        mode_index,
+        (enabled || holding) && !state.teleport_hold_releasing,
+    );
+    let frame = crate::ui_kit::why_disabled(
+        crate::ui_kit::segmented(
+            &state.ui,
+            "teleport-frame",
+            vec![
+                (
+                    "Actor-facing",
+                    Message::TeleportMovementFrameChanged(MovementFrame::Actor),
+                ),
+                (
+                    "Camera-facing",
+                    Message::TeleportMovementFrameChanged(MovementFrame::Camera),
+                ),
+            ],
+            usize::from(state.teleport_movement_frame == MovementFrame::Camera),
+            can_read,
+        ),
+        !can_read,
+        if holding {
+            "Stop the hold to change the reference"
+        } else {
+            read_reason
+        },
+    );
+    let speed_value = state
+        .teleport_fly_speed
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite())
+        .unwrap_or(8.0)
+        .clamp(1.0, 40.0);
+    let mut hold_head = row![].spacing(6).align_y(iced::Center);
+    if holding {
+        hold_head = hold_head.push(design::indicator_dot(
+            None,
+            crate::ui_kit::pulse(
+                state.ui.clock(std::time::Instant::now()),
+                state.preferences.reduce_motion,
+            ),
+        ));
+        hold_head = hold_head.push(design::caption(match state.teleport_hold_mode {
+            Some(HoldMode::Z) => "Hovering",
+            Some(HoldMode::Xyz) => "Locked",
+            Some(HoldMode::Fly) => "Flying",
+            None => "Releasing",
+        }));
+    }
+    let hold = dev_card(
+        "Hold & Fly",
+        Some(
+            "Hover (Z) moves X/Y with WASD. Fly adds Space and Ctrl for height and follows camera yaw. Lock XYZ holds every axis. Holds write position, not gravity or velocity; if the game overrides movement, the hold stops and says why.",
+        ),
+        Some(hold_head.into()),
+        column![
+            modes,
+            row![design::caption("WASD reference"), frame]
+                .spacing(10)
+                .align_y(iced::Center),
+            row![
+                design::caption("Speed").width(Length::Fixed(60.0)),
+                iced::widget::slider(1.0..=40.0, speed_value, |v| {
+                    Message::TeleportFlySpeedChanged(format!("{v:.0}"))
+                })
+                .step(1.0_f32)
+                .width(Fill),
+                container(crate::forms::number_field(
+                    &state.forms,
+                    state.keyboard_modifiers,
+                    "teleport.speed",
+                    &state.teleport_fly_speed,
+                    crate::forms::NumberSpec::new(1.0, 40.0, 1.0, 0),
+                    Message::TeleportFlySpeedChanged,
+                ))
+                .width(Length::Fixed(110.0)),
+                design::caption("units/s"),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+        ]
+        .spacing(10),
+    );
+
+    let step = state
+        .teleport_nudge_step
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite())
+        .unwrap_or(20.0)
+        .clamp(0.1, 1000.0);
+    let nudge = |icon, label: &'static str, dx: f32, dy: f32, dz: f32| {
+        crate::ui_kit::icon_button(
+            icon,
+            label,
+            enabled.then_some(Message::TeleportRelative(dx * step, dy * step, dz * step)),
+            (!reason.is_empty()).then_some(reason),
+        )
+    };
+    let blank = || iced::widget::space().width(30).height(30);
+    let pad = column![
+        row![
+            blank(),
+            nudge(crate::icons::chevron_up(), "+Y", 0.0, 1.0, 0.0),
+            blank()
+        ]
+        .spacing(4),
+        row![
+            nudge(crate::icons::chevron_left(), "−X", -1.0, 0.0, 0.0),
+            container(crate::forms::number_field(
+                &state.forms,
+                state.keyboard_modifiers,
+                "teleport.nudge",
+                &state.teleport_nudge_step,
+                crate::forms::NumberSpec::new(0.1, 1000.0, 1.0, 1),
+                Message::TeleportNudgeStep,
+            ))
+            .width(Length::Fixed(100.0)),
+            nudge(crate::icons::chevron(), "+X", 1.0, 0.0, 0.0),
+        ]
+        .spacing(4)
+        .align_y(iced::Center),
+        row![
+            blank(),
+            nudge(crate::icons::chevron_down(), "−Y", 0.0, -1.0, 0.0),
+            blank()
+        ]
+        .spacing(4),
+    ]
+    .spacing(4)
+    .align_x(iced::Center);
+    let vertical = column![
+        nudge(crate::icons::chevron_up(), "+Z (up)", 0.0, 0.0, 1.0),
+        design::caption("Z"),
+        nudge(crate::icons::chevron_down(), "−Z (down)", 0.0, 0.0, -1.0),
+    ]
+    .spacing(4)
+    .align_x(iced::Center);
+    let nudge_card = dev_card(
+        "Nudge",
+        Some("Moves along world axes by the step in the middle."),
+        None,
+        row![pad, vertical].spacing(28).align_y(iced::Center),
+    );
+
+    let mut aim = column![
+        row![
+            design::caption("Distance").width(Length::Fixed(60.0)),
+            container(crate::forms::number_field(
+                &state.forms,
+                state.keyboard_modifiers,
+                "teleport.aim",
+                &state.teleport_aim_distance,
+                crate::forms::NumberSpec::new(1.0, 500.0, 1.0, 0),
+                Message::TeleportAimDistanceChanged,
+            ))
+            .width(Length::Fixed(120.0)),
+            dev_action(
+                "Preview coordinates",
+                (can_read && !state.teleport_aim_preview_busy)
+                    .then_some(Message::TeleportPreviewAim),
+                if state.teleport_aim_preview_busy {
+                    "Preview running…"
+                } else {
+                    read_reason
+                },
+            ),
+            dev_action(
+                "Teleport to crosshair",
+                enabled.then_some(Message::TeleportAim),
+                reason,
+            ),
+        ]
+        .spacing(8)
+        .align_y(iced::Center)
+    ]
+    .spacing(8);
+    if let Some(target) = state.teleport_aim_result {
+        let coords = format!("{:.2}, {:.2}, {:.2}", target.x, target.y, target.z);
+        aim = aim.push(
+            container(
                 row![
-                    axis("X", 0, &state.teleport_x),
-                    axis("Y", 1, &state.teleport_y),
-                    axis("Z", 2, &state.teleport_z),
+                    design::caption("Target"),
+                    design::mono(coords.clone()).width(Fill),
+                    crate::ui_kit::copy_button(&state.ui, "teleport-aim", coords),
+                    design::button(text("Use as target").size(design::LABEL))
+                        .style(design::secondary)
+                        .on_press(Message::TeleportUseAim),
                 ]
                 .spacing(8)
-            },
-            row![
-                design::button("Read position")
-                    .on_press_maybe(can_read.then_some(Message::TeleportCapture(false))),
-                design::button("Save position")
-                    .on_press_maybe(can_read.then_some(Message::TeleportCapture(true))),
-                design::button("Teleport XYZ")
-                    .on_press_maybe(enabled.then_some(Message::TeleportAbsolute)),
-                design::button("Return to saved").on_press_maybe(
-                    (enabled && state.teleport_saved.is_some())
-                        .then_some(Message::TeleportReturnSaved)
-                ),
-            ]
-            .spacing(8),
-            text(if state.teleport_busy {
-                "Teleport operation running..."
-            } else if state.teleport_status.is_empty() {
-                "Position and teleport errors appear here."
-            } else {
-                state.teleport_status.as_str()
-            })
-            .size(design::LABEL)
-            .style(design::muted),
-            text("Coordinate freeze · hover and move horizontally in the air").size(17),
-            row![
-                design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Z) {
-                    "Holding Z"
-                } else {
-                    "Freeze Z (hover)"
-                })
-                .on_press_maybe(enabled.then_some(Message::TeleportHold(runtime_teleport::HoldMode::Z))),
-                design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Xyz) {
-                    "Holding XYZ"
-                } else {
-                    "Freeze XYZ"
-                })
-                .on_press_maybe(enabled.then_some(Message::TeleportHold(runtime_teleport::HoldMode::Xyz))),
-                design::button(if state.teleport_hold_releasing {
-                    "Releasing..."
-                } else {
-                    "Stop hold / Fly"
-                })
-                .on_press_maybe(
-                    (state.teleport_hold_cancel.is_some() && !state.teleport_hold_releasing)
-                        .then_some(Message::TeleportHoldRelease)
-                ),
-            ]
-            .spacing(8),
-            text("Fly Mode / Freeze Z · choose WASD reference before starting")
-                .size(design::HEADING),
-            row![
-                design::button(if state.teleport_movement_frame
-                    == runtime_teleport::MovementFrame::Actor
-                {
-                    "Actor-facing ✓"
-                } else {
-                    "Actor-facing"
-                })
-                .on_press_maybe(
-                    can_read.then_some(Message::TeleportMovementFrameChanged(
-                        runtime_teleport::MovementFrame::Actor,
-                    ))
-                ),
-                design::button(if state.teleport_movement_frame
-                    == runtime_teleport::MovementFrame::Camera
-                {
-                    "Camera-facing ✓"
-                } else {
-                    "Camera-facing"
-                })
-                .on_press_maybe(
-                    can_read.then_some(Message::TeleportMovementFrameChanged(
-                        runtime_teleport::MovementFrame::Camera,
-                    ))
-                ),
-            ]
-            .spacing(8),
-            text("Freeze Z: choose Actor-facing or Camera-facing WASD before starting. Fly Mode always moves relative to camera yaw and attempts to turn the actor horizontally with the camera; looking up/down does not tilt the actor. Stop the hold to change Freeze Z's reference.")
-                .size(design::LABEL)
-                .style(design::muted),
-            row![
-                text("Speed").width(Length::Fixed(65.0)),
-                design::text_input("8", &state.teleport_fly_speed)
-                    .on_input(Message::TeleportFlySpeedChanged)
-                    .width(Length::Fixed(95.0)),
-                text("hover / fly units per second (1–40)").size(design::LABEL).style(design::muted),
-                design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Fly) {
-                    "Flying..."
-                } else {
-                    "Enable Fly Mode"
-                })
-                    .on_press_maybe(enabled.then_some(
-                        Message::TeleportHold(runtime_teleport::HoldMode::Fly)
-                    )),
-            ]
-            .align_y(iced::Alignment::Center)
-            .spacing(8),
-            text(if state.teleport_hold_status.is_empty() {
-                "Freeze Z actively moves X/Y with WASD (no ground movement needed). Fly Mode adds Space/Ctrl for vertical movement. Freeze XYZ locks all axes."
-            } else {
-                state.teleport_hold_status.as_str()
-            })
-            .size(design::LABEL)
-            .style(design::muted),
-            text("Position-based hover/flight writes XYZ, not gravity or velocity. If the game overrides movement, the hold stops and reports the problem.")
-                .size(design::LABEL)
-                .style(design::muted),
-            text("Relative move · 20 units per click (world axes)")
-                .size(design::LABEL)
-                .style(design::muted),
-            row![
-                text("X").width(Length::Fixed(24.0)),
-                design::button("−20 X")
-                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(-20.0, 0.0, 0.0))),
-                design::button("+20 X")
-                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(20.0, 0.0, 0.0))),
-            ]
-            .align_y(iced::Alignment::Center)
-            .spacing(8),
-            row![
-                text("Y").width(Length::Fixed(24.0)),
-                design::button("−20 Y")
-                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, -20.0, 0.0))),
-                design::button("+20 Y")
-                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 20.0, 0.0))),
-            ]
-            .align_y(iced::Alignment::Center)
-            .spacing(8),
-            row![
-                text("Z").width(Length::Fixed(24.0)),
-                design::button("−20 Z")
-                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, -20.0))),
-                design::button("+20 Z")
-                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, 20.0))),
-            ]
-            .align_y(iced::Alignment::Center)
-            .spacing(8),
-            text("Approximate crosshair teleport").size(17),
-            text("Uses live camera direction from the player's position; no camera-origin raycast or collision test.")
-                .size(design::LABEL)
-                .style(design::muted),
-            row![
-                text("Distance").width(Length::Fixed(65.0)),
-                design::text_input("30", &state.teleport_aim_distance)
-                    .on_input(Message::TeleportAimDistanceChanged)
-                    .width(Length::Fixed(90.0)),
-                design::button("Preview coordinates").on_press_maybe(
-                    (can_read && !state.teleport_aim_preview_busy)
-                        .then_some(Message::TeleportPreviewAim)
-                ),
-                design::button("Teleport to Crosshair")
-                    .on_press_maybe(enabled.then_some(Message::TeleportAim)),
-            ]
-            .align_y(iced::Alignment::Center)
-            .spacing(8),
+                .align_y(iced::Center),
+            )
+            .padding([6, 10])
+            .style(|theme: &iced::Theme| design::tinted(theme, design::Tone::Info)),
+        );
+    }
+    let crosshair = dev_card(
+        "Crosshair",
+        Some(
+            "Approximate: uses the live camera direction from the player's position. No raycast or collision test.",
+        ),
+        None,
+        aim,
+    );
 
-        ]
-        .spacing(9)
+    column![island, position, saved, hold, nudge_card, crosshair]
+        .spacing(12)
         .into()
 }
 
+// --- External Overlay -----------------------------------------------------------
+
 fn overlay_controls(state: &State) -> Element<'_, Message> {
-    column![
-            {
-                let on = state.teleport_overlay.is_some() || state.teleport_overlay_pending;
-                crate::ui_kit::switch(
-                    &state.ui,
-                    "dev-overlay",
-                    "Show external overlay and enable shortcuts (windowed fullscreen)",
-                    on,
-                    Message::TeleportOverlayChanged(!on),
-                )
+    use crate::ui_kit::{TimelineItem, switch, timeline};
+    let on = state.teleport_overlay.is_some() || state.teleport_overlay_pending;
+    let detected = state
+        .runtime_snapshot
+        .as_ref()
+        .and_then(|s| s.pid)
+        .is_some();
+    let step =
+        |title: &str, done: bool, waiting: bool, meta_done: &str, meta_wait: &str| TimelineItem {
+            title: title.to_owned(),
+            meta: if done {
+                meta_done.to_owned()
+            } else if waiting {
+                meta_wait.to_owned()
+            } else {
+                "Not yet".to_owned()
             },
-            crate::ui_kit::switch(
-                &state.ui,
-                "dev-hooked-input",
-                "Experimental hooked input (Windows keyboard hook)",
-                state.teleport_overlay_experimental,
-                Message::TeleportOverlayExperimentalChanged(!state.teleport_overlay_experimental),
+            body: None,
+            tone: Some(if done {
+                design::Tone::Success
+            } else if waiting {
+                design::Tone::Warning
+            } else {
+                design::Tone::Info
+            }),
+        };
+    let shortcuts = if state.teleport_overlay_experimental {
+        step(
+            "Keyboard hook installed",
+            state.teleport_hook_ready,
+            state.teleport_overlay.is_some(),
+            "Shortcuts are captured while Evolve has focus",
+            "Starting…",
+        )
+    } else {
+        step(
+            "Shortcuts registered",
+            state.teleport_overlay.is_some(),
+            state.teleport_overlay_pending,
+            "Windows RegisterHotKey",
+            "Waiting for the overlay…",
+        )
+    };
+    let mut body = column![
+        switch(
+            &state.ui,
+            "dev-overlay",
+            "External overlay and shortcuts",
+            on,
+            Message::TeleportOverlayChanged(!on),
+        ),
+        design::caption("Shown only over Evolve while it has focus, in windowed fullscreen. The centre marker is not a raycast hit."),
+        switch(
+            &state.ui,
+            "dev-hooked-input",
+            "Experimental hooked input",
+            state.teleport_overlay_experimental,
+            Message::TeleportOverlayExperimentalChanged(!state.teleport_overlay_experimental),
+        ),
+        design::caption("Captures F6–F12 with a Windows low-level keyboard hook while Evolve is focused. No game injection; exclusive fullscreen and protected input are not guaranteed."),
+        timeline(vec![
+            step(
+                "Game detected",
+                detected,
+                state.teleport_overlay_pending,
+                "Evolve.exe is running",
+                "Detecting…",
             ),
-            text("Experimental mode captures F6–F12 hotkeys using a Windows low-level keyboard hook while Evolve is focused. The visual overlay remains external. No game injection; exclusive fullscreen and protected input are not guaranteed.")
-                .size(design::LABEL)
-                .style(design::muted),
-            text(if state.teleport_overlay_experimental {
-                if state.teleport_hook_ready {
-                    "Experimental hook installed · shortcuts are captured only while Evolve has focus."
-                } else if state.teleport_overlay.is_some() {
-                    "Experimental hook starting · check shortcut status below."
-                } else {
-                    "Experimental mode selected · start the external overlay to enable the hook."
-                }
-            } else {
-                "Standard mode · Windows RegisterHotKey shortcuts."
-            }).size(design::LABEL).style(design::muted),
-            text(if state.teleport_overlay_pending {
-                "Detecting running game..."
-            } else if state.teleport_status.is_empty() {
-                "Overlay preview needs only a running Evolve.exe; teleport shortcuts still require armed memory writes."
-            } else {
-                state.teleport_status.as_str()
-            })
-            .size(design::LABEL)
-            .style(design::muted),
-            text("Overlay appears only over Evolve while the game is in focus. The center marker is not a raycast hit location.")
-                .size(design::LABEL)
-                .style(design::muted),
+            step(
+                "Overlay shown",
+                state.teleport_overlay.is_some(),
+                state.teleport_overlay_pending,
+                "Over the game window",
+                "Starting…",
+            ),
+            shortcuts,
+        ]),
     ]
-    .spacing(9)
-    .into()
+    .spacing(8);
+    if !state.teleport_status.is_empty() {
+        body = body.push(muted_line(state.teleport_status.as_str()));
+    }
+    body.into()
 }
+
+// --- Network & Process -------------------------------------------------------
 
 fn network_controls(state: &State) -> Element<'_, Message> {
+    use crate::ui_kit::{BadgeKind, badge};
+    let online = state.developer_online_mods;
+    let mut firewall = column![crate::ui_kit::switch(
+        &state.ui,
+        "dev-online-mods",
+        "Allow modded online testing",
+        online,
+        Message::DeveloperOnlineMods(!online),
+    )]
+    .spacing(8);
+    if online {
+        firewall = firewall.push(crate::ui_kit::callout(
+            design::Tone::Warning,
+            "Online testing is on. Server acceptance is not guaranteed.",
+        ));
+    }
+    if state.developer_network_busy {
+        firewall = firewall.push(muted_line("Applying network policy…"));
+    } else if !state.developer_network_status.is_empty() {
+        firewall = firewall.push(muted_line(state.developer_network_status.as_str()));
+    }
+    let mut privileges = column![design::caption(
+        "The manager runs at High integrity; the client and game run at Medium."
+    )]
+    .spacing(6);
+    if state.developer_privilege_busy {
+        privileges = privileges.push(muted_line("Reading Windows process tokens…"));
+    }
+    for line in state
+        .developer_privilege_status
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let level = ["System", "High", "Medium", "Low"]
+            .into_iter()
+            .find(|level| line.contains(level));
+        let mut entry = row![design::mono(line).width(Fill)]
+            .spacing(8)
+            .align_y(iced::Center);
+        if let Some(level) = level {
+            entry = entry.push(badge(
+                if level == "High" || level == "System" {
+                    BadgeKind::Conflict
+                } else {
+                    BadgeKind::Neutral
+                },
+                level,
+            ));
+        }
+        privileges = privileges.push(entry);
+    }
     column![
-        text("Developer-only · Firewall policy")
-            .size(design::LABEL)
-            .style(design::muted),
-        crate::ui_kit::switch(
-            &state.ui,
-            "dev-online-mods",
-            "Allow modded online testing",
-            state.developer_online_mods,
-            Message::DeveloperOnlineMods(!state.developer_online_mods),
+        dev_card(
+            "Firewall",
+            Some("Developer-only firewall policy for the game client."),
+            Some(if online {
+                badge(BadgeKind::Conflict, "Online testing")
+            } else {
+                badge(BadgeKind::Signed, "Offline isolated")
+            }),
+            firewall,
         ),
-        text(if state.developer_network_busy {
-            "Applying network policy..."
-        } else if state.developer_online_mods {
-            "Online testing enabled · Server acceptance not guaranteed"
-        } else {
-            "Offline isolation selected"
-        })
-        .size(design::LABEL)
-        .style(design::muted),
-        text(state.developer_network_status.as_str())
-            .size(design::LABEL)
-            .style(design::muted),
-        text("Process privileges").size(17),
-        text("Manager: High · Client/Game: Medium")
-            .size(design::LABEL)
-            .style(design::muted),
-        design::button(if state.developer_privilege_busy {
-            "Inspecting process tokens..."
-        } else {
-            "Inspect Client / Game Privileges"
-        })
-        .on_press_maybe(
-            (!state.developer_privilege_busy).then_some(Message::DeveloperInspectProcessPrivileges)
+        dev_card(
+            "Process privileges",
+            None,
+            Some(crate::ui_kit::icon_button(
+                crate::icons::refresh(),
+                "Inspect client and game privileges",
+                (!state.developer_privilege_busy)
+                    .then_some(Message::DeveloperInspectProcessPrivileges),
+                Some("Inspection running"),
+            )),
+            privileges,
         ),
-        text(state.developer_privilege_status.as_str())
-            .size(design::LABEL)
-            .style(design::muted),
     ]
-    .spacing(8)
+    .spacing(12)
     .into()
 }
 
-fn actor_controls(state: &State) -> Element<'_, Message> {
-    column![
-        text("Offline memory · Validate fields before editing")
-            .size(design::LABEL)
-            .style(design::muted),
-        design::button(if state.runtime_checking {
-            "Detecting..."
-        } else {
-            "Detect Evolve.exe"
-        })
-        .on_press_maybe((!state.runtime_checking).then_some(Message::RuntimeDetect)),
-        text(
-            state
-                .runtime_snapshot
-                .as_ref()
-                .map(|s| s.status.as_str())
-                .unwrap_or("Not detected")
-        )
-        .size(design::LABEL)
-        .style(design::muted),
-        text(
-            state
-                .runtime_snapshot
-                .as_ref()
-                .map(|s| s.executable.as_str())
-                .unwrap_or("Executable not checked")
-        )
-        .size(design::LABEL)
-        .style(design::muted),
-        crate::ui_kit::switch(
-            &state.ui,
-            "dev-armor-scan",
-            "Enable guided armor scanning (optional)",
-            state.armor_offline_confirmed,
-            Message::ArmorOfflineChanged(!state.armor_offline_confirmed),
-        ),
-        crate::ui_kit::switch(
-            &state.ui,
-            "dev-live-edit",
-            "Enable actor memory writes / Freeze (experimental)",
-            state.live_edit_enabled,
-            Message::LiveEditEnabled(!state.live_edit_enabled),
-        ),
-        design::button(if state.actor_busy {
-            "Reading actors and perks..."
-        } else {
-            "Refresh actors and match perks"
-        })
-        .on_press_maybe(
-            (!state.actor_busy
-                && state
-                    .runtime_snapshot
-                    .as_ref()
-                    .and_then(|s| s.pid)
-                    .is_some())
-            .then_some(Message::ActorRefresh)
-        ),
-        text(state.actor_status.as_str())
-            .size(design::LABEL)
-            .style(design::muted),
-        match_perk_rows(state),
-        research_rows(state),
-        actor_rows(state),
-        text("Click a value to edit it · Enter to write · Freeze holds the current value")
-            .size(design::LABEL)
-            .style(design::muted),
-    ]
-    .spacing(9)
-    .into()
-}
-
-/// A collapsed section renders only its header; expensive runtime actor
-/// listings are not rebuilt until their section is opened.
-/// A status dot for a Developer tab: green while something there is active,
-/// red when its last memory read failed.
 fn developer_tab_status(state: &State, section: DeveloperSection) -> Option<design::Tone> {
     let failed = |text: &str| {
         let lower = text.to_ascii_lowercase();
@@ -2498,7 +3168,7 @@ fn developer_tab_status(state: &State, section: DeveloperSection) -> Option<desi
             if failed(&state.actor_status) || failed(&state.runtime_result) {
                 Some(design::Tone::Danger)
             } else {
-                None
+                state.live_edit_enabled.then_some(design::Tone::Warning)
             }
         }
         DeveloperSection::Ai => {
@@ -2588,6 +3258,9 @@ fn developer_header(state: &State) -> Element<'_, Message> {
     } else {
         badge(BadgeKind::Signed, "Online blocked")
     });
+    if state.live_edit_enabled {
+        strip = strip.push(badge(BadgeKind::Conflict, "Writes armed"));
+    }
     strip
         .push(iced::widget::space().width(Fill))
         .push(crate::ui_kit::icon_button(
@@ -2731,7 +3404,18 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
 
 #[cfg(test)]
 mod home_layout_tests {
-    use super::{keybind_conflicts, short_client_version, status_value_preview};
+    use super::{ai_address_valid, keybind_conflicts, short_client_version, status_value_preview};
+
+    #[test]
+    fn ai_address_accepts_absolute_and_module_relative_hex_only() {
+        assert!(ai_address_valid("0x1234ABCD"));
+        assert!(ai_address_valid(" Evolve.exe+0x10 "));
+        assert!(ai_address_valid("evolve.exe + 0X1f"));
+        assert!(!ai_address_valid("1234"));
+        assert!(!ai_address_valid("0x"));
+        assert!(!ai_address_valid("other.dll+0x10"));
+        assert!(!ai_address_valid("0xZZ"));
+    }
 
     #[test]
     fn shared_keybinds_are_conflicts_and_disabled_keys_are_not() {
@@ -2755,7 +3439,7 @@ mod home_layout_tests {
     fn client_build_is_short_but_release_is_preserved() {
         assert_eq!(
             short_client_version("0.1.95+b45fa23dbded9764d99cd3e021ba40fb8e6d3a93"),
-            "v0.1.95 · b45fa23d"
+            "v0.1.95"
         );
         assert_eq!(short_client_version("1.2.3"), "v1.2.3");
     }

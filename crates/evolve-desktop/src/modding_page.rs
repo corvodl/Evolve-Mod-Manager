@@ -362,27 +362,18 @@ pub(super) fn menu_commands(state: &State) -> Vec<(&'static str, &'static str, O
     ]
 }
 
+/// File / Edit / View / Tools, each menu drawn under its own title.
 fn menu(state: &State) -> Element<'_, Message> {
-    let title = |label: &'static str| {
-        crate::chrome::menu_title(
-            crate::chrome::MenuBar::Modding,
-            label,
-            label,
-            state.modding_menu,
-            Message::ModdingMenu(label),
-            13.0,
-            [6, 11],
-        )
-    };
     row![
-        title("File"),
-        title("Edit"),
-        title("View"),
-        title("Tools"),
-        space().width(Fill)
+        crate::chrome::menubar(
+            crate::chrome::MenuBar::Modding,
+            &["File", "Edit", "View", "Tools"],
+            state.modding_menu,
+            Message::ModdingMenu,
+            dropdown(state),
+        ),
+        space().width(Fill),
     ]
-    .spacing(3)
-    .align_y(iced::Center)
     .into()
 }
 
@@ -411,16 +402,6 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
             );
     }
     Some(commands.into())
-}
-
-fn dropdown_left(name: Option<&str>) -> f32 {
-    match name {
-        Some("File") => 8.0,
-        Some("Edit") => 59.0,
-        Some("View") => 111.0,
-        Some("Tools") => 167.0,
-        _ => 8.0,
-    }
 }
 
 /// "Page 2 of 7" between previous and next icon buttons.
@@ -1944,13 +1925,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         }
         main = main.push(scrollable(lines.spacing(4)).height(Length::Fixed(145.0)));
     }
-    let page = crate::menu_popup::overlay(
-        main,
-        dropdown(state),
-        dropdown_left(state.modding_menu),
-        115.0,
-        310.0,
-    );
+    let page: Element<'_, Message> = main.into();
     match selection_toolbar(state) {
         Some(toolbar) => iced::widget::stack![
             page,

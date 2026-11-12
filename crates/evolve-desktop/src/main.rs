@@ -3,6 +3,7 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
+mod anchored;
 mod anim;
 mod assembly_materials;
 mod asset_cache;
@@ -614,6 +615,15 @@ struct State {
     developer_password: String,
     /// Show the developer password as plain text while typing.
     developer_show_password: bool,
+    /// Open research disclosures on the Developer page.
+    developer_open: HashSet<&'static str>,
+    developer_collapsed_actors: HashSet<u32>,
+    actor_field_search: String,
+    /// Keybind waiting for its next key press.
+    developer_capture: Option<developer_hotkeys::Action>,
+    teleport_nudge_step: String,
+    /// The last crosshair preview target.
+    teleport_aim_result: Option<runtime_teleport::Position>,
     developer_status: String,
     developer_unlocked: bool,
     /// Session-only opt-in, never restored from settings; does not modify client authentication.
@@ -711,7 +721,6 @@ struct State {
     library_update_plan: Option<LibraryBuildUpdatePlan>,
     library_manage_builds_open: bool,
     library_managed_builds: Vec<ManagedLibraryBuild>,
-    library_delete_build_confirm: Option<String>,
     library_rename_build: Option<String>,
     library_rename_value: String,
     library_import_scanning: bool,
@@ -725,7 +734,13 @@ struct State {
     library_flat_list: bool,
     library_expanded_categories: HashSet<String>,
     library_expanded_sources: HashSet<String>,
-    library_expanded_details: HashSet<String>,
+    /// The archive row under the cursor (shows its icon actions).
+    library_hover: Option<usize>,
+    /// Rows per Asset Library page (50 / 110 / 250).
+    library_page_size: usize,
+    /// Filter of the build update's change list ("New", "Changed", …).
+    library_update_filter: Option<&'static str>,
+    library_update_help: bool,
     library_build_index: usize,
     library_page: usize,
     settings_tab: settings_page::Tab,
@@ -3090,8 +3105,6 @@ enum Message {
     LibraryManageBuildsToggle,
     LibraryManageBuildsRefresh,
     LibraryManagedBuildsLoaded(Result<Vec<ManagedLibraryBuild>, String>),
-    LibraryDeleteBuildConfirm(String),
-    LibraryDeleteBuildCancel,
     LibraryDeleteBuildNow(String),
     LibraryRenameBuildBegin(String),
     LibraryRenameBuildValue(String),
@@ -3165,8 +3178,13 @@ enum Message {
     LibrarySetFlat(bool),
     LibraryToggleCategory(String),
     LibraryToggleSource(String),
-    LibraryToggleDetails(String),
-    LibraryNextBuild,
+    LibraryHoverRow(Option<usize>),
+    LibrarySelectBuild(usize),
+    LibraryExpandAll(bool),
+    LibraryClearSelection,
+    LibraryPageSize(usize),
+    LibraryUpdateFilter(Option<&'static str>),
+    LibraryUpdateHelp,
     LibrarySelect(usize),
     LibraryOpenMap(usize),
     LevelMapSelect(usize),
@@ -3463,6 +3481,17 @@ enum Message {
     /// Ctrl+1–6: the Developer tab by position.
     DeveloperTabKey(usize),
     DeveloperShowPassword(bool),
+    DeveloperDisclose(&'static str),
+    DeveloperToggleActor(u32),
+    ActorFieldSearch(String),
+    /// Start (or with `None` stop) capturing a key for a keybind.
+    DeveloperCaptureKey(Option<developer_hotkeys::Action>),
+    DeveloperKeyEvent(iced::keyboard::Event),
+    TeleportNudgeStep(String),
+    TeleportUseAim,
+    TeleportSlotSave,
+    TeleportSlotGo(usize),
+    TeleportSlotDelete(usize),
     ClearActivity,
     ToggleSystemHealth,
     CheckSystemHealth,
@@ -7226,7 +7255,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LibraryManageBuildsToggle => {
             state.library_manage_builds_open = !state.library_manage_builds_open;
-            state.library_delete_build_confirm = None;
             state.library_rename_build = None;
             if !state.library_manage_builds_open {
                 return Task::none();
@@ -7237,7 +7265,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.busy || state.library_import_scanning || !state.library_manage_builds_open {
                 return Task::none();
             }
-            state.library_delete_build_confirm = None;
             let root = PathBuf::from(&state.library_root);
             return Task::perform(
                 async move {
@@ -7274,7 +7301,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     build.display_name.clone()
                 };
                 state.library_rename_build = Some(id);
-                state.library_delete_build_confirm = None;
             }
         }
         Message::LibraryRenameBuildValue(value) => state.library_rename_value = value,
@@ -7319,24 +7345,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
-        Message::LibraryDeleteBuildConfirm(id) => {
-            if !state.busy
-                && state
-                    .library_managed_builds
-                    .iter()
-                    .any(|build| build.id == id)
-            {
-                state.library_delete_build_confirm = Some(id);
-            }
-        }
-        Message::LibraryDeleteBuildCancel => {
-            state.library_delete_build_confirm = None;
-        }
         Message::LibraryDeleteBuildNow(id) => {
-            if state.busy
-                || state.library_import_scanning
-                || state.library_delete_build_confirm.as_deref() != Some(id.as_str())
-            {
+            // Hold-to-confirm (or the reduce-motion second click) is the
+            // confirmation; there is no separate confirm step.
+            if state.busy || state.library_import_scanning {
                 return Task::none();
             }
             let Some(build) = state
@@ -7348,7 +7360,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Refresh managed builds before deletion.".into();
                 return Task::none();
             };
-            state.library_delete_build_confirm = None;
             state.library_update_plan = None;
             return launch(
                 state,
@@ -7578,7 +7589,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
         }
         Message::LibraryToggleConfiguration => {
+            // Import lives in the side sheet so the table stays put.
             state.library_show_configuration = !state.library_show_configuration;
+            state.library_menu = None;
+            let sheet = if state.library_show_configuration {
+                chrome::Msg::OpenSheet(chrome::Sheet::Import)
+            } else {
+                chrome::Msg::CloseSheet
+            };
+            return update(state, Message::Chrome(sheet));
         }
         Message::OpenLibrarySettings => {
             state.settings_tab = settings_page::Tab::Storage;
@@ -7693,21 +7712,46 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.library_page = 0;
         }
-        Message::LibraryToggleDetails(id) => {
-            if !state.library_expanded_details.insert(id.clone()) {
-                state.library_expanded_details.remove(&id);
-            }
-        }
-        Message::LibraryNextBuild => {
+        Message::LibrarySelectBuild(index) => {
+            state.ui.popover = None;
             if let Some(catalog) = &state.library_catalog
-                && !catalog.builds.is_empty()
+                && index < catalog.builds.len()
             {
-                state.library_build_index = (state.library_build_index + 1) % catalog.builds.len();
+                state.library_build_index = index;
                 state.library_selected = None;
                 state.library_page = 0;
                 refresh_library_matches(state);
             }
         }
+        Message::LibraryHoverRow(row) => state.library_hover = row,
+        Message::LibraryExpandAll(expand) => {
+            state.library_expanded_categories.clear();
+            state.library_expanded_sources.clear();
+            if expand && let Some(catalog) = &state.library_catalog {
+                for archive in &catalog.archives {
+                    state
+                        .library_expanded_categories
+                        .insert(archive.group.to_ascii_lowercase());
+                    state.library_expanded_sources.insert(format!(
+                        "{}|{}",
+                        archive.name.to_ascii_lowercase(),
+                        archive.source.replace('\\', "/").to_ascii_lowercase()
+                    ));
+                }
+            }
+        }
+        Message::LibraryClearSelection => {
+            state.library_selection.indices.clear();
+            state.library_selected = None;
+        }
+        Message::LibraryPageSize(size) => {
+            if asset_library_page::PAGE_SIZES.contains(&size) {
+                state.library_page_size = size;
+                state.library_page = 0;
+            }
+        }
+        Message::LibraryUpdateFilter(filter) => state.library_update_filter = filter,
+        Message::LibraryUpdateHelp => state.library_update_help = !state.library_update_help,
         Message::LibraryOpenMap(index) => {
             let Some(archive) = state
                 .library_catalog
@@ -8776,6 +8820,117 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::DeveloperShowPassword(show) => state.developer_show_password = show,
+        Message::DeveloperDisclose(key) => {
+            if !state.developer_open.remove(key) {
+                state.developer_open.insert(key);
+            }
+        }
+        Message::DeveloperToggleActor(id) => {
+            if !state.developer_collapsed_actors.remove(&id) {
+                state.developer_collapsed_actors.insert(id);
+            }
+        }
+        Message::ActorFieldSearch(value) => state.actor_field_search = value,
+        Message::DeveloperCaptureKey(action) => state.developer_capture = action,
+        Message::DeveloperKeyEvent(event) => {
+            let Some(action) = state.developer_capture else {
+                return Task::none();
+            };
+            let iced::keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+                return Task::none();
+            };
+            use iced::keyboard::key::Named;
+            let bind = match key {
+                iced::keyboard::Key::Named(Named::Escape) => {
+                    state.developer_capture = None;
+                    return Task::none();
+                }
+                iced::keyboard::Key::Named(Named::Backspace | Named::Delete) => {
+                    Some(developer_hotkeys::Keybind(0))
+                }
+                iced::keyboard::Key::Named(named) => {
+                    let function = match named {
+                        Named::F6 => Some(0),
+                        Named::F7 => Some(1),
+                        Named::F8 => Some(2),
+                        Named::F9 => Some(3),
+                        Named::F10 => Some(4),
+                        Named::F11 => Some(5),
+                        Named::F12 => Some(6),
+                        _ => None,
+                    };
+                    function.map(|offset| {
+                        let group = if modifiers.control() {
+                            0
+                        } else if modifiers.alt() {
+                            1
+                        } else if modifiers.shift() {
+                            2
+                        } else {
+                            3
+                        };
+                        developer_hotkeys::Keybind(1 + group * 7 + offset)
+                    })
+                }
+                _ => None,
+            };
+            // The fixed option list still decides what is allowed.
+            match bind.filter(|bind| developer_hotkeys::Keybind::OPTIONS.contains(bind)) {
+                Some(bind) => {
+                    state.developer_capture = None;
+                    return update(state, Message::DeveloperKeybindChanged(action, bind));
+                }
+                None => {
+                    state.developer_hotkey_status =
+                        "Use F6–F12, optionally with Ctrl, Alt or Shift.".into();
+                }
+            }
+        }
+        Message::TeleportNudgeStep(value) => state.teleport_nudge_step = value,
+        Message::TeleportUseAim => {
+            if let Some(target) = state.teleport_aim_result {
+                state.teleport_x = format!("{:.2}", target.x);
+                state.teleport_y = format!("{:.2}", target.y);
+                state.teleport_z = format!("{:.2}", target.z);
+            }
+        }
+        Message::TeleportSlotSave => {
+            let parse = |value: &str| value.trim().parse::<f32>().ok().filter(|v| v.is_finite());
+            match (
+                parse(&state.teleport_x),
+                parse(&state.teleport_y),
+                parse(&state.teleport_z),
+            ) {
+                (Some(x), Some(y), Some(z)) => {
+                    let name = format!("Position {}", state.preferences.teleport_slots.len() + 1);
+                    state
+                        .preferences
+                        .teleport_slots
+                        .push(settings::TeleportSlot { name, x, y, z });
+                    state.preferences.teleport_slots.truncate(32);
+                    let slots = state.preferences.teleport_slots.clone();
+                    persist_saved_field(move |saved| saved.teleport_slots = slots);
+                }
+                _ => {
+                    state.teleport_status = "Read a position or enter X, Y and Z first".into();
+                }
+            }
+        }
+        Message::TeleportSlotGo(index) => {
+            if let Some(slot) = state.preferences.teleport_slots.get(index).cloned() {
+                state.teleport_x = format!("{:.2}", slot.x);
+                state.teleport_y = format!("{:.2}", slot.y);
+                state.teleport_z = format!("{:.2}", slot.z);
+                return update(state, Message::TeleportAbsolute);
+            }
+        }
+        Message::TeleportSlotDelete(index) => {
+            if index < state.preferences.teleport_slots.len() {
+                state.preferences.teleport_slots.remove(index);
+                let slots = state.preferences.teleport_slots.clone();
+                persist_saved_field(move |saved| saved.teleport_slots = slots);
+            }
+        }
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
                 state.developer_password = value;
@@ -9485,6 +9640,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             match result {
                 Ok(pos) => {
+                    state.teleport_aim_result = Some(pos);
                     state.teleport_status =
                         format!("Approximate camera-directed destination: {}", pos.label())
                 }
@@ -15980,7 +16136,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         report.failed_cleanup.len()
                     );
                     state.library_managed_builds = builds;
-                    state.library_delete_build_confirm = None;
                     state.library_catalog = Some(catalog);
                     state.library_selection.clear();
                     state.library_selected = None;
@@ -18623,6 +18778,8 @@ fn compact_footer_status(status: &str) -> String {
 
 fn initial_state() -> State {
     let mut result = State {
+        teleport_nudge_step: "20".into(),
+        library_page_size: 110,
         yaw: orientation_gizmo::FRONT_YAW,
         zoom: 1.0,
         playback_speed: 1.0,
@@ -19225,6 +19382,28 @@ impl Desktop {
                 };
                 Task::none()
             }
+            Message::FileDropped(id, path)
+                if id == self.main_id && self.state.chrome.sheet == Some(chrome::Sheet::Import) =>
+            {
+                self.state.ui.drop_target = None;
+                if path.is_dir() {
+                    update(
+                        &mut self.state,
+                        Message::LibraryUpdateFolderPicked(Ok(Some(vec![path]))),
+                    )
+                } else if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("pak"))
+                {
+                    update(
+                        &mut self.state,
+                        Message::LibrarySourcesPicked(Ok(Some(vec![path]))),
+                    )
+                } else {
+                    self.state.status = "Only .pak files or a game folder can be imported.".into();
+                    Task::none()
+                }
+            }
             Message::FileDropped(id, path) => {
                 self.state.ui.drop_target = None;
                 if (self.viewer_id == Some(id) || self.inspector_id == Some(id))
@@ -19647,6 +19826,11 @@ impl Desktop {
             scan_progress,
             wheel,
             window::close_events().map(Message::WindowClosed),
+            if self.state.developer_capture.is_some() {
+                iced::keyboard::listen().map(Message::DeveloperKeyEvent)
+            } else {
+                Subscription::none()
+            },
             iced::event::listen_with(|event, status, id| match event {
                 // Ctrl+K opens the command palette from any window, even
                 // while a text field has focus.

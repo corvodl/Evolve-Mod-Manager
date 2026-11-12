@@ -51,6 +51,8 @@ pub struct Preferences {
     pub played_with_mods: bool,
     /// Export format used last ("ChangedZz", "ChangedOriginal", "FullOriginal").
     pub last_export_format: String,
+    /// Named teleport positions saved on the Developer page.
+    pub teleport_slots: Vec<TeleportSlot>,
     pub reduce_motion: bool,
     pub keep_original_snapshots: bool,
     pub show_activity_on_tasks: bool,
@@ -146,6 +148,7 @@ impl Default for Preferences {
             developer_tab: String::new(),
             played_with_mods: false,
             last_export_format: String::new(),
+            teleport_slots: Vec::new(),
             reduce_motion: false,
             keep_original_snapshots: false,
             show_activity_on_tasks: true,
@@ -191,6 +194,16 @@ impl Default for Preferences {
             previous_options: BTreeMap::new(),
         }
     }
+}
+
+/// A saved teleport position.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TeleportSlot {
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
 }
 
 /// A map opened in the Level Editor, to reopen from the chooser.
@@ -395,6 +408,10 @@ impl Preferences {
         ) {
             self.last_export_format.clear();
         }
+        self.teleport_slots.truncate(32);
+        self.teleport_slots.retain(|slot| {
+            slot.name.len() <= 64 && [slot.x, slot.y, slot.z].iter().all(|v| v.is_finite())
+        });
         if self.developer_tab.len() > 64 {
             self.developer_tab.clear();
         }
