@@ -1,8 +1,8 @@
-//! Ctrl+K command palette: jump to pages and settings tabs, open mod
+//! Command palette (Ctrl+Space by default, rebindable in Settings): jump to pages and settings tabs, open mod
 //! projects or library archives, and run common actions from anywhere.
 //!
 //! Layered over the main window with `stack!` (like the toasts). Keyboard
-//! handling reuses the app's `event::listen_with`: Ctrl+K toggles, the
+//! handling reuses the app's `event::listen_with`: its shortcut toggles, the
 //! arrow keys move, Enter runs and Esc closes.
 
 use iced::widget::{Id, column, container, mouse_area, row, scrollable, space, text};
@@ -370,7 +370,9 @@ pub fn overlay<'a>(base: Element<'a, Message>, state: &'a State) -> Element<'a, 
         text("Enter run").size(10).style(design::muted),
         text("Esc close").size(10).style(design::muted),
         space().width(Fill),
-        text("Ctrl+K").size(10).style(design::muted),
+        text(crate::chrome::shortcut_for("Command palette").unwrap_or_default())
+            .size(10)
+            .style(design::muted),
     ]
     .spacing(14);
     let card =

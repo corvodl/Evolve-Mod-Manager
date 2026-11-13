@@ -33,6 +33,8 @@ pub struct Preferences {
     /// Hovering the collapsed sidebar opens it briefly (off: the button only).
     pub sidebar_hover_peek: bool,
     pub appearance_colors: BTreeMap<String, String>,
+    /// Rebound shortcuts by action id; missing actions use their default.
+    pub keybinds: BTreeMap<String, String>,
     pub theme_presets: BTreeMap<String, BTreeMap<String, String>>,
     pub font_family: String,
     /// Corner rounding for Modern widgets: "Sharp", "Rounded" or "Soft".
@@ -140,6 +142,7 @@ impl Default for Preferences {
             show_home_background: true,
             sidebar_hover_peek: false,
             appearance_colors: BTreeMap::new(),
+            keybinds: BTreeMap::new(),
             theme_presets: BTreeMap::new(),
             font_family: "Default".into(),
             corner_style: "Rounded".into(),

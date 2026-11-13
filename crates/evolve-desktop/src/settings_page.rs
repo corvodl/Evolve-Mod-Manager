@@ -542,6 +542,7 @@ fn library(state: &State) -> Element<'_, Message> {
 pub enum Tab {
     #[default]
     Appearance,
+    Shortcuts,
     Storage,
     Integration,
     Updates,
@@ -550,8 +551,9 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Appearance,
+        Self::Shortcuts,
         Self::Storage,
         Self::Integration,
         Self::Updates,
@@ -561,6 +563,7 @@ impl Tab {
     fn icon(self) -> iced::widget::svg::Handle {
         match self {
             Self::Appearance => crate::icons::palette(),
+            Self::Shortcuts => crate::icons::keyboard(),
             Self::Storage => crate::icons::drive(),
             Self::Integration => crate::icons::plug(),
             Self::Updates => crate::icons::download(),
@@ -600,13 +603,14 @@ impl Tab {
                 PathKind::FmodDesigner,
             ])
             .then_some(crate::design::Tone::Danger),
-            Self::Appearance | Self::SystemHealth | Self::Advanced => None,
+            Self::Appearance | Self::Shortcuts | Self::SystemHealth | Self::Advanced => None,
         }
     }
 
     pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
+            Self::Shortcuts => "Shortcuts",
             Self::Storage => "Storage",
             Self::Integration => "Integrations",
             Self::Updates => "Updates",
@@ -987,6 +991,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .size(design::CAPTION).style(design::muted),
             ].spacing(12).into()
         },
+        Tab::Shortcuts => shortcuts(state),
         Tab::SystemHealth => column![
             heading("System Health"),
             panel(health_panel(state)),
@@ -1033,6 +1038,116 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(16)
     .height(Fill)
+    .into()
+}
+
+fn shortcuts(state: &State) -> Element<'_, Message> {
+    use crate::keybinds::{self, Action};
+    let prefs = &state.preferences;
+    let mut rebindable = column![].spacing(10);
+    for action in Action::ALL {
+        let recording = state.keybind_recording == Some(action);
+        let keys: Element<'_, Message> = if recording {
+            text("Press the new keys…")
+                .size(design::LABEL)
+                .style(design::muted)
+                .into()
+        } else {
+            design::key_hint(crate::chrome::shortcut_for(action.labels()[0]).unwrap_or_default())
+        };
+        let change = if recording {
+            design::button("Cancel")
+                .style(design::secondary)
+                .on_press(Message::KeybindRecord(None))
+        } else {
+            design::button("Change")
+                .style(design::secondary)
+                .on_press(Message::KeybindRecord(Some(action)))
+        };
+        rebindable = rebindable.push(
+            row![
+                text(action.title()).width(Fill),
+                keys,
+                change,
+                design::button("Reset")
+                    .style(design::secondary)
+                    .on_press_maybe(
+                        keybinds::is_custom(prefs, action)
+                            .then_some(Message::KeybindReset(Some(action))),
+                    ),
+            ]
+            .spacing(10)
+            .align_y(iced::Center),
+        );
+    }
+    if !state.keybind_notice.is_empty() {
+        rebindable = rebindable.push(
+            text(state.keybind_notice.as_str())
+                .size(design::CAPTION)
+                .style(design::muted),
+        );
+    }
+    rebindable = rebindable.push(
+        row![
+            text("Shortcuts need Ctrl or Alt (or an F key) so they don't fire while typing. Esc cancels a change.")
+                .size(design::CAPTION)
+                .style(design::muted)
+                .width(Fill),
+            design::button("Reset all")
+                .style(design::secondary)
+                .on_press_maybe(
+                    (!prefs.keybinds.is_empty()).then_some(Message::KeybindReset(None)),
+                ),
+        ]
+        .spacing(10)
+        .align_y(iced::Center),
+    );
+
+    let fixed_row = |label: &'static str| -> Option<Element<'_, Message>> {
+        let keys = crate::chrome::shortcut_for(label)?;
+        Some(
+            row![
+                text(label).size(design::LABEL).width(Fill),
+                design::key_hint(keys),
+            ]
+            .spacing(10)
+            .align_y(iced::Center)
+            .into(),
+        )
+    };
+    let mut general = column![].spacing(6);
+    for label in [
+        "Close",
+        "Confirm dialog",
+        "Next field",
+        "Previous field",
+        "Move row up",
+        "Move row down",
+    ] {
+        if let Some(line) = fixed_row(label) {
+            general = general.push(line);
+        }
+    }
+    let mut level = column![].spacing(12);
+    for (group, labels) in crate::chrome::LEVEL_SHORTCUTS {
+        let mut lines = column![text(*group).size(design::LABEL)].spacing(6);
+        for label in labels.iter().filter(|label| **label != "Command palette") {
+            if let Some(line) = fixed_row(label) {
+                lines = lines.push(line);
+            }
+        }
+        level = level.push(lines);
+    }
+
+    column![
+        heading("Keyboard Shortcuts"),
+        panel(rebindable),
+        heading("General"),
+        panel(general),
+        heading("Level Editor"),
+        panel(level),
+    ]
+    .spacing(12)
     .into()
 }
 

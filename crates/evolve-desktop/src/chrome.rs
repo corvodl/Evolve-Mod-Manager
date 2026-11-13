@@ -30,10 +30,13 @@ const VISIBLE_BANNERS: usize = 2;
 /// used on buttons, dock items and menu entries. Tooltips and menus read
 /// from here so their hints match the real key handling in `main.rs`.
 pub const SHORTCUTS: &[(&str, &str)] = &[
-    ("Command palette", "Ctrl+K"),
+    ("Command palette", "Ctrl+Space"),
     ("Expand sidebar", "Ctrl+B"),
     ("Collapse sidebar", "Ctrl+B"),
     ("Close", "Esc"),
+    ("Confirm dialog", "Enter"),
+    ("Next field", "Tab"),
+    ("Previous field", "Shift+Tab"),
     ("Focus selection", "F"),
     ("Focus selected object", "F"),
     ("Focus selected placement", "F"),
@@ -129,6 +132,9 @@ pub const LEVEL_SHORTCUTS: &[(&str, &[&str])] = &[
 
 /// The shortcut for an action label, if it has one.
 pub fn shortcut_for(label: &str) -> Option<&'static str> {
+    if let Some(keys) = crate::keybinds::shortcut_for(label) {
+        return Some(keys);
+    }
     SHORTCUTS
         .iter()
         .find(|(action, _)| action.eq_ignore_ascii_case(label))
@@ -1257,7 +1263,7 @@ mod tests {
 
     #[test]
     fn shortcuts_are_found_case_insensitively() {
-        assert_eq!(shortcut_for("command palette"), Some("Ctrl+K"));
+        assert_eq!(shortcut_for("command palette"), Some("Ctrl+Space"));
         assert_eq!(shortcut_for("Focus selection"), Some("F"));
         assert_eq!(shortcut_for("Unknown action"), None);
     }

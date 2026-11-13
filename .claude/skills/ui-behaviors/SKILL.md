@@ -35,7 +35,7 @@ Don't hand-roll a second version of any of these.
 
 All global keys are in `App::subscription` (`iced::event::listen_with`) in `main.rs`. Rules:
 
-- **Respect `event::Status`.** A key a focused widget used (typing in a text field) arrives as `Captured`. Page shortcuts, camera keys, Enter-to-confirm and Delete must match only `Status::Ignored`. Only true global shortcuts (Ctrl+K, Ctrl+B) ignore status.
+- **Respect `event::Status`.** A key a focused widget used (typing in a text field) arrives as `Captured`. Page shortcuts, camera keys, Enter-to-confirm and Delete must match only `Status::Ignored`. Only the rebindable app-wide shortcuts in `keybinds.rs` (command palette, sidebar) ignore status; add a new one there as a `keybinds::Action` so it shows in Settings › Shortcuts and gets conflict checks.
 - **Esc closes the topmost layer, one per press.** The order lives in `Message::ViewportEscape`: modal → palette → popover → lightbox → map lightbox → sidebar panel → side sheet → transform / fullscreen → clears the window's search → closes menus. A new layer gets a line in that chain at its z-order, not its own Esc handler.
 - **Enter confirms** the open modal (`chrome::Msg::Enter`) when focus isn't in a field. Show `design::kbd("Enter")` / `kbd("Esc")` beside the buttons, as `modal_overlay` does.
 - **Tab / Shift+Tab move focus** through text inputs and editors in the current window only, wrapping at the ends (`focus_scope.rs`). iced's own `focus_next` walks every window, so never call it directly.
