@@ -857,6 +857,7 @@ pub fn dialog<'a>(
     )
     .on_press(outside)
     .interaction(iced::mouse::Interaction::Idle);
+    let card = container(card).id(crate::focus_scope::DIALOG);
     stack![base, backdrop, container(card).center(Fill).padding(24)].into()
 }
 

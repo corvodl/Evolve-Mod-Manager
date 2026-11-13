@@ -375,6 +375,7 @@ pub fn overlay<'a>(base: Element<'a, Message>, state: &'a State) -> Element<'a, 
     .spacing(14);
     let card =
         container(column![input, scrollable(rows).height(Length::Shrink), footer].spacing(10))
+            .id(crate::focus_scope::PALETTE)
             .padding(12)
             .width(Length::Fixed(600.0))
             .max_height(520)

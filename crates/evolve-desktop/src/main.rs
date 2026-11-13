@@ -26,6 +26,7 @@ mod direct_runtime;
 mod discord_presence;
 mod docs_page;
 mod explorer_tree;
+mod focus_scope;
 mod forms;
 mod fx;
 mod gallery;
@@ -3251,6 +3252,8 @@ enum Message {
     ToggleLevelViewportFullscreen,
     ToggleViewerViewportFullscreen,
     ViewportEscape(window::Id),
+    /// Tab (false) or Shift+Tab (true) outside a widget that uses it.
+    FocusCycle(window::Id, bool),
     /// A gizmo handle was grabbed: transform along its axis (None: free).
     LevelGizmoGrab(
         level_transform::Mode,
@@ -11076,6 +11079,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         | Message::ToggleLevelViewportFullscreen
         | Message::ToggleViewerViewportFullscreen
         | Message::ViewportEscape(_)
+        | Message::FocusCycle(..)
         | Message::OpenViewer
         | Message::OpenInspectorWindow
         | Message::OpenViewerPreferences
@@ -19760,6 +19764,7 @@ impl Desktop {
                     },
                 )
             }
+            Message::FocusCycle(id, backwards) => focus_scope::cycle(id, backwards),
             Message::ViewportEscape(id) => {
                 // Esc closes the topmost transient layer first: the modal,
                 // palette, popover, lightbox, then the side sheet.
@@ -20062,6 +20067,12 @@ impl Desktop {
     }
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
+        container(self.window_layers(id))
+            .id(focus_scope::window(id))
+            .into()
+    }
+
+    fn window_layers(&self, id: window::Id) -> Element<'_, Message> {
         let content = self.window_contents(id);
         let content = if self.state.ui.drop_target == Some(id) {
             let (label, refused) = self.drop_description(id);
@@ -20386,6 +20397,16 @@ impl Desktop {
                         .parse::<usize>()
                         .ok()
                         .map(|n| Message::DeveloperTabKey(n - 1))
+                }
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
+                    modifiers,
+                    ..
+                }) if status == iced::event::Status::Ignored
+                    && !modifiers.control()
+                    && !modifiers.alt() =>
+                {
+                    Some(Message::FocusCycle(id, modifiers.shift()))
                 }
                 // Enter outside a text field confirms an open modal.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
