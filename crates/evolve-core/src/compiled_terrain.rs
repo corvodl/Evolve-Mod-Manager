@@ -634,7 +634,10 @@ fn object_block(
                 let group = r.u16(at + 36)? as usize;
                 let position = [r.f32(at + 40)?, r.f32(at + 44)?, r.f32(at + 48)?];
                 let scale = r.f32(at + 52)?;
-                let angles = r.bytes(at + if out.version == 24 { 56 } else { 57 }, 3)?;
+                // Both layouts keep the brightness byte at +56, followed by
+                // Z/X/Y rotations at +57..+59. The v24 vegetation record is
+                // four bytes shorter *after* these fields, not before them.
+                let angles = r.bytes(at + 57, 3)?;
                 if group < out.vegetation_groups.len()
                     && position.iter().all(|v| v.is_finite())
                     && scale.is_finite()
@@ -1921,6 +1924,17 @@ mod tests {
         assert_eq!(terrain.brushes.len(), 1);
         assert_eq!(terrain.vegetation.len(), 1);
         assert_eq!(terrain.skipped_blocks, 0);
+        let brush = terrain.brushes[0].transform();
+        assert_eq!(brush.position, [5.0, 6.0, 7.0]);
+        assert_eq!(brush.scale, [2.0; 3]);
+        assert!((brush.quaternion[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.0001);
+        assert_eq!([brush.quaternion[1], brush.quaternion[2]], [0.0, 0.0]);
+        assert!((brush.quaternion[3] - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.0001);
+        assert_eq!(terrain.vegetation[0].angles, [64, 0, 0]);
+        let rotation = terrain.vegetation[0].transform().quaternion;
+        assert!((rotation[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.0001);
+        assert_eq!([rotation[1], rotation[2]], [0.0, 0.0]);
+        assert!((rotation[3] - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.0001);
         assert!(delete_compiled_placement(&source, CompiledPlacement::Brush(0)).is_err());
     }
 
