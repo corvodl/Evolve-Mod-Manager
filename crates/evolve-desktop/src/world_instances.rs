@@ -38,6 +38,16 @@ fn residency_target_bytes(full_textures: bool) -> u64 {
 }
 const MAX_MIP_WRITE_BYTES_PER_FRAME: usize = 8 * 1024 * 1024;
 
+// Most cooked Xbox 360 diffuse maps are 512–1024 px. Their complete decoded
+// mip chain fits in one bounded upload; starting every material at 128 px and
+// refining one mip per redraw leaves large maps visibly blurry for minutes.
+// Oversized textures still use the existing striped, progressive path.
+fn eager_diffuse_mips(width: u32, height: u32) -> bool {
+    width > 0
+        && height > 0
+        && mip_chain_bytes(width, height) <= MAX_MIP_WRITE_BYTES_PER_FRAME as u64
+}
+
 // Hash exact source pixel dimensions+bytes, not an Arc address. Distinct
 // imported PAK entries containing identical decoded pixels deduplicate while
 // their roles and GPU formats remain separate. The pointer memo is scoped to
@@ -4160,20 +4170,34 @@ impl Renderer {
                         }
                         _ => Arc::new(selected.as_ref().clone()),
                     };
-                    let (tex, view, lowest) = create_streaming_diffuse(device, queue, &original);
-                    mip_min_level.insert(key, lowest);
-                    if lowest > 0 {
-                        pending_diffuse.insert(
-                            key,
-                            PendingDiffuseMip {
-                                source: original,
-                                next_level: lowest - 1,
-                                next_row: 0,
-                                prepared: None,
-                            },
+                    if eager_diffuse_mips(w, h) {
+                        let (tex, view) = upload_rgba_mips(
+                            device,
+                            queue,
+                            Some(&original),
+                            fallback,
+                            wgpu::TextureFormat::Rgba8UnormSrgb,
+                            "Full source diffuse (bounded eager mip chain)",
                         );
+                        mip_min_level.insert(key, 0);
+                        (tex, view)
+                    } else {
+                        let (tex, view, lowest) =
+                            create_streaming_diffuse(device, queue, &original);
+                        mip_min_level.insert(key, lowest);
+                        if lowest > 0 {
+                            pending_diffuse.insert(
+                                key,
+                                PendingDiffuseMip {
+                                    source: original,
+                                    next_level: lowest - 1,
+                                    next_row: 0,
+                                    prepared: None,
+                                },
+                            );
+                        }
+                        (tex, view)
                     }
-                    (tex, view)
                 } else {
                     upload_rgba_mips(
                         device,
@@ -6409,6 +6433,15 @@ mod tests {
         let rows_8k = (MAX_MIP_WRITE_BYTES_PER_FRAME / (8192 * 4)).max(1);
         assert_eq!(rows_8k, 256);
         assert_eq!(8192usize.div_ceil(rows_8k), 32);
+    }
+
+    #[test]
+    fn original_2012_sized_diffuse_maps_skip_the_blurry_128_pixel_start() {
+        assert!(eager_diffuse_mips(512, 512));
+        assert!(eager_diffuse_mips(1024, 1024));
+        assert!(!eager_diffuse_mips(2048, 2048));
+        assert!(!eager_diffuse_mips(0, 512));
+        assert!(mip_chain_bytes(1024, 1024) <= MAX_MIP_WRITE_BYTES_PER_FRAME as u64);
     }
 
     #[test]

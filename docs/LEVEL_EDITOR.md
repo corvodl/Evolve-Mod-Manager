@@ -21,6 +21,13 @@ this is a source-backed viewport preview, **not** Xbox 360 shader, particle,
 lighting or rendering parity. Unsupported octree record types remain diagnosed
 rather than substituted with unrelated assets.
 
+Import both `Game/streaming/dds_low.pak` and `Game/streaming/dds_high.pak`
+from this same build for the complete cooked texture resolution. When a
+decoded diffuse mip chain fits the bounded 8 MiB upload, the world viewport
+uploads it immediately rather than leaving a 512–1024 px original at its
+128 px initial preview while other materials wait to refine. Larger textures
+still stream progressively; GPU quality and device limits still apply.
+
 ## How to open
 
 1. Import your original Evolve level PAKs and their dependency PAKs into Asset Library.
