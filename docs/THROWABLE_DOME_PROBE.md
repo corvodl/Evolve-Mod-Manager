@@ -22,9 +22,15 @@ original weapon definition. The original Stage 2 member is CryXmlB, so extract
 and decode it with `evolve-cli signed extract-member` and `evolve-cli cryxml
 decode` first. Place the decoded XML at the same member path under the supplied
 `--extracted-libs` directory. The script refuses unknown versions and existing
-output files. Encode its XML output with `evolve-cli cryxml encode` into the
-correctly cased archive-relative path under an isolated overlay directory
-before running `evolve-cli signed overlay` with an authorized signing key.
+output files. **Do not use `evolve-cli cryxml encode` for this game test:** the
+first signed bundle passed the Rust round-trip checks but the game reported its
+weapon member as corrupt. Instead use
+`scripts/experiments/encode_native_cryxml_probe.py` to encode the edited XML
+into the correctly cased archive-relative path under an isolated overlay
+directory before running `evolve-cli signed overlay` with an authorized
+signing key. The native-layout probe encoder re-encoded the extracted original
+weapon member byte-for-byte, but the repaired gameplay override still needs
+in-game verification.
 For the existing `zz_legacy_select.pak` bundle, use `Libs/Items/...` (capital
 `L`), matching its existing members. Never put keys or original game assets in
 the repository.
