@@ -26,6 +26,13 @@ bytes 57–59, just like version 25. Reading brightness as the first angle tilts
 foliage incorrectly; regression tests keep yaw-only plants upright. Brush
 matrices retain their separate source-authored orientation and scale.
 
+Import both `Game/streaming/dds_low.pak` and `Game/streaming/dds_high.pak`
+from this same build for the complete cooked texture resolution. When a
+decoded diffuse mip chain fits the bounded 8 MiB upload, the world viewport
+uploads it immediately rather than leaving a 512–1024 px original at its
+128 px initial preview while other materials wait to refine. Larger textures
+still stream progressively; GPU quality and device limits still apply.
+
 ## How to open
 
 1. Import your original Evolve level PAKs and their dependency PAKs into Asset Library.
