@@ -21,6 +21,11 @@ this is a source-backed viewport preview, **not** Xbox 360 shader, particle,
 lighting or rendering parity. Unsupported octree record types remain diagnosed
 rather than substituted with unrelated assets.
 
+Version-24 vegetation records put brightness at byte 56 and Z/X/Y rotation at
+bytes 57–59, just like version 25. Reading brightness as the first angle tilts
+foliage incorrectly; regression tests keep yaw-only plants upright. Brush
+matrices retain their separate source-authored orientation and scale.
+
 ## How to open
 
 1. Import your original Evolve level PAKs and their dependency PAKs into Asset Library.
