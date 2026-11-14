@@ -22,18 +22,22 @@ original weapon definition. The original Stage 2 member is CryXmlB, so extract
 and decode it with `evolve-cli signed extract-member` and `evolve-cli cryxml
 decode` first. Place the decoded XML at the same member path under the supplied
 `--extracted-libs` directory. The script refuses unknown versions and existing
-output files. Encode its XML output with `evolve-cli cryxml encode` into the same
-archive-relative path under an isolated overlay directory before running
-`evolve-cli signed overlay` with **locally generated** signing keys. Never put
-keys or original game assets in the repository.
+output files. Encode its XML output with `evolve-cli cryxml encode` into the
+correctly cased archive-relative path under an isolated overlay directory
+before running `evolve-cli signed overlay` with an authorized signing key.
+For the existing `zz_legacy_select.pak` bundle, use `Libs/Items/...` (capital
+`L`), matching its existing members. Never put keys or original game assets in
+the repository.
 
-For local testing, use the corresponding `inject-custom.dll` prepared with
-`evolve-cli hook prepare` against the **same custom public key**. The new PAK
-will not authenticate under the stock key or another custom hook. Verify with
-`evolve-cli hook pak-preflight`. Use the manager's isolated, reversible signed
-PAK/profile workflow; never overwrite the installed `Game/libs.pak` by hand.
-The test PAK and hook must be installed together through a matching test
-profile. This probe does **not** change the user's existing stage or game.
+For a separately signed `libs.pak` using a new test key, a matching
+`inject-custom.dll` is required; do not attempt to load it under another key.
+For the existing `zz_legacy_select.pak` bundle, sign the overlay with the
+bundle's existing authorized signing tool/key instead. This needs **no new
+hook**: independently verify the signed output against the bundle's public
+key, check that all original members remain unchanged and just one member was
+added, and only then publish the bundle file. Never overwrite the installed
+`Game/libs.pak` by hand. The offline test bundle's `START_TEST.bat` will ask
+before copying its updated `zz_legacy_select.pak` into a test installation.
 
 Private-match test checklist: try F far from the monster, select the dome via
 normal weapon controls if F does nothing, throw toward open ground and a wall,
