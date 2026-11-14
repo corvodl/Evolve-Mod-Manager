@@ -26,6 +26,7 @@ mod direct_runtime;
 mod discord_presence;
 mod docs_page;
 mod explorer_tree;
+mod focus_scope;
 mod forms;
 mod fx;
 mod gallery;
@@ -48,6 +49,7 @@ mod guided_modding;
 mod handles;
 mod icons;
 mod initial_setup;
+mod keybinds;
 mod launcher_bridge;
 mod level_archive;
 mod level_atmosphere;
@@ -775,6 +777,8 @@ struct State {
     library_build_index: usize,
     library_page: usize,
     settings_tab: settings_page::Tab,
+    keybind_recording: Option<keybinds::Action>,
+    keybind_notice: String,
     library_show_configuration: bool,
     library_menu: Option<&'static str>,
     library_matches: Vec<usize>,
@@ -3251,6 +3255,8 @@ enum Message {
     ToggleLevelViewportFullscreen,
     ToggleViewerViewportFullscreen,
     ViewportEscape(window::Id),
+    /// Tab (false) or Shift+Tab (true) outside a widget that uses it.
+    FocusCycle(window::Id, bool),
     /// A gizmo handle was grabbed: transform along its axis (None: free).
     LevelGizmoGrab(
         level_transform::Mode,
@@ -3703,6 +3709,11 @@ enum Message {
     PreferenceHomeBackground,
     PreferenceAccentPreset(&'static str),
     PreferenceReduceMotion,
+    /// Start (Some) or stop (None) listening for a new shortcut.
+    KeybindRecord(Option<keybinds::Action>),
+    KeybindCaptured(keybinds::Chord),
+    /// Back to the default for one action, or all of them.
+    KeybindReset(Option<keybinds::Action>),
     PreferenceSnapshots,
     PreferenceCrashLogging,
     OpenCrashLogs,
@@ -11076,6 +11087,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         | Message::ToggleLevelViewportFullscreen
         | Message::ToggleViewerViewportFullscreen
         | Message::ViewportEscape(_)
+        | Message::FocusCycle(..)
         | Message::OpenViewer
         | Message::OpenInspectorWindow
         | Message::OpenViewerPreferences
@@ -14311,6 +14323,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::PreferenceReduceMotion => {
             state.preferences.reduce_motion = !state.preferences.reduce_motion;
+            persist_preferences(state);
+        }
+        Message::KeybindRecord(action) => {
+            state.keybind_recording = action;
+            state.keybind_notice.clear();
+        }
+        Message::KeybindCaptured(chord) => {
+            if let Some(action) = state.keybind_recording {
+                match keybinds::conflict(&state.preferences, action, &chord) {
+                    Some(reason) => state.keybind_notice = reason,
+                    None => {
+                        keybinds::set(&mut state.preferences, action, &chord);
+                        state.keybind_recording = None;
+                        state.keybind_notice = format!("{} is now {chord}.", action.title());
+                        persist_preferences(state);
+                    }
+                }
+            }
+        }
+        Message::KeybindReset(action) => {
+            keybinds::reset(&mut state.preferences, action);
+            state.keybind_recording = None;
+            state.keybind_notice = match action {
+                Some(action) => {
+                    format!("{} is back to {}.", action.title(), action.default_chord())
+                }
+                None => "All shortcuts are back to their defaults.".into(),
+            };
             persist_preferences(state);
         }
         Message::PreferenceSnapshots => {
@@ -19279,6 +19319,7 @@ fn initial_state() -> State {
                 };
                 result.pitch = saved.saved_pitch;
                 result.zoom = saved.saved_zoom;
+                keybinds::publish(&saved);
                 result.preferences = saved;
                 // Fresh installs (and installs from before the intro card)
                 // start from the current version, so only later updates
@@ -19667,7 +19708,7 @@ impl Desktop {
                 ])
             }
             Message::Ui(ui_kit::UiMsg::Palette(msg)) => {
-                // Ctrl+K from a secondary window brings the main window up.
+                // The palette shortcut from a secondary window brings the main window up.
                 let raise =
                     matches!(msg, command_palette::Msg::Toggle) && !self.state.ui.palette.open;
                 let (task, next) = command_palette::update(&mut self.state, msg);
@@ -19759,6 +19800,10 @@ impl Desktop {
                         window::Mode::Windowed
                     },
                 )
+            }
+            Message::FocusCycle(id, backwards) => focus_scope::cycle(id, backwards),
+            Message::ViewportEscape(_) if self.state.keybind_recording.is_some() => {
+                update(&mut self.state, Message::KeybindRecord(None))
             }
             Message::ViewportEscape(id) => {
                 // Esc closes the topmost transient layer first: the modal,
@@ -20062,6 +20107,12 @@ impl Desktop {
     }
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
+        container(self.window_layers(id))
+            .id(focus_scope::window(id))
+            .into()
+    }
+
+    fn window_layers(&self, id: window::Id) -> Element<'_, Message> {
         let content = self.window_contents(id);
         let content = if self.state.ui.drop_target == Some(id) {
             let (label, refused) = self.drop_description(id);
@@ -20347,6 +20398,10 @@ impl Desktop {
             startup,
             scan_progress,
             wheel,
+            keybinds::subscription(
+                &self.state.preferences,
+                self.state.keybind_recording.is_some(),
+            ),
             window::close_events().map(Message::WindowClosed),
             window::close_requests().map(Message::WindowCloseRequested),
             if self.state.developer_capture.is_some() {
@@ -20355,23 +20410,6 @@ impl Desktop {
                 Subscription::none()
             },
             iced::event::listen_with(|event, status, id| match event {
-                // Ctrl+K opens the command palette from any window, even
-                // while a text field has focus.
-                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key: iced::keyboard::Key::Character(value),
-                    modifiers,
-                    ..
-                }) if modifiers.control() && value.eq_ignore_ascii_case("k") => Some(Message::Ui(
-                    ui_kit::UiMsg::Palette(command_palette::Msg::Toggle),
-                )),
-                // Ctrl+B opens or collapses the sidebar.
-                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key: iced::keyboard::Key::Character(value),
-                    modifiers,
-                    ..
-                }) if modifiers.control() && value.eq_ignore_ascii_case("b") => {
-                    Some(Message::SidebarToggle)
-                }
                 // Ctrl+1–6 switch Developer tabs.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Character(value),
@@ -20386,6 +20424,16 @@ impl Desktop {
                         .parse::<usize>()
                         .ok()
                         .map(|n| Message::DeveloperTabKey(n - 1))
+                }
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
+                    modifiers,
+                    ..
+                }) if status == iced::event::Status::Ignored
+                    && !modifiers.control()
+                    && !modifiers.alt() =>
+                {
+                    Some(Message::FocusCycle(id, modifiers.shift()))
                 }
                 // Enter outside a text field confirms an open modal.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
