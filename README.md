@@ -28,7 +28,6 @@ EMM is engineered for zero-compromise performance: multi-threaded background wor
   - [Updating Channels](#updating-channels)
 - [Architecture & Performance Discipline](#architecture--performance-discipline)
 - [Keyboard Shortcuts & Navigation](#keyboard-shortcuts--navigation)
-- [Contributing & Development](#contributing--development)
 - [Disclaimer & Community Notes](#disclaimer--community-notes)
 
 ---
