@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 const RELEASES_API: &str =
     "https://api.github.com/repos/corvodl/Evolve-Mod-Manager/releases?per_page=20";
-const DISCORD_FEED: &str = "https://corvodl.github.io/Evolve-Mod-Manager/announcements.json";
+const DISCORD_FEED: &str = "https://corvodl.github.io/EMM-SRC/announcements.json";
 const MAX_RESPONSE: u64 = 1_000_000;
 const MAX_IMAGE_BYTES: u64 = 6 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 16_000_000;
