@@ -72,8 +72,15 @@ pub(super) fn preview_archive(archive: ImportedPak, name: &str) -> Option<Vec<u8
     PREVIEWING.with(|flag| {
         flag.set(true);
         let result = (|| {
-            let (_, maps) = index_maps(&archive).ok()?;
+            let (owner, maps) = index_maps(&archive).ok()?;
             let index = maps.iter().position(|map| map.name == name)?;
+            let chosen = &maps[index];
+            let root = Path::new(&owner.directory);
+            if let Ok(inventory) = imported_archive_files(&archive)
+                && let Some(png) = authored_minimap_thumbnail(&owner, chosen, &inventory, root)
+            {
+                return Some(png);
+            }
             let loaded = open(archive, index).ok()?;
             (loaded.maps[loaded.index].name == name)
                 .then_some(loaded.thumbnail)
@@ -90,6 +97,12 @@ pub(super) fn preview_project(project: ProjectRow, name: &str, library: &Path) -
         let result = (|| {
             let maps = index_project_maps(&project).ok()?;
             let index = maps.iter().position(|map| map.name == name)?;
+            let chosen = &maps[index];
+            if let Ok(inventory) = scan_directory(&project.workspace.join("files"))
+                && let Some(png) = authored_minimap_thumbnail_project(&project, chosen, &inventory)
+            {
+                return Some(png);
+            }
             let loaded = open_project(project, index, library, None).ok()?;
             (loaded.maps[loaded.index].name == name)
                 .then_some(loaded.thumbnail)
@@ -735,6 +748,259 @@ fn authored_interior_weather(
         fog_profile,
         areas,
     })
+}
+
+/// Parse minimap texture path from CryEngine map XML elements (e.g. LevelInfo,
+/// MiniMap, Map, Radar) or their attributes.
+pub(super) fn parse_minimap_texture_ref(xml_bytes: &[u8]) -> Option<String> {
+    use quick_xml::events::Event;
+
+    let decoded = evolve_core::cryxml::xml_bytes(xml_bytes, 8 * 1024 * 1024).ok()?;
+    let mut reader = quick_xml::Reader::from_reader(decoded.as_ref());
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e) | Event::Empty(e)) => {
+                let tag_raw = e.name();
+                let tag = tag_raw.as_ref().to_ascii_lowercase();
+                let is_minimap_tag = tag == b"minimap"
+                    || tag == b"map"
+                    || tag == b"radar"
+                    || tag == b"mapinfo"
+                    || tag == b"levelinfo"
+                    || tag == b"level";
+
+                for attr in e.attributes().flatten() {
+                    let key = attr.key.as_ref().to_ascii_lowercase();
+                    let is_target_attr = key == b"file"
+                        || key == b"filename"
+                        || key == b"image"
+                        || key == b"imagepath"
+                        || key == b"texture"
+                        || key == b"texturepath"
+                        || key == b"path"
+                        || key == b"minimap"
+                        || key == b"map"
+                        || (is_minimap_tag && key == b"name");
+
+                    if is_target_attr {
+                        let value = attr
+                            .unescape_value()
+                            .map(|v| v.into_owned())
+                            .unwrap_or_default();
+                        let val_str = value.trim();
+                        let val_lower = val_str.to_ascii_lowercase();
+                        if val_lower.ends_with(".dds")
+                            || val_lower.ends_with(".png")
+                            || val_lower.ends_with(".tga")
+                            || val_lower.ends_with(".jpg")
+                            || val_lower.ends_with(".dds.0")
+                            || val_lower.contains("minimap")
+                            || val_lower.contains("map")
+                        {
+                            return Some(val_str.to_string());
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Decodes an authored minimap image (.dds, .dds.0 with mips, .png, .tga) to PNG bytes.
+pub(super) fn decode_minimap_file_to_png(path: &Path) -> Option<Vec<u8>> {
+    let lower = path.to_string_lossy().to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        return fs::read(path).ok();
+    }
+    if lower.ends_with(".dds") || lower.ends_with(".dds.0") {
+        let (source, parts) = if lower.ends_with(".dds.0") {
+            let path_str = path.to_string_lossy();
+            let stem = path_str.strip_suffix(".0")?;
+            let mut parts = Vec::new();
+            for i in 1..20 {
+                let part = PathBuf::from(format!("{stem}.{i}"));
+                if part.is_file() {
+                    parts.push(part);
+                }
+            }
+            (path.to_path_buf(), parts)
+        } else {
+            (path.to_path_buf(), Vec::new())
+        };
+
+        let decoded = if parts.is_empty() {
+            evolve_core::decode_dds_rgba(&source)
+        } else {
+            evolve_core::decode_dds_rgba_with_parts(&source, &parts)
+        };
+
+        let (_info, rgba) = decoded.ok()?;
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(rgba)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .ok()?;
+        return Some(png);
+    }
+    if let Ok(dyn_img) = image::open(path) {
+        let mut png = Vec::new();
+        if dyn_img
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .is_ok()
+        {
+            return Some(png);
+        }
+    }
+    None
+}
+
+/// Resolves authored minimap texture from XML references or direct candidate files,
+/// returning wholly displayed PNG bytes when present.
+pub(super) fn authored_minimap_thumbnail(
+    archive: &ImportedPak,
+    map: &MapCandidate,
+    inventory: &Inventory,
+    root: &Path,
+) -> Option<Vec<u8>> {
+    let folder = map_virtual_folder(map, archive);
+    let folder_lower = folder.as_deref().map(|f| f.to_ascii_lowercase());
+    let map_name_lower = map.name.to_ascii_lowercase();
+
+    // 1. Scan map XML candidates for minimap references
+    let xml_candidates = inventory.entries.iter().filter(|entry| {
+        let lower = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
+        let is_xml = lower.ends_with(".xml");
+        if !is_xml {
+            return false;
+        }
+        let in_folder = folder_lower
+            .as_deref()
+            .is_some_and(|f| lower.starts_with(f) || lower.contains(f));
+        let matches_map = in_folder || lower.contains(&map_name_lower);
+        let is_minimap_name = lower.ends_with("/levelinfo.xml")
+            || lower == "levelinfo.xml"
+            || lower.ends_with("/minimap.xml")
+            || lower == "minimap.xml"
+            || lower.ends_with("/leveldata.xml")
+            || lower == "leveldata.xml"
+            || lower.ends_with("/map.xml")
+            || lower == "map.xml"
+            || lower.ends_with("/mission.xml")
+            || lower == "mission.xml"
+            || lower.ends_with("/mission_mission0.xml")
+            || lower == "mission_mission0.xml";
+
+        matches_map && is_minimap_name
+    });
+
+    for entry in xml_candidates {
+        if let Ok(exact_path) =
+            verified_source(root, Path::new(&entry.relative_path), 16 * 1024 * 1024)
+            && let Ok(raw_bytes) = fs::read(&exact_path)
+            && let Some(tex_ref) = parse_minimap_texture_ref(&raw_bytes)
+        {
+            let normalized_ref = tex_ref.replace('\\', "/");
+            let ref_filename = Path::new(&normalized_ref)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_ascii_lowercase());
+
+            let direct_candidates = [
+                folder.as_ref().map(|f| root.join(f).join(&normalized_ref)),
+                Some(root.join(&normalized_ref)),
+                ref_filename
+                    .as_ref()
+                    .and_then(|name| folder.as_ref().map(|f| root.join(f).join(name.as_str()))),
+            ];
+
+            for cand in direct_candidates.into_iter().flatten() {
+                if cand.is_file()
+                    && let Some(png) = decode_minimap_file_to_png(&cand)
+                {
+                    return Some(png);
+                }
+            }
+
+            if let Some(target_file) = inventory.entries.iter().find(|e| {
+                let lower = e.relative_path.replace('\\', "/").to_ascii_lowercase();
+                lower.ends_with(&normalized_ref.to_ascii_lowercase())
+                    || ref_filename
+                        .as_deref()
+                        .is_some_and(|name| lower.ends_with(name))
+            }) && let Ok(exact) = verified_source(
+                root,
+                Path::new(&target_file.relative_path),
+                64 * 1024 * 1024,
+            ) && let Some(png) = decode_minimap_file_to_png(&exact)
+            {
+                return Some(png);
+            }
+        }
+    }
+
+    // 2. Direct minimap candidates in map folder or root
+    let direct_tex_names = [
+        "minimap.dds",
+        "minimap.dds.0",
+        "map.dds",
+        "map.dds.0",
+        "leveldata/minimap.dds",
+        "textures/minimap.dds",
+        "minimap.png",
+        "map.png",
+    ];
+
+    if let Some(ref f) = folder {
+        for name in direct_tex_names {
+            let path = root.join(f).join(name);
+            if path.is_file()
+                && let Some(png) = decode_minimap_file_to_png(&path)
+            {
+                return Some(png);
+            }
+        }
+    }
+
+    for entry in &inventory.entries {
+        let lower = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
+        let in_folder = folder_lower
+            .as_deref()
+            .is_some_and(|f| lower.starts_with(f) || lower.contains(f));
+        let is_direct_minimap = direct_tex_names.iter().any(|name| lower.ends_with(name));
+        if in_folder
+            && is_direct_minimap
+            && let Ok(exact) =
+                verified_source(root, Path::new(&entry.relative_path), 64 * 1024 * 1024)
+            && let Some(png) = decode_minimap_file_to_png(&exact)
+        {
+            return Some(png);
+        }
+    }
+
+    None
+}
+
+/// Resolves authored minimap thumbnail for a project map.
+pub(super) fn authored_minimap_thumbnail_project(
+    project: &ProjectRow,
+    map: &MapCandidate,
+    inventory: &Inventory,
+) -> Option<Vec<u8>> {
+    let dummy_archive = ImportedPak {
+        id: project.target.clone(),
+        name: project.target.clone(),
+        source: project.workspace.display().to_string(),
+        directory: project.workspace.display().to_string(),
+        group: "Project".into(),
+        description: "Project workspace".into(),
+        entries: inventory.entries.len(),
+        extracted_bytes: 0,
+        warnings: 0,
+        builds: Vec::new(),
+    };
+    authored_minimap_thumbnail(&dummy_archive, map, inventory, &project.workspace)
 }
 
 fn authored_fx_catalog(
@@ -2325,15 +2591,21 @@ fn open_selected(
         assembled.world = std::sync::Arc::new(world);
         diagnostics.push(assembled.report.status());
     }
-    let thumbnail = crate::map_preview::render(
-        terrain.as_ref().map(|(mesh, _)| mesh),
-        full_scene.as_ref().map(|scene| scene.world.as_ref()),
-    )
-    .or_else(|| {
-        terrain
-            .as_ref()
-            .and_then(|(mesh, _)| crate::map_chooser::terrain_thumbnail(&mesh.positions))
-    });
+    let thumbnail = authored_minimap_thumbnail(&archive, chosen, &inventory, &root)
+        .or_else(|| {
+            crate::map_preview::render(
+                terrain.as_ref().map(|(mesh, _)| mesh),
+                full_scene.as_ref().map(|scene| scene.world.as_ref()),
+            )
+        })
+        .or_else(|| {
+            terrain
+                .as_ref()
+                .and_then(|(mesh, _)| crate::map_chooser::terrain_thumbnail(&mesh.positions))
+        });
+    if thumbnail.is_some() {
+        diagnostics.push("Level thumbnail wholly loaded.".into());
+    }
     Ok(LoadedMap {
         thumbnail,
         archive,
@@ -3670,5 +3942,29 @@ mod tests {
         pak.name = "Levels_Island.pak".into();
         pak.group = "Levels".into();
         assert!(likely_level_pak(&pak));
+    }
+
+    #[test]
+    fn parses_minimap_references_from_various_xml_formats() {
+        let xml1 = br#"<LevelInfo><Minimap file="Textures/Minimap/minimap.dds" /></LevelInfo>"#;
+        assert_eq!(
+            parse_minimap_texture_ref(xml1),
+            Some("Textures/Minimap/minimap.dds".to_string())
+        );
+
+        let xml2 = br#"<MiniMap File="minimap.dds" Width="1024" />"#;
+        assert_eq!(
+            parse_minimap_texture_ref(xml2),
+            Some("minimap.dds".to_string())
+        );
+
+        let xml3 = br#"<Level Name="Forest" Minimap="Levels/Forest/map.dds" />"#;
+        assert_eq!(
+            parse_minimap_texture_ref(xml3),
+            Some("Levels/Forest/map.dds".to_string())
+        );
+
+        let xml_none = br#"<Objects><Object Name="Tree" /></Objects>"#;
+        assert_eq!(parse_minimap_texture_ref(xml_none), None);
     }
 }
