@@ -1,15 +1,27 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-15T18:00:00Z",
+  "updated_at": "2026-11-15T18:06:56+00:00",
   "announcements": [
     {
-      "id": "130600000000000000",
+      "id": "1563812052932370454",
       "author": "corvodl",
-      "timestamp": "2026-11-15T18:00:00Z",
-      "title": "Evolve Mod Manager Updates",
-      "content": "Welcome to the Evolve Mod Manager live announcements feed. Official updates and community news are synced directly from the Modded Evolve Discord.",
-      "description": "Stay tuned for the latest client updates, editor tools, and modding releases.",
-      "url": "https://discord.com/channels/100000000000000000/100000000000000001/130600000000000000",
+      "timestamp": "2026-10-25T07:10:47.642000+00:00",
+      "title": "",
+      "content": "TEST POST",
+      "description": "",
+      "url": "https://discord.com/channels/703798683069710407/1563782901106213004/1563812052932370454",
+      "image_urls": [
+        "https://cdn.discordapp.com/attachments/1563782901106213004/1563812052840091698/image.png?ex=6afaac77&is=6af95af7&hm=d3141bcf92b2dbdda4caffbcb886a859b7a8e29571909cc8912b0b2dc1d486fd&"
+      ]
+    },
+    {
+      "id": "1563782992998957058",
+      "author": "corvodl",
+      "timestamp": "2026-10-25T05:15:19.214000+00:00",
+      "title": "",
+      "content": "Modded Evolve #announcements",
+      "description": "",
+      "url": "https://discord.com/channels/703798683069710407/1563782901106213004/1563782992998957058",
       "image_urls": []
     }
   ]
