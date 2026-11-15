@@ -2,7 +2,7 @@ param([Parameter(Mandatory = $true)][string]$ArchivePath)
 $ErrorActionPreference = 'Stop'
 
 $expected = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'portable-release-members.txt'))
-if ($expected.Count -ne 17 -or @($expected | Select-Object -Unique).Count -ne $expected.Count) {
+if ($expected.Count -ne 16 -or @($expected | Select-Object -Unique).Count -ne $expected.Count) {
     throw 'Portable release inventory is invalid.'
 }
 
