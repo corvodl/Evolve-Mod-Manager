@@ -619,7 +619,6 @@ fn play_mods_beam<'a>(
 }
 
 fn home_launch_card<'a>(
-    label: &'static str,
     title: &'static str,
     description: &'static str,
     buttons: Element<'a, Message>,
@@ -627,18 +626,57 @@ fn home_launch_card<'a>(
 ) -> container::Container<'a, Message> {
     home_surface(
         column![
-            text(label).size(10).style(design::accent),
             text(title).size(17),
             text(description).size(design::LABEL).style(design::muted),
             iced::widget::space().height(Fill),
             buttons,
         ]
-        .spacing(9),
+        .spacing(8),
         wallpaper,
     )
     .padding(16)
     .width(Fill)
-    .height(Length::Fixed(210.0))
+    .height(Length::Fixed(190.0))
+}
+
+fn home_ticker_items(state: &State) -> Vec<String> {
+    let mut items = Vec::new();
+
+    // Community announcements from Discord / What's New feed:
+    for post in state.news.cache.announcements.iter().take(4) {
+        if !post.title.trim().is_empty() {
+            items.push(format!("📢 {}", post.title.trim()));
+        }
+    }
+    if state.news.loading {
+        items.push("Loading latest community announcements…".into());
+    } else if items.is_empty() {
+        items.push("📢 Community Discord announcements available in What's New".into());
+    }
+
+    // Release updates:
+    if let Some(update) = &state.available_update {
+        items.push(format!("🚀 New version v{} is available", update.version));
+    } else {
+        items.push(format!(
+            "✓ Evolve Mod Manager v{} ready",
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
+
+    // Active project context:
+    if let Some(workspace) = super::home_recent_workspace(state)
+        && let Some(name) = workspace.file_name()
+    {
+        items.push(format!("📁 Active workspace: {}", name.to_string_lossy()));
+    }
+
+    // Discoverable workflow shortcuts (per AGENTS.md):
+    items.push("⌨ Quick Action: Press Ctrl+K for Command Palette".into());
+    items.push("📦 Modding: Review changed files before packaging".into());
+    items.push("🔍 Asset Library: Inspect original textures and models".into());
+
+    items
 }
 
 pub(super) fn home(state: &State) -> Element<'_, Message> {
@@ -649,22 +687,14 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     let hero = home_surface(
         row![
             image(crate::handles::image(include_bytes!("../../../assets/hunt.png")))
-                .width(64).height(64),
+                .width(56).height(56),
             column![
-                text("Evolve Mod Manager").size(24),
+                text("Evolve Mod Manager").size(22),
                 text("Your workspace for CryPAK mods, original assets, model playback and level editing.")
                     .size(design::BODY).style(design::muted),
-            ].spacing(5).width(Fill),
-            column![
-                text("INSTALLATION").size(10).style(design::muted),
-                text(if state.preferences.game_installation.is_empty() { "Not configured" } else { "Configured" }).size(design::LABEL),
-            ].spacing(4),
-            column![
-                text("CLIENT").size(10).style(design::muted),
-                text(if state.preferences.client_executable.is_empty() { "Not configured" } else { "Configured" }).size(design::LABEL),
-            ].spacing(4),
+            ].spacing(4).width(Fill),
         ].spacing(18).align_y(iced::Center), wallpaper,
-    ).padding([16, 20]);
+    ).padding([14, 20]);
 
     let project = super::home_recent_workspace(state)
         .and_then(|path| {
@@ -674,7 +704,6 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         .unwrap_or_else(|| "No project selected".into());
     let launchpads = row![
         home_launch_card(
-            "INSTANT PLAY",
             "Launch Evolve",
             "Launch with enabled mod projects and staged overrides.",
             play_mods_beam(
@@ -688,7 +717,6 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         ),
         home_surface(
             column![
-                text("ACTIVE PROJECT").size(10).style(design::accent),
                 text(project).size(17),
                 text("Continue with your selected, isolated Modding workspace.")
                     .size(design::LABEL)
@@ -708,14 +736,13 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(8),
             ]
-            .spacing(9),
+            .spacing(8),
             wallpaper
         )
         .padding(16)
         .width(Fill)
-        .height(Length::Fixed(210.0)),
+        .height(Length::Fixed(190.0)),
         home_launch_card(
-            "AUTHORING SUITE",
             "Create New Mod Project",
             "Import source assets, edit gameplay data and preview models.",
             row![
@@ -734,9 +761,6 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     .spacing(14);
     let dashboard = home_bento(state);
     let tools = column![
-        text("QUICK TOOL ACCESS")
-            .size(design::CAPTION)
-            .style(design::muted),
         design::button("CryPAK Archive Explorer  →")
             .on_press(Message::Navigate(Page::Files))
             .width(Fill),
@@ -750,47 +774,15 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             .on_press(Message::Navigate(Page::Developer))
             .width(Fill),
     ]
-    .spacing(9)
+    .spacing(8)
     .width(Length::FillPortion(1));
 
-    let ticker_items = vec![
-        "CryPAK Archive Cryptography".into(),
-        "Scaleform Vector Reconstructions".into(),
-        "CAF & DBA Skeletal Animation".into(),
-        "DirectX BC7 / DDS Streaming Mips".into(),
-        "Procedural Terrain & Materials".into(),
-        "FSB5 IMA ADPCM Audio Rebuild".into(),
-        "CryEngine 3D Model Playback".into(),
-        "Live Process Telemetry & Memory Hooks".into(),
-    ];
+    let ticker_items = home_ticker_items(state);
     let marquee_ribbon = crate::ui_kit::marquee(
         &state.ui,
-        "home-tag-marquee",
+        "home-announcement-marquee",
         ticker_items,
         36.0,
-        state.preferences.reduce_motion,
-    );
-
-    let pipeline = crate::ui_kit::pipeline_flow(
-        &state.ui,
-        &[
-            ("Source Assets", "Loose CryEngine files", true),
-            (
-                "Mod Staging",
-                "Projects loaded",
-                state.modding_projects.is_some(),
-            ),
-            (
-                "CryPak Target",
-                "Stage folder set",
-                !state.preferences.stage.is_empty(),
-            ),
-            (
-                "Evolve Client",
-                "Client path set",
-                !state.preferences.client_executable.is_empty(),
-            ),
-        ],
         state.preferences.reduce_motion,
     );
 
@@ -800,7 +792,6 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             hero,
             marquee_ribbon,
             dashboard,
-            pipeline,
             launchpads,
             row![
                 container(latest_announcement(state, wallpaper)).width(Length::FillPortion(2)),
@@ -910,10 +901,10 @@ fn home_bento(state: &State) -> Element<'_, Message> {
     ]
     .spacing(4);
     row![
-        bento_tile("GAME CLIENT", client, 2),
-        bento_tile("MODS", mods, 2),
-        bento_tile("STORAGE", storage, 2),
-        bento_tile("MANAGER", update, 1),
+        bento_tile("Game Client", client, 2),
+        bento_tile("Mods", mods, 2),
+        bento_tile("Storage", storage, 2),
+        bento_tile("Manager", update, 1),
     ]
     .spacing(14)
     .height(Length::Fixed(104.0))

@@ -740,7 +740,7 @@ fn modifications(state: &State) -> Element<'_, Message> {
     });
     let mut rows = column![
         row![
-            text("MODIFIED FILES IN SELECTED PROJECT")
+            text("Modified files")
                 .size(design::LABEL)
                 .style(design::muted),
             space().width(Fill),
@@ -1726,7 +1726,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .align_y(iced::Center);
     let mut selected_content = column![
         row![
-            text("SELECTED PROJECT").size(design::BODY),
+            text("Selected project").size(design::BODY),
             space().width(Fill),
             text(
                 chosen
@@ -1754,7 +1754,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .spacing(10);
     if state.modding_export_options_open && chosen.is_some() {
         selected_content = selected_content.push(PakExportMode::ALL.into_iter().fold(
-            column![text("EXPORT FORMAT").size(design::LABEL).style(design::muted)].spacing(4),
+            column![text("Export format").size(design::LABEL).style(design::muted)].spacing(4),
             |menu, mode| {
                 let last = last_format == Some(mode);
                 menu.push(
@@ -1796,6 +1796,70 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let gameplay_count = mod_kind_count(project_list, ModKind::Gameplay);
     let review_count = mod_kind_count(project_list, ModKind::NeedsReview);
     let selected_project = panel(selected_content);
+
+    let has_assets = state
+        .library_catalog
+        .as_ref()
+        .is_some_and(|cat| !cat.archives.is_empty());
+    let has_stage = !state.preferences.stage.trim().is_empty();
+    let has_client = !state.preferences.client_executable.trim().is_empty();
+    let has_enabled_mods = scan.enabled_count() > 0;
+
+    let pipeline = crate::ui_kit::pipeline_flow(
+        &state.ui,
+        &[
+            (
+                "01",
+                "Source Assets",
+                if has_assets {
+                    "Originals ready"
+                } else {
+                    "Open Library"
+                },
+                has_assets,
+                Message::Navigate(super::Page::AssetLibrary),
+            ),
+            (
+                "02",
+                "Mod Staging",
+                if has_enabled_mods {
+                    "Mods enabled"
+                } else {
+                    "Select mods"
+                },
+                has_enabled_mods,
+                Message::Navigate(super::Page::Files),
+            ),
+            (
+                "03",
+                "CryPak Target",
+                if has_stage {
+                    "Target configured"
+                } else {
+                    "Set stage folder"
+                },
+                has_stage,
+                Message::OpenSettingsTab(crate::settings_page::Tab::Storage),
+            ),
+            (
+                "04",
+                "Evolve Client",
+                if has_client {
+                    "Client configured"
+                } else {
+                    "Set client path"
+                },
+                has_client,
+                if has_client && has_enabled_mods {
+                    Message::PlayWithMods
+                } else {
+                    Message::OpenSettingsTab(crate::settings_page::Tab::Storage)
+                },
+            ),
+        ],
+        state.preferences.reduce_motion,
+    );
+
     let top_cards = row![
         container(create_mod_card(state)).width(Length::FillPortion(1)),
         container(play_mods_card(state, &scan)).width(Length::FillPortion(1)),
@@ -1805,7 +1869,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let filter_bar = panel(
         column![
             row![
-                text("YOUR PROJECTS").size(design::HEADING),
+                text("Projects").size(design::HEADING),
                 space().width(Fill),
                 text(format!("{} matching", matching_projects(state).len()))
                     .size(design::CAPTION)
@@ -1881,6 +1945,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let mut main = column![
         text("Modding").size(24),
         menu(state),
+        pipeline,
         top_cards,
         filter_bar,
         order_split,
@@ -1889,14 +1954,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         text("Cosmetic candidates require content verification before online use. Gameplay, mixed and unverified mods stay offline.")
             .size(design::CAPTION)
             .style(design::muted),
-        text("OTHER MOD SOURCES").size(design::HEADING),
+        text("Other mod sources").size(design::HEADING),
         row![
             imported_paks(state),
             signed_paks(state),
         ]
         .spacing(12),
         panel(column![
-            text("RECOVERY").size(design::BODY),
+            text("Recovery").size(design::BODY),
             row![
                 crate::ui_kit::hold_button(
                     &state.ui,

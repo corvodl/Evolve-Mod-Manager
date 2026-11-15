@@ -722,14 +722,16 @@ impl canvas::Program<Message> for AnimatedBeam {
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let dx = self.to.x - self.from.x;
+        let from = Point::new(self.from.x.max(0.0), bounds.height * 0.5);
+        let to = Point::new(bounds.width.max(self.to.x), bounds.height * 0.5);
+        let dx = to.x - from.x;
 
-        let c1 = Point::new(self.from.x + dx * 0.5, self.from.y + self.curvature);
-        let c2 = Point::new(self.from.x + dx * 0.5, self.to.y - self.curvature);
+        let c1 = Point::new(from.x + dx * 0.5, from.y + self.curvature);
+        let c2 = Point::new(from.x + dx * 0.5, to.y - self.curvature);
 
         let path = Path::new(|builder| {
-            builder.move_to(self.from);
-            builder.bezier_curve_to(c1, c2, self.to);
+            builder.move_to(from);
+            builder.bezier_curve_to(c1, c2, to);
         });
 
         // Background track (quiet guideline)
@@ -738,11 +740,24 @@ impl canvas::Program<Message> for AnimatedBeam {
             &path,
             Stroke {
                 line_dash: canvas::LineDash {
-                    segments: &[6.0, 6.0],
+                    segments: &[4.0, 4.0],
                     offset: 0,
                 },
-                ..Stroke::default().with_width(2.0).with_color(track_color)
+                ..Stroke::default().with_width(1.5).with_color(track_color)
             },
+        );
+
+        // Directional arrowhead
+        let arrow_len = 5.0f32;
+        let arrow_p1 = Point::new(to.x - arrow_len, to.y - 3.5);
+        let arrow_p2 = Point::new(to.x - arrow_len, to.y + 3.5);
+        frame.stroke(
+            &Path::line(arrow_p1, to),
+            Stroke::default().with_width(1.5).with_color(track_color),
+        );
+        frame.stroke(
+            &Path::line(arrow_p2, to),
+            Stroke::default().with_width(1.5).with_color(track_color),
         );
 
         if self.active {
@@ -751,7 +766,7 @@ impl canvas::Program<Message> for AnimatedBeam {
 
             // Traveling pulse along the Bézier curve
             let samples = 18;
-            let pulse_span = 0.22;
+            let pulse_span = 0.28;
             for i in 0..samples {
                 let frac_a = i as f32 / samples as f32;
                 let frac_b = (i + 1) as f32 / samples as f32;
@@ -759,9 +774,9 @@ impl canvas::Program<Message> for AnimatedBeam {
                 let t_b = (progress - pulse_span * (1.0 - frac_b)).clamp(0.0, 1.0);
 
                 if t_b > t_a + 0.001 {
-                    let p_a = eval_bezier(self.from, c1, c2, self.to, t_a);
-                    let p_b = eval_bezier(self.from, c1, c2, self.to, t_b);
-                    let alpha = frac_b * frac_b * 0.92;
+                    let p_a = eval_bezier(from, c1, c2, to, t_a);
+                    let p_b = eval_bezier(from, c1, c2, to, t_b);
+                    let alpha = frac_b * frac_b * 0.95;
                     frame.stroke(
                         &Path::line(p_a, p_b),
                         Stroke::default()
@@ -776,9 +791,19 @@ impl canvas::Program<Message> for AnimatedBeam {
             }
 
             // Glowing head photon
-            let head = eval_bezier(self.from, c1, c2, self.to, progress);
-            frame.fill(&Path::circle(head, 4.5), design::with_alpha(accent, 0.35));
+            let head = eval_bezier(from, c1, c2, to, progress);
+            frame.fill(&Path::circle(head, 4.0), design::with_alpha(accent, 0.4));
             frame.fill(&Path::circle(head, 2.0), Color::WHITE);
+
+            // Active arrowhead highlight
+            frame.stroke(
+                &Path::line(arrow_p1, to),
+                Stroke::default().with_width(1.5).with_color(accent),
+            );
+            frame.stroke(
+                &Path::line(arrow_p2, to),
+                Stroke::default().with_width(1.5).with_color(accent),
+            );
         }
 
         vec![frame.into_geometry()]
@@ -876,13 +901,13 @@ impl canvas::Program<Message> for MarqueeTrack {
             return vec![frame.into_geometry()];
         }
 
-        let item_width = 160.0;
-        let spacing = 16.0;
+        let item_width = 280.0;
+        let spacing = 14.0;
         let step = item_width + spacing;
         let total_width = self.items.len() as f32 * step;
 
         let speed = if self.hovered {
-            self.speed * 0.25
+            self.speed * 0.2
         } else {
             self.speed
         };
@@ -893,12 +918,12 @@ impl canvas::Program<Message> for MarqueeTrack {
         let pill_height = (bounds.height - 8.0).max(18.0);
         let pill_y = (bounds.height - pill_height) / 2.0;
 
-        let visible_count = (bounds.width / step).ceil() as usize + 2;
+        let first_k = ((-step + offset) / step).floor() as isize;
+        let last_k = ((bounds.width + offset) / step).ceil() as isize + 1;
 
-        for i in 0..visible_count {
-            let virtual_x = i as f32 * step - offset;
-            let wrapped_x = virtual_x.rem_euclid(total_width);
-            let item_index = (wrapped_x / step).floor() as usize % self.items.len();
+        for k in first_k..=last_k {
+            let virtual_x = k as f32 * step - offset;
+            let item_index = (k.rem_euclid(self.items.len() as isize)) as usize;
             let label = &self.items[item_index];
 
             // Render background pill
@@ -912,12 +937,18 @@ impl canvas::Program<Message> for MarqueeTrack {
                 &pill_rect,
                 Stroke::default()
                     .with_width(1.0)
-                    .with_color(design::with_alpha(design::border(theme), 0.6)),
+                    .with_color(design::with_alpha(design::border(theme), 0.7)),
             );
+
+            let truncated = if label.chars().count() > 36 {
+                format!("{}…", label.chars().take(35).collect::<String>())
+            } else {
+                label.clone()
+            };
 
             // Centered label text
             frame.fill_text(canvas::Text {
-                content: label.clone(),
+                content: truncated,
                 position: Point::new(virtual_x + item_width / 2.0, bounds.height / 2.0),
                 color: theme.palette().text,
                 size: 12.0.into(),
