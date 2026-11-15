@@ -16,6 +16,7 @@ mod chrome;
 mod client_version;
 mod color_picker;
 mod command_palette;
+mod context_menu;
 mod crash_diagnostics;
 mod credits;
 mod design;
@@ -393,6 +394,8 @@ struct State {
     path_checks: forms::PathChecks,
     /// Last good value per number field.
     forms: forms::FormState,
+    /// Native floating Windows 11 style context menu.
+    context_menu: Option<context_menu::ContextMenuState>,
     /// Level Editor map chooser: search, filters, focus and thumbnails.
     map_chooser: map_chooser::ChooserState,
     /// Sort orders for the library table, project list and storage legend.
@@ -3112,6 +3115,17 @@ enum Message {
     Chrome(chrome::Msg),
     Form(forms::FormMsg),
     Map(map_chooser::Msg),
+    OpenContextMenu(context_menu::ContextMenuState),
+    OpenLevelContextMenu {
+        title: String,
+        subtitle: String,
+        thumb_key: Option<String>,
+        open_message: Option<Box<Message>>,
+    },
+    OpenAssetContextMenu(usize),
+    OpenProjectContextMenu(usize),
+    DismissContextMenu,
+    ContextAction(Box<Message>),
     /// Browse for a path setting that has no dedicated picker.
     BrowsePath(forms::PathKind),
     BrowsedPath(forms::PathKind, Option<PathBuf>),
@@ -6273,6 +6287,12 @@ fn send_dev_bind(state: &mut State, action: developer_hotkeys::Action) {
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
+        Message::OpenContextMenu(_)
+        | Message::OpenLevelContextMenu { .. }
+        | Message::OpenAssetContextMenu(_)
+        | Message::OpenProjectContextMenu(_)
+        | Message::DismissContextMenu
+        | Message::ContextAction(_) => {}
         Message::SidebarHover(hovered) => {
             if state.sidebar_hovered == hovered {
                 return Task::none();
@@ -19364,6 +19384,9 @@ fn level_editor_contents(state: &State) -> Element<'_, Message> {
     level_editor_shell::view(state)
 }
 
+static CURSOR_POS: std::sync::Mutex<iced::Point> =
+    std::sync::Mutex::new(iced::Point::new(400.0, 300.0));
+
 /// One native main window, model/asset editor, and separate export settings window. All costly
 /// asset operations stay in the existing worker queue, independent of either
 /// window's render loop.
@@ -19437,6 +19460,13 @@ impl Desktop {
                 client_version_task,
             ]),
         )
+    }
+
+    fn cursor_position(&self) -> iced::Point {
+        CURSOR_POS
+            .lock()
+            .map(|p| *p)
+            .unwrap_or(iced::Point::new(400.0, 300.0))
     }
 
     fn open_level_editor(&mut self) -> Task<Message> {
@@ -19539,6 +19569,12 @@ impl Desktop {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(
+            message,
+            Message::Navigate(_) | Message::DismissIntro | Message::DismissMenus
+        ) {
+            self.state.context_menu = None;
+        }
         // Choosing anything from the open sidebar closes it.
         if self.state.sidebar_open
             && matches!(
@@ -19576,6 +19612,139 @@ impl Desktop {
             return task;
         }
         match message {
+            Message::OpenContextMenu(menu) => {
+                self.state.context_menu = Some(menu);
+                Task::none()
+            }
+            Message::OpenLevelContextMenu {
+                title,
+                subtitle,
+                thumb_key,
+                open_message,
+            } => {
+                let mut items = Vec::new();
+                if let Some(ref key) = thumb_key
+                    && self.state.map_chooser.thumbs.contains_key(key)
+                {
+                    items.push(
+                        context_menu::ContextMenuItem::action(
+                            "View Full Minimap",
+                            Message::Map(map_chooser::Msg::Lightbox(Some(key.clone()))),
+                        )
+                        .with_icon(context_menu::ContextIcon::Eye),
+                    );
+                }
+                if let Some(msg) = open_message {
+                    items.push(
+                        context_menu::ContextMenuItem::action("Open in Level Editor", *msg)
+                            .with_icon(context_menu::ContextIcon::Edit)
+                            .with_shortcut("Enter"),
+                    );
+                }
+                items.push(context_menu::ContextMenuItem::separator());
+                items.push(
+                    context_menu::ContextMenuItem::action(
+                        "Copy Level Name",
+                        Message::CopyToClipboard("context_menu".to_string(), title.clone()),
+                    )
+                    .with_icon(context_menu::ContextIcon::Copy)
+                    .with_shortcut("Ctrl+C"),
+                );
+                if !subtitle.is_empty() {
+                    items.push(
+                        context_menu::ContextMenuItem::action(
+                            "Copy Source Path",
+                            Message::CopyToClipboard("context_menu".to_string(), subtitle),
+                        )
+                        .with_icon(context_menu::ContextIcon::Copy),
+                    );
+                }
+                let pos = self.cursor_position();
+                self.state.context_menu = Some(context_menu::ContextMenuState::new(pos, items));
+                Task::none()
+            }
+            Message::OpenAssetContextMenu(index) => {
+                let entry = self
+                    .state
+                    .inventory
+                    .as_ref()
+                    .and_then(|inv| inv.entries.get(index));
+                if let Some(entry) = entry {
+                    let path = entry.relative_path.clone();
+                    let name = Path::new(&path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.clone());
+                    let items = vec![
+                        context_menu::ContextMenuItem::action(
+                            "Inspect in Viewer",
+                            Message::LibrarySelect(index),
+                        )
+                        .with_icon(context_menu::ContextIcon::Eye),
+                        context_menu::ContextMenuItem::separator(),
+                        context_menu::ContextMenuItem::action(
+                            "Copy Asset Path",
+                            Message::CopyToClipboard("asset_context".to_string(), path),
+                        )
+                        .with_icon(context_menu::ContextIcon::Copy)
+                        .with_shortcut("Ctrl+C"),
+                        context_menu::ContextMenuItem::action(
+                            "Copy Asset Name",
+                            Message::CopyToClipboard("asset_context".to_string(), name),
+                        )
+                        .with_icon(context_menu::ContextIcon::Copy),
+                    ];
+                    let pos = self.cursor_position();
+                    self.state.context_menu = Some(context_menu::ContextMenuState::new(pos, items));
+                }
+                Task::none()
+            }
+            Message::OpenProjectContextMenu(index) => {
+                if let Some(project) = self
+                    .state
+                    .modding_projects
+                    .as_ref()
+                    .and_then(|p| p.get(index))
+                {
+                    let path = project.workspace.display().to_string();
+                    let name = project.target.clone();
+                    let items = vec![
+                        context_menu::ContextMenuItem::action(
+                            "Open Project",
+                            Message::ModdingSelectProject(index),
+                        )
+                        .with_icon(context_menu::ContextIcon::Folder)
+                        .with_shortcut("Enter"),
+                        context_menu::ContextMenuItem::action(
+                            "Package Mod (CryPAK)",
+                            Message::ModdingExportPak,
+                        )
+                        .with_icon(context_menu::ContextIcon::Export),
+                        context_menu::ContextMenuItem::separator(),
+                        context_menu::ContextMenuItem::action(
+                            "Copy Project Path",
+                            Message::CopyToClipboard("modding_context".to_string(), path),
+                        )
+                        .with_icon(context_menu::ContextIcon::Copy),
+                        context_menu::ContextMenuItem::action(
+                            "Copy Project Name",
+                            Message::CopyToClipboard("modding_context".to_string(), name),
+                        )
+                        .with_icon(context_menu::ContextIcon::Copy),
+                    ];
+                    let pos = self.cursor_position();
+                    self.state.context_menu = Some(context_menu::ContextMenuState::new(pos, items));
+                }
+                Task::none()
+            }
+            Message::DismissContextMenu => {
+                self.state.context_menu = None;
+                Task::none()
+            }
+            Message::ContextAction(action) => {
+                self.state.context_menu = None;
+                self.update(*action)
+            }
             // The page under an open modal ignores global shortcuts.
             Message::Ui(
                 ui_kit::UiMsg::Palette(_)
@@ -19727,9 +19896,10 @@ impl Desktop {
                 update(&mut self.state, Message::KeybindRecord(None))
             }
             Message::ViewportEscape(id) => {
-                // Esc closes the topmost transient layer first: the modal,
+                // Esc closes the topmost transient layer first: the context menu, modal,
                 // palette, popover, lightbox, then the side sheet.
-                let closed_layer = self.state.chrome.modal.take().is_some()
+                let closed_layer = self.state.context_menu.take().is_some()
+                    || self.state.chrome.modal.take().is_some()
                     || std::mem::take(&mut self.state.ui.palette.open)
                     || self.state.ui.popover.take().is_some()
                     || self.state.gallery.lightbox.take().is_some();
@@ -20043,31 +20213,33 @@ impl Desktop {
         };
         // Completion toasts follow the user into the windows where
         // long-running work is started; small dialogs stay uncluttered.
-        if id == self.main_id || self.viewer_id == Some(id) || self.level_id == Some(id) {
-            let content = toast::overlay(
-                content,
-                &self.state.toasts,
-                self.state.preferences.reduce_motion,
-            );
-            if id == self.main_id {
-                let content = chrome::modal_overlay(content, &self.state);
-                let content = match self
-                    .quit_prompt
-                    .then(|| unsaved_level_summary(&self.state))
-                    .flatten()
-                {
-                    Some(summary) => chrome::quit_prompt(content, summary),
-                    None => content,
-                };
-                command_palette::overlay(content, &self.state)
-            } else if self.viewer_id == Some(id) {
-                gallery::lightbox(&self.state, content)
+        let content =
+            if id == self.main_id || self.viewer_id == Some(id) || self.level_id == Some(id) {
+                let content = toast::overlay(
+                    content,
+                    &self.state.toasts,
+                    self.state.preferences.reduce_motion,
+                );
+                if id == self.main_id {
+                    let content = chrome::modal_overlay(content, &self.state);
+                    let content = match self
+                        .quit_prompt
+                        .then(|| unsaved_level_summary(&self.state))
+                        .flatten()
+                    {
+                        Some(summary) => chrome::quit_prompt(content, summary),
+                        None => content,
+                    };
+                    command_palette::overlay(content, &self.state)
+                } else if self.viewer_id == Some(id) {
+                    gallery::lightbox(&self.state, content)
+                } else {
+                    content
+                }
             } else {
                 content
-            }
-        } else {
-            content
-        }
+            };
+        context_menu::overlay(content, &self.state)
     }
 
     /// The message that clears the search box Esc applies to in window
@@ -20337,6 +20509,12 @@ impl Desktop {
                 Subscription::none()
             },
             iced::event::listen_with(|event, status, id| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    if let Ok(mut pos) = CURSOR_POS.lock() {
+                        *pos = position;
+                    }
+                    None
+                }
                 // Ctrl+1–6 switch Developer tabs.
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Character(value),

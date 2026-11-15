@@ -324,7 +324,8 @@ fn archive_row<'a>(
     container(
         mouse_area(line)
             .on_enter(Message::LibraryHoverRow(Some(row_index)))
-            .on_exit(Message::LibraryHoverRow(None)),
+            .on_exit(Message::LibraryHoverRow(None))
+            .on_right_press(Message::OpenAssetContextMenu(index)),
     )
     .width(Fill)
     .style(move |theme| container::Style {

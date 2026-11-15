@@ -5,7 +5,7 @@ use super::{Message, State};
 use crate::design;
 use crate::modding_projects::{PakExportMode, ProjectRow};
 use evolve_core::mod_safety::{ModKind, classify};
-use iced::widget::{column, container, row, scrollable, space, text};
+use iced::widget::{column, container, mouse_area, row, scrollable, space, text};
 use iced::{Alignment, Background, Element, Fill, Length};
 use std::collections::HashMap;
 
@@ -624,18 +624,24 @@ fn projects<'a>(state: &'a State, scan: &LoadOrderScan) -> Element<'a, Message> 
                     .padding([0, 3])
                     .on_press(Message::ModdingToggleEnabled(index))
                     .width(Length::FillPortion(2)),
-                    design::button(cells)
-                        .width(Length::FillPortion(20))
-                        .padding([
-                            if state.preferences.ui_density == "Compact" {
-                                2
-                            } else {
-                                5
-                            },
-                            7,
-                        ])
-                        .style(design::text_button)
-                        .on_press(Message::ModdingSelectProject(index)),
+                    container(
+                        mouse_area(
+                            design::button(cells)
+                                .width(Fill)
+                                .padding([
+                                    if state.preferences.ui_density == "Compact" {
+                                        2
+                                    } else {
+                                        5
+                                    },
+                                    7,
+                                ])
+                                .style(design::text_button)
+                                .on_press(Message::ModdingSelectProject(index)),
+                        )
+                        .on_right_press(Message::OpenProjectContextMenu(index)),
+                    )
+                    .width(Length::FillPortion(20)),
                     design::tooltip(
                         iced::widget::button(crate::icons::glyph(crate::icons::details(), 15.0))
                             .padding(5)
@@ -1474,22 +1480,25 @@ fn collision_owner<'a>(projects: &'a [ProjectRow], index: usize) -> Element<'a, 
         return text("").into();
     };
     container(
-        column![
-            text(record.label.as_str()).size(design::LABEL),
-            text(record.target.as_str()).size(10).style(design::muted),
-            row![
-                design::button("Open")
-                    .style(design::text_button)
-                    .padding([2, 5])
-                    .on_press(Message::ModdingSelectProject(index)),
-                design::button("Disable")
-                    .style(design::secondary)
-                    .padding([2, 6])
-                    .on_press(Message::ModdingToggleEnabled(index)),
+        mouse_area(
+            column![
+                text(record.label.as_str()).size(design::LABEL),
+                text(record.target.as_str()).size(10).style(design::muted),
+                row![
+                    design::button("Open")
+                        .style(design::text_button)
+                        .padding([2, 5])
+                        .on_press(Message::ModdingSelectProject(index)),
+                    design::button("Disable")
+                        .style(design::secondary)
+                        .padding([2, 6])
+                        .on_press(Message::ModdingToggleEnabled(index)),
+                ]
+                .spacing(4),
             ]
-            .spacing(4),
-        ]
-        .spacing(2),
+            .spacing(2),
+        )
+        .on_right_press(Message::OpenProjectContextMenu(index)),
     )
     .width(Fill)
     .padding(8)
