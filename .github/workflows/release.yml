@@ -95,9 +95,12 @@ jobs:
             throw "Release target $env:TARGET_REPO must keep main as its default branch."
           }
           $files = @(gh api "repos/$env:TARGET_REPO/contents" --jq '.[].name')
+          $unexpected = @($files | Where-Object { @('LICENSE', 'README.md', 'announcements.json') -notcontains $_ })
           if ($LASTEXITCODE -ne 0 -or
-              @(Compare-Object @('LICENSE', 'README.md') $files).Count -ne 0) {
-            throw "Public main must contain only README.md and LICENSE before creating a release tag."
+              $unexpected.Count -gt 0 -or
+              $files -notcontains 'LICENSE' -or
+              $files -notcontains 'README.md') {
+            throw "Public main must contain only README.md, LICENSE, and optionally announcements.json before creating a release tag."
           }
           Write-Host "Publishing to public $env:TARGET_REPO from its main branch."
 

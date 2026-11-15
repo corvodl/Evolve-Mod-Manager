@@ -1,4 +1,4 @@
-Nightly requested 2026-11-15 to update Discord announcements endpoint to public repository.
+Nightly requested 2026-11-15 after updating public release verification for announcements feed.
 request: user-requested-discord-feed-public-repo-2026-11-15-nightly-127
-base-main-commit: b043bc6c1b6ecac7ddff177a4a764349079647e2
-description: Point Discord announcements feed in What's New directly to public repository raw URL, update publishing workflow to sync announcements to public repo, and deploy a fresh Windows Nightly 127 build.
+base-main-commit: c12bb4a37102fbdff4d275a0166e469f8ba8d766
+description: Permit announcements.json in public repository release verification, build and publish fresh Windows Nightly 127 release with public raw announcements feed.
