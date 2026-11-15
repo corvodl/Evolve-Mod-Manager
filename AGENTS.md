@@ -4,6 +4,31 @@ Evolve Mod Manager is a Windows modding and asset-inspection app built with Rust
 Iced, and wgpu. The Cargo workspace lives in `crates/` (`evolve-core`,
 `evolve-desktop`, `evolve-teleport-overlay`, `evolve-privileged-worker`).
 
+## Working in this codebase
+
+- Serve three readers of every change: the person using the app, the developer
+  maintaining it, and the next agent editing it. Prefer a clear interaction and
+  a small, discoverable implementation over cleverness or decorative UI.
+- Inspect the call sites, tests, and existing patterns before changing behavior.
+  Keep unrelated edits intact; make the smallest complete change that preserves
+  existing workflows, including errors, cancellation, and recovery.
+- Put domain rules and asset provenance in `evolve-core`; keep desktop messages,
+  rendering, and focus in `evolve-desktop`. Never guess missing game data or
+  substitute a plausible asset for a verified source.
+- Model mutually exclusive states with enums or typed payloads. Do not make
+  control flow depend on display strings, positional labels, or combinations of
+  booleans that can contradict each other. Async work needs explicit pending,
+  success, failure, cancellation, and stale-result handling where applicable.
+- Reuse existing helpers before adding a new abstraction. Avoid one-use wrappers,
+  speculative options, duplicated guards, magic offsets, and defensive checks
+  already guaranteed by types. Name values for their purpose, not their shape.
+- Comments document the *why*: a security invariant, asset format constraint,
+  or framework quirk. No section banners, change-history comments, or prose
+  that merely paraphrases the next statement. Keep public documentation current
+  when the behavior or a safety boundary changes.
+- Add focused tests for the transition or regression being changed. Test
+  negative paths as well as success; report what cannot be verified locally.
+
 ## Repository topology
 
 - Source of truth: the **private** `corvodl/EMM-SRC` repository. Branch from
@@ -96,20 +121,37 @@ firewall rules, installs, updates, mod staging, or signing.
 ## Desktop UI
 
 Read `.claude/skills/ui-behaviors/SKILL.md` before adding or changing a page,
-dialog, popover, menu, list, or shortcut.
+dialog, popover, menu, list, or shortcut. Follow `docs/MANAGER_REDESIGN.md` for
+the Modern/Legacy visual split: restrained hierarchy, real source imagery,
+existing theme overrides, and no invented game art.
 
 - Reuse `ui_kit.rs`, `design.rs`, `forms.rs`, `chrome.rs`, and `toast.rs`.
   Do not hand-roll a second button, dialog, popover, field, or toast.
+- **No text that explains the layout.** Do not add headings like "Your
+  workspace" or "At a glance", captions that point "above", "below", or
+  "right", or paragraphs explaining where a control lives. Give the control
+  an actionable name, group it clearly, or fix the layout instead. Keep text
+  that communicates an actual constraint, outcome, error, shortcut, or safety
+  warning; do not remove accessible control names to make a screen quieter.
+- Prefer one clear primary action and visible state over competing cards,
+  decorative badges, and redundant status copy. Empty, loading, success, and
+  error states should say what happened or what the person can do next, not
+  where to look. Use real progress only; never invent a percentage.
 - One Esc closes the topmost layer in the `Message::ViewportEscape` chain.
   Enter confirms the open modal when focus is not in a field. Tab stays inside
   the current window or dialog via `focus_scope`.
+- Respect `event::Status`: page shortcuts must not steal keystrokes captured
+  by an input. Opening a dialog focuses its first useful control, and closing
+  or deleting a selected item must not strand focus.
 - Route global shortcuts through `keybinds.rs` and register new commands in the
-  command palette.
+  command palette; put shortcut hints where the action is used.
 - Name every control; use `ui_kit::why_disabled` for unavailable actions. Style
-  from `design` tokens and widget state, check contrast in light and dark
-  themes, and honour `preferences.reduce_motion`.
-- Review at 1440×900 and the 880×620 minimum, in both themes, with the keyboard
-  only.
+  from `design` tokens and widget state, not ad hoc colors or spacing. Check
+  text contrast at 4.5:1 and control/focus edges at 3:1 in both themes, and
+  honour `preferences.reduce_motion`.
+- Review Modern and Legacy at 1440×900 and the 880×620 minimum, in light and
+  dark themes where supported, with the keyboard only. Check long paths,
+  empty collections, busy states, errors, and the return from overlays.
 
 ## Verification
 
