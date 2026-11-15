@@ -192,7 +192,7 @@ jobs:
           if (Test-Path -LiteralPath 'dist/third_party/Cryengine-Converter') {
             Copy-Item -LiteralPath 'dist/third_party/Cryengine-Converter' -Destination "$folder/third_party/Cryengine-Converter" -Recurse -Force
           }
-          Compress-Archive -Path (Join-Path $folder '*') -DestinationPath "dist/EvolveModManager-Portable-$env:VERSION.zip" -CompressionLevel Optimal -Force
+          ./scripts/package-portable-release.ps1 -SourceDirectory $folder -ArchivePath "dist/EvolveModManager-Portable-$env:VERSION.zip"
 
       - name: Fetch and verify optional GFX editor tools
         shell: pwsh

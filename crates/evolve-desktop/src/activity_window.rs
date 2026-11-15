@@ -79,7 +79,18 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 "Live status for long-running operations. Closing this window does not cancel work."
             )
             .size(12),
-            meter,
+            row![
+                container(meter).width(Fill),
+                crate::ui_kit::radar_scanner(
+                    &state.ui,
+                    80.0,
+                    "SCANNER",
+                    state.scan_cancel.is_some() || state.busy,
+                    state.preferences.reduce_motion,
+                ),
+            ]
+            .spacing(12)
+            .align_y(iced::Center),
             container(
                 row![
                     text(&state.status).size(13).width(Fill),

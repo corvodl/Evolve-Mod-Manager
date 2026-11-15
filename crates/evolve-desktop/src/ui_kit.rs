@@ -7,7 +7,7 @@
 //! and [`UiState::ambient`]), and `reduce_motion` makes every effect
 //! instant or static.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use iced::widget::{column, container, mouse_area, row, space, svg, text};
@@ -103,6 +103,8 @@ pub enum UiMsg {
     PopoverSave(Box<Message>),
     /// A faded scroll list moved: `(list, relative offset, overflows)`.
     Scrolled(&'static str, f32, bool),
+    /// Horizontal marquee hover state: `(marquee id, hovered)`.
+    MarqueeHover(&'static str, bool),
 }
 
 /// An in-progress reorder drag (or the keyboard-focused row).
@@ -197,6 +199,8 @@ pub struct UiState {
     scrolls: BTreeMap<&'static str, (f32, bool)>,
     /// When the Legacy title scramble started (once per page change).
     scramble_start: Option<Instant>,
+    /// Currently hovered marquee identifiers.
+    pub marquee_hovered: BTreeSet<&'static str>,
 }
 
 impl UiState {
@@ -569,6 +573,13 @@ pub fn update(ui: &mut UiState, message: UiMsg, reduce_motion: bool) -> Option<M
                 reduce_motion,
             );
             return Some(*message);
+        }
+        UiMsg::MarqueeHover(id, hovered) => {
+            if hovered {
+                ui.marquee_hovered.insert(id);
+            } else {
+                ui.marquee_hovered.remove(id);
+            }
         }
     }
     None
@@ -2196,6 +2207,276 @@ pub fn beam<'a>(
     .into()
 }
 
+// ---------------------------------------------------------------------------
+// Tactical Radar Scanner (Uiverse / React Bits / CryEngine HUD)
+// ---------------------------------------------------------------------------
+
+/// Tactical radar sweep scanner for integrity checks, memory probing, and actor discovery.
+/// Concentric rings, azimuth axis crosshairs, rotating sweep beam with trailing phosphor,
+/// and responsive blip echoes.
+pub fn radar_scanner<'a>(
+    ui_state: &UiState,
+    size: f32,
+    label: &'static str,
+    scanning: bool,
+    reduce_motion: bool,
+) -> Element<'a, Message> {
+    let now = Instant::now();
+    let time = ui_state.clock(now);
+    let legacy_label = text(label).size(design::CAPTION).style(design::muted);
+
+    let blips = if scanning {
+        vec![(0.85, 0.65), (2.10, 0.40), (3.80, 0.80), (5.20, 0.55)]
+    } else {
+        vec![(0.85, 0.65), (3.80, 0.80)]
+    };
+
+    let radar = iced::widget::canvas(crate::fx::RadarSweep {
+        time,
+        period: 2.8,
+        scanning: scanning && !reduce_motion,
+        blips,
+    })
+    .width(Length::Fixed(size))
+    .height(Length::Fixed(size));
+
+    container(
+        column![radar, legacy_label,]
+            .spacing(6)
+            .align_x(Alignment::Center),
+    )
+    .padding(8)
+    .style(design::panel)
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// Animated Node Connection Beam (Magic UI Animated Beam)
+// ---------------------------------------------------------------------------
+
+/// A smooth cubic Bézier animated beam connecting two points with traveling energy photons.
+pub fn animated_beam<'a>(
+    ui_state: &UiState,
+    from: Point,
+    to: Point,
+    curvature: f32,
+    active: bool,
+    reduce_motion: bool,
+) -> Element<'a, Message> {
+    let now = Instant::now();
+    let time = ui_state.clock(now);
+    iced::widget::canvas(crate::fx::AnimatedBeam {
+        from,
+        to,
+        time,
+        period: 2.2,
+        curvature,
+        active: active && !reduce_motion,
+    })
+    .width(Fill)
+    .height(Fill)
+    .into()
+}
+
+/// Interactive multi-stage pipeline flow visualization (Magic UI Animated Beam pattern).
+/// Renders consecutive cards with animated connection beams showing data flowing through stages.
+pub fn pipeline_flow<'a>(
+    ui_state: &UiState,
+    stages: &[(&'static str, &'static str, bool)],
+    reduce_motion: bool,
+) -> Element<'a, Message> {
+    let mut cards = row![].spacing(20).align_y(iced::Center);
+
+    for (index, &(title, subtitle, active)) in stages.iter().enumerate() {
+        let node_body = column![
+            text(format!("0{}", index + 1)).size(10).style(if active {
+                design::accent
+            } else {
+                design::muted
+            }),
+            text(title).size(13),
+            text(subtitle).size(10).style(design::muted),
+        ]
+        .spacing(3);
+
+        let card = container(node_body).padding([8, 14]).style(move |theme| {
+            let mut style = design::panel(theme);
+            if active {
+                style.border.color = theme.palette().primary;
+                style.border.width = 1.5;
+            }
+            style
+        });
+
+        cards = cards.push(card);
+
+        if index + 1 < stages.len() {
+            let arrow_canvas = container(animated_beam(
+                ui_state,
+                Point::new(0.0, 15.0),
+                Point::new(24.0, 15.0),
+                0.0,
+                active,
+                reduce_motion,
+            ))
+            .width(Length::Fixed(24.0))
+            .height(Length::Fixed(30.0));
+
+            cards = cards.push(arrow_canvas);
+        }
+    }
+
+    container(cards).padding(12).style(design::panel).into()
+}
+
+// ---------------------------------------------------------------------------
+// Infinite Marquee (Magic UI Marquee)
+// ---------------------------------------------------------------------------
+
+/// Infinite horizontal scrolling ribbon for assets, mods, and tags.
+/// Subpixel smooth translation that wraps seamlessly and pauses when hovered.
+pub fn marquee<'a>(
+    ui_state: &UiState,
+    id: &'static str,
+    items: Vec<String>,
+    speed: f32,
+    reduce_motion: bool,
+) -> Element<'a, Message> {
+    let hovered = ui_state.marquee_hovered.contains(id);
+    let time = ui_state.clock(Instant::now());
+
+    let track = iced::widget::canvas(crate::fx::MarqueeTrack {
+        items,
+        time,
+        speed: if reduce_motion { 0.0 } else { speed },
+        hovered,
+    })
+    .width(Fill)
+    .height(Length::Fixed(36.0));
+
+    let masked = iced::widget::stack![
+        track,
+        row![
+            edge_fade_horizontal(true),
+            space().width(Fill),
+            edge_fade_horizontal(false),
+        ]
+        .width(Fill)
+        .height(Fill),
+    ];
+
+    mouse_area(masked)
+        .on_enter(ui(UiMsg::MarqueeHover(id, true)))
+        .on_exit(ui(UiMsg::MarqueeHover(id, false)))
+        .into()
+}
+
+/// Horizontal edge fade: true = fades out at left, false = fades out at right.
+fn edge_fade_horizontal<'a>(left: bool) -> Element<'a, Message> {
+    container(space().width(24).height(Fill))
+        .width(Length::Fixed(24.0))
+        .height(Fill)
+        .style(move |theme: &Theme| {
+            let solid = design::surface(theme);
+            let clear = design::with_alpha(solid, 0.0);
+            let angle = if left {
+                std::f32::consts::FRAC_PI_2
+            } else {
+                -std::f32::consts::FRAC_PI_2
+            };
+            let gradient = iced::gradient::Linear::new(angle)
+                .add_stop(0.0, clear)
+                .add_stop(1.0, solid);
+            container::Style {
+                background: Some(Background::Gradient(gradient.into())),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+// ---------------------------------------------------------------------------
+// Shimmer Button (Magic UI / 21st.dev)
+// ---------------------------------------------------------------------------
+
+/// Action button with diagonal traveling shimmer highlight.
+pub fn shimmer_button<'a>(
+    ui_state: &UiState,
+    label: impl text::IntoFragment<'a>,
+    on_press: Message,
+    busy: bool,
+    reduce_motion: bool,
+) -> Element<'a, Message> {
+    let base_btn = design::button(text(label))
+        .on_press(on_press)
+        .style(design::primary);
+
+    if reduce_motion {
+        return base_btn.into();
+    }
+
+    let shimmer = iced::widget::canvas(crate::fx::ShimmerGlow {
+        time: ui_state.clock(Instant::now()),
+        period: if busy { 1.6 } else { 3.2 },
+        strength: if busy { 1.0 } else { 0.65 },
+    })
+    .width(Fill)
+    .height(Fill);
+
+    iced::widget::stack![base_btn, shimmer].into()
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry HUD (Inspora / React Bits / CryEngine HUD)
+// ---------------------------------------------------------------------------
+
+/// Tactical telemetry display panel with monospace technical readouts and live scramble.
+pub fn telemetry_hud<'a>(
+    ui_state: &UiState,
+    title: &'static str,
+    entries: &[(&str, &str)],
+    active: bool,
+) -> Element<'a, Message> {
+    let now = Instant::now();
+    let mut readouts = column![
+        row![
+            text(title).size(11).style(design::accent),
+            space().width(Fill),
+            text(if active { "● UNLOCKED" } else { "○ LOCKED" })
+                .size(10)
+                .style(if active {
+                    design::accent
+                } else {
+                    design::muted
+                }),
+        ]
+        .align_y(iced::Center),
+    ]
+    .spacing(8);
+
+    for &(key, val) in entries {
+        let display_val = if ui_state.scrambling(now) {
+            ui_state.scrambled(val, now)
+        } else {
+            val.to_owned()
+        };
+
+        readouts = readouts.push(
+            row![
+                text(key.to_owned())
+                    .size(11)
+                    .style(design::muted)
+                    .width(Length::Fixed(120.0)),
+                text(display_val).size(11).font(iced::Font::MONOSPACE),
+            ]
+            .spacing(6)
+            .align_y(iced::Center),
+        );
+    }
+
+    container(readouts).padding(12).style(design::panel).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2317,5 +2598,35 @@ mod tests {
         assert_eq!(format_bytes(512.0), "512 B");
         assert_eq!(format_bytes(1536.0), "1.5 KiB");
         assert_eq!(format_bytes(3.0 * 1024.0 * 1024.0 * 1024.0), "3.0 GiB");
+    }
+
+    #[test]
+    fn marquee_hover_tracks_active_state() {
+        let mut state = UiState::default();
+        assert!(!state.marquee_hovered.contains("test-marquee"));
+
+        update(&mut state, UiMsg::MarqueeHover("test-marquee", true), false);
+        assert!(state.marquee_hovered.contains("test-marquee"));
+
+        update(
+            &mut state,
+            UiMsg::MarqueeHover("test-marquee", false),
+            false,
+        );
+        assert!(!state.marquee_hovered.contains("test-marquee"));
+    }
+
+    #[test]
+    fn shimmer_and_beam_elements_construct_cleanly() {
+        let state = UiState::default();
+        let _ = shimmer_button(&state, "Play", Message::ClearActivity, true, false);
+        let _ = animated_beam(
+            &state,
+            Point::ORIGIN,
+            Point::new(100.0, 100.0),
+            10.0,
+            true,
+            false,
+        );
     }
 }
