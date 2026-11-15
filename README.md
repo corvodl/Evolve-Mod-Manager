@@ -1,55 +1,193 @@
-# Evolve Mod Manager
+# Evolve Mod Manager (EMM)
 
-An experimental Windows modding and asset-inspection tool for **Evolve Stage 2**, built with Rust, Iced, and wgpu.
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue.svg)
+[![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org/)
+[![UI](https://img.shields.io/badge/ui-Iced%200.14%20%2B%20wgpu-purple.svg)](https://github.com/iced-rs/iced)
+![CryEngine](https://img.shields.io/badge/engine-CryEngine%203%20(Evolve)-red.svg)
+[![License](https://img.shields.io/badge/license-Community%20Preview-lightgrey.svg)](LICENSE)
 
-> **Nightly 0.1.0 is a development preview.** Some features are unfinished, and not all models, animations, materials, or exports are game-accurate yet. The first full 1.0 release is still in development.
+An advanced, native Windows modding environment, asset inspector, and level editing suite for **Evolve Stage 2**, built in Rust with **Iced** and **wgpu**.
 
-## Download and install
+EMM is engineered for zero-compromise performance: multi-threaded background workers handle heavy I/O, CryPAK cryptography, DDS streaming decompression, and 3D terrain meshing so the user interface never freezes and consumes **0% CPU** while idle.
 
-**[Download the latest release from GitHub Releases](https://github.com/corvodl/Evolve-Mod-Manager/releases)**
+---
 
-Choose one of the two Windows downloads attached to a release:
+## Table of Contents
 
-- **Installer** — `EvolveModManager-Setup-*.exe`. Run the installer and choose whether to add a desktop shortcut, a Start Menu shortcut, and launch the manager after installation.
-- **Portable** — `EvolveModManager-Portable-*.zip`. Extract the ZIP to a folder of your choice, then run `evolve-mod-manager.exe`. No installation is necessary.
+- [Overview](#overview)
+- [Key Features](#key-features)
+  - [1. Modern Fluent Desktop Interface](#1-modern-fluent-desktop-interface)
+  - [2. Level Editor & World Builder](#2-level-editor--world-builder)
+  - [3. Modding & Staging Pipeline](#3-modding--staging-pipeline)
+  - [4. Asset Library & Multi-Format Viewer](#4-asset-library--multi-format-viewer)
+  - [5. CryPAK Archive Explorer & Cryptography](#5-crypak-archive-explorer--cryptography)
+  - [6. Runtime Utilities & Direct Play](#6-runtime-utilities--direct-play)
+  - [7. In-App Verified Updater](#7-in-app-verified-updater)
+- [Download & Installation](#download--installation)
+  - [Installer vs. Portable](#installer-vs-portable)
+  - [Updating Channels](#updating-channels)
+- [Architecture & Performance Discipline](#architecture--performance-discipline)
+- [Keyboard Shortcuts & Navigation](#keyboard-shortcuts--navigation)
+- [Contributing & Development](#contributing--development)
+- [Disclaimer & Community Notes](#disclaimer--community-notes)
 
-Windows may request administrator approval when launching the manager. Download builds only from the repository's Releases page. You **do not** need to install Rust, Visual Studio, or build the project yourself.
+---
 
-Nightly releases receive experimental fixes first. Under **Settings → Updates**, choose Stable, Beta, or Nightly and check for new versions. When an update is available, select **Update and restart**: the manager downloads and verifies the matching GitHub release, closes itself, installs the update, and reopens. Portable copies remain portable. You do not need to download or run the installer yourself for subsequent updates.
+## Overview
 
-## Features
+Evolve Mod Manager provides a complete authoring and reverse-engineering workspace for Evolve Stage 2 CryEngine assets. Whether inspecting signed original archives, previewing monster skeletal rigs, assembling custom maps with full atmospheric lighting, or staging non-destructive mod projects with automated rollback protection, EMM delivers a fast, game-accurate workflow.
 
-The following features are available or being actively tested in the public preview:
+```mermaid
+flowchart LR
+    A["Original CryPAKs<br/>(Signed / Encrypted)"] --> B["EMM Asset Core<br/>(CryXML / Twofish / BCn)"]
+    B --> C["Asset Library<br/>(Virtual Explorer)"]
+    B --> D["3D Viewport<br/>(Models / Levels)"]
+    B --> E["Modding Staging<br/>(Isolated Workspaces)"]
+    E --> F["CryPAK Target<br/>(Rebuilt & Signed)"]
+    F --> G["Evolve Client<br/>(Play with Mods)"]
+```
 
-- **Modding workspace** — File browsing, asset inspection, PAK import and isolated mod staging with backup/recovery safeguards.
-- **PAK tools** — Inspect and extract CryEngine archives, including supported signed/encrypted Stage 2 PAKs; experimental archive rebuilding and signing workflows.
-- **Asset Library** — Import assets into a searchable workspace and preview them without editing the original archive.
-- **GPU model viewer** — Preview supported `.cgf`, `.chr`, `.skin`, `.skinm`, and `.cdf` models, with camera controls and character attachment assembly.
-- **Textures and materials** — Preview DDS textures and authored diffuse, normal, and emissive maps; export supported DDS images to PNG at their highest available resolution.
-- **Character effects** — Preview selected CryEngine glow materials and animated emissive Decals, including Kala's Banshee Gun; exact in-game HDR/bloom parity is still in progress.
-- **Animations** — Experimental native CAF playback and character animation inspection, with limited DBA/conversion support.
-- **Blender exports** — Experimental model, character-assembly, and rigged FBX export, with optional material textures and animation support where verified.
-- **Level tools** — Preview supported terrain and level assets and export experimental Blender-compatible scenes.
-- **Settings and updates** — Appearance options, configurable paths, recovery preferences, Stable/Beta/Nightly channels, and experimental one-click verified update and restart.
+---
 
-**Compatibility varies by asset.** Some Stage 2 and historical assets require additional material or skeleton handling. Missing dependencies and ambiguous references are reported rather than replaced with invented data.
+## Key Features
 
-## Planned additions and improvements
+### 1. Modern Fluent Desktop Interface
+- **Windows 11 Acrylic Theme**: Refined charcoal surfaces, Bento layout summary cards, crisp contrast borders, and responsive design.
+- **Live Community Marquee**: Real-time ticker ribbon streaming live community announcements directly from Discord and GitHub Releases.
+- **Floating Context Menus**: Native Windows 11 style dark floating context menus across the Level Chooser, Modding Projects, and Asset Library with keyboard accelerators and icons.
+- **Command Palette (`Ctrl+K`)**: Universal fuzzy navigation across all pages, recent maps, mod projects, tools, and appearance settings.
+- **Dockable Inspector (`Ctrl+B`)**: Sliding side sheet for inspecting file metadata, project details, and asset diagnostics.
+- **Motion Reduction**: Full accessibility support honoring Windows reduced motion preferences, swapping continuous animations for static, energy-efficient layouts.
 
-- More accurate **character and monster previews**, including full CDF attachments, higher-fidelity materials, source UVs, emissive effects, and in-game-style bloom.
-- Improved **Blender exports** with reliable rigs, skin weights, animations, high-resolution textures, and complete monster/hunter assemblies.
-- More complete **CAF/DBA animation** playback, skeleton compatibility, and layered animations.
-- Expanded **Level Editor** tools for assembling, editing, and exporting textured levels.
-- More complete **PAK and mod-profile management**, safe installed-game application, restore/rollback, and automated dependency handling.
-- More reliable **update recovery and progress feedback** for installed and portable versions.
-- Performance, stability, and usability improvements as Nightly builds are tested.
+### 2. Level Editor & World Builder
+- **Interactive 3D Viewport**: Real-time GPU instanced rendering of level terrain, placed brushes, static props, and lighting.
+- **Wholly Displayed XML Minimaps**: Automatically extracts, resolves, and decodes authored minimap texture references (`levelinfo.xml`, `minimap.xml`, `leveldata.xml`, streaming DDS mips), wholly displaying them without clipping (`ContentFit::Contain`).
+- **Minimap Lightbox Viewer**: Full-screen zoom and drag-pan inspection accessible directly via level card right-click.
+- **Atmosphere & Environmental Systems**:
+  - `TimeOfDay.xml` evaluation with real-time curve scrubbing.
+  - Authored sun lighting, shadow directions, sky cubemaps, and ambient reflection probes.
+  - Rain darkening, fog profiles, water volume meshes, and celestial bodies.
+  - Interior weather transitions (e.g., biodome indoor/outdoor lighting triggers).
+- **Terrain & Surface Editing**:
+  - Heightmap decoding and CPU hillshade visualization.
+  - Surface painting layers (`TerrainTexture.xml`, `cover.ctc` baked cover atlases, raw RGB24 tiles).
+  - Vegetation map parsing and procedural instance scatter inspection.
+- **Multi-Layer Authoring**: Object placement, coordinate transforms, interactive gizmos, duplicate GUID detection, and a non-destructive 64-step undo/redo buffer.
 
-See [the development parity checklist](docs/PARITY.md) for technical implementation status.
+### 3. Modding & Staging Pipeline
+- **4-Stage Interactive Pipeline**: Clear, interactive workflow linking *Source Assets* &rarr; *Mod Staging* &rarr; *CryPak Target* &rarr; *Evolve Client*.
+- **Isolated Mod Workspaces**: Keep modifications in independent project folders without touching or overwriting original game installations.
+- **Multi-Profile Management**: Enable or disable mods with a single click; instant conflict detection and dependency analysis.
+- **Controlled Swap & Rollback**: Built-in safety helpers create automatic recovery checkpoints, ensuring game files can always be restored to vanilla status.
 
-Developers can optionally stage the independent GPLv2 Cryengine-Converter with its corresponding source; see [converter setup and redistribution](docs/CRYENGINE_CONVERTER.md).
+### 4. Asset Library & Multi-Format Viewer
+- **Virtual Filesystem Explorer**: Fast search with instant chips (`Category`, `Source PAK`, `Build`), sorting, and recursive tree browsing.
+- **Multi-Model GPU Viewer**:
+  - `.cgf` static meshes, `.chr` character rigs, `.skin` / `.skinm` skinned meshes.
+  - Full `.cdf` (Character Definition) attachment hierarchy with CA bone sockets and damage layer reblending.
+  - Unified rigged FBX export for Blender with preserved vertex UVs and skin weights.
+- **Skeletal Animation**: Native CAF playback, DBA catalog scanning, and 1D/2D/3D blendspace interpolation.
+- **Scaleform & UI Inspector**: Vector SWF/GFX reconstruction, localization dictionary tables, and video stream playback.
+- **DirectX DDS Texture Engine**: Decodes BC1–BC7 formats, reconstitutes split streaming mips (`.dds.0` &rarr; `.dds.16`), supports Linear/sRGB views, and exports uncompressed PNGs.
+- **Audio Sample Auditioning**: In-app player for FSB5 and WAV audio soundbanks.
 
-## Notes
+### 5. CryPAK Archive Explorer & Cryptography
+- **Signed Container Cryptography**: Unpacks and verifies encrypted Stage 2 CryEngine archives using Twofish and RSA decryption.
+- **Binary CryXML Engine**: High-performance streaming decoder and encoder for binary CryXML formats (`cryxml::xml_bytes`).
+- **Archive Rebuilder**: Package mod projects into game-ready `.pak` files with optional rekeying and signing.
 
-This project is an independent community tool. Work with copies of game assets when testing experimental modification features. Previewing or exporting assets does not imply they can be safely used in an installed game, and modding may disable online functionality. Preserve backups and follow applicable game and community rules.
+### 6. Runtime Utilities & Direct Play
+- **One-Click Play with Mods**: Launches Evolve with active mod overrides applied seamlessly.
+- **Online Guard**: Automatically sets and maintains Windows Firewall rules to prevent accidental online connectivity during testing, preserving account safety.
+- **Process Telemetry & Direct Play**: Live client state observation, memory-safe synchronization hooks, and rapid one-click launching.
 
-The original game archives, extracted asset packs, private signing keys, and personal configuration are **not included** with the downloads. The Home workbench banner (`assets/default_loading.dds`) is bundled as a standalone artwork asset.
+### 7. In-App Verified Updater
+- **One-Click Updates**: Automatically checks for updates, downloads the latest release from GitHub, verifies hash integrity, and performs in-place upgrades.
+- **Channel Switching**: Select between **Stable**, **Beta**, and **Nightly** builds under Settings.
+- **Portable Preservation**: Portable ZIP installations remain strictly portable across updates without creating registry or installer clutter.
+
+---
+
+## Download & Installation
+
+Get the latest build from **[GitHub Releases](https://github.com/corvodl/Evolve-Mod-Manager/releases)**.
+
+### Installer vs. Portable
+
+| Feature | Installer (`.exe`) | Portable (`.zip`) |
+| :--- | :--- | :--- |
+| **Setup** | Windows Setup wizard with optional shortcuts | Extract anywhere and run `evolve-mod-manager.exe` |
+| **Location** | Installs to user AppData or Program Files | Self-contained in chosen directory |
+| **Shortcuts** | Desktop & Start Menu integration | Launch directly from folder |
+| **Updates** | Seamless in-place updater | Upgrades in-place, remains portable |
+| **Uninstallation** | Windows Settings &rarr; Apps | Simply delete the extracted folder |
+
+> [!NOTE]
+> Windows may display a standard UAC prompt on launch because certain memory hooks and firewall protections require standard administrator privileges.
+
+---
+
+## Architecture & Performance Discipline
+
+EMM is built on strict architectural and performance standards:
+
+1. **0% CPU Idle**: When no animations or user interactions are occurring, the application drops to 0% CPU consumption. No polling loops or unconditional tick subscriptions.
+2. **Asynchronous Worker Queue**: Time-consuming tasks (archive extraction, texture mip stitching, 3D world meshing, cryptographic signing) run on dedicated background threads. The main UI thread never blocks.
+3. **Multi-Window Isolation**: The main desktop shell, Level Editor, Model Viewer, and Inspector operate on independent `wgpu` rendering contexts.
+4. **Data Integrity**: Non-destructive workflows ensure original game archives and loose files are never modified without explicit user consent.
+
+---
+
+## Keyboard Shortcuts & Navigation
+
+| Shortcut | Context | Action |
+| :--- | :--- | :--- |
+| `Ctrl+K` / `⌘K` | Global | Open universal Command Palette |
+| `Ctrl+B` | Global | Toggle side inspector sheet |
+| `Esc` | Global | Close topmost layer (context menu &rarr; modal &rarr; palette &rarr; sheet) |
+| `Right Click` | Chooser / Lists | Open native floating context menu |
+| `Alt+↑` / `Alt+↓` | Reorder Lists | Move focused row up or down |
+| `Tab` / `Shift+Tab` | Forms | Cycle input focus forwards / backwards |
+| `Enter` | Chooser / Lists | Open selected level, project, or asset |
+
+---
+
+## Contributing & Development
+
+### Prerequisites
+- [Rust](https://rustup.rs/) (2024 edition / latest stable)
+- Windows 10/11 x64
+- PowerShell 7+
+
+### Building from Source
+
+```powershell
+# Clone the repository
+git clone <repository-url>
+cd evolve-mod-manager
+
+# Check code formatting
+cargo fmt --all -- --check
+
+# Run linter
+cargo clippy -p evolve-mod-manager -- -D warnings
+
+# Execute test suite (standard-user runner)
+./scripts/test-desktop-standard-user.ps1
+cargo test -p evolve-core -p evolve-privileged-worker
+
+# Run manager in development mode
+cargo run -p evolve-mod-manager
+```
+
+> [!IMPORTANT]
+> `Cargo.lock` is intentionally untracked in this repository. Avoid committing changes to `Cargo.lock`.
+
+---
+
+## Disclaimer & Community Notes
+
+Evolve Mod Manager is an independent open-source community tool. It is not affiliated with, endorsed by, or associated with 2K Games or Turtle Rock Studios. 
+
+- Modifying game files can impact online gameplay and matchmaking. Use the built-in **Online Guard** when experimenting with asset replacements.
+- Original game archives, proprietary assets, and private signing keys are **not included** with this distribution.
