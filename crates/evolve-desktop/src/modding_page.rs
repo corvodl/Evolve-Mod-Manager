@@ -1682,10 +1682,75 @@ fn mod_kind_count(projects: &[ProjectRow], kind: ModKind) -> usize {
         .count()
 }
 
+/// Roster membership is established by authored gameplay paths in the selected
+/// build, never by matching the portrait or an asset from another installation.
+pub(super) fn discover_roster(archives: &[evolve_core::ImportedPak]) -> (Vec<usize>, Vec<usize>) {
+    let mut characters = std::collections::BTreeSet::new();
+    let mut wildlife = std::collections::BTreeSet::new();
+    for archive in archives {
+        if let Ok(paths) = crate::modding_projects::guided_import_members(archive, false) {
+            for path in paths {
+                for (index, (name, _)) in evolve_core::character_gameplay::CHARACTERS
+                    .iter()
+                    .enumerate()
+                {
+                    if evolve_core::character_gameplay::owns_document(name, &path) {
+                        characters.insert(index);
+                    }
+                }
+                for (index, (name, _)) in
+                    evolve_core::character_gameplay::WILDLIFE.iter().enumerate()
+                {
+                    if evolve_core::character_gameplay::owns_wildlife_document(name, &path) {
+                        wildlife.insert(index);
+                    }
+                }
+            }
+        }
+    }
+    (
+        characters.into_iter().collect(),
+        wildlife.into_iter().collect(),
+    )
+}
+
 fn character_browser(state: &State) -> Element<'_, Message> {
+    let selected_build = state.modding_character_build.as_deref().filter(|build| {
+        state
+            .library_catalog
+            .as_ref()
+            .is_some_and(|catalog| catalog.builds.iter().any(|entry| entry == build))
+    });
+    let edition = selected_build.map_or("", |build| {
+        let label = build.to_ascii_lowercase();
+        if label.contains("2012") {
+            " (2012)"
+        } else if label.contains("legacy") {
+            " (Legacy)"
+        } else {
+            ""
+        }
+    });
+    let mut builds = row![].spacing(8);
+    if let Some(catalog) = &state.library_catalog {
+        for (index, build) in catalog.builds.iter().enumerate() {
+            builds = builds.push(
+                design::button(text(build.as_str()).size(design::LABEL))
+                    .style(if selected_build == Some(build.as_str()) {
+                        design::secondary
+                    } else {
+                        design::text_button
+                    })
+                    .on_press(Message::ModdingCharacterBuild(index)),
+            );
+        }
+    }
     let mut entries = column![].spacing(5);
     let mut found = 0;
     for (index, character) in crate::character_roster::CHARACTERS.iter().enumerate() {
+        if !state.modding_available_characters.contains(&index) || selected_build.is_none() {
+            continue;
+        }
         if !crate::character_roster::matches_search(
             character.name,
             character.group,
@@ -1700,9 +1765,12 @@ fn character_browser(state: &State) -> Element<'_, Message> {
         };
         entries = entries.push(
             design::button(
-                row![portrait, text(character.name).size(design::BODY)]
-                    .align_y(Alignment::Center)
-                    .spacing(12),
+                row![
+                    portrait,
+                    text(format!("{}{edition}", character.name)).size(design::BODY)
+                ]
+                .align_y(Alignment::Center)
+                .spacing(12),
             )
             .width(Fill)
             .style(if state.modding_character == Some(index) {
@@ -1713,7 +1781,7 @@ fn character_browser(state: &State) -> Element<'_, Message> {
             .on_press(Message::ModdingCharacterSelected(index)),
         );
     }
-    if found == 0 {
+    if found == 0 && selected_build.is_some() && !state.modding_roster_loading {
         entries = entries.push(crate::ui_kit::empty_state(
             None,
             "No characters found",
@@ -1733,6 +1801,8 @@ fn character_browser(state: &State) -> Element<'_, Message> {
                 .on_press(Message::ModdingBasicAdvanced),
         ]
         .align_y(Alignment::Center),
+        text("Imported build").size(design::LABEL),
+        builds,
         crate::forms::search_field(
             "Find a character or class…",
             &state.modding_character_search,
@@ -1742,25 +1812,86 @@ fn character_browser(state: &State) -> Element<'_, Message> {
         scrollable(entries).height(Length::Fixed(340.0)),
     ]
     .spacing(12);
+    if selected_build.is_none() || state.modding_roster_loading {
+        page = page.push(
+            text(if state.modding_roster_loading {
+                "Checking imported gameplay documents…"
+            } else if state.library_catalog.is_some() {
+                "Select an imported build to browse its characters."
+            } else {
+                "Import a game build into the Asset Library to browse its characters."
+            })
+            .size(design::BODY),
+        );
+    }
+    if selected_build.is_some() && !state.modding_roster_loading {
+        page = page.push(crate::ui_kit::disclosure(
+            &state.ui,
+            "modding:wildlife",
+            text(format!(
+                "Wildlife ({})",
+                state.modding_available_wildlife.len()
+            ))
+            .size(design::LABEL),
+            state.modding_wildlife_open,
+            Message::ModdingWildlifeToggle,
+            || {
+                let mut rows = column![].spacing(5);
+                for &index in &state.modding_available_wildlife {
+                    let (name, _) = evolve_core::character_gameplay::WILDLIFE[index];
+                    if !crate::character_roster::matches_search(
+                        name,
+                        "Wildlife",
+                        &state.modding_character_search,
+                    ) {
+                        continue;
+                    }
+                    rows = rows.push(
+                        design::button(text(format!("{name}{edition}")))
+                            .style(if state.modding_wildlife == Some(index) {
+                                design::secondary
+                            } else {
+                                design::text_button
+                            })
+                            .on_press(Message::ModdingWildlifeSelected(index)),
+                    );
+                }
+                scrollable(rows).height(Length::Fixed(200.0)).into()
+            },
+        ));
+    }
     if let Some(character) = state
         .modding_character
         .and_then(|index| crate::character_roster::CHARACTERS.get(index))
+        .filter(|_| selected_build.is_some())
     {
         page = page.push(panel(
             column![
-                text(character.name).size(design::HEADING),
+                text(format!("{}{edition}", character.name)).size(design::HEADING),
                 row![
                     design::button("Find gameplay values")
                         .style(design::primary)
                         .on_press(Message::ModdingCharacterEdit(false)),
-                    design::button("Find models & skins")
+                    design::button("Search build models & skins")
                         .style(design::secondary)
                         .on_press(Message::ModdingCharacterEdit(true)),
                 ]
                 .spacing(8),
-                text("Results are searchable imported files and editable projects. Choose the correct build and source before making an editable copy; some game files use internal names. Clear the search in the editor to browse all assets.")
-                    .size(design::CAPTION)
-                    .style(design::muted),
+            ]
+            .spacing(10),
+        ));
+    }
+    if let Some((name, _)) = state
+        .modding_wildlife
+        .and_then(|index| evolve_core::character_gameplay::WILDLIFE.get(index))
+        && selected_build.is_some()
+    {
+        page = page.push(panel(
+            column![
+                text(format!("{name}{edition}")).size(design::HEADING),
+                design::button("Find gameplay values")
+                    .style(design::primary)
+                    .on_press(Message::ModdingCharacterEdit(false)),
             ]
             .spacing(10),
         ));
@@ -2224,6 +2355,85 @@ fn selection_toolbar(state: &State) -> Option<Element<'_, Message>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roster_never_borrows_another_builds_actor_or_wildlife() {
+        let root = tempfile::tempdir().unwrap();
+        let mut archives = Vec::new();
+        for (index, path) in [
+            "libs/Actor/Monsters/GoliathA.actorparams",
+            "libs/Actor/Creatures/Trapjaw.actorparams",
+            "Scripts/Entities/Abilities/XML/Rocky/RockyDome1.xml",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let dir = root.path().join(index.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            let source = format!("C:/game{index}/libs.pak");
+            std::fs::write(
+                dir.join("asset-library.json"),
+                serde_json::json!({
+                    "version": 1, "source": source, "entries": [{"path": path, "bytes": 1}]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            archives.push(evolve_core::ImportedPak {
+                id: format!("{index:020}"),
+                name: "libs.pak".into(),
+                source,
+                directory: dir.to_string_lossy().into_owned(),
+                group: String::new(),
+                description: String::new(),
+                entries: 1,
+                extracted_bytes: 1,
+                warnings: 0,
+                builds: vec![if index == 2 { "2012" } else { "Stage 2" }.into()],
+            });
+        }
+        let (characters, wildlife) = discover_roster(&archives[..2]);
+        assert!(characters.contains(&0));
+        assert_eq!(wildlife.len(), 1);
+        assert!(!characters.contains(&5));
+        let (characters, wildlife) = discover_roster(&archives[2..]);
+        assert!(characters.contains(&5));
+        assert!(!characters.contains(&0));
+        assert!(wildlife.is_empty());
+        let (characters, wildlife) = discover_roster(&[]);
+        assert!(characters.is_empty() && wildlife.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires EVOLVE_BENCH_LIBRARY pointing to a local imported Asset Library"]
+    fn local_imported_builds_keep_2012_separate_from_stage_two_wildlife() {
+        let root = std::path::PathBuf::from(std::env::var_os("EVOLVE_BENCH_LIBRARY").unwrap());
+        let library = evolve_core::imported_library(&root).unwrap();
+        let older = library
+            .builds
+            .iter()
+            .find(|build| build.contains("2012"))
+            .unwrap();
+        let archives: Vec<_> = library
+            .archives
+            .iter()
+            .filter(|archive| archive.builds.contains(older))
+            .cloned()
+            .collect();
+        let (characters, _) = discover_roster(&archives);
+        let rocky = evolve_core::character_gameplay::CHARACTERS
+            .iter()
+            .position(|(name, _)| *name == "Behemoth")
+            .unwrap();
+        assert!(characters.contains(&rocky));
+        let stage_two: Vec<_> = library
+            .archives
+            .into_iter()
+            .filter(|archive| !archive.builds.contains(older))
+            .collect();
+        let (_, wildlife) = discover_roster(&stage_two);
+        assert!(!wildlife.is_empty());
+    }
     use std::path::PathBuf;
 
     fn project(

@@ -893,6 +893,13 @@ struct State {
     modding_basic_advanced: bool,
     modding_character_search: String,
     modding_character: Option<usize>,
+    modding_wildlife_open: bool,
+    modding_wildlife: Option<usize>,
+    modding_character_build: Option<String>,
+    modding_available_characters: Vec<usize>,
+    modding_available_wildlife: Vec<usize>,
+    modding_roster_loading: bool,
+    modding_roster_request: u64,
     modding_headshots: std::collections::HashMap<&'static str, image::Handle>,
     modding_headshots_requested: bool,
     modding_profiles: bool,
@@ -3200,6 +3207,10 @@ enum Message {
     ModdingFilterChanged(String),
     ModdingCharacterSearch(String),
     ModdingCharacterSelected(usize),
+    ModdingWildlifeToggle,
+    ModdingWildlifeSelected(usize),
+    ModdingCharacterBuild(usize),
+    ModdingRosterReady(u64, String, Vec<usize>, Vec<usize>),
     ModdingBasicAdvanced,
     ModdingHeadshotsLoaded(Vec<(&'static str, Vec<u8>)>),
     ModdingCharacterEdit(bool),
@@ -6513,8 +6524,74 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ModdingCharacterSearch(value) => state.modding_character_search = value,
         Message::ModdingCharacterSelected(index) => {
-            if index < character_roster::CHARACTERS.len() {
+            if index < character_roster::CHARACTERS.len()
+                && (state.modding_character_build.is_none()
+                    || (!state.modding_roster_loading
+                        && state.modding_available_characters.contains(&index)))
+            {
                 state.modding_character = Some(index);
+                state.modding_wildlife = None;
+            }
+        }
+        Message::ModdingWildlifeToggle => {
+            state.modding_wildlife_open = !state.modding_wildlife_open
+        }
+        Message::ModdingWildlifeSelected(index) => {
+            if index < evolve_core::character_gameplay::WILDLIFE.len()
+                && !state.modding_roster_loading
+                && state.modding_available_wildlife.contains(&index)
+            {
+                state.modding_wildlife = Some(index);
+                state.modding_character = None;
+            }
+        }
+        Message::ModdingCharacterBuild(index) => {
+            if let Some(build) = state
+                .library_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.builds.get(index))
+            {
+                let build = build.clone();
+                let archives = state
+                    .library_catalog
+                    .as_ref()
+                    .unwrap()
+                    .archives
+                    .iter()
+                    .filter(|archive| archive.builds.contains(&build))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                state.modding_character_build = Some(build.clone());
+                state.modding_character = None;
+                state.modding_wildlife = None;
+                state.modding_available_characters.clear();
+                state.modding_available_wildlife.clear();
+                state.modding_roster_loading = true;
+                state.modding_roster_request = state.modding_roster_request.wrapping_add(1);
+                let request = state.modding_roster_request;
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            modding_page::discover_roster(&archives)
+                        })
+                        .await
+                    },
+                    move |result| match result {
+                        Ok((characters, wildlife)) => {
+                            Message::ModdingRosterReady(request, build, characters, wildlife)
+                        }
+                        Err(_) => Message::ModdingRosterReady(request, build, vec![], vec![]),
+                    },
+                );
+            }
+        }
+        Message::ModdingRosterReady(request, build, characters, wildlife) => {
+            if state.modding_roster_request == request
+                && state.modding_character_build.as_deref() == Some(build.as_str())
+            {
+                state.modding_roster_loading = false;
+                state.modding_available_characters = characters;
+                state.modding_available_wildlife = wildlife;
             }
         }
         Message::ModdingBasicAdvanced => {
@@ -6528,21 +6605,41 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ModdingCharacterEdit(models) => {
-            let Some(character) = state
-                .modding_character
-                .and_then(|index| character_roster::CHARACTERS.get(index))
-            else {
+            if state.modding_roster_loading {
+                return Task::none();
+            }
+            let Some(build) = state.modding_character_build.clone().filter(|build| {
+                state
+                    .library_catalog
+                    .as_ref()
+                    .is_some_and(|catalog| catalog.builds.contains(build))
+            }) else {
+                state.status = "Select an imported build before viewing character files.".into();
                 return Task::none();
             };
-            let name = character.name.to_owned();
-            let task = guided_modding::update(state, guided_modding::Action::Open(models));
-            if state.guided_editor.open {
-                return Task::batch(vec![
-                    task,
-                    guided_modding::update(state, guided_modding::Action::Search(name)),
-                ]);
-            }
-            return task;
+            let target = if let Some(character) = state
+                .modding_character
+                .filter(|index| state.modding_available_characters.contains(index))
+                .and_then(|index| character_roster::CHARACTERS.get(index))
+            {
+                guided_modding::Target::Character(character.name.to_owned())
+            } else if let Some((name, _)) = state
+                .modding_wildlife
+                .filter(|index| state.modding_available_wildlife.contains(index))
+                .and_then(|index| evolve_core::character_gameplay::WILDLIFE.get(index))
+            {
+                guided_modding::Target::Wildlife((*name).to_owned())
+            } else {
+                return Task::none();
+            };
+            return guided_modding::update(
+                state,
+                guided_modding::Action::OpenTarget {
+                    models,
+                    target,
+                    build,
+                },
+            );
         }
         Message::ModdingClearFilters => {
             state.modding_filter.clear();
@@ -22266,6 +22363,33 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::ModdingBasicAdvanced);
         assert_eq!(state.modding_character_search, "Goliath");
         assert_eq!(state.modding_character, Some(0));
+    }
+
+    #[test]
+    fn late_or_wrong_build_roster_cannot_replace_current_selection() {
+        let mut state = State {
+            modding_character_build: Some("Legacy".into()),
+            modding_roster_request: 3,
+            modding_roster_loading: true,
+            ..State::default()
+        };
+        let _ = update(
+            &mut state,
+            Message::ModdingRosterReady(2, "Legacy".into(), vec![0], vec![0]),
+        );
+        let _ = update(
+            &mut state,
+            Message::ModdingRosterReady(3, "2012".into(), vec![0], vec![0]),
+        );
+        assert!(state.modding_roster_loading);
+        assert!(state.modding_available_characters.is_empty());
+        let _ = update(
+            &mut state,
+            Message::ModdingRosterReady(3, "Legacy".into(), vec![1], vec![2]),
+        );
+        assert!(!state.modding_roster_loading);
+        assert_eq!(state.modding_available_characters, vec![1]);
+        assert_eq!(state.modding_available_wildlife, vec![2]);
     }
 
     #[test]

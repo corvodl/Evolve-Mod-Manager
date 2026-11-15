@@ -36,15 +36,19 @@ the redesign retains both and corrects hierarchy instead of replacing them.
   extraction, editing, or recovery handler is changed. This is a visual
   redesign, not an asset-provenance or security change.
 - Modding opens with a searchable character roster and the site's mapped
-  headshots. Character actions search existing imported model and gameplay
-  documents; results retain their source/build labels and verified project
-  preparation. This is a search aid, not a complete character dependency map:
-  internal asset names and textures need source-backed associations before they
-  can be listed as belonging to a character. Advanced Modding retains the
-  project, archive, conflict, recovery, and signed-PAK controls.
+  headshots. Select an imported build before browsing; only entries with
+  directly authored gameplay documents in that build appear. Build labels
+  containing 2012 or Legacy show that edition alongside a character's name and
+  portrait. Wildlife with direct actor documents lives in a collapsed section
+  with text thumbnails. Models remain a search of the selected build, not a
+  verified character association; textures and cross-PAK inherited values
+  need authored-reference tracing before claiming ownership. Advanced Modding
+  retains the project, archive, conflict, recovery, and signed-PAK controls.
 - Guided gameplay searches retain distinct imported archives with the same
-  PAK filename, show each source/build, and page all editable scalar fields
-  instead of silently stopping after 80. The editor supports numeric/boolean
+  PAK filename, scope character and wildlife results to the chosen build, show
+  each source, and page imported files and scalar fields. Imported values are
+  validated again for read-only preview before making an editable project copy.
+  The editor supports numeric/boolean
   attributes; complete character-specific values still require verified
   references from imported game documents, not name-only search.
 
