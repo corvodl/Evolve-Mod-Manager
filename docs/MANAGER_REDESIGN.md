@@ -48,9 +48,11 @@ the redesign retains both and corrects hierarchy instead of replacing them.
   PAK filename, scope character and wildlife results to the chosen build, show
   each source, and page imported files and scalar fields. Imported values are
   validated again for read-only preview before making an editable project copy.
-  The editor supports numeric/boolean
-  attributes; complete character-specific values still require verified
-  references from imported game documents, not name-only search.
+  Preview includes authored attributes and text; editing supports numeric and
+  boolean attributes only. Explicit actor item/ability and item effect-set
+  references link shared documents when their source is unique in the selected
+  build. Ambiguous matches stay unassigned; other inheritance and dependencies
+  still require source-backed tracing rather than name-only search.
 
 ## Acceptance
 

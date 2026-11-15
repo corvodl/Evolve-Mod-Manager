@@ -1,5 +1,6 @@
 //! Conservative gameplay discovery from authored member namespaces.
 //! A display name is never used to guess an archive or a game-internal ID.
+use quick_xml::{Reader, events::Event};
 
 /// In-game name and internal actor namespace confirmed against imported
 /// actor and item manifests. This is discovery metadata, not permission to edit.
@@ -131,6 +132,179 @@ pub fn owns_document(display_name: &str, path: &str) -> bool {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceKind {
+    Ability,
+    Item,
+    EffectSet,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentReference {
+    pub kind: ReferenceKind,
+    pub name: String,
+}
+
+/// Only explicit sItem/sAbility actor parameters establish a relationship.
+/// Filename similarity, blueprint text and generic actor inheritance do not.
+pub fn actor_references(bytes: &[u8]) -> Result<Vec<DocumentReference>, String> {
+    let xml = crate::cryxml::xml_bytes(bytes, crate::gameplay_values::LIMIT)
+        .map_err(|error| error.to_string())?;
+    crate::cryxml::encode_xml(&xml, crate::gameplay_values::LIMIT)
+        .map_err(|error| error.to_string())?;
+    let mut reader = Reader::from_reader(xml.as_ref());
+    let mut references = Vec::new();
+    loop {
+        match reader.read_event().map_err(|error| error.to_string())? {
+            Event::Start(tag) | Event::Empty(tag) if tag.name().as_ref() == b"param" => {
+                let mut name = None;
+                let mut value = None;
+                for attribute in tag.attributes() {
+                    let attribute = attribute.map_err(|error| error.to_string())?;
+                    if attribute.key.as_ref() == b"name" || attribute.key.as_ref() == b"value" {
+                        let decoded = attribute
+                            .decode_and_unescape_value(reader.decoder())
+                            .map_err(|error| error.to_string())?
+                            .into_owned();
+                        if attribute.key.as_ref() == b"name" {
+                            name = Some(decoded);
+                        } else {
+                            value = Some(decoded);
+                        }
+                    }
+                }
+                let kind = match name.as_deref() {
+                    Some("sAbility") => ReferenceKind::Ability,
+                    Some("sItem") => ReferenceKind::Item,
+                    _ => continue,
+                };
+                for token in value.unwrap_or_default().split('|') {
+                    if token.is_empty()
+                        || token.len() > 120
+                        || !token
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    {
+                        continue;
+                    }
+                    if references.len() >= 10_000 {
+                        return Err("Too many authored actor references".into());
+                    }
+                    references.push(DocumentReference {
+                        kind,
+                        name: token.to_owned(),
+                    });
+                }
+            }
+            Event::Eof => break,
+            _ => (),
+        }
+    }
+    references.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| (left.kind as u8).cmp(&(right.kind as u8)))
+    });
+    references.dedup();
+    Ok(references)
+}
+
+/// An item can explicitly apply a shared effect set. Other strings in item
+/// documents are not evidence of an effect-set dependency.
+pub fn item_effect_set_references(bytes: &[u8]) -> Result<Vec<DocumentReference>, String> {
+    let xml = crate::cryxml::xml_bytes(bytes, crate::gameplay_values::LIMIT)
+        .map_err(|error| error.to_string())?;
+    crate::cryxml::encode_xml(&xml, crate::gameplay_values::LIMIT)
+        .map_err(|error| error.to_string())?;
+    let mut reader = Reader::from_reader(xml.as_ref());
+    let mut references = Vec::new();
+    loop {
+        match reader.read_event().map_err(|error| error.to_string())? {
+            Event::Start(tag) | Event::Empty(tag) => {
+                for attribute in tag.attributes() {
+                    let attribute = attribute.map_err(|error| error.to_string())?;
+                    if attribute.key.as_ref() != b"autoApplyEffectSet" {
+                        continue;
+                    }
+                    let value = attribute
+                        .decode_and_unescape_value(reader.decoder())
+                        .map_err(|error| error.to_string())?;
+                    if value.is_empty()
+                        || value.len() > 120
+                        || !value
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    {
+                        continue;
+                    }
+                    if references.len() >= 10_000 {
+                        return Err("Too many authored effect-set references".into());
+                    }
+                    references.push(DocumentReference {
+                        kind: ReferenceKind::EffectSet,
+                        name: value.into_owned(),
+                    });
+                }
+            }
+            Event::Eof => break,
+            _ => (),
+        }
+    }
+    references.sort_by(|left, right| left.name.cmp(&right.name));
+    references.dedup();
+    Ok(references)
+}
+
+pub fn referenced_document(reference: &DocumentReference, path: &str) -> bool {
+    if !crate::mod_safety::gameplay_document(path) {
+        return false;
+    }
+    let path = path.to_ascii_lowercase();
+    let parts: Vec<_> = path.split('/').collect();
+    let name = reference.name.to_ascii_lowercase();
+    let Some(filename) = parts.last() else {
+        return false;
+    };
+    if filename.strip_suffix(".xml") != Some(name.as_str()) {
+        return false;
+    }
+    matches!(
+        (reference.kind, parts.as_slice()),
+        (ReferenceKind::Ability, ["libs", "abilities", ..])
+            | (
+                ReferenceKind::Ability,
+                ["scripts", "entities", "abilities", "xml", ..]
+            )
+            | (ReferenceKind::Item, ["libs", "items", ..])
+            | (
+                ReferenceKind::Item,
+                ["scripts", "entities", "items", "xml", ..]
+            )
+            | (ReferenceKind::EffectSet, ["libs", "effectsets", ..])
+    )
+}
+
+/// Resolve only unique source-qualified members. Two PAKs with the same
+/// authored member path are still distinct candidates and remain ambiguous.
+pub fn unique_referenced_members(
+    references: &[DocumentReference],
+    candidates: &[(String, String)],
+) -> Vec<usize> {
+    let mut found = std::collections::BTreeSet::new();
+    for reference in references {
+        let mut matches = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, path))| referenced_document(reference, path));
+        if let Some((index, _)) = matches.next()
+            && matches.next().is_none()
+        {
+            found.insert(index);
+        }
+    }
+    found.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +360,68 @@ mod tests {
             "Armadon Bull",
             "libs/Actor/Creatures/ArmadonBullElite.actorparams"
         ));
+    }
+
+    #[test]
+    fn actor_links_require_explicit_typed_parameters_and_exact_document_names() {
+        let xml = br#"<Actor base="BaseMerc"><param name="sBlueprint" value="Maggie"/><param name="sItem" value="MobileArenaTriggerWeapon|SubMachineGunA"/><param name="sAbility" value="RockyDome1"/><param name="sItem" value="../foreign"/></Actor>"#;
+        let links = actor_references(xml).unwrap();
+        assert_eq!(links.len(), 3);
+        let item = links
+            .iter()
+            .find(|link| link.name == "SubMachineGunA")
+            .unwrap();
+        assert!(referenced_document(
+            item,
+            "libs/Items/Mercs/Maggie/SubMachineGunA.xml"
+        ));
+        assert!(!referenced_document(
+            item,
+            "libs/Items/Mercs/Maggie/SubMachineGunA_extra.xml"
+        ));
+        assert!(!referenced_document(
+            item,
+            "libs/Abilities/Mercs/SubMachineGunA.xml"
+        ));
+        let ability = links.iter().find(|link| link.name == "RockyDome1").unwrap();
+        assert!(referenced_document(
+            ability,
+            "Scripts/Entities/Abilities/XML/Rocky/RockyDome1.xml"
+        ));
+        assert!(!referenced_document(
+            ability,
+            "libs/Items/Rocky/RockyDome1.xml"
+        ));
+        assert!(actor_references(b"<!DOCTYPE foo><Actor/>").is_err());
+        let candidates = vec![
+            (
+                "stage-two".into(),
+                "libs/Items/Shared/SubMachineGunA.xml".into(),
+            ),
+            ("2012".into(), "libs/Items/Shared/SubMachineGunA.xml".into()),
+            (
+                "stage-two".into(),
+                "libs/Abilities/Shared/RockyDome1.xml".into(),
+            ),
+        ];
+        assert_eq!(unique_referenced_members(&links, &candidates), vec![2]);
+        assert_eq!(unique_referenced_members(&links, &candidates[..1]), vec![0]);
+    }
+
+    #[test]
+    fn item_effect_sets_are_only_linked_by_authored_attribute() {
+        let item = br#"<item name="MercHealthRegen"><feature autoApplyEffectSet="MercHealthRegen" other="Unrelated"/></item>"#;
+        let refs = item_effect_set_references(item).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert!(referenced_document(
+            &refs[0],
+            "libs/EffectSets/MercHealthRegen.xml"
+        ));
+        assert!(!referenced_document(
+            &refs[0],
+            "libs/Items/Mercs/Shared/MercHealthRegen.xml"
+        ));
+        assert!(item_effect_set_references(b"<!DOCTYPE foo><item/>").is_err());
     }
 
     #[test]

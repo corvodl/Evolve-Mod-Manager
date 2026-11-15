@@ -449,6 +449,7 @@ pub fn imported_archive_preview_inventory(
     )?)?;
     if manifest.version != 1
         || manifest.name != archive.name
+        || manifest.source != archive.source
         || manifest.entries.len() > MAX_MEMBERS
     {
         return Err(LibraryError::UnsafeArchive);
@@ -480,6 +481,42 @@ pub fn imported_archive_preview_inventory(
         total_bytes: total,
         skipped_symlinks: 0,
     })
+}
+
+/// Read one imported gameplay member for source-backed relationship discovery.
+/// The manifest, source identity, exact member, size and canonical root are
+/// rechecked; unrelated extracted files need not be present for read-only use.
+pub fn read_imported_gameplay_member(
+    archive: &ImportedPak,
+    path: &str,
+    limit: usize,
+) -> Result<Vec<u8>, LibraryError> {
+    if !crate::mod_safety::gameplay_document(path) {
+        return Err(LibraryError::UnsafeArchive);
+    }
+    let inventory = imported_archive_preview_inventory(archive)?;
+    let member = inventory
+        .entries
+        .iter()
+        .find(|item| item.relative_path == path)
+        .ok_or(LibraryError::UnsafeArchive)?;
+    if member.byte_size > limit as u64 {
+        return Err(LibraryError::Limit);
+    }
+    let root = Path::new(&inventory.root);
+    let file = root.join(path);
+    let meta = fs::symlink_metadata(&file)?;
+    if !meta.file_type().is_file()
+        || meta.len() != member.byte_size
+        || !fs::canonicalize(&file)?.starts_with(root)
+    {
+        return Err(LibraryError::Modified);
+    }
+    let bytes = read_bounded(&file, limit as u64)?;
+    if bytes.len() as u64 != member.byte_size {
+        return Err(LibraryError::Modified);
+    }
+    Ok(bytes)
 }
 
 /// Validate every listed asset's location and original byte count before
@@ -1057,6 +1094,53 @@ fn resolve_imported_reference_scoped(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn relationship_read_rejects_foreign_manifest_changed_file_and_unlisted_member() {
+        let root = tempfile::tempdir().unwrap();
+        let member = "libs/Actor/Mercs/Maggie.actorparams";
+        let file = root.path().join("files").join(member);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"<Actor/>").unwrap();
+        let manifest = root.path().join("asset-library.json");
+        let write_manifest = |source: &str| {
+            fs::write(
+                &manifest,
+                serde_json::json!({
+                    "version": 1, "name": "libs.pak", "source": source,
+                    "entries": [{"path": member, "bytes": 8}]
+                })
+                .to_string(),
+            )
+            .unwrap()
+        };
+        write_manifest("C:/game/libs.pak");
+        let archive = ImportedPak {
+            id: "a".repeat(20),
+            name: "libs.pak".into(),
+            source: "C:/game/libs.pak".into(),
+            directory: root.path().to_string_lossy().into(),
+            group: String::new(),
+            description: String::new(),
+            entries: 1,
+            extracted_bytes: 8,
+            warnings: 0,
+            builds: vec![],
+        };
+        assert_eq!(
+            read_imported_gameplay_member(&archive, member, 100).unwrap(),
+            b"<Actor/>"
+        );
+        assert!(read_imported_gameplay_member(&archive, "../outside.xml", 100).is_err());
+        assert!(
+            read_imported_gameplay_member(&archive, "libs/Items/Mercs/Maggie.xml", 100).is_err()
+        );
+        assert!(read_imported_gameplay_member(&archive, member, 4).is_err());
+        write_manifest("D:/foreign/libs.pak");
+        assert!(read_imported_gameplay_member(&archive, member, 100).is_err());
+        write_manifest("C:/game/libs.pak");
+        fs::write(&file, b"changed").unwrap();
+        assert!(read_imported_gameplay_member(&archive, member, 100).is_err());
+    }
     #[test]
     fn source_game_identity_never_crosses_independent_installations() {
         let root = tempfile::tempdir().unwrap();

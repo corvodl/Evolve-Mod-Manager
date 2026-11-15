@@ -4,8 +4,8 @@ use crate::{
     design,
     modding_projects::{self, ProjectRow},
 };
-use evolve_core::gameplay_values::{self, ValueField};
-use iced::widget::{column, row, scrollable, text};
+use evolve_core::gameplay_values::{self, SourceField, ValueField};
+use iced::widget::{Id, column, row, scrollable, text};
 use iced::{Element, Fill, Task};
 use std::path::Path;
 use std::sync::Arc;
@@ -25,9 +25,19 @@ pub struct Editor {
     selected: Option<usize>,
     snapshot: Vec<u8>,
     fields: Vec<ValueField>,
-    preview: Option<(usize, Vec<ValueField>)>,
+    preview: Option<(usize, Vec<SourceField>)>,
     preview_request: u64,
+    links_request: u64,
+    links_status: LinkStatus,
     note: String,
+}
+#[derive(Default)]
+enum LinkStatus {
+    #[default]
+    Idle,
+    Pending,
+    Ready(usize),
+    Failed(String),
 }
 #[derive(Debug, Clone)]
 pub enum Target {
@@ -67,18 +77,22 @@ pub enum Action {
     Save,
     Prepare(usize),
     PreviewImport(usize),
-    PreviewReady(u64, usize, Result<Vec<ValueField>, String>),
+    PreviewReady(u64, usize, Result<Vec<SourceField>, String>),
+    LinksReady(u64, Result<Vec<(evolve_core::ImportedPak, String)>, String>),
     Discard,
     Refresh,
 }
 fn message(action: Action) -> Message {
     Message::GuidedEdit(action)
 }
+fn search_id() -> Id {
+    Id::new("guided-document-search")
+}
 
 fn preview_imported_values(
     archive: &evolve_core::ImportedPak,
     path: &str,
-) -> Result<Vec<ValueField>, String> {
+) -> Result<Vec<SourceField>, String> {
     // The source identity is checked again, not just when the list was built.
     if !modding_projects::guided_import_members(archive, false)?
         .iter()
@@ -86,30 +100,124 @@ fn preview_imported_values(
     {
         return Err("Imported source changed since discovery".into());
     }
-    let inventory = evolve_core::imported_archive_files(archive).map_err(|e| e.to_string())?;
-    let member = inventory
-        .entries
+    let bytes = evolve_core::library_catalog::read_imported_gameplay_member(
+        archive,
+        path,
+        gameplay_values::LIMIT,
+    )
+    .map_err(|error| error.to_string())?;
+    gameplay_values::source_fields(&bytes)
+}
+
+fn actor_linked_imports(
+    direct: &[(Arc<evolve_core::ImportedPak>, String)],
+    archives: &[evolve_core::ImportedPak],
+    build: &str,
+) -> Result<Vec<(evolve_core::ImportedPak, String)>, String> {
+    let mut imports = Vec::new();
+    for archive in archives
         .iter()
-        .find(|entry| entry.relative_path == path)
-        .ok_or("Imported member is no longer in the selected source")?;
-    if member.byte_size > gameplay_values::LIMIT as u64 {
-        return Err("Gameplay document exceeds the supported preview limit".into());
-    }
-    let file = Path::new(&inventory.root).join(path);
-    let metadata = std::fs::symlink_metadata(&file).map_err(|e| e.to_string())?;
-    if !metadata.file_type().is_file()
-        || metadata.len() != member.byte_size
-        || !std::fs::canonicalize(&file)
-            .map_err(|e| e.to_string())?
-            .starts_with(&inventory.root)
+        .filter(|archive| archive.builds.iter().any(|label| label == build))
     {
-        return Err("Imported gameplay document changed since validation".into());
+        let paths = modding_projects::guided_import_members(archive, false)?;
+        for path in paths {
+            imports.push((archive.clone(), path));
+        }
     }
-    let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
-    if bytes.len() as u64 != member.byte_size {
-        return Err("Imported gameplay document changed while reading".into());
+    let candidates: Vec<_> = imports
+        .iter()
+        .map(|(archive, path)| (archive.id.clone(), path.clone()))
+        .collect();
+    let mut references = Vec::new();
+    for (archive, path) in direct {
+        if !archive.builds.iter().any(|label| label == build) {
+            return Err("Actor source no longer belongs to the selected build".into());
+        }
+        if !path.to_ascii_lowercase().ends_with(".actorparams") {
+            continue;
+        }
+        let bytes = evolve_core::library_catalog::read_imported_gameplay_member(
+            archive,
+            path,
+            gameplay_values::LIMIT,
+        )
+        .map_err(|error| error.to_string())?;
+        references.extend(evolve_core::character_gameplay::actor_references(&bytes)?);
     }
-    gameplay_values::fields(&bytes)
+    let actor_links =
+        evolve_core::character_gameplay::unique_referenced_members(&references, &candidates);
+    let mut effect_refs = Vec::new();
+    let mut inspected_items = std::collections::HashSet::new();
+    for (archive, path) in direct
+        .iter()
+        .map(|(archive, path)| (archive.as_ref(), path.as_str()))
+        .chain(
+            actor_links
+                .iter()
+                .map(|&index| (&imports[index].0, imports[index].1.as_str())),
+        )
+    {
+        if !path.to_ascii_lowercase().starts_with("libs/items/")
+            || !inspected_items.insert((archive.id.clone(), path.to_owned()))
+        {
+            continue;
+        }
+        let bytes = evolve_core::library_catalog::read_imported_gameplay_member(
+            archive,
+            path,
+            gameplay_values::LIMIT,
+        )
+        .map_err(|error| error.to_string())?;
+        effect_refs.extend(evolve_core::character_gameplay::item_effect_set_references(
+            &bytes,
+        )?);
+    }
+    let mut linked = Vec::new();
+    for index in
+        actor_links
+            .into_iter()
+            .chain(evolve_core::character_gameplay::unique_referenced_members(
+                &effect_refs,
+                &candidates,
+            ))
+    {
+        let (archive, path) = &imports[index];
+        if !direct
+            .iter()
+            .any(|(other, member)| other.id == archive.id && member == path)
+            && !linked
+                .iter()
+                .any(|(other, member): &(evolve_core::ImportedPak, String)| {
+                    other.id == archive.id && member == path
+                })
+        {
+            linked.push((archive.clone(), path.clone()));
+        }
+    }
+    Ok(linked)
+}
+
+pub(super) fn link_task(state: &mut State) -> Task<Message> {
+    let editor = &mut state.guided_editor;
+    let (Some(build), Some(library)) = (&editor.build, &state.library_catalog) else {
+        return Task::none();
+    };
+    if editor.models || editor.target.is_none() {
+        return Task::none();
+    }
+    let direct = editor.imports.clone();
+    let archives = library.archives.clone();
+    let build = build.clone();
+    let request = editor.links_request;
+    editor.links_status = LinkStatus::Pending;
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || actor_linked_imports(&direct, &archives, &build))
+                .await
+                .map_err(|error| error.to_string())?
+        },
+        move |result| message(Action::LinksReady(request, result)),
+    )
 }
 /// Repopulate imported edit targets from the already-indexed library without
 /// resetting unsaved gameplay fields or requiring another source-PAK import.
@@ -119,6 +227,8 @@ pub fn refresh_imports(state: &mut State) {
     }
     let editor = &mut state.guided_editor;
     editor.preview_request = editor.preview_request.wrapping_add(1);
+    editor.links_request = editor.links_request.wrapping_add(1);
+    editor.links_status = LinkStatus::Idle;
     editor.preview = None;
     editor.imports.clear();
     editor.imports_page = 0;
@@ -173,7 +283,7 @@ pub fn refresh_imports(state: &mut State) {
 }
 
 pub fn update(state: &mut State, action: Action) -> Task<Message> {
-    if state.busy && !matches!(action, Action::PreviewReady(..)) {
+    if state.busy && !matches!(action, Action::PreviewReady(..) | Action::LinksReady(..)) {
         state.status = "Wait for the current operation before editing.".into();
         return Task::none();
     }
@@ -205,6 +315,7 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                 target,
                 build,
                 preview_request: editor.preview_request.wrapping_add(1),
+                links_request: editor.links_request.wrapping_add(1),
                 ..Editor::default()
             };
             for project in state.modding_projects.as_deref().unwrap_or(&[]) {
@@ -250,13 +361,20 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                         });
             }
             refresh_imports(state);
+            return Task::batch(vec![
+                link_task(state),
+                iced::widget::operation::focus(search_id()),
+            ]);
         }
         Action::Refresh => {
             if state.library_catalog.is_none() {
                 return super::update(state, Message::ModdingReloadLibrary);
             }
             refresh_imports(state);
-            return super::update(state, Message::ModdingRefresh);
+            return Task::batch(vec![
+                super::update(state, Message::ModdingRefresh),
+                link_task(state),
+            ]);
         }
         Action::Prepare(i) => {
             let Some((archive, _)) = editor.imports.get(i).cloned() else {
@@ -305,7 +423,7 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
             match result {
                 Ok(fields) => {
                     editor.note = format!(
-                        "{} editable values in this verified source. Preview is read-only.",
+                        "{} authored fields in this verified source. Preview is read-only.",
                         fields.len()
                     );
                     editor.preview = Some((index, fields));
@@ -313,6 +431,23 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                     editor.fields_search.clear();
                 }
                 Err(error) => editor.note = format!("Could not preview source values: {error}"),
+            }
+        }
+        Action::LinksReady(request, result) => {
+            if !editor.open || editor.links_request != request {
+                return Task::none();
+            }
+            match result {
+                Ok(linked) => {
+                    let count = linked.len();
+                    editor.imports.extend(
+                        linked
+                            .into_iter()
+                            .map(|(archive, path)| (Arc::new(archive), path)),
+                    );
+                    editor.links_status = LinkStatus::Ready(count);
+                }
+                Err(error) => editor.links_status = LinkStatus::Failed(error),
             }
         }
         Action::Discard => {
@@ -324,6 +459,7 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
         Action::Close => {
             editor.open = false;
             editor.preview_request = editor.preview_request.wrapping_add(1);
+            editor.links_request = editor.links_request.wrapping_add(1);
         }
         Action::Search(s) => {
             editor.search = s;
@@ -342,17 +478,22 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
         }
         Action::FieldsPage(next) => {
             let query = editor.fields_search.to_ascii_lowercase();
-            let active_fields = editor
-                .preview
-                .as_ref()
-                .map_or(&editor.fields, |(_, fields)| fields);
-            let count = active_fields
-                .iter()
-                .filter(|field| {
-                    field.label.to_ascii_lowercase().contains(&query)
-                        || field.original.to_ascii_lowercase().contains(&query)
-                })
-                .count();
+            let matches = |label: &str, value: &str| {
+                label.to_ascii_lowercase().contains(&query)
+                    || value.to_ascii_lowercase().contains(&query)
+            };
+            let count = if let Some((_, preview)) = &editor.preview {
+                preview
+                    .iter()
+                    .filter(|field| matches(&field.label, &field.value))
+                    .count()
+            } else {
+                editor
+                    .fields
+                    .iter()
+                    .filter(|field| matches(&field.label, &field.original))
+                    .count()
+            };
             let last = count.saturating_sub(1) / 80;
             editor.fields_page = if next {
                 editor.fields_page.saturating_add(1).min(last)
@@ -509,10 +650,18 @@ pub fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(10),
         text(e.note.as_str()).size(12),
+        text(match &e.links_status {
+            LinkStatus::Idle => "".to_owned(),
+            LinkStatus::Pending => "Checking authored actor references in this build…".to_owned(),
+            LinkStatus::Ready(count) => format!("{count} additional documents linked by authored actor equipment, abilities or item effect sets. Ambiguous matches remain unassigned."),
+            LinkStatus::Failed(error) => format!("Could not check actor references: {error}"),
+        }).size(12),
+        design::label("Search documents"),
         design::text_input(
             "Find character, ability, perk, effect set, model or build…",
             &e.search,
         )
+        .id(search_id())
         .on_input(|s| message(Action::Search(s))),
         text(format!(
             "{} editable matches (first 80 shown) · {}–{} of {} imported",
@@ -561,6 +710,7 @@ pub fn view(state: &State) -> Element<'_, Message> {
         }
         panel = panel
             .push(text(path.as_str()).size(12))
+            .push(design::label("Search editable values"))
             .push(
                 design::text_input(
                     "Find a value, e.g. cooldown, damage, variant…",
@@ -610,7 +760,7 @@ pub fn view(state: &State) -> Element<'_, Message> {
             .iter()
             .filter(|field| {
                 field.label.to_ascii_lowercase().contains(&query)
-                    || field.original.to_ascii_lowercase().contains(&query)
+                    || field.value.to_ascii_lowercase().contains(&query)
             })
             .collect();
         let start = e.fields_page.saturating_mul(80).min(matching.len());
@@ -619,7 +769,7 @@ pub fn view(state: &State) -> Element<'_, Message> {
             fields = fields.push(
                 row![
                     text(value.label.as_str()).size(12).width(Fill),
-                    text(value.original.as_str()).size(12),
+                    text(value.value.as_str()).size(12).width(Fill),
                 ]
                 .spacing(8),
             );
@@ -634,6 +784,7 @@ pub fn view(state: &State) -> Element<'_, Message> {
                 ))
                 .size(design::LABEL),
             )
+            .push(design::label("Search source fields"))
             .push(
                 design::text_input("Find a value…", &e.fields_search)
                     .on_input(|s| message(Action::FieldSearch(s))),
@@ -669,6 +820,135 @@ pub fn view(state: &State) -> Element<'_, Message> {
 mod tests {
     use super::*;
     use evolve_core::{ImportedLibrary, ImportedPak};
+    #[test]
+    fn late_actor_links_do_not_change_reopened_or_refreshed_editor() {
+        let mut state = State {
+            guided_editor: Editor {
+                open: true,
+                links_request: 9,
+                ..Editor::default()
+            },
+            ..State::default()
+        };
+        let archive = ImportedPak {
+            id: "a".repeat(20),
+            name: "items.pak".into(),
+            source: "C:/game/items.pak".into(),
+            directory: String::new(),
+            group: String::new(),
+            description: String::new(),
+            entries: 1,
+            extracted_bytes: 1,
+            warnings: 0,
+            builds: vec!["Stage 2".into()],
+        };
+        let linked = vec![(archive.clone(), "libs/Items/Shared/Item.xml".into())];
+        let _ = update(&mut state, Action::LinksReady(8, Ok(linked.clone())));
+        assert!(state.guided_editor.imports.is_empty());
+        let _ = update(&mut state, Action::LinksReady(9, Ok(linked)));
+        assert_eq!(state.guided_editor.imports.len(), 1);
+        let _ = update(&mut state, Action::Close);
+        let _ = update(
+            &mut state,
+            Action::LinksReady(9, Ok(vec![(archive, "libs/Items/Other.xml".into())])),
+        );
+        assert_eq!(state.guided_editor.imports.len(), 1);
+    }
+
+    #[test]
+    fn explicit_actor_item_link_crosses_paks_but_not_builds_or_ambiguity() {
+        let root = tempfile::tempdir().unwrap();
+        let actor = "libs/Actor/Mercs/Maggie.actorparams";
+        let item = "libs/Items/Shared/MobileArenaTriggerWeapon.xml";
+        let mut archives = Vec::new();
+        for (index, path) in [actor, item, item].into_iter().enumerate() {
+            let folder = root.path().join(index.to_string());
+            let bytes: &[u8] = if index == 0 {
+                br#"<Actor><param name="sItem" value="MobileArenaTriggerWeapon"/></Actor>"#
+            } else {
+                b"<Item/>"
+            };
+            let file = folder.join("files").join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, bytes).unwrap();
+            let source = format!(
+                "C:/game{index}/{}.pak",
+                if index == 0 { "libs" } else { "items" }
+            );
+            let name = if index == 0 { "libs.pak" } else { "items.pak" };
+            std::fs::write(
+                folder.join("asset-library.json"),
+                serde_json::json!({
+                    "version": 1, "name": name, "source": source,
+                    "entries": [{"path": path, "bytes": bytes.len()}]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            archives.push(ImportedPak {
+                id: format!("{index:020}"),
+                name: name.into(),
+                source,
+                directory: folder.to_string_lossy().into_owned(),
+                group: String::new(),
+                description: String::new(),
+                entries: 1,
+                extracted_bytes: bytes.len() as u64,
+                warnings: 0,
+                builds: vec![if index == 2 { "2012" } else { "Stage 2" }.into()],
+            });
+        }
+        let direct = vec![(Arc::new(archives[0].clone()), actor.to_owned())];
+        let linked = actor_linked_imports(&direct, &archives, "Stage 2").unwrap();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].0.id, archives[1].id);
+        assert!(actor_linked_imports(&direct, &archives, "2012").is_err());
+        archives[2].builds = vec!["Stage 2".into()];
+        assert!(
+            actor_linked_imports(&direct, &archives, "Stage 2")
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::write(root.path().join("0/files").join(actor), b"tampered").unwrap();
+        assert!(actor_linked_imports(&direct, &archives, "Stage 2").is_err());
+    }
+
+    #[test]
+    #[ignore = "requires EVOLVE_BENCH_LIBRARY pointing to a local imported Asset Library"]
+    fn local_maggie_actor_links_shared_items_only_within_its_build() {
+        let root = std::path::PathBuf::from(std::env::var_os("EVOLVE_BENCH_LIBRARY").unwrap());
+        let catalog = evolve_core::imported_library(&root).unwrap();
+        let archive = catalog
+            .archives
+            .iter()
+            .find(|archive| archive.name == "libs.pak")
+            .unwrap();
+        let build = archive.builds.first().unwrap();
+        let direct = vec![(
+            Arc::new(archive.clone()),
+            "libs/Actor/Mercs/Maggie.actorparams".into(),
+        )];
+        let linked = actor_linked_imports(&direct, &catalog.archives, build).unwrap();
+        assert!(
+            linked
+                .iter()
+                .any(|(archive, path)| archive.builds.contains(build)
+                    && path.eq_ignore_ascii_case(
+                        "libs/Items/Mercs/Shared/MobileArenaTriggerWeapon.xml"
+                    ))
+        );
+        assert!(
+            linked
+                .iter()
+                .any(|(archive, path)| archive.builds.contains(build)
+                    && path.eq_ignore_ascii_case("libs/EffectSets/MercHealthRegen.xml"))
+        );
+        assert!(
+            !linked
+                .iter()
+                .any(|(archive, _)| !archive.builds.contains(build))
+        );
+    }
 
     #[test]
     fn imported_preview_is_read_only_and_rejects_foreign_or_modified_members() {
@@ -700,7 +980,7 @@ mod tests {
             builds: vec![],
         };
         let fields = preview_imported_values(&archive, path).unwrap();
-        assert!(fields.iter().any(|field| field.original == "42"));
+        assert!(fields.iter().any(|field| field.value == "42"));
         assert_eq!(std::fs::read(&file).unwrap(), content);
         assert!(preview_imported_values(&archive, "../outside.xml").is_err());
         assert!(

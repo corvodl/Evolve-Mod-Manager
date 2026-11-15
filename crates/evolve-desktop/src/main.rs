@@ -7877,6 +7877,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_page = 0;
                     refresh_library_matches(state);
                     guided_modding::refresh_imports(state);
+                    return guided_modding::link_task(state);
                 }
                 Err(error) => {
                     state.status = format!("Could not index saved Asset Library: {error}");
