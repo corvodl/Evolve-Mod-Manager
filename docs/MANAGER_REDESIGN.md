@@ -42,6 +42,11 @@ the redesign retains both and corrects hierarchy instead of replacing them.
   internal asset names and textures need source-backed associations before they
   can be listed as belonging to a character. Advanced Modding retains the
   project, archive, conflict, recovery, and signed-PAK controls.
+- Guided gameplay searches retain distinct imported archives with the same
+  PAK filename, show each source/build, and page all editable scalar fields
+  instead of silently stopping after 80. The editor supports numeric/boolean
+  attributes; complete character-specific values still require verified
+  references from imported game documents, not name-only search.
 
 ## Acceptance
 

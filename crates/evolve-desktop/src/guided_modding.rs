@@ -17,6 +17,7 @@ pub struct Editor {
     imports: Vec<(Arc<evolve_core::library_catalog::ImportedPak>, String)>,
     search: String,
     fields_search: String,
+    fields_page: usize,
     rows: Vec<(Arc<ProjectRow>, String)>,
     selected: Option<usize>,
     snapshot: Vec<u8>,
@@ -29,6 +30,7 @@ pub enum Action {
     Close,
     Search(String),
     FieldSearch(String),
+    FieldsPage(bool),
     Select(usize),
     Value(usize, String),
     Save,
@@ -55,12 +57,6 @@ pub fn refresh_imports(state: &mut State) {
             .flatten();
         for archive in &library.archives {
             if state.library_by_build && !build.is_some_and(|b| archive.builds.contains(b)) {
-                continue;
-            }
-            if editor.rows.iter().any(|(p, _)| {
-                p.target.eq_ignore_ascii_case(&archive.name)
-                    && archive.builds.contains(&p.source_build)
-            }) {
                 continue;
             }
             match modding_projects::guided_import_members(archive, editor.models) {
@@ -154,7 +150,27 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
         }
         Action::Close => editor.open = false,
         Action::Search(s) => editor.search = s,
-        Action::FieldSearch(s) => editor.fields_search = s,
+        Action::FieldSearch(s) => {
+            editor.fields_search = s;
+            editor.fields_page = 0;
+        }
+        Action::FieldsPage(next) => {
+            let query = editor.fields_search.to_ascii_lowercase();
+            let count = editor
+                .fields
+                .iter()
+                .filter(|field| {
+                    field.label.to_ascii_lowercase().contains(&query)
+                        || field.original.to_ascii_lowercase().contains(&query)
+                })
+                .count();
+            let last = count.saturating_sub(1) / 80;
+            editor.fields_page = if next {
+                editor.fields_page.saturating_add(1).min(last)
+            } else {
+                editor.fields_page.saturating_sub(1)
+            };
+        }
         Action::Value(i, value) => {
             if let Some(f) = editor.fields.get_mut(i) {
                 f.value = value;
@@ -189,6 +205,7 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                         editor.snapshot = bytes;
                         editor.fields = fields;
                         editor.fields_search.clear();
+                        editor.fields_page = 0;
                         editor.note = "Gameplay changes are offline only. Save creates a recovery backup. Values use the game's source names; engine-specific ranges are not inferred.".into();
                     }
                     Err(e) => {
@@ -255,7 +272,7 @@ pub fn view(state: &State) -> Element<'_, Message> {
         .iter()
         .enumerate()
         .filter(|(_, (a, path))| {
-            format!("{} {}", path, a.builds.join(" "))
+            format!("{} {} {} {}", path, a.builds.join(" "), a.name, a.source)
                 .to_ascii_lowercase()
                 .contains(&query)
         })
@@ -264,9 +281,11 @@ pub fn view(state: &State) -> Element<'_, Message> {
         rows = rows.push(
             design::button(
                 text(format!(
-                    "Create editable copy: {} · {}",
+                    "Create editable copy: {} · {} · {} · {}",
                     path,
-                    archive.builds.join(", ")
+                    archive.name,
+                    archive.builds.join(", "),
+                    crate::level_archive::source_label(&archive.source)
                 ))
                 .size(12),
             )
@@ -308,9 +327,13 @@ pub fn view(state: &State) -> Element<'_, Message> {
             .fields
             .iter()
             .enumerate()
-            .filter(|(_, f)| f.label.to_ascii_lowercase().contains(&query))
+            .filter(|(_, f)| {
+                f.label.to_ascii_lowercase().contains(&query)
+                    || f.original.to_ascii_lowercase().contains(&query)
+            })
             .collect();
-        for (i, f) in matching.iter().take(80) {
+        let start = e.fields_page.saturating_mul(80).min(matching.len());
+        for (i, f) in matching.iter().skip(start).take(80) {
             let i = *i;
             fields = fields.push(
                 row![
@@ -334,12 +357,22 @@ pub fn view(state: &State) -> Element<'_, Message> {
             )
             .push(
                 text(format!(
-                    "{} numeric/boolean fields (first 80 shown; authored | stage/variant lists and comma-separated vector widths are validated, not rewritten)",
-                    matching.len()
+                    "{}–{} of {} editable numeric/boolean fields (authored | stage/variant lists and comma-separated vector widths are validated)",
+                    if matching.is_empty() { 0 } else { start + 1 },
+                    (start + 80).min(matching.len()),
+                    matching.len(),
                 ))
                 .size(11),
             )
             .push(scrollable(fields).height(180))
+            .push(row![
+                design::button("Previous values").on_press_maybe(
+                    (start > 0).then_some(message(Action::FieldsPage(false)))
+                ),
+                design::button("Next values").on_press_maybe(
+                    (start + 80 < matching.len()).then_some(message(Action::FieldsPage(true)))
+                ),
+            ].spacing(8))
             .push(
                 row![
                     design::button("Save gameplay values").on_press(message(Action::Save)),
@@ -445,5 +478,88 @@ mod tests {
             state.guided_editor.imports[0].1,
             "Libs/Items/Perks/Assault/Perk_Assault_Rearm.effectset"
         );
+    }
+
+    #[test]
+    fn imported_gameplay_keeps_same_named_archives_from_independent_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut archives = Vec::new();
+        for (id, source) in [("a", "C:/GameA/libs.pak"), ("b", "D:/GameB/libs.pak")] {
+            let folder = dir.path().join(id);
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(
+                folder.join("asset-library.json"),
+                serde_json::json!({
+                    "version": 1, "source": source,
+                    "entries": [{"path": "libs/Abilities/Goliath/GoliathCharge.xml"}]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            archives.push(ImportedPak {
+                id: id.repeat(20),
+                name: "libs.pak".into(),
+                source: source.into(),
+                directory: folder.to_string_lossy().into_owned(),
+                group: "Gameplay".into(),
+                description: String::new(),
+                entries: 1,
+                extracted_bytes: 1,
+                warnings: 0,
+                builds: vec!["Stage 2".into()],
+            });
+        }
+        let mut state = State {
+            library_catalog: Some(ImportedLibrary {
+                root: dir.path().to_string_lossy().into_owned(),
+                archives,
+                builds: vec!["Stage 2".into()],
+                total_bytes: 2,
+                ignored: 0,
+            }),
+            ..State::default()
+        };
+        state.guided_editor.open = true;
+        state.guided_editor.rows.push((
+            Arc::new(ProjectRow {
+                label: "Existing mod".into(),
+                target: "libs.pak".into(),
+                source_build: "Stage 2".into(),
+                status: String::new(),
+                details: String::new(),
+                workspace: dir.path().join("project"),
+                modified: vec![],
+                changed_known: true,
+                enabled: false,
+            }),
+            "libs/Abilities/Goliath/GoliathCharge.xml".into(),
+        ));
+        refresh_imports(&mut state);
+        assert_eq!(state.guided_editor.imports.len(), 2);
+        assert_ne!(
+            state.guided_editor.imports[0].0.source,
+            state.guided_editor.imports[1].0.source
+        );
+    }
+
+    #[test]
+    fn field_pages_reach_late_values_and_reset_on_search() {
+        let mut state = State::default();
+        state.guided_editor.fields = (0..181)
+            .map(|i| ValueField {
+                element: i,
+                attribute: "value".into(),
+                label: format!("field {i}"),
+                original: i.to_string(),
+                value: i.to_string(),
+            })
+            .collect();
+        let _ = update(&mut state, Action::FieldsPage(true));
+        let _ = update(&mut state, Action::FieldsPage(true));
+        assert_eq!(state.guided_editor.fields_page, 2);
+        let _ = update(&mut state, Action::FieldsPage(true));
+        assert_eq!(state.guided_editor.fields_page, 2);
+        let _ = update(&mut state, Action::FieldSearch("180".into()));
+        assert_eq!(state.guided_editor.fields_page, 0);
     }
 }
