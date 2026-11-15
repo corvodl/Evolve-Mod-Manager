@@ -1,4 +1,4 @@
 Nightly requested 2026-11-15 after merging all open PRs.
-request: user-requested-merge-build-public-nightly-2026-11-15-pr223-pr224-pr225
-base-main-commit: 206487955dac726088a02822371b612afbdb9ba8
-description: Build and publish a fresh Windows Nightly from merged main including PR #223 Discord announcements feed configuration and URL, PR #224 live Home announcements and Modding workflow UI, and PR #225 authored minimap display and Windows-style contextual menus. Preserve all release authorization, admin manifest verification, official Stage 2 runtime packaging and license guards. Publish only the verified Windows installer and portable ZIP as assets on the public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease.
+request: user-requested-merge-build-public-nightly-2026-11-15-pr226
+base-main-commit: ff7560be9f99db73528b18ec0dc862e316a73a69
+description: Build and publish a fresh Windows Nightly from merged main including PR #226 modernized public README, unlinked repository references, internal teleport overlay companion, authored minimap display, and Windows-style contextual menus. Preserve all release authorization, admin manifest verification, official Stage 2 runtime packaging and license guards. Publish only the verified Windows installer and portable ZIP as assets on the public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease.
