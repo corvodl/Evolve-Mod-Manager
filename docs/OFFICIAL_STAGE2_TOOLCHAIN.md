@@ -59,7 +59,7 @@ The developer's extracted tool files have been uploaded to the private
 repository `corvodl/Evolve-Official-Tools`, under `evolve_tool_stage2/`.
 **A GitHub Release in the private repository is no longer required.**
 
-Nightly builds clone that private repository using a read-only credential,
+Nightly and gated release builds clone that private repository using a read-only credential,
 check the SHA-256 of each required file, and copy only the five runtime
 files and the BouncyCastle license into the release staging directory.
 The source projects and developer archive are not included in the release.
@@ -71,12 +71,12 @@ update transaction.
 
 ### Remaining Actions credential setup
 
-In the **public** `corvodl/Evolve-Mod-Manager` repository, configure
+In the **private** `corvodl/EMM-SRC` repository, configure
 an Actions secret named `EVOLVE_STAGE2_TOOLS_TOKEN`: a fine-grained GitHub
 personal access token with `Contents: Read` permission specifically on
-`corvodl/Evolve-Official-Tools`. The ChatGPT GitHub connection can read
-the private repository, but that does not authorize GitHub Actions in
-another repository. Do not put the token itself in a PR, repository
+`corvodl/Evolve-Official-Tools`. Repository access for one workflow does not
+authorize GitHub Actions to read another private repository. Do not put the
+token itself in a PR, repository
 variable, source file, issue, or Actions output.
 
 `EVOLVE_STAGE2_TOOLS_REPO` and `EVOLVE_STAGE2_TOOLS_TAG` are no longer

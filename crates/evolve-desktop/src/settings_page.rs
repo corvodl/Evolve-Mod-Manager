@@ -581,7 +581,9 @@ impl Tab {
                 .any(|kind| state.path_checks.get(*kind).is_some_and(|check| !check.ok))
         };
         match self {
-            Self::Updates => (!state.launch_updates.is_empty() || state.available_update.is_some())
+            Self::Updates => state
+                .available_update
+                .is_some()
                 .then_some(crate::design::Tone::Info),
             Self::Storage => failing(&[
                 PathKind::GameInstall,
@@ -734,7 +736,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .push(env!("CARGO_PKG_VERSION").contains("-nightly.").then(|| {
                 crate::ui_kit::badge(crate::ui_kit::BadgeKind::Nightly, "Nightly")
             }))
-            .push(env!("CARGO_PKG_VERSION").contains("-beta.").then(|| {
+            .push((env!("CARGO_PKG_VERSION").contains("-beta.") || env!("CARGO_PKG_VERSION").contains("-rc.")).then(|| {
                 crate::ui_kit::badge(crate::ui_kit::BadgeKind::Modified, "Beta")
             }))
             .spacing(8)
@@ -745,15 +747,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     &state.ui,
                     "update-channel",
                     vec![
-                        ("Stable", Message::PreferenceUpdateChannelSet("Stable")),
-                        ("Beta", Message::PreferenceUpdateChannelSet("Beta")),
-                        ("Nightly", Message::PreferenceUpdateChannelSet("Nightly")),
+                        ("Stable", Message::PreferenceUpdateChannelSet(crate::updater::UpdateChannel::Stable)),
+                        ("Beta", Message::PreferenceUpdateChannelSet(crate::updater::UpdateChannel::Beta)),
+                        ("Nightly", Message::PreferenceUpdateChannelSet(crate::updater::UpdateChannel::Nightly)),
                     ],
                     if state.preferences.nightly_updates { 2 } else if state.preferences.experimental_updates { 1 } else { 0 },
                     true,
                 ),
             ].spacing(8),
-            text("Beta and Nightly builds are prereleases. Every channel is checked automatically when the manager starts.").size(design::CAPTION).style(design::muted),
+            crate::ui_kit::switch(&state.ui, "automatic-update-checks", "Check selected channel at startup", state.preferences.automatic_update_checks, Message::PreferenceAutomaticUpdateChecks),
+            text("Beta includes release candidates. Only newer verified versions on the selected channel are offered.").size(design::CAPTION).style(design::muted),
             text(state.update_status.as_str()).size(design::LABEL).style(design::muted),
             if let Some(error) = &state.update_worker_failure {
                 text(format!(
@@ -771,7 +774,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .style(design::secondary)
             },
             super::download_action(state),
-            super::launch_update_actions(state),
             crate::ui_kit::callout(crate::design::Tone::Success, "Updates are downloaded, SHA-256 verified and installed when you select Update and restart. Portable downloads remain portable; your game files and preferences are preserved."),
         ].spacing(8)),
         ].spacing(12).into(),

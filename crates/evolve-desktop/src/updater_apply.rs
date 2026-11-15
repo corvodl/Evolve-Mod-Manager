@@ -23,17 +23,21 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
 const SHUTDOWN_POLL: Duration = Duration::from_millis(250);
 // These are known executables / DLLs replaced by the installer. We also
 // inspect installed third-party files, as optional tooling may still be open.
-const INSTALLED_TOP_LEVEL_FILES: [&str; 3] = [
+const INSTALLED_TOP_LEVEL_FILES: [&str; 4] = [
     "evolve-mod-manager.exe",
     "evolve-cli.exe",
     "evolve-teleport-overlay.exe",
+    "evolve-privileged-worker.exe",
 ];
 const MAX_ZIP_CONTENTS: u64 = 256 * 1024 * 1024;
-const PORTABLE_MEMBERS: [&str; 11] = [
+const PORTABLE_MEMBERS: [&str; 17] = [
     "evolve-mod-manager.exe",
     "evolve-cli.exe",
+    "evolve-teleport-overlay.exe",
+    "evolve-privileged-worker.exe",
     "hunt.ico",
     "README.md",
+    "assets/default_loading.dds",
     "third_party/OfficialStage2/evolve_tool.exe",
     "third_party/OfficialStage2/crypto.dll",
     "third_party/OfficialStage2/inject/inject.dll",
@@ -41,6 +45,9 @@ const PORTABLE_MEMBERS: [&str; 11] = [
     "third_party/OfficialStage2/inject/RSAKeyData.bin",
     "third_party/OfficialStage2/README.txt",
     "third_party/OfficialStage2/LICENSE-BOUNCYCASTLE.html",
+    "third_party/Cryengine-Converter/cgf-converter.exe",
+    "third_party/Cryengine-Converter/NOTICE.txt",
+    "third_party/Cryengine-Converter/Cryengine-Converter-source-v2.0.0.zip",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,8 +190,8 @@ pub fn launch_worker(plan: &PreparedUpdate) -> Result<(), UpdateError> {
     Ok(())
 }
 
-/// Only the four expected top-level release artifacts may be written back to
-/// a portable directory, never arbitrary ZIP paths, directories or symlinks.
+/// Only the expected release members may be written back to a portable
+/// directory, never arbitrary ZIP paths, directories or symlinks.
 fn verify_portable_contents<R: Read + io::Seek>(
     zip: &mut zip::ZipArchive<R>,
 ) -> Result<(), UpdateError> {
@@ -892,6 +899,10 @@ mod tests {
 
     #[test]
     fn exact_portable_file_list_accepted() {
+        let packaged_members = include_str!("../../../scripts/portable-release-members.txt")
+            .lines()
+            .collect::<Vec<_>>();
+        assert_eq!(packaged_members, PORTABLE_MEMBERS.to_vec());
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("portable.zip");
         let mut writer = zip::ZipWriter::new(File::create(&file).unwrap());

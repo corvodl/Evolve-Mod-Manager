@@ -147,6 +147,22 @@ jobs:
           }
           Write-Host 'evolve-mod-manager.exe manifest requires administrator.'
 
+      - name: Retrieve and verify developer-supplied Stage 2 runtime
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.EVOLVE_STAGE2_TOOLS_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw 'Set EVOLVE_STAGE2_TOOLS_TOKEN with Contents:read on corvodl/Evolve-Official-Tools.'
+          }
+          $sourceRepo = 'corvodl/Evolve-Official-Tools'
+          $folder = Join-Path $env:RUNNER_TEMP 'evolve-official-tools'
+          if (Test-Path -LiteralPath $folder) { Remove-Item -LiteralPath $folder -Recurse -Force }
+          & gh repo clone $sourceRepo $folder -- --depth 1 --filter=blob:none
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to fetch authorized private tool repository.' }
+          ./scripts/package-official-stage2-tools.ps1 -SourceDirectory (Join-Path $folder 'evolve_tool_stage2')
+          Remove-Item -LiteralPath $folder -Recurse -Force
+
       - name: Stage verified GPLv2 Cryengine-Converter and corresponding source
         shell: pwsh
         run: ./scripts/prepare-cryengine-converter.ps1 -Fetch
@@ -163,12 +179,18 @@ jobs:
             if (!(Test-Path $source)) { throw "Windows binary missing: $name" }
             Copy-Item -LiteralPath $source -Destination (Join-Path $folder $name)
           }
-          Copy-Item "assets/hunt.ico" "$folder/hunt.ico"
-          Copy-Item "README.md" "$folder/README.md"
-          if (Test-Path -LiteralPath 'dist/third_party/Cryengine-Converter') {
-            New-Item -ItemType Directory -Path "$folder/third_party" -Force | Out-Null
-            Copy-Item -LiteralPath 'dist/third_party/Cryengine-Converter' -Destination "$folder/third_party/Cryengine-Converter" -Recurse -Force
+          Copy-Item -LiteralPath 'assets/hunt.ico' -Destination "$folder/hunt.ico"
+          $banner = 'assets/default_loading.dds'
+          $expectedHash = '2f02f19b085dc7edc5f88b730121ca511bf499b2c3ef1045f4ebe020da3fff5a'
+          if (!(Test-Path -LiteralPath $banner) -or (Get-FileHash -LiteralPath $banner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) {
+            throw 'Required Home banner does not match the verified original DDS.'
           }
+          New-Item -ItemType Directory -Path "$folder/assets" -Force | Out-Null
+          Copy-Item -LiteralPath $banner -Destination "$folder/assets/default_loading.dds"
+          Copy-Item -LiteralPath 'README.md' -Destination "$folder/README.md"
+          New-Item -ItemType Directory -Path "$folder/third_party" -Force | Out-Null
+          Copy-Item -LiteralPath 'dist/third_party/OfficialStage2' -Destination "$folder/third_party/OfficialStage2" -Recurse -Force
+          Copy-Item -LiteralPath 'dist/third_party/Cryengine-Converter' -Destination "$folder/third_party/Cryengine-Converter" -Recurse -Force
           Compress-Archive -Path (Join-Path $folder '*') -DestinationPath "dist/EvolveModManager-Portable-$env:VERSION.zip" -CompressionLevel Optimal -Force
 
       - name: Fetch and verify optional GFX editor tools
@@ -199,6 +221,7 @@ jobs:
             if (!(Test-Path $item)) { throw "Missing release file: $item" }
             if ((Get-Item $item).Length -lt 1024) { throw "Suspiciously small file: $item" }
           }
+          ./scripts/verify-portable-release.ps1 -ArchivePath $portable
           $body = @("Evolve Mod Manager $env:VERSION",
                     "Windows installer and portable ZIP only.",
                     "")

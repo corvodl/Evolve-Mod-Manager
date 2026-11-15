@@ -568,8 +568,7 @@ pub fn newest_news(state: &State) -> Option<String> {
 
 pub fn nav_indicator(state: &State, page: Page) -> Option<Indicator> {
     match page {
-        Page::Settings => (state.available_update.is_some() || !state.launch_updates.is_empty())
-            .then_some(Indicator::Dot),
+        Page::Settings => state.available_update.is_some().then_some(Indicator::Dot),
         Page::WhatsNew if state.page != Some(Page::WhatsNew) => {
             let unread = unread_news(state);
             (unread > 0).then_some(Indicator::Count(unread))

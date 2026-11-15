@@ -1,4 +1,4 @@
-name: Nightly 0.1.0 Windows release
+name: Nightly Windows release
 
 on:
   # Manual developer trigger remains available in GitHub Actions.
@@ -27,8 +27,6 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: windows-2022
     timeout-minutes: 55
-    env:
-      VERSION: 0.1.0-nightly.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,8 +66,8 @@ jobs:
           }
           $releases = $releasesJson | ConvertFrom-Json
           $previous = $releases |
-            Where-Object { $_.tagName -match '^v0\.1\.0-nightly\.[0-9]+$' } |
-            Sort-Object { [int]($_.tagName -replace '^v0\.1\.0-nightly\.', '') } -Descending |
+            Where-Object { $_.tagName -match '^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]+$' } |
+            Sort-Object createdAt -Descending |
             Select-Object -First 1
           "NIGHTLY_BASELINE_TAG=$($previous.tagName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "NIGHTLY_BASELINE_AT=$($previous.createdAt)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -82,13 +80,26 @@ jobs:
         shell: pwsh
         run: |
           $manifest = Get-Content "Cargo.toml" -Raw
-          $original = 'version = "0.1.0"'
-          if (!$manifest.Contains($original)) {
-            throw "Expected Nightly 0.1.0 base version in workspace Cargo.toml"
+          $base = [regex]::Match($manifest, '(?m)^version = "([0-9]+)\.([0-9]+)\.([0-9]+)(?:-[^"]+)?"(?=\r?$)')
+          if (!$base.Success) {
+            throw 'Workspace version must be semver with a numeric major.minor.patch base.'
           }
-          $manifest = $manifest.Replace($original, ('version = "' + $env:VERSION + '"'))
+          $major = [int]$base.Groups[1].Value
+          $minor = [int]$base.Groups[2].Value
+          $patch = [int]$base.Groups[3].Value + 1
+          $version = "$major.$minor.$patch-nightly.${{ github.run_number }}"
+          $previous = $env:NIGHTLY_BASELINE_TAG
+          if ($previous) {
+            $parts = [regex]::Match($previous, '^v([0-9]+\.[0-9]+\.[0-9]+)-nightly\.([0-9]+)$')
+            if (!$parts.Success -or [version]"$major.$minor.$patch" -lt [version]$parts.Groups[1].Value -or
+                ([version]"$major.$minor.$patch" -eq [version]$parts.Groups[1].Value -and [long]${{ github.run_number }} -le [long]$parts.Groups[2].Value)) {
+              throw "Nightly $version must be newer than the published $previous."
+            }
+          }
+          $manifest = $manifest.Replace($base.Value, "version = `"$version`"")
           Set-Content "Cargo.toml" -Value $manifest -Encoding utf8
-          Write-Host "Building Nightly $env:VERSION"
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Building Nightly $version"
 
       # Core and desktop lint/tests run in CI; compile binaries only once here.
       - run: cargo fmt --all -- --check
@@ -212,26 +223,7 @@ jobs:
             if (!(Test-Path $item)) { throw "Missing Nightly release asset: $item" }
             if ((Get-Item $item).Length -lt 1024) { throw "Suspiciously small Nightly asset: $item" }
           }
-          # Require the complete official runtime in every portable release.
-          Add-Type -AssemblyName System.IO.Compression
-          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $portable).Path)
-          try {
-            foreach ($name in @(
-              'third_party/OfficialStage2/evolve_tool.exe',
-              'third_party/OfficialStage2/crypto.dll',
-              'third_party/OfficialStage2/inject/inject.dll',
-              'third_party/OfficialStage2/inject/dbghelp.dll',
-              'third_party/OfficialStage2/inject/RSAKeyData.bin',
-              'third_party/OfficialStage2/README.txt',
-              'third_party/OfficialStage2/LICENSE-BOUNCYCASTLE.html'
-            )) {
-              $entry = $archive.GetEntry($name)
-              if ($null -eq $entry -or $entry.Length -le 0) {
-                throw "Portable release is missing official tool component: $name"
-              }
-            }
-          } finally { $archive.Dispose() }
-          Write-Host 'Portable official tool inventory verified.'
+          ./scripts/verify-portable-release.ps1 -ArchivePath $portable
           # The previous published nightly is the changelog boundary. Tags live
           # only in the public artifact repository, which points at its
           # README/LICENSE-only main, so list first-parent source commits newer
@@ -244,7 +236,7 @@ jobs:
           }
 
           $body = @(
-            "Evolve Mod Manager Nightly 0.1.0 (build $env:VERSION)",
+            "Evolve Mod Manager Nightly (build $env:VERSION)",
             "",
             "Experimental Windows preview. The manager is not yet feature-complete.",
             ""
@@ -290,14 +282,14 @@ jobs:
       # Publish only build artifacts to the public repository. The tag is
       # created from the public README/LICENSE-only main, so GitHub's generated
       # source archives contain no source; never upload source archives.
-      - name: Publish Nightly 0.1.0 GitHub prerelease to public repository
+      - name: Publish Nightly GitHub prerelease to public repository
         uses: softprops/action-gh-release@v3
         with:
           repository: corvodl/Evolve-Mod-Manager
           token: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
           target_commitish: main
           tag_name: v${{ env.VERSION }}
-          name: Evolve Mod Manager Nightly 0.1.0 (build ${{ github.run_number }})
+          name: Evolve Mod Manager Nightly (build ${{ github.run_number }})
           prerelease: true
           make_latest: false
           body_path: dist/nightly-release-notes.md

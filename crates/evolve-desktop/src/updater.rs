@@ -1,4 +1,4 @@
-//! Opt-in public GitHub Releases updater.
+//! Verified public GitHub Releases updater.
 //!
 //! The release description contains SHA256 lines for the only two distributable
 //! assets: the portable ZIP and the installer. Downloads are checked before any
@@ -20,6 +20,8 @@ const REPOSITORY: &str = "Evolve-Mod-Manager";
 // Bound response parsing separately from the artifact download cap.
 const MAX_METADATA: u64 = 8 * 1024 * 1024;
 const MAX_DOWNLOAD: u64 = 500 * 1024 * 1024;
+const RELEASES_PER_PAGE: usize = 100;
+const MAX_RELEASE_PAGES: usize = 100;
 const USER_AGENT: &str = "EvolveModManager-Updater/1.0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +46,6 @@ pub struct ReleaseUpdate {
     pub channel: UpdateChannel,
     pub installer: VerifiedAsset,
     pub portable: VerifiedAsset,
-    pub release_url: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +86,15 @@ fn client() -> Result<Client, UpdateError> {
     Ok(Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()?)
+}
+
+fn download_client() -> Result<Client, UpdateError> {
+    Ok(Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(3600))
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()?)
 }
@@ -167,11 +177,17 @@ fn parse_release(release: ApiRelease) -> Result<ReleaseUpdate, UpdateError> {
         ));
     }
     let prerelease = semver.pre.as_str();
+    let numbered = |prefix: &str| {
+        prerelease
+            .strip_prefix(prefix)
+            .and_then(|number| number.parse::<u64>().ok())
+            .is_some()
+    };
     let channel = if prerelease.is_empty() {
         UpdateChannel::Stable
-    } else if prerelease.starts_with("nightly.") {
+    } else if numbered("nightly.") {
         UpdateChannel::Nightly
-    } else if prerelease.starts_with("beta.") || prerelease.starts_with("rc.") {
+    } else if numbered("beta.") || numbered("rc.") {
         UpdateChannel::Beta
     } else {
         return Err(UpdateError::Invalid("unsupported release channel".into()));
@@ -198,7 +214,6 @@ fn parse_release(release: ApiRelease) -> Result<ReleaseUpdate, UpdateError> {
         channel,
         portable,
         installer,
-        release_url: release.html_url,
     })
 }
 
@@ -212,17 +227,8 @@ fn read_metadata(mut response: impl Read) -> Result<Vec<u8>, UpdateError> {
     Ok(result)
 }
 
-pub fn discover_update(
-    channel: UpdateChannel,
-    installed: &str,
-) -> Result<Option<ReleaseUpdate>, UpdateError> {
-    let installed = Version::parse(installed)
-        .map_err(|_| UpdateError::Invalid("current version is not semver".into()))?;
-    let url = match channel {
-        UpdateChannel::Stable => format!("{API}/releases/latest"),
-        UpdateChannel::Beta | UpdateChannel::Nightly => format!("{API}/releases?per_page=50"),
-    };
-    let response = client()?
+fn fetch_releases(client: &Client, url: String) -> Result<Option<Vec<u8>>, UpdateError> {
+    let response = client
         .get(url)
         .header("Accept", "application/vnd.github+json")
         .send()?;
@@ -230,20 +236,17 @@ pub fn discover_update(
         return Ok(None);
     }
     let response = response.error_for_status()?;
-    let bytes = read_metadata(response)?;
-    let candidates = match channel {
-        UpdateChannel::Stable => vec![
-            serde_json::from_slice::<ApiRelease>(&bytes)
-                .map_err(|e| UpdateError::Invalid(e.to_string()))?,
-        ],
-        UpdateChannel::Beta | UpdateChannel::Nightly => {
-            serde_json::from_slice::<Vec<ApiRelease>>(&bytes)
-                .map_err(|e| UpdateError::Invalid(e.to_string()))?
-        }
-    };
+    Ok(Some(read_metadata(response)?))
+}
+
+fn best_update(
+    channel: UpdateChannel,
+    installed: &Version,
+    candidates: Vec<ApiRelease>,
+) -> Option<ReleaseUpdate> {
     let mut available = Vec::new();
     for candidate in candidates {
-        if candidate.draft || (channel != UpdateChannel::Stable && !candidate.prerelease) {
+        if candidate.draft || (channel == UpdateChannel::Stable && candidate.prerelease) {
             continue;
         }
         let Ok(parsed) = parse_release(candidate) else {
@@ -255,20 +258,56 @@ pub fn discover_update(
         let Ok(version) = Version::parse(&parsed.version) else {
             continue;
         };
-        // An explicit Stable -> Nightly opt-in at the same base version
-        // may cross from 0.1.0 into 0.1.0-nightly.N. Once installed, the
-        // prerelease revision comparison prevents repetitive prompts.
-        let opted_into_same_version_nightly = channel == UpdateChannel::Nightly
-            && installed.pre.is_empty()
-            && version.major == installed.major
-            && version.minor == installed.minor
-            && version.patch == installed.patch;
-        if version > installed || opted_into_same_version_nightly {
+        if version > *installed {
             available.push((version, parsed));
         }
     }
     available.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(available.pop().map(|(_, value)| value))
+    available.pop().map(|(_, value)| value)
+}
+
+pub fn discover_update(
+    channel: UpdateChannel,
+    installed: &str,
+) -> Result<Option<ReleaseUpdate>, UpdateError> {
+    let installed = Version::parse(installed)
+        .map_err(|_| UpdateError::Invalid("current version is not semver".into()))?;
+    let client = client()?;
+    if channel == UpdateChannel::Stable {
+        let Some(bytes) = fetch_releases(&client, format!("{API}/releases/latest"))? else {
+            return Ok(None);
+        };
+        let candidate = serde_json::from_slice::<ApiRelease>(&bytes)
+            .map_err(|error| UpdateError::Invalid(error.to_string()))?;
+        return Ok(best_update(channel, &installed, vec![candidate]));
+    }
+    // GitHub lists releases by creation date, not channel. A long run of
+    // Nightlies must not hide a still-available Beta on the next page.
+    let mut newest: Option<ReleaseUpdate> = None;
+    for page in 1..=MAX_RELEASE_PAGES {
+        let url = format!("{API}/releases?per_page={RELEASES_PER_PAGE}&page={page}");
+        let Some(bytes) = fetch_releases(&client, url)? else {
+            return Ok(None);
+        };
+        let candidates = serde_json::from_slice::<Vec<ApiRelease>>(&bytes)
+            .map_err(|error| UpdateError::Invalid(error.to_string()))?;
+        let count = candidates.len();
+        if let Some(update) = best_update(channel, &installed, candidates) {
+            let newer = newest.as_ref().is_none_or(|prior| {
+                Version::parse(&update.version).expect("validated release version")
+                    > Version::parse(&prior.version).expect("validated release version")
+            });
+            if newer {
+                newest = Some(update);
+            }
+        }
+        if count < RELEASES_PER_PAGE {
+            return Ok(newest);
+        }
+    }
+    Err(UpdateError::Invalid(
+        "release history exceeded the channel search limit".into(),
+    ))
 }
 
 pub(crate) fn check_file_hash(path: &Path, expected: &VerifiedAsset) -> Result<(), UpdateError> {
@@ -313,7 +352,10 @@ pub fn download_verified_asset(asset: &VerifiedAsset, root: &Path) -> Result<Pat
         // Retry interrupted or corrupted downloads without trusting stale bytes.
         fs::remove_file(&target)?;
     }
-    let mut response = client()?.get(&asset.url).send()?.error_for_status()?;
+    let mut response = download_client()?
+        .get(&asset.url)
+        .send()?
+        .error_for_status()?;
     if response.content_length().is_some_and(|v| v > asset.size) {
         return Err(UpdateError::TooLarge);
     }
@@ -380,6 +422,27 @@ mod tests {
             ],
         }
     }
+
+    fn release_version(version: &str) -> ApiRelease {
+        let mut data = release();
+        data.tag_name = format!("v{version}");
+        data.html_url = format!("https://github.com/{OWNER}/{REPOSITORY}/releases/tag/v{version}");
+        data.prerelease = version.contains('-');
+        let prefix = github_release_prefix(version);
+        for asset in &mut data.assets {
+            asset.name = asset.name.replace("1.0.2", version);
+            asset.browser_download_url = format!("{prefix}{}", asset.name);
+        }
+        let digest = "a".repeat(64);
+        data.body = Some(
+            data.assets
+                .iter()
+                .map(|asset| format!("SHA256 {} {digest}", asset.name))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        data
+    }
     #[test]
     fn accepts_cumulative_github_release_metadata_over_one_megabyte() {
         // The list of up to 50 Nightlies includes large cumulative patch
@@ -406,27 +469,70 @@ mod tests {
     }
     #[test]
     fn recognizes_nightly_as_separate_prerelease_channel() {
-        let mut data = release();
-        let version = "0.1.0-nightly.1";
-        let prefix = github_release_prefix(version);
-        data.tag_name = format!("v{version}");
-        data.html_url = format!("https://github.com/{OWNER}/{REPOSITORY}/releases/tag/v{version}");
-        data.prerelease = true;
-        for asset in &mut data.assets {
-            asset.name = asset.name.replace("1.0.2", version);
-            asset.browser_download_url = format!("{prefix}{}", asset.name);
-        }
-        let digest = "a".repeat(64);
-        data.body = Some(
-            data.assets
-                .iter()
-                .map(|asset| format!("SHA256 {} {digest}", asset.name))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-        let parsed = parse_release(data).unwrap();
+        let version = "0.1.1-nightly.1";
+        let parsed = parse_release(release_version(version)).unwrap();
         assert_eq!(parsed.channel, UpdateChannel::Nightly);
         assert_eq!(parsed.version, version);
+    }
+
+    #[test]
+    fn channels_do_not_cross_or_downgrade_a_stable_install() {
+        let installed = Version::parse("0.1.0").unwrap();
+        let stable = best_update(
+            UpdateChannel::Stable,
+            &installed,
+            vec![release_version("0.1.1-beta.2"), release_version("0.1.1")],
+        )
+        .unwrap();
+        assert_eq!(stable.version, "0.1.1");
+        let beta = best_update(
+            UpdateChannel::Beta,
+            &installed,
+            vec![
+                release_version("0.1.1-nightly.50"),
+                release_version("0.1.1-rc.1"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(beta.version, "0.1.1-rc.1");
+        let nightly = best_update(
+            UpdateChannel::Nightly,
+            &installed,
+            vec![
+                release_version("0.1.0-nightly.999"),
+                release_version("0.1.1-nightly.2"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(nightly.version, "0.1.1-nightly.2");
+        assert!(
+            best_update(
+                UpdateChannel::Nightly,
+                &installed,
+                vec![release_version("0.1.0-nightly.999")],
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn beta_can_be_found_after_a_full_page_of_nightlies() {
+        let installed = Version::parse("0.1.0").unwrap();
+        let first_page = (0..RELEASES_PER_PAGE)
+            .map(|index| release_version(&format!("0.1.1-nightly.{}", index + 1)))
+            .collect();
+        assert!(best_update(UpdateChannel::Beta, &installed, first_page).is_none());
+        assert_eq!(
+            best_update(
+                UpdateChannel::Beta,
+                &installed,
+                vec![release_version("0.1.1-beta.3")],
+            )
+            .unwrap()
+            .version,
+            "0.1.1-beta.3"
+        );
+        assert!(parse_release(release_version("0.1.1-nightly.preview")).is_err());
     }
 
     #[test]
