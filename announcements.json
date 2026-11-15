@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-11-15T18:00:00Z",
+  "announcements": [
+    {
+      "id": "130600000000000000",
+      "author": "corvodl",
+      "timestamp": "2026-11-15T18:00:00Z",
+      "title": "Evolve Mod Manager Updates",
+      "content": "Welcome to the Evolve Mod Manager live announcements feed. Official updates and community news are synced directly from the Modded Evolve Discord.",
+      "description": "Stay tuned for the latest client updates, editor tools, and modding releases.",
+      "url": "https://discord.com/channels/100000000000000000/100000000000000001/130600000000000000",
+      "image_urls": []
+    }
+  ]
+}
