@@ -146,7 +146,6 @@ EMM is built on strict architectural and performance standards:
 | `Ctrl+B` | Global | Toggle side inspector sheet |
 | `Esc` | Global | Close topmost layer (context menu &rarr; modal &rarr; palette &rarr; sheet) |
 | `Right Click` | Chooser / Lists | Open native floating context menu |
-| `Ctrl+1` – `Ctrl+6` | Developer | Switch developer inspection tabs |
 | `Alt+↑` / `Alt+↓` | Reorder Lists | Move focused row up or down |
 | `Tab` / `Shift+Tab` | Forms | Cycle input focus forwards / backwards |
 | `Enter` | Chooser / Lists | Open selected level, project, or asset |
