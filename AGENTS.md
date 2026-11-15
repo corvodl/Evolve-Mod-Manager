@@ -15,6 +15,17 @@ Iced, and wgpu. The Cargo workspace lives in `crates/` (`evolve-core`,
 - Put domain rules and asset provenance in `evolve-core`; keep desktop messages,
   rendering, and focus in `evolve-desktop`. Never guess missing game data or
   substitute a plausible asset for a verified source.
+- Workspace crate boundaries:
+  - `evolve-core`: Domain models, game root detection, VPK and pak archive
+    parsing, asset provenance, install verification, and configuration. Must
+    remain UI-agnostic with no dependencies on Iced or wgpu.
+  - `evolve-desktop`: The primary desktop application (`evolve-mod-manager`).
+    Manages GUI state, user messages, layout views, components, keyboard focus,
+    and canvas rendering.
+  - `evolve-privileged-worker`: Short-lived standalone helper binary executing
+    vetted, privileged filesystem and registry operations under UAC elevation.
+  - `evolve-teleport-overlay`: Dedicated in-game overlay binary utilizing
+    DirectX and window hooking mechanics.
 - Model mutually exclusive states with enums or typed payloads. Do not make
   control flow depend on display strings, positional labels, or combinations of
   booleans that can contradict each other. Async work needs explicit pending,
@@ -28,6 +39,13 @@ Iced, and wgpu. The Cargo workspace lives in `crates/` (`evolve-core`,
   when the behavior or a safety boundary changes.
 - Add focused tests for the transition or regression being changed. Test
   negative paths as well as success; report what cannot be verified locally.
+- Keep `Cargo.lock` untracked: the workspace lockfile is intentionally ignored
+  in git. Do not commit or force-add `Cargo.lock` during routine dependencies or
+  code changes.
+- Multi-agent worktree etiquette: when working concurrently with other agents or
+  human contributors, use isolated git worktrees or dedicated feature branches
+  branched from `main`. Clean up scratch worktrees and avoid writing partial,
+  untested changes to shared branches.
 
 ## Repository topology
 
@@ -114,9 +132,10 @@ firewall rules, installs, updates, mod staging, or signing.
   journals.
 - A future broker must not automatically elevate a portable/user-writable copy;
   never launch an arbitrary sibling executable with the worker token.
-- Change manifests only together with `tests/windows_admin_manifest.rs`, the
-  manifest assertion in `.github/workflows/rust-ci.yml`, and the packaging
-  guard. Never ship an `asInvoker` build as a release.
+- Change manifests only together with
+  `crates/evolve-desktop/tests/windows_admin_manifest.rs`, the manifest
+  assertion in `.github/workflows/rust-ci.yml`, and the packaging guard. Never
+  ship an `asInvoker` build as a release.
 
 ## Desktop UI
 
@@ -149,19 +168,43 @@ existing theme overrides, and no invented game art.
   from `design` tokens and widget state, not ad hoc colors or spacing. Check
   text contrast at 4.5:1 and control/focus edges at 3:1 in both themes, and
   honour `preferences.reduce_motion`.
+- Frame rate & animation subscription discipline:
+  - Distinguish active animation from ambient sweeps. Use high-frequency ticks
+    (`anim::FRAME`, ~60 fps / 16 ms) only during user interaction, drags, or
+    transient state transitions.
+  - Use lower-frequency ambient ticks (`anim::AMBIENT_FRAME`, ~30 fps / 33 ms or
+    slower) for background pulses, radar sweeps, or telemetry HUDs.
+  - When no animated component is visible and no background activity is running
+    (`!ui_ambient_running(...)`), subscriptions must drop to
+    `Subscription::none()` so the application idles at 0% CPU.
+  - Always respect `preferences.reduce_motion`: suppress continuous canvas
+    ticks, disable decorative pulses, and transition to settled states
+    immediately.
 - Review Modern and Legacy at 1440×900 and the 880×620 minimum, in light and
   dark themes where supported, with the keyboard only. Check long paths,
   empty collections, busy states, errors, and the return from overlays.
 
 ## Verification
 
-Run from the repository root:
+Because `evolve-desktop` embeds a `requireAdministrator` manifest, running a raw
+`cargo test --workspace --all-targets` in an unelevated console on Windows fails
+with `os error 740: The requested operation requires elevation`. Use the
+unelevated-safe test suite:
 
 ```powershell
+# Format and linting checks:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets
+
+# Unit and integration tests for non-elevated crates:
+cargo test -p evolve-core -p evolve-teleport-overlay -p evolve-privileged-worker
+
+# Desktop tests without requiring elevation (sets EVOLVE_TEST_NO_MANIFEST):
+./scripts/test-desktop-standard-user.ps1
 ```
+
+If `cargo` is not found on your current PowerShell `$env:PATH`, invoke via
+`& "$env:USERPROFILE\.cargo\bin\cargo.exe"`.
 
 Additional checks:
 
