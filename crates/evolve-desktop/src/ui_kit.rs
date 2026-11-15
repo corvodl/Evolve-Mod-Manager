@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use iced::widget::{column, container, mouse_area, row, space, svg, text};
+use iced::widget::{button, column, container, mouse_area, row, space, svg, text};
 use iced::{Alignment, Background, Border, Element, Fill, Length, Point, Theme};
 
 use crate::anim::{Easing, Tween};
@@ -2279,62 +2279,97 @@ pub fn animated_beam<'a>(
 }
 
 /// Interactive multi-stage pipeline flow visualization (Magic UI Animated Beam pattern).
-/// Renders consecutive cards with animated connection beams showing data flowing through stages.
+/// Renders consecutive clickable workflow cards with animated connection beams between stages.
 pub fn pipeline_flow<'a>(
     ui_state: &UiState,
-    stages: &[(&'static str, &'static str, bool)],
+    stages: &[(&'static str, &'static str, &'static str, bool, Message)],
     reduce_motion: bool,
 ) -> Element<'a, Message> {
-    let mut cards = row![].spacing(20).align_y(iced::Center);
+    let mut cards = row![].spacing(14).align_y(iced::Center);
 
-    for (index, &(title, subtitle, active)) in stages.iter().enumerate() {
+    for (index, (step_num, title, subtitle, active, on_press_msg)) in
+        stages.iter().cloned().enumerate()
+    {
         let node_body = column![
-            text(format!("0{}", index + 1)).size(10).style(if active {
-                design::accent
-            } else {
-                design::muted
-            }),
+            row![
+                text(step_num).size(10).style(if active {
+                    design::accent
+                } else {
+                    design::muted
+                }),
+                space().width(Fill),
+                text(if active { "✓ Ready" } else { "Setup" })
+                    .size(10)
+                    .style(if active {
+                        design::accent
+                    } else {
+                        design::muted
+                    }),
+            ]
+            .align_y(iced::Center),
             text(title).size(13),
             text(subtitle).size(10).style(design::muted),
         ]
         .spacing(3);
 
-        let card = container(node_body).padding([8, 14]).style(move |theme| {
-            let mut style = design::panel(theme);
-            if active {
-                style.border.color = theme.palette().primary;
-                style.border.width = 1.5;
-            }
-            style
-        });
+        let card_content = container(node_body)
+            .padding([8, 14])
+            .width(Length::Fixed(155.0));
 
-        cards = cards.push(card);
+        let card_btn = button(card_content)
+            .padding(0)
+            .style(move |theme, status| {
+                let mut style = design::secondary(theme, status);
+                if active {
+                    style.border.color = theme.palette().primary;
+                    style.border.width = 1.5;
+                }
+                style
+            })
+            .on_press(on_press_msg);
+
+        cards = cards.push(card_btn);
 
         if index + 1 < stages.len() {
-            let arrow_canvas = container(animated_beam(
-                ui_state,
-                Point::new(0.0, 15.0),
-                Point::new(24.0, 15.0),
-                0.0,
-                active,
-                reduce_motion,
-            ))
-            .width(Length::Fixed(24.0))
-            .height(Length::Fixed(30.0));
+            let arrow_element: Element<'a, Message> = if reduce_motion {
+                container(text("→").size(16).style(if active {
+                    design::accent
+                } else {
+                    design::muted
+                }))
+                .width(Length::Fixed(28.0))
+                .align_x(iced::alignment::Horizontal::Center)
+                .into()
+            } else {
+                container(animated_beam(
+                    ui_state,
+                    Point::new(0.0, 15.0),
+                    Point::new(28.0, 15.0),
+                    0.0,
+                    active,
+                    reduce_motion,
+                ))
+                .width(Length::Fixed(28.0))
+                .height(Length::Fixed(30.0))
+                .into()
+            };
 
-            cards = cards.push(arrow_canvas);
+            cards = cards.push(arrow_element);
         }
     }
 
-    container(cards).padding(12).style(design::panel).into()
+    container(cards)
+        .padding([10, 16])
+        .style(design::panel)
+        .into()
 }
 
 // ---------------------------------------------------------------------------
 // Infinite Marquee (Magic UI Marquee)
 // ---------------------------------------------------------------------------
 
-/// Infinite horizontal scrolling ribbon for assets, mods, and tags.
-/// Subpixel smooth translation that wraps seamlessly and pauses when hovered.
+/// Infinite horizontal scrolling ribbon for announcements, updates, and shortcuts.
+/// Subpixel smooth translation that wraps seamlessly, pauses on hover, and opens What's New on click.
 pub fn marquee<'a>(
     ui_state: &UiState,
     id: &'static str,
@@ -2342,13 +2377,29 @@ pub fn marquee<'a>(
     speed: f32,
     reduce_motion: bool,
 ) -> Element<'a, Message> {
+    if reduce_motion || items.is_empty() {
+        let first = items
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "No announcements".into());
+        return button(
+            container(text(first).size(design::LABEL).style(design::muted))
+                .padding([6, 14])
+                .style(design::panel),
+        )
+        .padding(0)
+        .style(design::text_button)
+        .on_press(Message::Navigate(super::Page::WhatsNew))
+        .into();
+    }
+
     let hovered = ui_state.marquee_hovered.contains(id);
     let time = ui_state.clock(Instant::now());
 
     let track = iced::widget::canvas(crate::fx::MarqueeTrack {
         items,
         time,
-        speed: if reduce_motion { 0.0 } else { speed },
+        speed,
         hovered,
     })
     .width(Fill)
@@ -2365,7 +2416,12 @@ pub fn marquee<'a>(
         .height(Fill),
     ];
 
-    mouse_area(masked)
+    let clickable = button(masked)
+        .padding(0)
+        .style(design::text_button)
+        .on_press(Message::Navigate(super::Page::WhatsNew));
+
+    mouse_area(clickable)
         .on_enter(ui(UiMsg::MarqueeHover(id, true)))
         .on_exit(ui(UiMsg::MarqueeHover(id, false)))
         .into()
