@@ -129,7 +129,7 @@ pub fn load_thumbs_task() -> iced::Task<Message> {
                         let key = path.file_stem()?.to_string_lossy().into_owned();
                         key.starts_with("scene2_").then_some(())?;
                         let metadata = std::fs::symlink_metadata(&path).ok()?;
-                        (metadata.file_type().is_file() && metadata.len() <= 512 * 1024)
+                        (metadata.file_type().is_file() && metadata.len() <= 8 * 1024 * 1024)
                             .then_some(())?;
                         Some((key, std::fs::read(&path).ok()?))
                     })
@@ -775,14 +775,20 @@ fn card_view<'a>(state: &'a State, card: Card, focused: bool) -> Element<'a, Mes
             .get(key)
             .map(|handle| (key, handle))
     }) {
-        Some((key, handle)) => mouse_area(
+        Some((_key, handle)) => container(
             image(handle.clone())
                 .width(Fill)
                 .height(Length::Fixed(110.0))
-                .content_fit(iced::ContentFit::Cover),
+                .content_fit(iced::ContentFit::Contain),
         )
-        .on_press(Message::Map(Msg::Lightbox(Some(key.clone()))))
-        .interaction(iced::mouse::Interaction::Pointer)
+        .center_x(Fill)
+        .center_y(Fill)
+        .width(Fill)
+        .height(Length::Fixed(110.0))
+        .style(|theme| container::Style {
+            background: Some(Background::Color(design::surface(theme))),
+            ..container::Style::default()
+        })
         .into(),
         None => {
             let alpha = crate::ui_kit::pulse(
@@ -812,6 +818,10 @@ fn card_view<'a>(state: &'a State, card: Card, focused: bool) -> Element<'a, Mes
     for (kind, label) in card.badges {
         badges = badges.push(crate::ui_kit::badge(kind, label));
     }
+    let title = card.title.clone();
+    let subtitle = card.subtitle.clone();
+    let open_message = (!busy).then_some(card.message.clone());
+
     let mut body = column![text(card.title).size(design::BODY)].spacing(5);
     if !card.subtitle.is_empty() {
         body = body.push(design::caption(card.subtitle));
@@ -836,7 +846,15 @@ fn card_view<'a>(state: &'a State, card: Card, focused: bool) -> Element<'a, Mes
             style
         })
         .on_press_maybe((!busy).then_some(card.message));
-    button.into()
+
+    mouse_area(button)
+        .on_right_press(Message::OpenLevelContextMenu {
+            title,
+            subtitle,
+            thumb_key: card.thumb.clone(),
+            open_message: open_message.map(Box::new),
+        })
+        .into()
 }
 
 fn grid<'a>(state: &'a State, cards: Vec<(usize, Card)>, columns: usize) -> Element<'a, Message> {
