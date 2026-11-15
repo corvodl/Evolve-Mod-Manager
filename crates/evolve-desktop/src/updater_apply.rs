@@ -23,17 +23,15 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
 const SHUTDOWN_POLL: Duration = Duration::from_millis(250);
 // These are known executables / DLLs replaced by the installer. We also
 // inspect installed third-party files, as optional tooling may still be open.
-const INSTALLED_TOP_LEVEL_FILES: [&str; 4] = [
+const INSTALLED_TOP_LEVEL_FILES: [&str; 3] = [
     "evolve-mod-manager.exe",
     "evolve-cli.exe",
-    "evolve-teleport-overlay.exe",
     "evolve-privileged-worker.exe",
 ];
 const MAX_ZIP_CONTENTS: u64 = 256 * 1024 * 1024;
-const PORTABLE_MEMBERS: [&str; 17] = [
+const PORTABLE_MEMBERS: [&str; 16] = [
     "evolve-mod-manager.exe",
     "evolve-cli.exe",
-    "evolve-teleport-overlay.exe",
     "evolve-privileged-worker.exe",
     "hunt.ico",
     "README.md",

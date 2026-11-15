@@ -47,7 +47,6 @@ Source: "..\target\release\evolve-mod-manager.exe"; DestDir: "{app}"; Flags: ign
 Source: "..\target\release\evolve-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; Restricted, one-shot elevation worker: installed only under the protected Program Files directory.
 Source: "..\target\release\evolve-privileged-worker.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\target\release\evolve-teleport-overlay.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\hunt.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\default_loading.dds"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion

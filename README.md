@@ -1,9 +1,9 @@
 # Evolve Mod Manager (EMM)
 
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue.svg)](https://github.com/corvodl/EMM-SRC)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue.svg)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org/)
 [![UI](https://img.shields.io/badge/ui-Iced%200.14%20%2B%20wgpu-purple.svg)](https://github.com/iced-rs/iced)
-[![CryEngine](https://img.shields.io/badge/engine-CryEngine%203%20(Evolve)-red.svg)](https://github.com/corvodl/EMM-SRC)
+![CryEngine](https://img.shields.io/badge/engine-CryEngine%203%20(Evolve)-red.svg)
 [![License](https://img.shields.io/badge/license-Community%20Preview-lightgrey.svg)](LICENSE)
 
 An advanced, native Windows modding environment, asset inspector, and level editing suite for **Evolve Stage 2**, built in Rust with **Iced** and **wgpu**.
@@ -99,7 +99,7 @@ flowchart LR
 ### 6. Runtime Utilities & Direct Play
 - **One-Click Play with Mods**: Launches Evolve with active mod overrides applied seamlessly.
 - **Online Guard**: Automatically sets and maintains Windows Firewall rules to prevent accidental online connectivity during testing, preserving account safety.
-- **Teleport Overlay & Memory Bridge**: Live coordinate telemetry, in-game camera synchronization, and memory-safe teleportation hooks.
+- **Process Telemetry & Direct Play**: Live client state observation, memory-safe synchronization hooks, and rapid one-click launching.
 
 ### 7. In-App Verified Updater
 - **One-Click Updates**: Automatically checks for updates, downloads the latest release from GitHub, verifies hash integrity, and performs in-place upgrades.
@@ -110,7 +110,7 @@ flowchart LR
 
 ## Download & Installation
 
-Get the latest build from **[GitHub Releases](https://github.com/corvodl/EMM-SRC/releases)**.
+Get the latest build from **Releases**.
 
 ### Installer vs. Portable
 
@@ -162,9 +162,9 @@ EMM is built on strict architectural and performance standards:
 ### Building from Source
 
 ```powershell
-# Clone the private source repository
-git clone https://github.com/corvodl/EMM-SRC.git
-cd EMM-SRC
+# Clone the repository
+git clone <repository-url>
+cd evolve-mod-manager
 
 # Check code formatting
 cargo fmt --all -- --check
@@ -174,7 +174,7 @@ cargo clippy -p evolve-mod-manager -- -D warnings
 
 # Execute test suite (standard-user runner)
 ./scripts/test-desktop-standard-user.ps1
-cargo test -p evolve-core -p evolve-teleport-overlay -p evolve-privileged-worker
+cargo test -p evolve-core -p evolve-privileged-worker
 
 # Run manager in development mode
 cargo run -p evolve-mod-manager

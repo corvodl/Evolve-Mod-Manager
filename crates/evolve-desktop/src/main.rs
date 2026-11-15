@@ -98,6 +98,9 @@ mod runtime_memory;
 mod runtime_research;
 mod runtime_signatures;
 mod runtime_teleport;
+#[cfg(windows)]
+#[path = "../../evolve-teleport-overlay/src/lib.rs"]
+mod teleport_overlay;
 mod selection;
 mod settings;
 mod settings_page;
@@ -9623,15 +9626,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 let result = std::env::current_exe()
                     .map_err(|error| format!("Cannot locate manager installation: {error}"))
                     .and_then(|path| {
-                        let path = path.with_file_name("evolve-teleport-overlay.exe");
-                        if !path.is_file() {
-                            return Err(format!(
-                                "Missing overlay companion: {}. Reinstall or use the complete nightly package.",
-                                path.display()
-                            ));
-                        }
                         let mut command = std::process::Command::new(path);
                         command
+                            .arg("--teleport-overlay-runner")
                             .arg(pid.to_string())
                             .arg(std::process::id().to_string())
                             .stdin(std::process::Stdio::piped())
@@ -9640,7 +9637,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         if state.teleport_overlay_experimental {
                             command.arg("--experimental-hook");
                         }
-                        command.spawn()
+                        command
+                            .spawn()
                             .map_err(|error| format!("Cannot launch overlay companion: {error}"))
                     });
                 match result {
@@ -20681,8 +20679,23 @@ impl Desktop {
     }
 }
 
+#[cfg(windows)]
+fn try_run_teleport_overlay() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pos) = args.iter().position(|a| a == "--teleport-overlay-runner") {
+        teleport_overlay::run_with_args(&args[pos + 1..]);
+        true
+    } else {
+        false
+    }
+}
+
 fn main() -> iced::Result {
     if updater_apply::try_run_helper() {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    if try_run_teleport_overlay() {
         return Ok(());
     }
     let logging_enabled = settings_path()

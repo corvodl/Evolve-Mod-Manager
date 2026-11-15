@@ -1,6 +1,5 @@
 evolve-mod-manager.exe
 evolve-cli.exe
-evolve-teleport-overlay.exe
 evolve-privileged-worker.exe
 hunt.ico
 README.md
