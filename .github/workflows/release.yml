@@ -11,8 +11,10 @@ on:
         required: true
         type: string
 
+# The source-repository token is read-only. Publishing uses the dedicated
+# PUBLIC_RELEASE_TOKEN for the public artifacts repository instead.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   publish:
@@ -20,6 +22,7 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -69,11 +72,80 @@ jobs:
             }
           }
 
+      # Run only after the source/version/parity gate passes so a rejected
+      # run never touches the public release token.
+      - name: Verify public release repository and credentials
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          TARGET_REPO: corvodl/Evolve-Mod-Manager
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw 'PUBLIC_RELEASE_TOKEN is not set. Configure a fine-grained token with Contents: write on corvodl/Evolve-Mod-Manager and store it as an Actions secret in this private repository.'
+          }
+          $repoJson = gh api "repos/$env:TARGET_REPO"
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($repoJson)) {
+            throw "PUBLIC_RELEASE_TOKEN cannot access the release target $env:TARGET_REPO."
+          }
+          $repo = $repoJson | ConvertFrom-Json
+          if ($repo.private) {
+            throw "Release target $env:TARGET_REPO must be the public artifact repository."
+          }
+          if ($repo.default_branch -ne 'main') {
+            throw "Release target $env:TARGET_REPO must keep main as its default branch."
+          }
+          $files = @(gh api "repos/$env:TARGET_REPO/contents" --jq '.[].name')
+          if ($LASTEXITCODE -ne 0 -or
+              @(Compare-Object @('LICENSE', 'README.md') $files).Count -ne 0) {
+            throw "Public main must contain only README.md and LICENSE before creating a release tag."
+          }
+          Write-Host "Publishing to public $env:TARGET_REPO from its main branch."
+
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
       - run: cargo build --release --workspace --bins
+
+      # Packaging must never ship an accidental asInvoker/test build.
+      - name: Verify release executable requires administrator
+        shell: pwsh
+        run: |
+          $binaryPath = Join-Path "target/release" "evolve-mod-manager.exe"
+          if (!(Test-Path -LiteralPath $binaryPath)) {
+            throw "Missing release executable: $binaryPath"
+          }
+          $binary = (Resolve-Path -LiteralPath $binaryPath).Path
+          $mtCommand = Get-Command mt.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          $mtPath = if ($mtCommand) { $mtCommand.Source } else { $null }
+          if (!$mtPath) {
+            $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+            $mtPath = Get-ChildItem -Path $sdkBin -Filter mt.exe -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\x64\\mt\.exe$' } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (!$mtPath) { throw 'mt.exe is required to inspect the executable manifest.' }
+          $manifest = Join-Path $env:RUNNER_TEMP 'evolve-mod-manager.manifest'
+          Remove-Item -LiteralPath $manifest -ErrorAction SilentlyContinue
+          & $mtPath -nologo -inputresource:"$binary;#1" -out:"$manifest"
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $manifest)) {
+            throw 'Unable to extract the embedded manifest from evolve-mod-manager.exe.'
+          }
+          try {
+            [xml]$xml = Get-Content -LiteralPath $manifest -Raw
+          } catch {
+            throw "Embedded manifest is not valid XML: $($_.Exception.Message)"
+          }
+          $levels = @($xml.SelectNodes('//*[local-name()="requestedExecutionLevel"]'))
+          if ($levels.Count -ne 1) {
+            throw "Embedded manifest must contain exactly one requestedExecutionLevel; found $($levels.Count)."
+          }
+          $level = "$($levels[0].level)".Trim()
+          if ($level -ne 'requireAdministrator') {
+            throw "evolve-mod-manager.exe must require administrator; found level '$level'."
+          }
+          Write-Host 'evolve-mod-manager.exe manifest requires administrator.'
 
       - name: Stage verified GPLv2 Cryengine-Converter and corresponding source
         shell: pwsh
@@ -137,9 +209,15 @@ jobs:
           }
           Set-Content -LiteralPath "dist/release-notes.md" -Value $body -Encoding utf8
 
-      - name: Publish installer and portable ZIP
-        uses: softprops/action-gh-release@v2
+      # Publish only build artifacts to the public repository. The tag is
+      # created from the public README/LICENSE-only main, so GitHub's generated
+      # source archives contain no source; never upload source archives.
+      - name: Publish installer and portable ZIP to public repository
+        uses: softprops/action-gh-release@v3
         with:
+          repository: corvodl/Evolve-Mod-Manager
+          token: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          target_commitish: main
           tag_name: v${{ inputs.version }}
           name: Evolve Mod Manager v${{ inputs.version }}
           prerelease: ${{ contains(inputs.version, '-beta.') || contains(inputs.version, '-rc.') }}
