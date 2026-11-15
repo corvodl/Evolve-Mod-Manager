@@ -2226,12 +2226,7 @@ pub fn radar_scanner<'a>(
     let legacy_label = text(label).size(design::CAPTION).style(design::muted);
 
     let blips = if scanning {
-        vec![
-            (0.85, 0.65),
-            (2.10, 0.40),
-            (3.80, 0.80),
-            (5.20, 0.55),
-        ]
+        vec![(0.85, 0.65), (2.10, 0.40), (3.80, 0.80), (5.20, 0.55)]
     } else {
         vec![(0.85, 0.65), (3.80, 0.80)]
     };
@@ -2246,12 +2241,9 @@ pub fn radar_scanner<'a>(
     .height(Length::Fixed(size));
 
     container(
-        column![
-            radar,
-            legacy_label,
-        ]
-        .spacing(6)
-        .align_x(Alignment::Center),
+        column![radar, legacy_label,]
+            .spacing(6)
+            .align_x(Alignment::Center),
     )
     .padding(8)
     .style(design::panel)
@@ -2297,24 +2289,24 @@ pub fn pipeline_flow<'a>(
 
     for (index, &(title, subtitle, active)) in stages.iter().enumerate() {
         let node_body = column![
-            text(format!("0{}", index + 1))
-                .size(10)
-                .style(if active { design::accent } else { design::muted }),
+            text(format!("0{}", index + 1)).size(10).style(if active {
+                design::accent
+            } else {
+                design::muted
+            }),
             text(title).size(13),
             text(subtitle).size(10).style(design::muted),
         ]
         .spacing(3);
 
-        let card = container(node_body)
-            .padding([8, 14])
-            .style(move |theme| {
-                let mut style = design::panel(theme);
-                if active {
-                    style.border.color = theme.palette().primary;
-                    style.border.width = 1.5;
-                }
-                style
-            });
+        let card = container(node_body).padding([8, 14]).style(move |theme| {
+            let mut style = design::panel(theme);
+            if active {
+                style.border.color = theme.palette().primary;
+                style.border.width = 1.5;
+            }
+            style
+        });
 
         cards = cards.push(card);
 
@@ -2334,10 +2326,7 @@ pub fn pipeline_flow<'a>(
         }
     }
 
-    container(cards)
-        .padding(12)
-        .style(design::panel)
-        .into()
+    container(cards).padding(12).style(design::panel).into()
 }
 
 // ---------------------------------------------------------------------------
@@ -2445,7 +2434,7 @@ pub fn shimmer_button<'a>(
 pub fn telemetry_hud<'a>(
     ui_state: &UiState,
     title: &'static str,
-    entries: &[(&'static str, &'static str)],
+    entries: &[(&str, &str)],
     active: bool,
 ) -> Element<'a, Message> {
     let now = Instant::now();
@@ -2453,9 +2442,13 @@ pub fn telemetry_hud<'a>(
         row![
             text(title).size(11).style(design::accent),
             space().width(Fill),
-            text(if active { "● ONLINE" } else { "○ STANDBY" })
+            text(if active { "● UNLOCKED" } else { "○ LOCKED" })
                 .size(10)
-                .style(if active { design::accent } else { design::muted }),
+                .style(if active {
+                    design::accent
+                } else {
+                    design::muted
+                }),
         ]
         .align_y(iced::Center),
     ]
@@ -2470,7 +2463,7 @@ pub fn telemetry_hud<'a>(
 
         readouts = readouts.push(
             row![
-                text(key)
+                text(key.to_owned())
                     .size(11)
                     .style(design::muted)
                     .width(Length::Fixed(120.0)),
@@ -2481,10 +2474,7 @@ pub fn telemetry_hud<'a>(
         );
     }
 
-    container(readouts)
-        .padding(12)
-        .style(design::panel)
-        .into()
+    container(readouts).padding(12).style(design::panel).into()
 }
 
 #[cfg(test)]
@@ -2618,7 +2608,11 @@ mod tests {
         update(&mut state, UiMsg::MarqueeHover("test-marquee", true), false);
         assert!(state.marquee_hovered.contains("test-marquee"));
 
-        update(&mut state, UiMsg::MarqueeHover("test-marquee", false), false);
+        update(
+            &mut state,
+            UiMsg::MarqueeHover("test-marquee", false),
+            false,
+        );
         assert!(!state.marquee_hovered.contains("test-marquee"));
     }
 
@@ -2626,6 +2620,13 @@ mod tests {
     fn shimmer_and_beam_elements_construct_cleanly() {
         let state = UiState::default();
         let _ = shimmer_button(&state, "Play", Message::ClearActivity, true, false);
-        let _ = animated_beam(&state, Point::ORIGIN, Point::new(100.0, 100.0), 10.0, true, false);
+        let _ = animated_beam(
+            &state,
+            Point::ORIGIN,
+            Point::new(100.0, 100.0),
+            10.0,
+            true,
+            false,
+        );
     }
 }

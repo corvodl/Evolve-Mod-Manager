@@ -20279,7 +20279,11 @@ impl Desktop {
         let now = Instant::now();
         let sidebar_animation = if ui_animation_running(&self.state, now) {
             iced::time::every(anim::FRAME).map(|_| Message::AnimationFrame)
-        } else if ui_ambient_running(&self.state) || self.activity_id.is_some() {
+        } else if ui_ambient_running(&self.state)
+            || (self.activity_id.is_some()
+                && !self.state.preferences.reduce_motion
+                && (self.state.scan_cancel.is_some() || self.state.busy))
+        {
             // Looping effects (embers, border beam, skeleton pulse, activity radar) only
             // need ~30 fps and stop as soon as they leave the screen.
             iced::time::every(anim::AMBIENT_FRAME).map(|_| Message::AnimationFrame)

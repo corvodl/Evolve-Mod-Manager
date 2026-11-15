@@ -775,9 +775,21 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         &state.ui,
         &[
             ("Source Assets", "Loose CryEngine files", true),
-            ("Mod Staging", "Active workspace profile", state.modding_projects.is_some()),
-            ("CryPak Target", "Signed & verified PAK", !state.preferences.stage.is_empty()),
-            ("Evolve Client", "Direct runtime launch", !state.preferences.client_executable.is_empty()),
+            (
+                "Mod Staging",
+                "Projects loaded",
+                state.modding_projects.is_some(),
+            ),
+            (
+                "CryPak Target",
+                "Stage folder set",
+                !state.preferences.stage.is_empty(),
+            ),
+            (
+                "Evolve Client",
+                "Client path set",
+                !state.preferences.client_executable.is_empty(),
+            ),
         ],
         state.preferences.reduce_motion,
     );
@@ -3380,26 +3392,20 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
         };
         let hud = crate::ui_kit::telemetry_hud(
             &state.ui,
-            "CRYENGINE RUNTIME TELEMETRY",
+            "DEVELOPER SESSION",
             &[
                 (
-                    "Process Hook",
+                    "Developer tools",
                     if state.developer_unlocked {
-                        "ATTACHED (0x7FF6_CryProcess)"
+                        "Unlocked"
                     } else {
-                        "DETACHED"
+                        "Locked"
                     },
                 ),
                 (
                     "Client Version",
-                    if state.client_version.is_some() {
-                        "VERIFIED_ONLINE"
-                    } else {
-                        "OFFLINE_STANDBY"
-                    },
+                    state.client_version.as_deref().unwrap_or("Not detected"),
                 ),
-                ("Memory Ring", "PROTECTED_STAGE2_V1"),
-                ("PAK Integrity", "RSA-4096 SIGNED"),
             ],
             state.developer_unlocked,
         );

@@ -881,7 +881,11 @@ impl canvas::Program<Message> for MarqueeTrack {
         let step = item_width + spacing;
         let total_width = self.items.len() as f32 * step;
 
-        let speed = if self.hovered { self.speed * 0.25 } else { self.speed };
+        let speed = if self.hovered {
+            self.speed * 0.25
+        } else {
+            self.speed
+        };
         let offset = (self.time * speed).rem_euclid(total_width);
 
         let legacy = design::is_legacy(theme);
