@@ -21,7 +21,7 @@ concurrency:
 jobs:
   publish:
     # Secrets are deliberately never exposed in PR builds or the desktop.
-    if: github.repository == 'corvodl/Evolve-Mod-Manager' && github.ref == 'refs/heads/main'
+    if: github.repository == 'corvodl/EMM-SRC' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,6 +41,7 @@ jobs:
         run: |
           python3 scripts/publish_discord_announcements.py --output site/announcements.json
           touch site/.nojekyll
+          printf '%s\n' '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Evolve Mod Manager announcements</title></head><body><a href="announcements.json">Discord announcements JSON</a></body></html>' > site/index.html
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
       - name: Upload feed to Pages
