@@ -35,6 +35,13 @@ the redesign retains both and corrects hierarchy instead of replacing them.
 - Settings and Modding use the shared panel rhythm; no launch, import,
   extraction, editing, or recovery handler is changed. This is a visual
   redesign, not an asset-provenance or security change.
+- Modding opens with a searchable character roster and the site's mapped
+  headshots. Character actions search existing imported model and gameplay
+  documents; results retain their source/build labels and verified project
+  preparation. This is a search aid, not a complete character dependency map:
+  internal asset names and textures need source-backed associations before they
+  can be listed as belonging to a character. Advanced Modding retains the
+  project, archive, conflict, recovery, and signed-PAK controls.
 
 ## Acceptance
 

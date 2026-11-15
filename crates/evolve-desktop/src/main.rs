@@ -12,6 +12,7 @@ mod asset_viewer;
 mod audio_tools;
 mod auto_resources;
 mod blender_install;
+mod character_roster;
 mod chrome;
 mod client_version;
 mod color_picker;
@@ -889,6 +890,11 @@ struct State {
     editor_replace_dialog: Option<usize>,
     modding_menu: Option<&'static str>,
     modding_advanced: bool,
+    modding_basic_advanced: bool,
+    modding_character_search: String,
+    modding_character: Option<usize>,
+    modding_headshots: std::collections::HashMap<&'static str, image::Handle>,
+    modding_headshots_requested: bool,
     modding_profiles: bool,
     modding_open_editor_when_scanned: bool,
     modding_pending_focus: Option<PathBuf>,
@@ -3192,6 +3198,11 @@ enum Message {
     DismissMenus,
     MenuCommand(Box<Message>),
     ModdingFilterChanged(String),
+    ModdingCharacterSearch(String),
+    ModdingCharacterSelected(usize),
+    ModdingBasicAdvanced,
+    ModdingHeadshotsLoaded(Vec<(&'static str, Vec<u8>)>),
+    ModdingCharacterEdit(bool),
     /// Clear the Modding search, kind filter and chips together.
     ModdingClearFilters,
     ModdingPage(bool),
@@ -6434,6 +6445,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 mark_news_seen(state);
             }
             let mut tasks = Vec::new();
+            if page == Page::Files && !state.modding_headshots_requested {
+                state.modding_headshots_requested = true;
+                tasks.push(character_roster::load_headshots());
+            }
             if page == Page::Home {
                 tasks.push(inspect_client_version_task(
                     &state.preferences.client_executable,
@@ -6495,6 +6510,39 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ModdingFilterChanged(value) => {
             state.modding_filter = value;
             state.modding_page = 0;
+        }
+        Message::ModdingCharacterSearch(value) => state.modding_character_search = value,
+        Message::ModdingCharacterSelected(index) => {
+            if index < character_roster::CHARACTERS.len() {
+                state.modding_character = Some(index);
+            }
+        }
+        Message::ModdingBasicAdvanced => {
+            state.modding_basic_advanced = !state.modding_basic_advanced
+        }
+        Message::ModdingHeadshotsLoaded(images) => {
+            for (name, bytes) in images {
+                state
+                    .modding_headshots
+                    .insert(name, image::Handle::from_bytes(bytes));
+            }
+        }
+        Message::ModdingCharacterEdit(models) => {
+            let Some(character) = state
+                .modding_character
+                .and_then(|index| character_roster::CHARACTERS.get(index))
+            else {
+                return Task::none();
+            };
+            let name = character.name.to_owned();
+            let task = guided_modding::update(state, guided_modding::Action::Open(models));
+            if state.guided_editor.open {
+                return Task::batch(vec![
+                    task,
+                    guided_modding::update(state, guided_modding::Action::Search(name)),
+                ]);
+            }
+            return task;
         }
         Message::ModdingClearFilters => {
             state.modding_filter.clear();
@@ -22199,6 +22247,25 @@ mod project_edit_tests {
         assert_eq!(state.library_selected, Some(0));
         assert_eq!(state.library_selection.indices.len(), 1);
         assert!(state.library_selection.indices.contains(&0));
+    }
+
+    #[test]
+    fn basic_modding_selection_keeps_advanced_tools_and_rejects_invalid_characters() {
+        let mut state = State::default();
+        assert!(!state.modding_basic_advanced);
+        let _ = update(&mut state, Message::ModdingCharacterSelected(usize::MAX));
+        assert!(state.modding_character.is_none());
+        let _ = update(&mut state, Message::ModdingCharacterSelected(0));
+        assert_eq!(state.modding_character, Some(0));
+        let _ = update(
+            &mut state,
+            Message::ModdingCharacterSearch("Goliath".into()),
+        );
+        let _ = update(&mut state, Message::ModdingBasicAdvanced);
+        assert!(state.modding_basic_advanced);
+        let _ = update(&mut state, Message::ModdingBasicAdvanced);
+        assert_eq!(state.modding_character_search, "Goliath");
+        assert_eq!(state.modding_character, Some(0));
     }
 
     #[test]

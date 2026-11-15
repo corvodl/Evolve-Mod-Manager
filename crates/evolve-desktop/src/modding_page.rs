@@ -5,7 +5,7 @@ use super::{Message, State};
 use crate::design;
 use crate::modding_projects::{PakExportMode, ProjectRow};
 use evolve_core::mod_safety::{ModKind, classify};
-use iced::widget::{column, container, mouse_area, row, scrollable, space, text};
+use iced::widget::{column, container, image, mouse_area, row, scrollable, space, text};
 use iced::{Alignment, Background, Element, Fill, Length};
 use std::collections::HashMap;
 
@@ -1682,6 +1682,97 @@ fn mod_kind_count(projects: &[ProjectRow], kind: ModKind) -> usize {
         .count()
 }
 
+fn character_browser(state: &State) -> Element<'_, Message> {
+    let mut entries = column![].spacing(5);
+    let mut found = 0;
+    for (index, character) in crate::character_roster::CHARACTERS.iter().enumerate() {
+        if !crate::character_roster::matches_search(
+            character.name,
+            character.group,
+            &state.modding_character_search,
+        ) {
+            continue;
+        }
+        found += 1;
+        let portrait: Element<'_, Message> = match state.modding_headshots.get(character.name) {
+            Some(handle) => image(handle.clone()).width(72).height(36).into(),
+            None => text(character.group).size(design::CAPTION).into(),
+        };
+        entries = entries.push(
+            design::button(
+                row![portrait, text(character.name).size(design::BODY)]
+                    .align_y(Alignment::Center)
+                    .spacing(12),
+            )
+            .width(Fill)
+            .style(if state.modding_character == Some(index) {
+                design::secondary
+            } else {
+                design::text_button
+            })
+            .on_press(Message::ModdingCharacterSelected(index)),
+        );
+    }
+    if found == 0 {
+        entries = entries.push(crate::ui_kit::empty_state(
+            None,
+            "No characters found",
+            "Try another name or class.",
+            Some((
+                "Clear search",
+                Message::ModdingCharacterSearch(String::new()),
+            )),
+        ));
+    }
+    let mut page = column![
+        row![
+            text("Modding").size(design::HEADING),
+            space().width(Fill),
+            design::button("Advanced Modding & PAKs")
+                .style(design::secondary)
+                .on_press(Message::ModdingBasicAdvanced),
+        ]
+        .align_y(Alignment::Center),
+        crate::forms::search_field(
+            "Find a character or class…",
+            &state.modding_character_search,
+            Some(found),
+            Message::ModdingCharacterSearch,
+        ),
+        scrollable(entries).height(Length::Fixed(340.0)),
+    ]
+    .spacing(12);
+    if let Some(character) = state
+        .modding_character
+        .and_then(|index| crate::character_roster::CHARACTERS.get(index))
+    {
+        page = page.push(panel(
+            column![
+                text(character.name).size(design::HEADING),
+                row![
+                    design::button("Find gameplay values")
+                        .style(design::primary)
+                        .on_press(Message::ModdingCharacterEdit(false)),
+                    design::button("Find models & skins")
+                        .style(design::secondary)
+                        .on_press(Message::ModdingCharacterEdit(true)),
+                ]
+                .spacing(8),
+                text("Results are searchable imported files and editable projects. Choose the correct build and source before making an editable copy; some game files use internal names. Clear the search in the editor to browse all assets.")
+                    .size(design::CAPTION)
+                    .style(design::muted),
+            ]
+            .spacing(10),
+        ));
+    }
+    page = page.push(
+        design::button("Browse all gameplay values").on_press(Message::GuidedEdit(
+            crate::guided_modding::Action::Open(false),
+        )),
+    );
+    page.into()
+}
+
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let chosen = state.modding_selected.and_then(|index| {
         state
@@ -1693,6 +1784,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         return column![text("Modding").size(22), crate::guided_modding::view(state)]
             .spacing(10)
             .into();
+    }
+    if !state.modding_basic_advanced {
+        return character_browser(state);
     }
 
     let has_selection = state.modding_selected.is_some();
@@ -1953,6 +2047,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .align_y(Alignment::Start);
     let mut main = column![
         text("Modding").size(24),
+        design::button("Basic character browser")
+            .style(design::secondary)
+            .on_press(Message::ModdingBasicAdvanced),
         menu(state),
         pipeline,
         top_cards,
