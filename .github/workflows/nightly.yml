@@ -1,4 +1,4 @@
-name: Nightly 0.1.0 Windows release
+name: Nightly Windows release
 
 on:
   # Manual developer trigger remains available in GitHub Actions.
@@ -11,8 +11,10 @@ on:
     paths:
       - '.github/nightly-request.txt'
 
+# The source-repository token is read-only. Publishing uses the dedicated
+# PUBLIC_RELEASE_TOKEN for the public artifacts repository instead.
 permissions:
-  contents: write
+  contents: read
 
 # Avoid overlapping 20-minute Windows release builds.
 concurrency:
@@ -25,12 +27,52 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: windows-2022
     timeout-minutes: 55
-    env:
-      VERSION: 0.1.0-nightly.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Verify public release repository and credentials
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          TARGET_REPO: corvodl/Evolve-Mod-Manager
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw 'PUBLIC_RELEASE_TOKEN is not set. Configure a fine-grained token with Contents: write on corvodl/Evolve-Mod-Manager and store it as an Actions secret in this private repository.'
+          }
+          $repoJson = gh api "repos/$env:TARGET_REPO"
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($repoJson)) {
+            throw "PUBLIC_RELEASE_TOKEN cannot access the release target $env:TARGET_REPO."
+          }
+          $repo = $repoJson | ConvertFrom-Json
+          if ($repo.private) {
+            throw "Release target $env:TARGET_REPO must be the public artifact repository."
+          }
+          if ($repo.default_branch -ne 'main') {
+            throw "Release target $env:TARGET_REPO must keep main as its default branch."
+          }
+          $files = @(gh api "repos/$env:TARGET_REPO/contents" --jq '.[].name')
+          if ($LASTEXITCODE -ne 0 -or
+              @(Compare-Object @('LICENSE', 'README.md') $files).Count -ne 0) {
+            throw "Public main must contain only README.md and LICENSE before creating a release tag."
+          }
+          # The previous nightly release is the changelog boundary. Tags exist
+          # only in the public artifact repository, so compare against its
+          # publication time rather than source-repository tags.
+          $releasesJson = gh release list --repo $env:TARGET_REPO --limit 100 --json tagName,createdAt
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to list existing nightly releases in $env:TARGET_REPO."
+          }
+          $releases = $releasesJson | ConvertFrom-Json
+          $previous = $releases |
+            Where-Object { $_.tagName -match '^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]+$' } |
+            Sort-Object createdAt -Descending |
+            Select-Object -First 1
+          "NIGHTLY_BASELINE_TAG=$($previous.tagName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NIGHTLY_BASELINE_AT=$($previous.createdAt)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Publishing to public $env:TARGET_REPO from its main branch."
+
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -38,17 +80,70 @@ jobs:
         shell: pwsh
         run: |
           $manifest = Get-Content "Cargo.toml" -Raw
-          $original = 'version = "0.1.0"'
-          if (!$manifest.Contains($original)) {
-            throw "Expected Nightly 0.1.0 base version in workspace Cargo.toml"
+          $base = [regex]::Match($manifest, '(?m)^version = "([0-9]+)\.([0-9]+)\.([0-9]+)(?:-[^"]+)?"(?=\r?$)')
+          if (!$base.Success) {
+            throw 'Workspace version must be semver with a numeric major.minor.patch base.'
           }
-          $manifest = $manifest.Replace($original, ('version = "' + $env:VERSION + '"'))
+          $major = [int]$base.Groups[1].Value
+          $minor = [int]$base.Groups[2].Value
+          $patch = [int]$base.Groups[3].Value + 1
+          $version = "$major.$minor.$patch-nightly.${{ github.run_number }}"
+          $previous = $env:NIGHTLY_BASELINE_TAG
+          if ($previous) {
+            $parts = [regex]::Match($previous, '^v([0-9]+\.[0-9]+\.[0-9]+)-nightly\.([0-9]+)$')
+            if (!$parts.Success -or [version]"$major.$minor.$patch" -lt [version]$parts.Groups[1].Value -or
+                ([version]"$major.$minor.$patch" -eq [version]$parts.Groups[1].Value -and [long]${{ github.run_number }} -le [long]$parts.Groups[2].Value)) {
+              throw "Nightly $version must be newer than the published $previous."
+            }
+          }
+          $manifest = $manifest.Replace($base.Value, "version = `"$version`"")
           Set-Content "Cargo.toml" -Value $manifest -Encoding utf8
-          Write-Host "Building Nightly $env:VERSION"
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Building Nightly $version"
 
       # Core and desktop lint/tests run in CI; compile binaries only once here.
       - run: cargo fmt --all -- --check
       - run: cargo build --release --workspace --bins
+
+      # Packaging must never ship an accidental asInvoker/test build.
+      - name: Verify release executable requires administrator
+        shell: pwsh
+        run: |
+          $binaryPath = Join-Path "target/release" "evolve-mod-manager.exe"
+          if (!(Test-Path -LiteralPath $binaryPath)) {
+            throw "Missing release executable: $binaryPath"
+          }
+          $binary = (Resolve-Path -LiteralPath $binaryPath).Path
+          $mtCommand = Get-Command mt.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          $mtPath = if ($mtCommand) { $mtCommand.Source } else { $null }
+          if (!$mtPath) {
+            $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+            $mtPath = Get-ChildItem -Path $sdkBin -Filter mt.exe -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\x64\\mt\.exe$' } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (!$mtPath) { throw 'mt.exe is required to inspect the executable manifest.' }
+          $manifest = Join-Path $env:RUNNER_TEMP 'evolve-mod-manager.manifest'
+          Remove-Item -LiteralPath $manifest -ErrorAction SilentlyContinue
+          & $mtPath -nologo -inputresource:"$binary;#1" -out:"$manifest"
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $manifest)) {
+            throw 'Unable to extract the embedded manifest from evolve-mod-manager.exe.'
+          }
+          try {
+            [xml]$xml = Get-Content -LiteralPath $manifest -Raw
+          } catch {
+            throw "Embedded manifest is not valid XML: $($_.Exception.Message)"
+          }
+          $levels = @($xml.SelectNodes('//*[local-name()="requestedExecutionLevel"]'))
+          if ($levels.Count -ne 1) {
+            throw "Embedded manifest must contain exactly one requestedExecutionLevel; found $($levels.Count)."
+          }
+          $level = "$($levels[0].level)".Trim()
+          if ($level -ne 'requireAdministrator') {
+            throw "evolve-mod-manager.exe must require administrator; found level '$level'."
+          }
+          Write-Host 'evolve-mod-manager.exe manifest requires administrator.'
 
       - name: Retrieve and verify developer-supplied Stage 2 runtime
         shell: pwsh
@@ -128,37 +223,20 @@ jobs:
             if (!(Test-Path $item)) { throw "Missing Nightly release asset: $item" }
             if ((Get-Item $item).Length -lt 1024) { throw "Suspiciously small Nightly asset: $item" }
           }
-          # Require the complete official runtime in every portable release.
-          Add-Type -AssemblyName System.IO.Compression
-          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $portable).Path)
-          try {
-            foreach ($name in @(
-              'third_party/OfficialStage2/evolve_tool.exe',
-              'third_party/OfficialStage2/crypto.dll',
-              'third_party/OfficialStage2/inject/inject.dll',
-              'third_party/OfficialStage2/inject/dbghelp.dll',
-              'third_party/OfficialStage2/inject/RSAKeyData.bin',
-              'third_party/OfficialStage2/README.txt',
-              'third_party/OfficialStage2/LICENSE-BOUNCYCASTLE.html'
-            )) {
-              $entry = $archive.GetEntry($name)
-              if ($null -eq $entry -or $entry.Length -le 0) {
-                throw "Portable release is missing official tool component: $name"
-              }
-            }
-          } finally { $archive.Dispose() }
-          Write-Host 'Portable official tool inventory verified.'
-          # The previous published nightly is the changelog boundary.
-          # Pull complete history/tags at checkout and list first-parent
-          # merges/direct commits only; never carry old release notes forward.
-          $previousTag = git tag --merged HEAD --list 'v0.1.0-nightly.*' |
-            Where-Object { $_ -match '^v0\.1\.0-nightly\.[0-9]+$' } |
-            Sort-Object { [int]($_ -replace '^v0\.1\.0-nightly\.', '') } -Descending |
-            Select-Object -First 1
-          if ($LASTEXITCODE -ne 0) { throw "Could not inspect previous nightly tags" }
+          ./scripts/verify-portable-release.ps1 -ArchivePath $portable
+          # The previous published nightly is the changelog boundary. Tags live
+          # only in the public artifact repository, which points at its
+          # README/LICENSE-only main, so list first-parent source commits newer
+          # than that release and never carry old release notes forward.
+          $previousTag = $env:NIGHTLY_BASELINE_TAG
+          $previousAt = $env:NIGHTLY_BASELINE_AT
+          if (!$previousTag -or !$previousAt) {
+            $previousTag = $null
+            $previousAt = $null
+          }
 
           $body = @(
-            "Evolve Mod Manager Nightly 0.1.0 (build $env:VERSION)",
+            "Evolve Mod Manager Nightly (build $env:VERSION)",
             "",
             "Experimental Windows preview. The manager is not yet feature-complete.",
             ""
@@ -166,8 +244,8 @@ jobs:
           $changes = @()
           if ($previousTag) {
             $body += "Changes since ${previousTag}:"
-            $history = @(git log --first-parent --format="%H" "$previousTag..HEAD")
-            if ($LASTEXITCODE -ne 0) { throw "Unable to compare commits with $previousTag" }
+            $history = @(git log --first-parent --format="%H" --since="$previousAt" HEAD)
+            if ($LASTEXITCODE -ne 0) { throw "Unable to compare commits since $previousTag" }
             foreach ($commit in $history) {
               if (!$commit) { continue }
               $lines = @(git log -1 --format="%B" $commit |
@@ -186,7 +264,7 @@ jobs:
               }
             }
           } else {
-            $body += "Initial Nightly release on this branch."
+            $body += "Initial Nightly release on the public release channel."
           }
           if ($changes.Count -gt 0) {
             $body += $changes
@@ -201,11 +279,17 @@ jobs:
           }
           Set-Content -LiteralPath "dist/nightly-release-notes.md" -Value $body -Encoding utf8
 
-      - name: Publish Nightly 0.1.0 GitHub prerelease
-        uses: softprops/action-gh-release@v2
+      # Publish only build artifacts to the public repository. The tag is
+      # created from the public README/LICENSE-only main, so GitHub's generated
+      # source archives contain no source; never upload source archives.
+      - name: Publish Nightly GitHub prerelease to public repository
+        uses: softprops/action-gh-release@v3
         with:
+          repository: corvodl/Evolve-Mod-Manager
+          token: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          target_commitish: main
           tag_name: v${{ env.VERSION }}
-          name: Evolve Mod Manager Nightly 0.1.0 (build ${{ github.run_number }})
+          name: Evolve Mod Manager Nightly (build ${{ github.run_number }})
           prerelease: true
           make_latest: false
           body_path: dist/nightly-release-notes.md

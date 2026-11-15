@@ -107,3 +107,10 @@ is derived from the canonical game executable by `online_guard.rs`.
 Until these gates pass, a local `asInvoker` build may be used **only** to
 review layout; it is not evidence that protected actions work. Never distribute
 such a preview as a release.
+
+Desktop tests can run without UAC using
+`./scripts/test-desktop-standard-user.ps1`. The script confines
+`EVOLVE_TEST_NO_MANIFEST` to its process and a separate Cargo target directory;
+it does not change the shipped GUI. Release builds reject that flag, and
+packaging must verify the embedded `requireAdministrator` manifest. The GUI
+itself still requires UAC until the protected workflows above are brokered.

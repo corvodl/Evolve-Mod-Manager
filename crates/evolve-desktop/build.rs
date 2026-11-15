@@ -13,6 +13,11 @@ fn main() {
         // Cargo test executables must remain runnable by an ordinary account;
         // the released GUI still embeds its normal elevation manifest.
         if std::env::var_os("EVOLVE_TEST_NO_MANIFEST").is_some() {
+            assert_ne!(
+                std::env::var("PROFILE").as_deref(),
+                Ok("release"),
+                "EVOLVE_TEST_NO_MANIFEST cannot be used for a release build"
+            );
             return;
         }
         let mut resource = winres::WindowsResource::new();

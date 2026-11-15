@@ -182,7 +182,8 @@ impl Default for Preferences {
             ruffle_executable: String::new(),
             ruffle_web_runtime: String::new(),
             gfx_ffmpeg_executable: String::new(),
-            experimental_updates: false,
+            experimental_updates: env!("CARGO_PKG_VERSION").contains("-beta.")
+                || env!("CARGO_PKG_VERSION").contains("-rc."),
             nightly_updates: env!("CARGO_PKG_VERSION").contains("-nightly."),
             automatic_update_checks: true,
             developer_hotkeys: vec![0; 10],

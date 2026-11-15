@@ -609,9 +609,9 @@ struct State {
     update_status: String,
     update_worker_failure: Option<String>,
     retry_update_after_check: bool,
+    update_check_generation: u64,
+    notify_update_on_check: bool,
     available_update: Option<ReleaseUpdate>,
-    /// Newer releases on every channel, found by the launch check.
-    launch_updates: Vec<ReleaseUpdate>,
     news: whats_new::NewsState,
     client_version: Option<String>,
     startup_update_checked: bool,
@@ -3131,7 +3131,8 @@ enum Message {
     /// Copy a value from a copy button: `(button id, value)`.
     CopyToClipboard(String, String),
     PreferenceThemePreset(&'static str),
-    PreferenceUpdateChannelSet(&'static str),
+    PreferenceUpdateChannelSet(UpdateChannel),
+    PreferenceAutomaticUpdateChecks,
     PreferenceAppearanceSet(&'static str),
     PreferenceCornerStyle(&'static str),
     ToastTick(std::time::Instant),
@@ -3139,8 +3140,6 @@ enum Message {
     ToastClicked(u64),
     OpenUpdatesSettings,
     CheckAllUpdatesOnLaunch,
-    LaunchUpdatesChecked(Vec<(UpdateChannel, Result<Option<ReleaseUpdate>, String>)>),
-    ApplyLaunchUpdate(String),
     SidebarHover(bool),
     SidebarRailHover(bool),
     SidebarToggle,
@@ -3718,7 +3717,6 @@ enum Message {
     PreferenceCrashLogging,
     OpenCrashLogs,
     OpenCrashLogsFolder,
-    PreferenceUpdateChannel,
     PreferenceStage(String),
     PreferenceGameStorage(String),
     SettingsToggleAdvancedPaths,
@@ -3731,7 +3729,7 @@ enum Message {
     SavePreferences,
     CheckUpdates,
     RetryUpdate,
-    UpdateChecked(Result<Option<ReleaseUpdate>, String>),
+    UpdateChecked(u64, UpdateChannel, Result<Option<ReleaseUpdate>, String>),
     RefreshNews,
     NewsLoaded(Result<whats_new::NewsResult, String>),
     NewsImagesLoaded(Result<whats_new::ImageResults, String>),
@@ -5976,7 +5974,7 @@ fn load_saved_library(root: PathBuf) -> Task<Message> {
     )
 }
 
-fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
+fn check_updates_task(channel: UpdateChannel, generation: u64) -> Task<Message> {
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
@@ -5985,7 +5983,7 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
             .await
             .map_err(|e| format!("Update checker crashed: {e}"))?
         },
-        Message::UpdateChecked,
+        move |result| Message::UpdateChecked(generation, channel, result),
     )
 }
 
@@ -6005,32 +6003,6 @@ fn channel_name(channel: UpdateChannel) -> &'static str {
         UpdateChannel::Beta => "Beta",
         UpdateChannel::Nightly => "Nightly",
     }
-}
-
-/// Launch-time check of every channel, so users hear about Stable, Beta
-/// and Nightly releases regardless of the channel they follow.
-fn check_all_updates_task() -> Task<Message> {
-    Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
-                [
-                    UpdateChannel::Stable,
-                    UpdateChannel::Beta,
-                    UpdateChannel::Nightly,
-                ]
-                .into_iter()
-                .map(|channel| {
-                    let result = discover_update(channel, env!("CARGO_PKG_VERSION"))
-                        .map_err(|error| error.to_string());
-                    (channel, result)
-                })
-                .collect::<Vec<_>>()
-            })
-            .await
-            .unwrap_or_default()
-        },
-        Message::LaunchUpdatesChecked,
-    )
 }
 
 fn start_news_images(state: &mut State) -> Task<Message> {
@@ -6358,43 +6330,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return task;
         }
         Message::CheckAllUpdatesOnLaunch => {
-            state.startup_update_checked = true;
-            state.update_status = "Checking public GitHub Releases for verified updates...".into();
-            return check_all_updates_task();
-        }
-        Message::LaunchUpdatesChecked(results) => {
-            let selected = selected_update_channel(&state.preferences);
-            state.launch_updates.clear();
-            let mut follow_up = Task::none();
-            for (channel, result) in results {
-                if channel == selected {
-                    // The selected channel keeps driving the existing
-                    // status line and "Update to ... and restart" button.
-                    state.available_update = None;
-                    follow_up = update(state, Message::UpdateChecked(result.clone()));
-                }
-                if let Ok(Some(release)) = result {
-                    state.toasts.push_update(
-                        channel_name(channel),
-                        &release.version,
-                        Message::OpenUpdatesSettings,
-                    );
-                    state.launch_updates.push(release);
-                }
-            }
-            return follow_up;
-        }
-        Message::ApplyLaunchUpdate(version) => {
-            let Some(release) = state
-                .launch_updates
-                .iter()
-                .find(|release| release.version == version)
-                .cloned()
-            else {
+            if state.startup_update_checked || !state.preferences.automatic_update_checks {
                 return Task::none();
-            };
-            state.available_update = Some(release);
-            return update(state, Message::ApplyUpdate);
+            }
+            state.startup_update_checked = true;
+            let task = update(state, Message::CheckUpdates);
+            state.notify_update_on_check = true;
+            return task;
         }
         Message::AnimationFrame => {
             // Values are time-based; this only settles finished tweens so the
@@ -14136,9 +14078,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::PreferenceUpdateChannelSet(channel) => {
             let prefs = &mut state.preferences;
-            prefs.experimental_updates = channel == "Beta";
-            prefs.nightly_updates = channel == "Nightly";
+            prefs.experimental_updates = channel == UpdateChannel::Beta;
+            prefs.nightly_updates = channel == UpdateChannel::Nightly;
             state.available_update = None;
+            state.retry_update_after_check = false;
+            state.notify_update_on_check = false;
+            state.update_check_generation = state.update_check_generation.wrapping_add(1);
+            persist_preferences(state);
+        }
+        Message::PreferenceAutomaticUpdateChecks => {
+            state.preferences.automatic_update_checks = !state.preferences.automatic_update_checks;
             persist_preferences(state);
         }
         Message::PreferenceAppearanceSet(mode) => {
@@ -14411,20 +14360,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.settings_status = format!("Crash log path unavailable: {error}")
                 }
             }
-        }
-        Message::PreferenceUpdateChannel => {
-            if state.preferences.nightly_updates {
-                state.preferences.nightly_updates = false;
-                state.preferences.experimental_updates = false;
-            } else if state.preferences.experimental_updates {
-                state.preferences.nightly_updates = true;
-                state.preferences.experimental_updates = false;
-            } else {
-                state.preferences.nightly_updates = false;
-                state.preferences.experimental_updates = true;
-            }
-            state.available_update = None;
-            persist_preferences(state);
         }
         Message::SettingsToggleAdvancedPaths => {
             state.settings_advanced_paths = !state.settings_advanced_paths
@@ -14895,14 +14830,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.busy {
                 return Task::none();
             }
+            let task = update(state, Message::CheckUpdates);
             state.retry_update_after_check = true;
-            return update(state, Message::CheckUpdates);
+            return task;
         }
         Message::CheckUpdates => {
             state.startup_update_checked = true;
+            state.update_check_generation = state.update_check_generation.wrapping_add(1);
+            state.retry_update_after_check = false;
+            state.notify_update_on_check = false;
             state.update_status = "Checking public GitHub Releases for verified updates...".into();
             state.available_update = None;
-            return check_updates_task(selected_update_channel(&state.preferences));
+            return check_updates_task(
+                selected_update_channel(&state.preferences),
+                state.update_check_generation,
+            );
         }
         Message::ClientVersionChecked(path, version) => {
             if state.preferences.client_executable == path {
@@ -14969,27 +14911,44 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::CreditsSearch(value) => state.credits_search = value.chars().take(64).collect(),
-        Message::UpdateChecked(result) => match result {
-            Ok(Some(release)) => {
-                state.update_status = format!(
-                    "Update {} ({:?}) is available. Portable: {}. Release: {}",
-                    release.version, release.channel, release.portable.name, release.release_url
-                );
-                state.available_update = Some(release);
-                if state.retry_update_after_check {
+        Message::UpdateChecked(generation, channel, result) => {
+            if generation != state.update_check_generation
+                || channel != selected_update_channel(&state.preferences)
+            {
+                return Task::none();
+            }
+            let notify = std::mem::take(&mut state.notify_update_on_check);
+            match result {
+                Ok(Some(release)) => {
+                    state.update_status = format!(
+                        "{} {} is available from the public release channel.",
+                        channel_name(channel),
+                        release.version,
+                    );
+                    if notify {
+                        state.toasts.push_update(
+                            channel_name(channel),
+                            &release.version,
+                            Message::OpenUpdatesSettings,
+                        );
+                    }
+                    state.available_update = Some(release);
+                    if state.retry_update_after_check {
+                        state.retry_update_after_check = false;
+                        return update(state, Message::ApplyUpdate);
+                    }
+                }
+                Ok(None) => {
                     state.retry_update_after_check = false;
-                    return update(state, Message::ApplyUpdate);
+                    state.update_status =
+                        "No newer verified release on the selected channel.".into()
+                }
+                Err(error) => {
+                    state.retry_update_after_check = false;
+                    state.update_status = format!("Cannot verify latest release: {error}");
                 }
             }
-            Ok(None) => {
-                state.retry_update_after_check = false;
-                state.update_status = "No newer verified release on the selected channel.".into()
-            }
-            Err(error) => {
-                state.retry_update_after_check = false;
-                state.update_status = format!("Cannot verify latest release: {error}");
-            }
-        },
+        }
         Message::ApplyUpdate => {
             let Some(update) = state.available_update.clone() else {
                 return Task::none();
@@ -18213,44 +18172,6 @@ fn download_action(state: &State) -> Element<'_, Message> {
     }
 }
 
-/// Releases on other channels found by the launch check, each installable
-/// without changing the channel the user follows.
-fn launch_update_actions(state: &State) -> Element<'_, Message> {
-    let selected = state
-        .available_update
-        .as_ref()
-        .map(|release| release.version.as_str());
-    state
-        .launch_updates
-        .iter()
-        .filter(|release| Some(release.version.as_str()) != selected)
-        .fold(column![].spacing(8), |list, release| {
-            let button = design::button(text(format!(
-                "Install {} {} and restart",
-                channel_name(release.channel),
-                release.version
-            )))
-            .on_press_maybe(
-                (!state.busy).then(|| Message::ApplyLaunchUpdate(release.version.clone())),
-            );
-            list.push(
-                row![
-                    text(format!(
-                        "{} update {} is also available.",
-                        channel_name(release.channel),
-                        release.version
-                    ))
-                    .size(12)
-                    .width(Fill),
-                    button,
-                ]
-                .spacing(8)
-                .align_y(iced::Center),
-            )
-        })
-        .into()
-}
-
 fn sidebar_surface(theme: &iced::Theme) -> container::Style {
     container::Style {
         background: Some(iced::Background::Color(design::sidebar(theme))),
@@ -20311,8 +20232,10 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        // Every launch checks all update channels once.
-        let startup = if !self.state.startup_update_checked {
+        // The selected channel is checked once on launch when enabled.
+        let startup = if self.state.preferences.automatic_update_checks
+            && !self.state.startup_update_checked
+        {
             iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckAllUpdatesOnLaunch)
         } else {
             Subscription::none()
@@ -20596,6 +20519,30 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn outdated_update_results_cannot_change_the_selected_channel_or_retry() {
+        let mut state = State {
+            update_check_generation: 2,
+            retry_update_after_check: true,
+            update_status: "Checking Nightly".into(),
+            ..Default::default()
+        };
+        let _ = update(
+            &mut state,
+            Message::UpdateChecked(1, UpdateChannel::Stable, Err("stale failure".into())),
+        );
+        let _ = update(
+            &mut state,
+            Message::UpdateChecked(2, UpdateChannel::Nightly, Err("wrong channel".into())),
+        );
+        assert!(state.retry_update_after_check);
+        assert_eq!(state.update_status, "Checking Nightly");
+
+        let _ = update(&mut state, Message::CheckUpdates);
+        assert!(!state.retry_update_after_check);
+        assert_eq!(state.update_check_generation, 3);
+    }
 
     #[test]
     fn expanding_sidebar_does_not_treat_covered_rail_as_a_hover_exit() {
