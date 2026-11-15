@@ -1,4 +1,4 @@
-Nightly requested 2026-11-12 after merging all open PRs.
-request: user-requested-merge-all-then-build-2026-11-12-pr213-pr214-pr215-pr216
-base-main-commit: 7abe5f354cbc5e8050a11a586eb14e4bed4611e4
-description: Build a fresh Windows nightly from merged main including PR #213 Level Editor camera/announcement/sidebar fixes, PR #214 map chooser auto-discovery and previews, PR #215 2012 map-owned level.pak discovery and classification, and PR #216 looping Play beam, quit guard, Launching state and UI kit improvements. Preserve authorized Stage 2 runtime packaging, signing safeguards, installer and portable ZIP creation. Full version-24 2012 terrain viewport parity remains a separate unfinished task.
+Nightly requested 2026-11-15 after merging all open PRs.
+request: user-requested-merge-build-public-nightly-2026-11-15-pr223-pr224-pr225
+base-main-commit: 206487955dac726088a02822371b612afbdb9ba8
+description: Build and publish a fresh Windows Nightly from merged main including PR #223 Discord announcements feed configuration and URL, PR #224 live Home announcements and Modding workflow UI, and PR #225 authored minimap display and Windows-style contextual menus. Preserve all release authorization, admin manifest verification, official Stage 2 runtime packaging and license guards. Publish only the verified Windows installer and portable ZIP as assets on the public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease.
