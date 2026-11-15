@@ -191,7 +191,7 @@ jobs:
           New-Item -ItemType Directory -Path "$folder/third_party" -Force | Out-Null
           Copy-Item -LiteralPath 'dist/third_party/OfficialStage2' -Destination "$folder/third_party/OfficialStage2" -Recurse -Force
           Copy-Item -LiteralPath 'dist/third_party/Cryengine-Converter' -Destination "$folder/third_party/Cryengine-Converter" -Recurse -Force
-          Compress-Archive -Path (Join-Path $folder '*') -DestinationPath "dist/EvolveModManager-Portable-$env:VERSION.zip" -CompressionLevel Optimal -Force
+          ./scripts/package-portable-release.ps1 -SourceDirectory $folder -ArchivePath "dist/EvolveModManager-Portable-$env:VERSION.zip"
 
       - name: Fetch and verify optional GFX editor tools
         shell: pwsh
