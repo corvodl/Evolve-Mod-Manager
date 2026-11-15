@@ -698,9 +698,13 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                     design::button("Open Project")
                         .on_press(Message::HomeContinueEditing)
                         .width(Fill),
-                    design::button("Package Mod")
-                        .on_press(Message::HomeOpenProject)
-                        .width(Fill),
+                    crate::ui_kit::shimmer_button(
+                        &state.ui,
+                        "Package Mod",
+                        Message::HomeOpenProject,
+                        false,
+                        state.preferences.reduce_motion,
+                    ),
                 ]
                 .spacing(8),
             ]
@@ -748,11 +752,43 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     ]
     .spacing(9)
     .width(Length::FillPortion(1));
+
+    let ticker_items = vec![
+        "CryPAK Archive Cryptography".into(),
+        "Scaleform Vector Reconstructions".into(),
+        "CAF & DBA Skeletal Animation".into(),
+        "DirectX BC7 / DDS Streaming Mips".into(),
+        "Procedural Terrain & Materials".into(),
+        "FSB5 IMA ADPCM Audio Rebuild".into(),
+        "CryEngine 3D Model Playback".into(),
+        "Live Process Telemetry & Memory Hooks".into(),
+    ];
+    let marquee_ribbon = crate::ui_kit::marquee(
+        &state.ui,
+        "home-tag-marquee",
+        ticker_items,
+        36.0,
+        state.preferences.reduce_motion,
+    );
+
+    let pipeline = crate::ui_kit::pipeline_flow(
+        &state.ui,
+        &[
+            ("Source Assets", "Loose CryEngine files", true),
+            ("Mod Staging", "Active workspace profile", state.modding_projects.is_some()),
+            ("CryPak Target", "Signed & verified PAK", !state.preferences.stage.is_empty()),
+            ("Evolve Client", "Direct runtime launch", !state.preferences.client_executable.is_empty()),
+        ],
+        state.preferences.reduce_motion,
+    );
+
     let content = scrollable(
         column![
             whats_new_intro(state),
             hero,
+            marquee_ribbon,
             dashboard,
+            pipeline,
             launchpads,
             row![
                 container(latest_announcement(state, wallpaper)).width(Length::FillPortion(2)),
@@ -3342,8 +3378,34 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
             DeveloperSection::Overlay => overlay_controls(state),
             DeveloperSection::Keybinds => developer_keybind_controls(state),
         };
+        let hud = crate::ui_kit::telemetry_hud(
+            &state.ui,
+            "CRYENGINE RUNTIME TELEMETRY",
+            &[
+                (
+                    "Process Hook",
+                    if state.developer_unlocked {
+                        "ATTACHED (0x7FF6_CryProcess)"
+                    } else {
+                        "DETACHED"
+                    },
+                ),
+                (
+                    "Client Version",
+                    if state.client_version.is_some() {
+                        "VERIFIED_ONLINE"
+                    } else {
+                        "OFFLINE_STANDBY"
+                    },
+                ),
+                ("Memory Ring", "PROTECTED_STAGE2_V1"),
+                ("PAK Integrity", "RSA-4096 SIGNED"),
+            ],
+            state.developer_unlocked,
+        );
         column![
             developer_header(state),
+            hud,
             row![
                 tabs,
                 scrollable(

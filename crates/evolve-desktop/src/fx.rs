@@ -529,6 +529,404 @@ impl canvas::Program<Message> for Embers {
     }
 }
 
+/// Tactical radar sweep scanner for integrity checks, memory probing, and actor discovery.
+/// Reconstructs authentic CryEngine tactical radar: concentric range rings, azimuth crosshairs,
+/// rotating sweep beam, trailing phosphor persistence sector, and reactive target blips.
+pub struct RadarSweep {
+    /// Clock time in seconds.
+    pub time: f32,
+    /// Seconds per 360-degree rotation.
+    pub period: f32,
+    /// Whether the sweep is actively rotating or resting at a static reticle.
+    pub scanning: bool,
+    /// Target blips as `(angle_radians, normalized_distance_0_to_1)`.
+    pub blips: Vec<(f32, f32)>,
+}
+
+impl canvas::Program<Message> for RadarSweep {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let center = frame.center();
+        let max_radius = (bounds.width.min(bounds.height) / 2.0 - 6.0).max(10.0);
+        let legacy = design::is_legacy(theme);
+
+        // Palette selection: Legacy tactical HUD green or amber, Modern accent
+        let base_accent = if legacy {
+            Color::from_rgb8(70, 170, 130)
+        } else {
+            theme.palette().primary
+        };
+        let grid_color = design::with_alpha(base_accent, if legacy { 0.28 } else { 0.20 });
+
+        // 1. Concentric range rings
+        for step in [0.33, 0.66, 1.0] {
+            let r = max_radius * step;
+            frame.stroke(
+                &Path::circle(center, r),
+                Stroke::default().with_width(1.0).with_color(grid_color),
+            );
+        }
+
+        // 2. Crosshairs with tick marks
+        frame.stroke(
+            &Path::line(
+                Point::new(center.x - max_radius, center.y),
+                Point::new(center.x + max_radius, center.y),
+            ),
+            Stroke::default().with_width(1.0).with_color(grid_color),
+        );
+        frame.stroke(
+            &Path::line(
+                Point::new(center.x, center.y - max_radius),
+                Point::new(center.x, center.y + max_radius),
+            ),
+            Stroke::default().with_width(1.0).with_color(grid_color),
+        );
+
+        // Tick marks on axes
+        for r_step in [0.33, 0.66] {
+            let offset = max_radius * r_step;
+            let tick = 3.0;
+            frame.stroke(
+                &Path::line(
+                    Point::new(center.x - offset, center.y - tick),
+                    Point::new(center.x - offset, center.y + tick),
+                ),
+                Stroke::default().with_width(1.0).with_color(grid_color),
+            );
+            frame.stroke(
+                &Path::line(
+                    Point::new(center.x + offset, center.y - tick),
+                    Point::new(center.x + offset, center.y + tick),
+                ),
+                Stroke::default().with_width(1.0).with_color(grid_color),
+            );
+            frame.stroke(
+                &Path::line(
+                    Point::new(center.x - tick, center.y - offset),
+                    Point::new(center.x + tick, center.y - offset),
+                ),
+                Stroke::default().with_width(1.0).with_color(grid_color),
+            );
+            frame.stroke(
+                &Path::line(
+                    Point::new(center.x - tick, center.y + offset),
+                    Point::new(center.x + tick, center.y + offset),
+                ),
+                Stroke::default().with_width(1.0).with_color(grid_color),
+            );
+        }
+
+        // 3. Sweeping beam and trailing phosphor sector
+        let sweep_angle = if self.scanning {
+            (self.time / self.period.max(0.1)).fract() * std::f32::consts::TAU
+        } else {
+            -std::f32::consts::FRAC_PI_4
+        };
+
+        if self.scanning {
+            let trail_steps = 14;
+            let trail_span = std::f32::consts::FRAC_PI_2 * 0.9;
+            for step in 0..trail_steps {
+                let frac = step as f32 / trail_steps as f32;
+                let next_frac = (step + 1) as f32 / trail_steps as f32;
+                let a1 = sweep_angle - trail_span * (1.0 - frac);
+                let a2 = sweep_angle - trail_span * (1.0 - next_frac);
+                let sector = Path::new(|builder| {
+                    builder.move_to(center);
+                    builder.arc(canvas::path::Arc {
+                        center,
+                        radius: max_radius,
+                        start_angle: iced::Radians(a1),
+                        end_angle: iced::Radians(a2),
+                    });
+                    builder.close();
+                });
+                let alpha = (frac * frac * 0.18).clamp(0.005, 0.22);
+                frame.fill(&sector, design::with_alpha(base_accent, alpha));
+            }
+        }
+
+        // Leading sweep line
+        let sweep_end = Point::new(
+            center.x + max_radius * sweep_angle.cos(),
+            center.y + max_radius * sweep_angle.sin(),
+        );
+        frame.stroke(
+            &Path::line(center, sweep_end),
+            Stroke::default()
+                .with_width(if legacy { 1.5 } else { 2.0 })
+                .with_color(design::with_alpha(base_accent, 0.95)),
+        );
+        frame.fill(&Path::circle(center, 2.5), base_accent);
+
+        // 4. Blip targets
+        for &(angle, dist_norm) in &self.blips {
+            let r = max_radius * dist_norm.clamp(0.1, 0.95);
+            let blip_pos = Point::new(center.x + r * angle.cos(), center.y + r * angle.sin());
+
+            let diff = (sweep_angle - angle).rem_euclid(std::f32::consts::TAU);
+            let intensity = if self.scanning {
+                if diff < std::f32::consts::FRAC_PI_2 {
+                    1.0 - diff / std::f32::consts::FRAC_PI_2
+                } else {
+                    0.15
+                }
+            } else {
+                0.6
+            };
+
+            frame.fill(
+                &Path::circle(blip_pos, 4.5),
+                design::with_alpha(base_accent, intensity * 0.4),
+            );
+            frame.fill(
+                &Path::circle(blip_pos, 2.0),
+                design::with_alpha(Color::WHITE, intensity),
+            );
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Smooth cubic Bézier connection beam with a traveling energy pulse (Magic UI Animated Beam).
+/// Connects two UI nodes or pipeline stages with an interactive data flow visualization.
+pub struct AnimatedBeam {
+    pub from: Point,
+    pub to: Point,
+    pub time: f32,
+    pub period: f32,
+    pub curvature: f32,
+    pub active: bool,
+}
+
+impl canvas::Program<Message> for AnimatedBeam {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let dx = self.to.x - self.from.x;
+
+        let c1 = Point::new(self.from.x + dx * 0.5, self.from.y + self.curvature);
+        let c2 = Point::new(self.from.x + dx * 0.5, self.to.y - self.curvature);
+
+        let path = Path::new(|builder| {
+            builder.move_to(self.from);
+            builder.bezier_curve_to(c1, c2, self.to);
+        });
+
+        // Background track (quiet guideline)
+        let track_color = design::with_alpha(design::border(theme), 0.55);
+        frame.stroke(
+            &path,
+            Stroke {
+                line_dash: canvas::LineDash {
+                    segments: &[6.0, 6.0],
+                    offset: 0,
+                },
+                ..Stroke::default().with_width(2.0).with_color(track_color)
+            },
+        );
+
+        if self.active {
+            let accent = theme.palette().primary;
+            let progress = (self.time / self.period.max(0.1)).fract();
+
+            // Traveling pulse along the Bézier curve
+            let samples = 18;
+            let pulse_span = 0.22;
+            for i in 0..samples {
+                let frac_a = i as f32 / samples as f32;
+                let frac_b = (i + 1) as f32 / samples as f32;
+                let t_a = (progress - pulse_span * (1.0 - frac_a)).clamp(0.0, 1.0);
+                let t_b = (progress - pulse_span * (1.0 - frac_b)).clamp(0.0, 1.0);
+
+                if t_b > t_a + 0.001 {
+                    let p_a = eval_bezier(self.from, c1, c2, self.to, t_a);
+                    let p_b = eval_bezier(self.from, c1, c2, self.to, t_b);
+                    let alpha = frac_b * frac_b * 0.92;
+                    frame.stroke(
+                        &Path::line(p_a, p_b),
+                        Stroke::default()
+                            .with_width(2.5)
+                            .with_color(design::with_alpha(
+                                design::mix(accent, Color::WHITE, 0.4 * frac_b),
+                                alpha,
+                            ))
+                            .with_line_cap(canvas::LineCap::Round),
+                    );
+                }
+            }
+
+            // Glowing head photon
+            let head = eval_bezier(self.from, c1, c2, self.to, progress);
+            frame.fill(&Path::circle(head, 4.5), design::with_alpha(accent, 0.35));
+            frame.fill(&Path::circle(head, 2.0), Color::WHITE);
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Evaluates a cubic Bézier curve at parameter t in [0, 1].
+pub fn eval_bezier(p0: Point, p1: Point, p2: Point, p3: Point, t: f32) -> Point {
+    let t = t.clamp(0.0, 1.0);
+    let u = 1.0 - t;
+    let tt = t * t;
+    let uu = u * u;
+    let uuu = uu * u;
+    let ttt = tt * t;
+
+    let x = uuu * p0.x + 3.0 * uu * t * p1.x + 3.0 * u * tt * p2.x + ttt * p3.x;
+    let y = uuu * p0.y + 3.0 * uu * t * p1.y + 3.0 * u * tt * p2.y + ttt * p3.y;
+    Point::new(x, y)
+}
+
+/// Diagonal traveling shimmer highlight across a button or card surface (Magic UI / 21st.dev).
+pub struct ShimmerGlow {
+    pub time: f32,
+    pub period: f32,
+    pub strength: f32,
+}
+
+impl canvas::Program<Message> for ShimmerGlow {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let w = bounds.width;
+        let h = bounds.height;
+
+        let progress = (self.time / self.period.max(0.1)).fract();
+        let total_span = w + h + 120.0;
+        let current_x = -h - 40.0 + progress * total_span;
+
+        let band_width = 38.0;
+        let p1 = Point::new(current_x, 0.0);
+        let p2 = Point::new(current_x + band_width, 0.0);
+        let p3 = Point::new(current_x + band_width - h * 0.7, h);
+        let p4 = Point::new(current_x - h * 0.7, h);
+
+        let shimmer_path = Path::new(|builder| {
+            builder.move_to(p1);
+            builder.line_to(p2);
+            builder.line_to(p3);
+            builder.line_to(p4);
+            builder.close();
+        });
+
+        let clip_rect = Rectangle::new(Point::ORIGIN, bounds.size());
+        frame.with_clip(clip_rect, |clipped| {
+            clipped.fill(
+                &shimmer_path,
+                design::with_alpha(Color::WHITE, 0.16 * self.strength.clamp(0.0, 1.0)),
+            );
+        });
+
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Horizontal scrolling marquee canvas program (Magic UI Marquee).
+/// Renders an infinite ribbon of badges or text labels with subpixel smooth translation.
+pub struct MarqueeTrack {
+    pub items: Vec<String>,
+    pub time: f32,
+    pub speed: f32,
+    pub hovered: bool,
+}
+
+impl canvas::Program<Message> for MarqueeTrack {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        if self.items.is_empty() || bounds.width <= 1.0 {
+            return vec![frame.into_geometry()];
+        }
+
+        let item_width = 160.0;
+        let spacing = 16.0;
+        let step = item_width + spacing;
+        let total_width = self.items.len() as f32 * step;
+
+        let speed = if self.hovered { self.speed * 0.25 } else { self.speed };
+        let offset = (self.time * speed).rem_euclid(total_width);
+
+        let legacy = design::is_legacy(theme);
+        let radius = if legacy { 1.0 } else { 8.0 };
+        let pill_height = (bounds.height - 8.0).max(18.0);
+        let pill_y = (bounds.height - pill_height) / 2.0;
+
+        let visible_count = (bounds.width / step).ceil() as usize + 2;
+
+        for i in 0..visible_count {
+            let virtual_x = i as f32 * step - offset;
+            let wrapped_x = virtual_x.rem_euclid(total_width);
+            let item_index = (wrapped_x / step).floor() as usize % self.items.len();
+            let label = &self.items[item_index];
+
+            // Render background pill
+            let pill_rect = Path::rounded_rectangle(
+                Point::new(virtual_x, pill_y),
+                Size::new(item_width, pill_height),
+                radius.into(),
+            );
+            frame.fill(&pill_rect, design::field(theme));
+            frame.stroke(
+                &pill_rect,
+                Stroke::default()
+                    .with_width(1.0)
+                    .with_color(design::with_alpha(design::border(theme), 0.6)),
+            );
+
+            // Centered label text
+            frame.fill_text(canvas::Text {
+                content: label.clone(),
+                position: Point::new(virtual_x + item_width / 2.0, bounds.height / 2.0),
+                color: theme.palette().text,
+                size: 12.0.into(),
+                align_x: iced::alignment::Horizontal::Center.into(),
+                align_y: iced::alignment::Vertical::Center,
+                ..canvas::Text::default()
+            });
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,5 +961,24 @@ mod tests {
             assert!((0.0..=1.0).contains(&a.0));
             assert!(a.3 >= 0.0 && a.3 <= 1.0);
         }
+    }
+
+    #[test]
+    fn eval_bezier_interpolates_smoothly_between_endpoints() {
+        let p0 = Point::new(10.0, 20.0);
+        let p1 = Point::new(30.0, 40.0);
+        let p2 = Point::new(70.0, 40.0);
+        let p3 = Point::new(90.0, 20.0);
+
+        let start = eval_bezier(p0, p1, p2, p3, 0.0);
+        assert!((start.x - p0.x).abs() < 0.001);
+        assert!((start.y - p0.y).abs() < 0.001);
+
+        let end = eval_bezier(p0, p1, p2, p3, 1.0);
+        assert!((end.x - p3.x).abs() < 0.001);
+        assert!((end.y - p3.y).abs() < 0.001);
+
+        let mid = eval_bezier(p0, p1, p2, p3, 0.5);
+        assert!(mid.x > p0.x && mid.x < p3.x);
     }
 }
