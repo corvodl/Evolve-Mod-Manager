@@ -152,39 +152,6 @@ EMM is built on strict architectural and performance standards:
 
 ---
 
-## Contributing & Development
-
-### Prerequisites
-- [Rust](https://rustup.rs/) (2024 edition / latest stable)
-- Windows 10/11 x64
-- PowerShell 7+
-
-### Building from Source
-
-```powershell
-# Clone the repository
-git clone <repository-url>
-cd evolve-mod-manager
-
-# Check code formatting
-cargo fmt --all -- --check
-
-# Run linter
-cargo clippy -p evolve-mod-manager -- -D warnings
-
-# Execute test suite (standard-user runner)
-./scripts/test-desktop-standard-user.ps1
-cargo test -p evolve-core -p evolve-privileged-worker
-
-# Run manager in development mode
-cargo run -p evolve-mod-manager
-```
-
-> [!IMPORTANT]
-> `Cargo.lock` is intentionally untracked in this repository. Avoid committing changes to `Cargo.lock`.
-
----
-
 ## Disclaimer & Community Notes
 
 Evolve Mod Manager is an independent open-source community tool. It is not affiliated with, endorsed by, or associated with 2K Games or Turtle Rock Studios. 
