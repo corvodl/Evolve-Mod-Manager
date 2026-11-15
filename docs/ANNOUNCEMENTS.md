@@ -21,14 +21,11 @@ Unreachable feeds never prevent running the manager, updating, or playing.
    secrets**, add **both** `DISCORD_BOT_TOKEN` (bot token, secret) and
    `DISCORD_CHANNEL_ID` (destination channel snowflake, also accepted as a
    secret). Do not place either in code, a release, an issue, or a log.
-4. In **corvodl/EMM-SRC**, open **GitHub → Settings → Pages** and select **Build and deployment →
-   Source: GitHub Actions**. GitHub Pages is required for this deployment flow.
-   Ensure the repository's plan and visibility permit publishing a Pages site.
-5. In **corvodl/EMM-SRC**, after the PR is merged, open **Actions → Publish Discord announcement feed →
-   Run workflow** on `main`. It also runs on relevant pushes and approximately
-   every 30 minutes (scheduled workflows can be delayed by GitHub). Check the
-   published URL:
-   `https://corvodl.github.io/EMM-SRC/announcements.json`.
+4. Ensure `PUBLIC_RELEASE_TOKEN` has **Contents: Read and write** permissions
+   for the public `corvodl/Evolve-Mod-Manager` repository.
+5. In **Actions → Publish Discord announcement feed → Run workflow** on `main`,
+   the workflow fetches channel posts and updates the public feed at:
+   `https://raw.githubusercontent.com/corvodl/Evolve-Mod-Manager/main/announcements.json`.
 
 The workflow requests messages from Discord *inside GitHub Actions* using the
 bot token, and publishes a small, bounded, text-focused JSON result containing

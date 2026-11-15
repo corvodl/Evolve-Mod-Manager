@@ -25,11 +25,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify announcement feed sanitization
@@ -39,15 +34,21 @@ jobs:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
         run: |
+          mkdir -p site
           python3 scripts/publish_discord_announcements.py --output site/announcements.json
-          touch site/.nojekyll
-          printf '%s\n' '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Evolve Mod Manager announcements</title></head><body><a href="announcements.json">Discord announcements JSON</a></body></html>' > site/index.html
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-      - name: Upload feed to Pages
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: site
-      - name: Deploy public read-only announcement feed
-        id: deploy
-        uses: actions/deploy-pages@v4
+      - name: Publish announcements to public repository
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+        run: |
+          sha=$(gh api repos/corvodl/Evolve-Mod-Manager/contents/announcements.json --jq .sha 2>/dev/null || echo "")
+          base64_content=$(base64 -w 0 site/announcements.json)
+          if [ -n "$sha" ]; then
+            gh api --method PUT repos/corvodl/Evolve-Mod-Manager/contents/announcements.json \
+              -f message="chore(feed): update Discord announcements feed" \
+              -f content="$base64_content" \
+              -f sha="$sha"
+          else
+            gh api --method PUT repos/corvodl/Evolve-Mod-Manager/contents/announcements.json \
+              -f message="chore(feed): update Discord announcements feed" \
+              -f content="$base64_content"
+          fi
