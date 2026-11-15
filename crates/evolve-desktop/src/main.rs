@@ -98,9 +98,6 @@ mod runtime_memory;
 mod runtime_research;
 mod runtime_signatures;
 mod runtime_teleport;
-#[cfg(windows)]
-#[path = "../../evolve-teleport-overlay/src/lib.rs"]
-mod teleport_overlay;
 mod selection;
 mod settings;
 mod settings_page;
@@ -109,6 +106,9 @@ mod standard_user_launch;
 mod storage_usage;
 mod system_health;
 mod system_meters;
+#[cfg(windows)]
+#[path = "../../evolve-teleport-overlay/src/lib.rs"]
+mod teleport_overlay;
 mod terrain_brush;
 mod terrain_material_probe;
 // Native RGB24 source-backed output stage; UI activation awaits verified\n// per-pixel Evolve paint alpha and original multi-layer shader ordering.\n#[allow(dead_code)]\nmod terrain_rebake_project;
