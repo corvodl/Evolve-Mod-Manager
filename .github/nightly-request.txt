@@ -1,4 +1,4 @@
-Nightly requested 2026-11-16 after merging all open PRs.
-request: user-requested-merge-build-public-nightly-2026-11-16-pr227-pr228-pr229-pr230
-base-main-commit: 7cb6cd83d3ef69c29c18a29fcd0983d251e23d45
-description: Build and publish a fresh Windows Nightly from merged main including PR #227 (2012 Forest Cliffs brush models restore), PR #228 (Character-first Modding roster, approved headshots, Legacy & Stage 2 compiled Lua decoding), and PRs #229/#230 (Manager UI component survey and native iced UI interactions). Preserve all release authorization, admin manifest verification, official Stage 2 runtime packaging and license guards. Publish only the verified Windows installer and portable ZIP as assets on the public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease.
+Nightly requested 2026-11-16 after merging PR #231.
+request: user-requested-merge-build-public-nightly-2026-11-16-pr231
+base-main-commit: 5915a4e0e14d9b217dfac2ea3f7d07bc30c1bf5d
+description: Build and publish a fresh Windows Nightly from merged private EMM-SRC main including PR #231 (character portraits, enabled mods, readable gameplay values). Preserve release authorization, requireAdministrator manifest verification, official Stage 2 runtime packaging and licensing safeguards. Publish only compiled installer and portable ZIP to public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease; do not publish private source.
