@@ -1,4 +1,4 @@
-Nightly requested 2026-11-15 after updating public release verification for announcements feed.
-request: user-requested-discord-feed-public-repo-2026-11-15-nightly-127
-base-main-commit: c12bb4a37102fbdff4d275a0166e469f8ba8d766
-description: Permit announcements.json in public repository release verification, build and publish fresh Windows Nightly 127 release with public raw announcements feed.
+Nightly requested 2026-11-16 after merging all open PRs.
+request: user-requested-merge-build-public-nightly-2026-11-16-pr227-pr228-pr229-pr230
+base-main-commit: 7cb6cd83d3ef69c29c18a29fcd0983d251e23d45
+description: Build and publish a fresh Windows Nightly from merged main including PR #227 (2012 Forest Cliffs brush models restore), PR #228 (Character-first Modding roster, approved headshots, Legacy & Stage 2 compiled Lua decoding), and PRs #229/#230 (Manager UI component survey and native iced UI interactions). Preserve all release authorization, admin manifest verification, official Stage 2 runtime packaging and license guards. Publish only the verified Windows installer and portable ZIP as assets on the public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease.
