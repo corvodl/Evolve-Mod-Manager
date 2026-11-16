@@ -208,20 +208,38 @@ pub fn owns_document(display_name: &str, path: &str) -> bool {
                     .iter()
                     .any(|suffix| stem == format!("{id}{suffix}"))
         }
-        ["libs", "abilities", owner, ..] if *owner == id => true,
-        ["libs", "items", "mercs" | "monsters", owner, ..] if *owner == id => true,
-        ["scripts", "entities", "abilities", "xml", owner, ..] if *owner == id => true,
-        [
+        ["libs", "abilities", folder, ..]
+        | ["libs", "items", "mercs" | "monsters", folder, ..]
+        | ["scripts", "entities", "abilities", "xml", folder, ..]
+        | [
             "scripts",
             "entities",
             "items",
             "xml",
             "weapons" | "ammo",
-            owner,
+            folder,
             ..,
-        ] if *owner == id => true,
+        ] => parts
+            .last()
+            .is_some_and(|filename| folder_owner(folder, filename) == id),
         _ => false,
     }
+}
+
+/// Legacy keeps a variant's documents in its base character's folder, named
+/// with the variant's internal ID (`Libs/Abilities/Goliath/GoliathMeteorCharge1.xml`).
+/// Such a file belongs to that roster variant, never to the base character.
+fn folder_owner(folder: &str, filename: &str) -> String {
+    CHARACTERS
+        .iter()
+        .map(|(_, id)| id.to_ascii_lowercase())
+        .filter(|variant| {
+            variant.len() > folder.len()
+                && variant.starts_with(folder)
+                && filename.starts_with(variant.as_str())
+        })
+        .max_by_key(String::len)
+        .unwrap_or_else(|| folder.to_owned())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -503,6 +521,27 @@ mod tests {
         assert!(!owns_document(
             "Goliath",
             "libs/Abilities/GoliathMeteor/Rock.xml"
+        ));
+        // Legacy files a variant's documents in its base character's folder.
+        let meteor_in_goliath = "Libs/Abilities/Goliath/GoliathMeteorCharge1.xml";
+        assert!(owns_document("Meteor Goliath", meteor_in_goliath));
+        assert!(!owns_document("Goliath", meteor_in_goliath));
+        assert!(owns_document(
+            "Goliath",
+            "Libs/Abilities/Goliath/GoliathCharge1.xml"
+        ));
+        assert!(owns_document(
+            "Blitz Markov",
+            "Libs/Items/Mercs/Markov/MarkovBlitzRifle.xml"
+        ));
+        assert!(!owns_document(
+            "Markov",
+            "Libs/Items/Mercs/Markov/MarkovBlitzRifle.xml"
+        ));
+        // Only the base's own folder hands documents to a variant.
+        assert!(!owns_document(
+            "Meteor Goliath",
+            "Libs/Abilities/Shared/GoliathMeteorCharge1.xml"
         ));
         assert!(!owns_document(
             "Markov",

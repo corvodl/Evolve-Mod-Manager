@@ -63,6 +63,11 @@ the redesign retains both and corrects hierarchy instead of replacing them.
   followed because it is inherited. A level token such as `BaseMonster2` links
   `BaseMonster` only when that actor declares at least that many `levels`.
   Ambiguous matches stay unassigned.
+- Legacy files a variant's abilities and items in its base character's folder
+  under the variant's internal ID (`Libs/Abilities/Goliath/GoliathMeteor…`);
+  those belong to the variant, not the base. Legacy has no `libs/Actor`
+  documents (actors are compiled Lua 5.1), so it has no inherited actor links
+  and no wildlife entries until that bytecode is read.
 
 ## Acceptance
 
