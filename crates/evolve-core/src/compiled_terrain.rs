@@ -555,7 +555,16 @@ fn object_block(
             BRUSH | 1
                 if (out.version == 24 && kind == 1) || (out.version != 24 && kind == BRUSH) =>
             {
-                let model = r.u16(at + if out.version == 24 { 32 } else { 36 })? as usize;
+                let raw_model = r.u16(at + if out.version == 24 { 32 } else { 36 })?;
+                // Forest Cliffs v24 brushes use bit 13 on otherwise valid
+                // model-table indices (e.g. 0x2000 and 0x2008). It is a
+                // record flag, not part of the model index. Keep the v25
+                // layout and all other out-of-range bits fail-closed.
+                let model = if out.version == 24 {
+                    usize::from(raw_model & !0x2000)
+                } else {
+                    usize::from(raw_model)
+                };
                 let mut matrix = [0f32; 12];
                 for (index, value) in matrix.iter_mut().enumerate() {
                     *value = r.f32(at + 40 + index * 4)?;
@@ -1936,6 +1945,36 @@ mod tests {
         assert_eq!([rotation[1], rotation[2]], [0.0, 0.0]);
         assert!((rotation[3] - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.0001);
         assert!(delete_compiled_placement(&source, CompiledPlacement::Brush(0)).is_err());
+    }
+
+    #[test]
+    fn v24_brush_model_flag_does_not_hide_the_placement() {
+        let mut source = fixture();
+        source[0] = 24;
+        source.drain(32 + 4 + 256 + 80..32 + 4 + 256 + 96);
+        let node = source.len() - (32 + 104 + 64);
+        source[node] = 3;
+        let brush = node + 32;
+        source[brush..brush + 4].copy_from_slice(&1u32.to_le_bytes());
+        source[brush + 32..brush + 34].copy_from_slice(&0x2000u16.to_le_bytes());
+        source.drain(brush + 100..brush + 104);
+        let vegetation = brush + 100;
+        source.drain(vegetation + 60..vegetation + 64);
+        source[node + 28..node + 32].copy_from_slice(&160u32.to_le_bytes());
+        let size = source.len() as u32;
+        source[4..8].copy_from_slice(&size.to_le_bytes());
+
+        let terrain = decode_compiled_terrain(&source).unwrap();
+        assert_eq!(terrain.brushes.len(), 1);
+        assert_eq!(terrain.brushes[0].model, 0);
+        assert_eq!(terrain.brushes[0].transform().position, [5.0, 6.0, 7.0]);
+
+        source[brush + 32..brush + 34].copy_from_slice(&0x4000u16.to_le_bytes());
+        assert!(decode_compiled_terrain(&source).unwrap().brushes.is_empty());
+        let mut stage2 = fixture();
+        let brush = stage2.len() - (104 + 64);
+        stage2[brush + 36..brush + 38].copy_from_slice(&0x2000u16.to_le_bytes());
+        assert!(decode_compiled_terrain(&stage2).unwrap().brushes.is_empty());
     }
 
     #[test]
