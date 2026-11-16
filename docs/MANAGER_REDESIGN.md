@@ -45,3 +45,72 @@ Confirm all navigation and launch controls still work. Compare Legacy before
 and after, verify keyboard focus/readability and custom color overrides.
 Windows executable test runs may require elevation because of the app manifest;
 CI/build checks do not substitute for an interactive screenshot review.
+
+## Component and interaction survey — 2026-11-15 23:44 EST (UTC-05:00)
+
+Reviewed Magic UI, Aceternity UI, 21st.dev, Awwwards and React Bits. These
+are **design references**, not dependencies: their implementations are mainly
+React/Tailwind/Motion, while the manager is native Rust/Iced. Adapt only the
+interaction and information hierarchy in existing Modern controls; preserve
+the Legacy skin, light mode, custom colors and the quiet red selection edge.
+
+### Worth prototyping first
+
+1. **Task stages with truthful progress.** [Aceternity's Stateful
+   Button](https://ui.aceternity.com/components/stateful-button) communicates
+   idle → working → done, and its [Multi Step
+   Loader](https://ui.aceternity.com/components/multi-step-loader) presents
+   stages. Apply the pattern to import, prepare, export and verified launch:
+   show *actual* operation stage, progress when measurable, failure/retry and
+   an accessible text status. Do not use the loader's timer-driven/looping
+   states as fake progress or imply success before verification finishes.
+2. **Dense, legible asset lists.** The [21st.dev table with row
+   selection](https://21st.dev/@originui/components/table/table-with-row-selection)
+   and [filtered table](https://21st.dev/@originui/components/table/data-table-with-filters-made-with-tan-stack-table)
+   suggest a compact Asset Library/Modding list with explicit selection,
+   filter chips, sortable metadata and a stable details pane. Keep full
+   archive/path provenance available and actions unambiguous; test large lists
+   and the 880×620 minimum before adding more columns. These are references,
+   not shadcn components to install in Iced.
+3. **Actionable empty states.** [21st.dev's Empty
+   patterns](https://21st.dev/community/components/s/empty-state) suggest
+   distinct "no game found", "no project", "no imported assets" and "no search
+   results" states. Each should explain the condition and offer one relevant
+   next action (choose path, create project, import, clear filters), without
+   decorative nested cards or misleading error language.
+4. **File hierarchy and context.** [Magic UI's File
+   Tree](https://magicui.design/docs/components/file-tree) is a useful model
+   for archive → folder → asset disclosure in the Asset Library. Prefer a
+   keyboard-operable, virtualized native tree with expansion state and a
+   persistent source/path detail area; do not animate every row.
+5. **Contextual destructive actions.** [React Bits'
+   Stepper](https://reactbits.dev/components/stepper) suggests a restrained
+   project/import setup flow, while its [Hold
+   Button](https://reactbits.dev/micro/hold-button) is a reference for
+   deliberate confirmation. Use plain confirmation with clear target, impact
+   and cancel for replacing files or clearing staged content; do not rely on
+   hold duration as the only safety mechanism.
+
+### Lower priority / visual references
+
+- [Magic UI's Animated List](https://magicui.design/docs/components/animated-list)
+  and [React Bits' Animated
+  List](https://reactbits.dev/components/animated-list): borrow a brief
+  selection/arrival transition for *recent activity*, not the main asset
+  table. Preserve stable row positions and provide reduced-motion behavior.
+- [Aceternity's Expandable
+  Card](https://ui.aceternity.com/components/expandable-card): use a compact
+  mod/project summary with details on demand, not another Home card grid.
+- [Awwwards' Elements
+  index](https://www.awwwards.com/elements/) and
+  [notification examples](https://www.awwwards.com/elements/notification/)
+  are inspiration galleries, **not** installable components. Borrow the
+  principle of small, clearly worded operation feedback; retain persistent
+  failure/recovery details rather than making them disappear as toasts.
+
+**Avoid:** docks or hover-expanding navigation (the fixed labelled rail solves
+that problem), autoplay carousels, elaborate 3D/glass/particle backgrounds,
+cursor-following effects and marketing bento grids. They compete with game
+art and dense editing work, increase rendering/accessibility cost and conflict
+with the restrained workstation direction above. Validate any prototype in
+Modern dark/light and keyboard/reduced-motion modes before adopting it.
