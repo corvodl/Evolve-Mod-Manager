@@ -41,7 +41,9 @@ the redesign retains both and corrects hierarchy instead of replacing them.
   beside a name comes from the recorded install, never the editable build
   label: `Evolve.xex` beside the imported `Game` folder marks the 2012 Xbox 360
   build, and `GameDLC01` with `Bin64_SteamRetail/Evolve.exe` marks Legacy.
-  Stage 2, moved installs and older build collections show no edition. Wildlife with direct actor documents lives in a collapsed section
+  Stage 2, moved installs and older build collections show no edition. A damaged
+  imported source reports an inspection error rather than appearing as an empty
+  roster. Wildlife with direct actor documents lives in a collapsed section
   with text thumbnails. A bounded plain-text 2012 subtype source can explicitly
   assign a CDF model; verified matches are distinguished from the broader build
   search, which is not a character association. Explicit CDF material references

@@ -1337,7 +1337,7 @@ mod tests {
             .filter(|archive| archive.builds.contains(&build))
             .cloned()
             .collect();
-        let (characters, wildlife) = crate::modding_page::discover_roster(&in_build);
+        let (characters, wildlife) = crate::modding_page::discover_roster(&in_build).unwrap();
         println!(
             "roster {} characters, {} wildlife",
             characters.len(),

@@ -899,6 +899,7 @@ struct State {
     modding_available_characters: Vec<usize>,
     modding_available_wildlife: Vec<usize>,
     modding_roster_loading: bool,
+    modding_roster_error: Option<String>,
     modding_roster_request: u64,
     modding_headshots: std::collections::HashMap<&'static str, image::Handle>,
     modding_headshots_requested: bool,
@@ -3210,7 +3211,7 @@ enum Message {
     ModdingWildlifeToggle,
     ModdingWildlifeSelected(usize),
     ModdingCharacterBuild(usize),
-    ModdingRosterReady(u64, String, Vec<usize>, Vec<usize>),
+    ModdingRosterReady(u64, String, Result<(Vec<usize>, Vec<usize>), String>),
     ModdingBasicAdvanced,
     ModdingHeadshotsLoaded(Vec<(&'static str, Vec<u8>)>),
     ModdingCharacterEdit(bool),
@@ -6567,6 +6568,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.modding_available_characters.clear();
                 state.modding_available_wildlife.clear();
                 state.modding_roster_loading = true;
+                state.modding_roster_error = None;
                 state.modding_roster_request = state.modding_roster_request.wrapping_add(1);
                 let request = state.modding_roster_request;
                 return Task::perform(
@@ -6577,21 +6579,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .await
                     },
                     move |result| match result {
-                        Ok((characters, wildlife)) => {
-                            Message::ModdingRosterReady(request, build, characters, wildlife)
-                        }
-                        Err(_) => Message::ModdingRosterReady(request, build, vec![], vec![]),
+                        Ok(roster) => Message::ModdingRosterReady(request, build, roster),
+                        Err(error) => Message::ModdingRosterReady(
+                            request,
+                            build,
+                            Err(format!("Roster worker failed: {error}")),
+                        ),
                     },
                 );
             }
         }
-        Message::ModdingRosterReady(request, build, characters, wildlife) => {
+        Message::ModdingRosterReady(request, build, result) => {
             if state.modding_roster_request == request
                 && state.modding_character_build.as_deref() == Some(build.as_str())
             {
                 state.modding_roster_loading = false;
-                state.modding_available_characters = characters;
-                state.modding_available_wildlife = wildlife;
+                match result {
+                    Ok((characters, wildlife)) => {
+                        state.modding_available_characters = characters;
+                        state.modding_available_wildlife = wildlife;
+                        state.modding_roster_error = None;
+                    }
+                    Err(error) => {
+                        state.modding_available_characters.clear();
+                        state.modding_available_wildlife.clear();
+                        state.modding_roster_error = Some(error);
+                    }
+                }
             }
         }
         Message::ModdingBasicAdvanced => {
@@ -22377,21 +22391,47 @@ mod project_edit_tests {
         };
         let _ = update(
             &mut state,
-            Message::ModdingRosterReady(2, "Legacy".into(), vec![0], vec![0]),
+            Message::ModdingRosterReady(2, "Legacy".into(), Ok((vec![0], vec![0]))),
         );
         let _ = update(
             &mut state,
-            Message::ModdingRosterReady(3, "2012".into(), vec![0], vec![0]),
+            Message::ModdingRosterReady(3, "2012".into(), Ok((vec![0], vec![0]))),
         );
         assert!(state.modding_roster_loading);
         assert!(state.modding_available_characters.is_empty());
         let _ = update(
             &mut state,
-            Message::ModdingRosterReady(3, "Legacy".into(), vec![1], vec![2]),
+            Message::ModdingRosterReady(3, "Legacy".into(), Ok((vec![1], vec![2]))),
         );
         assert!(!state.modding_roster_loading);
         assert_eq!(state.modding_available_characters, vec![1]);
         assert_eq!(state.modding_available_wildlife, vec![2]);
+    }
+
+    #[test]
+    fn roster_decode_failure_is_visible_and_stale_failures_are_ignored() {
+        let mut state = State {
+            modding_character_build: Some("Legacy".into()),
+            modding_roster_request: 3,
+            modding_roster_loading: true,
+            ..State::default()
+        };
+        let _ = update(
+            &mut state,
+            Message::ModdingRosterReady(2, "Legacy".into(), Err("old failure".into())),
+        );
+        assert!(state.modding_roster_loading);
+        assert!(state.modding_roster_error.is_none());
+        let _ = update(
+            &mut state,
+            Message::ModdingRosterReady(3, "Legacy".into(), Err("invalid script".into())),
+        );
+        assert!(!state.modding_roster_loading);
+        assert_eq!(
+            state.modding_roster_error.as_deref(),
+            Some("invalid script")
+        );
+        assert!(state.modding_available_characters.is_empty());
     }
 
     #[test]

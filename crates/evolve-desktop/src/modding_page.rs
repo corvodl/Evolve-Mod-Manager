@@ -1684,33 +1684,31 @@ fn mod_kind_count(projects: &[ProjectRow], kind: ModKind) -> usize {
 
 /// Roster membership is established by authored gameplay paths in the selected
 /// build, never by matching the portrait or an asset from another installation.
-pub(super) fn discover_roster(archives: &[evolve_core::ImportedPak]) -> (Vec<usize>, Vec<usize>) {
+pub(super) fn discover_roster(
+    archives: &[evolve_core::ImportedPak],
+) -> Result<(Vec<usize>, Vec<usize>), String> {
     let mut characters = std::collections::BTreeSet::new();
     let mut wildlife = std::collections::BTreeSet::new();
     for archive in archives {
-        if let Ok(paths) = crate::modding_projects::guided_import_members(archive, false) {
-            for path in paths {
-                for (index, (name, _)) in evolve_core::character_gameplay::CHARACTERS
-                    .iter()
-                    .enumerate()
-                {
-                    if evolve_core::character_gameplay::owns_document(name, &path) {
-                        characters.insert(index);
-                    }
+        for path in crate::modding_projects::guided_import_members(archive, false)? {
+            for (index, (name, _)) in evolve_core::character_gameplay::CHARACTERS
+                .iter()
+                .enumerate()
+            {
+                if evolve_core::character_gameplay::owns_document(name, &path) {
+                    characters.insert(index);
                 }
-                for (index, (name, _)) in
-                    evolve_core::character_gameplay::WILDLIFE.iter().enumerate()
-                {
-                    if evolve_core::character_gameplay::owns_wildlife_document(name, &path) {
-                        wildlife.insert(index);
-                    }
+            }
+            for (index, (name, _)) in evolve_core::character_gameplay::WILDLIFE.iter().enumerate() {
+                if evolve_core::character_gameplay::owns_wildlife_document(name, &path) {
+                    wildlife.insert(index);
                 }
             }
         }
     }
     // Legacy defines actors and creatures in compiled Lua instead of XML.
     use evolve_core::character_gameplay::{CHARACTERS, RosterEntry, WILDLIFE, script_global_owner};
-    for script in crate::guided_modding::decoded_scripts(archives).unwrap_or_default() {
+    for script in crate::guided_modding::decoded_scripts(archives)? {
         for (global, _) in &script.globals {
             match script_global_owner(&script.path, global) {
                 Some(RosterEntry::Character(owner)) => {
@@ -1723,10 +1721,10 @@ pub(super) fn discover_roster(archives: &[evolve_core::ImportedPak]) -> (Vec<usi
             }
         }
     }
-    (
+    Ok((
         characters.into_iter().collect(),
         wildlife.into_iter().collect(),
-    )
+    ))
 }
 
 fn character_browser(state: &State) -> Element<'_, Message> {
@@ -1789,7 +1787,11 @@ fn character_browser(state: &State) -> Element<'_, Message> {
             .on_press(Message::ModdingCharacterSelected(index)),
         );
     }
-    if found == 0 && selected_build.is_some() && !state.modding_roster_loading {
+    if found == 0
+        && selected_build.is_some()
+        && !state.modding_roster_loading
+        && state.modding_roster_error.is_none()
+    {
         entries = entries.push(crate::ui_kit::empty_state(
             None,
             "No characters found",
@@ -1817,9 +1819,19 @@ fn character_browser(state: &State) -> Element<'_, Message> {
             Some(found),
             Message::ModdingCharacterSearch,
         ),
-        scrollable(entries).height(Length::Fixed(340.0)),
     ]
     .spacing(12);
+    if let Some(error) = state
+        .modding_roster_error
+        .as_ref()
+        .filter(|_| selected_build.is_some())
+    {
+        page = page.push(crate::ui_kit::callout(
+            design::Tone::Danger,
+            format!("Cannot inspect this build's character sources: {error}"),
+        ));
+    }
+    page = page.push(scrollable(entries).height(Length::Fixed(340.0)));
     if selected_build.is_none() || state.modding_roster_loading {
         page = page.push(
             text(if state.modding_roster_loading {
@@ -2400,16 +2412,23 @@ mod tests {
                 builds: vec![if index == 2 { "2012" } else { "Stage 2" }.into()],
             });
         }
-        let (characters, wildlife) = discover_roster(&archives[..2]);
+        let (characters, wildlife) = discover_roster(&archives[..2]).unwrap();
         assert!(characters.contains(&0));
         assert_eq!(wildlife.len(), 1);
         assert!(!characters.contains(&5));
-        let (characters, wildlife) = discover_roster(&archives[2..]);
+        let (characters, wildlife) = discover_roster(&archives[2..]).unwrap();
         assert!(characters.contains(&5));
         assert!(!characters.contains(&0));
         assert!(wildlife.is_empty());
-        let (characters, wildlife) = discover_roster(&[]);
+        let (characters, wildlife) = discover_roster(&[]).unwrap();
         assert!(characters.is_empty() && wildlife.is_empty());
+        // A damaged import must not masquerade as a legitimate empty roster.
+        std::fs::write(
+            std::path::Path::new(&archives[0].directory).join("asset-library.json"),
+            "{invalid json",
+        )
+        .unwrap();
+        assert!(discover_roster(&archives[..2]).is_err());
     }
 
     #[test]
@@ -2428,7 +2447,7 @@ mod tests {
             .filter(|archive| archive.builds.contains(older))
             .cloned()
             .collect();
-        let (characters, _) = discover_roster(&archives);
+        let (characters, _) = discover_roster(&archives).unwrap();
         let rocky = evolve_core::character_gameplay::CHARACTERS
             .iter()
             .position(|(name, _)| *name == "Behemoth")
@@ -2439,7 +2458,7 @@ mod tests {
             .into_iter()
             .filter(|archive| !archive.builds.contains(older))
             .collect();
-        let (_, wildlife) = discover_roster(&stage_two);
+        let (_, wildlife) = discover_roster(&stage_two).unwrap();
         assert!(!wildlife.is_empty());
     }
     use std::path::PathBuf;
