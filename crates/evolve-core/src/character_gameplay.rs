@@ -92,6 +92,98 @@ pub fn internal_id(display_name: &str) -> Option<&'static str> {
         .map(|(_, id)| *id)
 }
 
+/// Read literal `fileModel` assignments in a verified 2012 subtype document.
+/// Never run Lua or scan compiled bytecode for strings: only the authored
+/// assignment itself proves a model link.
+pub fn authored_subtype_models(bytes: &[u8]) -> Result<Vec<String>, String> {
+    if bytes.len() > 256 * 1024 || bytes.contains(&0) {
+        return Err("Subtype source is not bounded plain text".into());
+    }
+    let text = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
+    let mut models = std::collections::BTreeSet::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.trim().split_once('=') else {
+            continue;
+        };
+        if key.trim() != "fileModel" {
+            continue;
+        }
+        let value = value.trim();
+        let quote = value.chars().next().unwrap_or_default();
+        if quote != '"' && quote != '\'' {
+            continue;
+        }
+        let Some((path, rest)) = value[1..].split_once(quote) else {
+            continue;
+        };
+        if !rest.trim().trim_start_matches(',').trim().is_empty()
+            || !path.to_ascii_lowercase().ends_with(".cdf")
+        {
+            continue;
+        }
+        let path = crate::archive::safe_member_name(&path.replace('\\', "/"))
+            .map_err(|error| error.to_string())?;
+        if models.len() >= 256 {
+            return Err("Too many authored subtype models".into());
+        }
+        models.insert(path);
+    }
+    Ok(models.into_iter().collect())
+}
+
+/// Material references declared by a CDF, not inferred from a skeleton's or
+/// mesh's filename. CryEngine permits extensionless material attributes.
+pub fn authored_cdf_materials(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let cdf = crate::cdf::parse_cdf(bytes).map_err(|error| error.to_string())?;
+    let xml =
+        crate::cryxml::xml_bytes(bytes, 2 * 1024 * 1024).map_err(|error| error.to_string())?;
+    let mut reader = Reader::from_reader(xml.as_ref());
+    let mut materials = Vec::new();
+    for attachment in cdf.attachments {
+        if let Some(material) = attachment.material {
+            materials.push(material);
+        }
+    }
+    loop {
+        match reader.read_event().map_err(|error| error.to_string())? {
+            Event::Start(tag) | Event::Empty(tag)
+                if tag.name().as_ref().eq_ignore_ascii_case(b"Model") =>
+            {
+                for attribute in tag.attributes() {
+                    let attribute = attribute.map_err(|error| error.to_string())?;
+                    if !attribute.key.as_ref().eq_ignore_ascii_case(b"Material") {
+                        continue;
+                    }
+                    materials.push(
+                        attribute
+                            .decode_and_unescape_value(reader.decoder())
+                            .map_err(|error| error.to_string())?
+                            .into_owned(),
+                    );
+                }
+            }
+            Event::Eof => break,
+            _ => (),
+        }
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    for material in materials {
+        let material = material.replace('\\', "/");
+        if material.is_empty() {
+            continue;
+        }
+        let candidate = if material.to_ascii_lowercase().ends_with(".mtl") {
+            material
+        } else {
+            format!("{material}.mtl")
+        };
+        paths.insert(
+            crate::archive::safe_member_name(&candidate).map_err(|error| error.to_string())?,
+        );
+    }
+    Ok(paths.into_iter().collect())
+}
+
 /// Match only an authored per-character namespace. Shared actor bases and
 /// global effect sets are not silently attributed to a playable character.
 pub fn owns_document(display_name: &str, path: &str) -> bool {
@@ -425,6 +517,26 @@ mod tests {
     }
 
     #[test]
+    fn subtype_models_require_literal_safe_file_model_assignments() {
+        let lua = b"-- fileModel = \"fake.cdf\"\nfileModel = \"Objects/Characters/Grounder/Grounder1.cdf\",\nclientFileModel = \"other.cdf\",\nfileModel = \"../outside.cdf\",\n";
+        assert!(authored_subtype_models(lua).is_err());
+        let valid = b"-- fileModel = \"fake.cdf\"\nfileModel = \"Objects/Characters/Grounder/Grounder1.cdf\",\nclientFileModel = \"other.cdf\",\n";
+        assert_eq!(
+            authored_subtype_models(valid).unwrap(),
+            vec!["Objects/Characters/Grounder/Grounder1.cdf"]
+        );
+        assert!(authored_subtype_models(b"fileModel = \"safe.cdf\"\0").is_err());
+    }
+
+    #[test]
+    fn cdf_materials_require_explicit_safe_bindings() {
+        let xml = br#"<CharacterDefinition><Model File="objects/rig.chr" Material="objects/rig"/><AttachmentList><Attachment AName="body" Type="CA_SKIN" Binding="objects/body.skin" Material="objects/body.mtl"/></AttachmentList></CharacterDefinition>"#;
+        let materials = authored_cdf_materials(xml).unwrap();
+        assert_eq!(materials, vec!["objects/body.mtl", "objects/rig.mtl"]);
+        assert!(authored_cdf_materials(br#"<CharacterDefinition><Model File="objects/rig.chr" Material="../other"/></CharacterDefinition>"#).is_err());
+    }
+
+    #[test]
     #[ignore = "requires EVOLVE_BENCH_LIBRARY pointing to a local imported Asset Library"]
     fn local_imported_roster_has_direct_gameplay_documents() {
         let root = std::path::PathBuf::from(std::env::var_os("EVOLVE_BENCH_LIBRARY").unwrap());
@@ -448,5 +560,27 @@ mod tests {
                 "No directly authored gameplay document for {name}"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "requires EVOLVE_BENCH_LIBRARY pointing to a local imported Asset Library"]
+    fn local_2012_subtype_assigns_a_real_grounder_cdf() {
+        let root = std::path::PathBuf::from(std::env::var_os("EVOLVE_BENCH_LIBRARY").unwrap());
+        let catalog = crate::library_catalog::imported_library(&root).unwrap();
+        let archive = catalog
+            .archives
+            .iter()
+            .find(|archive| archive.name == "Scripts.pak")
+            .unwrap();
+        let bytes = crate::library_catalog::read_imported_member_bounded(
+            archive,
+            "Scripts/Entities/actor/subtypes_grounder.lua",
+            256 * 1024,
+        )
+        .unwrap();
+        let models = authored_subtype_models(&bytes).unwrap();
+        assert!(models.iter().any(|model| {
+            model.eq_ignore_ascii_case("Objects/Characters/Monsters/Grounder/Grounder1.cdf")
+        }));
     }
 }

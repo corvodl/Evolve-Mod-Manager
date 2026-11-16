@@ -40,10 +40,15 @@ the redesign retains both and corrects hierarchy instead of replacing them.
   directly authored gameplay documents in that build appear. Build labels
   containing 2012 or Legacy show that edition alongside a character's name and
   portrait. Wildlife with direct actor documents lives in a collapsed section
-  with text thumbnails. Models remain a search of the selected build, not a
-  verified character association; textures and cross-PAK inherited values
-  need authored-reference tracing before claiming ownership. Advanced Modding
-  retains the project, archive, conflict, recovery, and signed-PAK controls.
+  with text thumbnails. A bounded plain-text 2012 subtype source can explicitly
+  assign a CDF model; verified matches are distinguished from the broader build
+  search, which is not a character association. Explicit CDF material references
+  and MTL texture maps are checked for unique, build-scoped imported sources;
+  unresolved or ambiguous assets are not listed as verified. Compiled Lua is
+  never executed or scanned for apparent string matches. Most Stage 2 models,
+  unreferenced textures and inherited gameplay values still need authored links.
+  Advanced Modding retains the project,
+  archive, conflict, recovery, and signed-PAK controls.
 - Guided gameplay searches retain distinct imported archives with the same
   PAK filename, scope character and wildlife results to the chosen build, show
   each source, and page imported files and scalar fields. Imported values are

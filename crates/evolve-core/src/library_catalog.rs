@@ -494,6 +494,16 @@ pub fn read_imported_gameplay_member(
     if !crate::mod_safety::gameplay_document(path) {
         return Err(LibraryError::UnsafeArchive);
     }
+    read_imported_member_bounded(archive, path, limit)
+}
+
+/// Bounded, read-only access to one exact manifest member. Callers must
+/// independently constrain the type and purpose of the requested document.
+pub fn read_imported_member_bounded(
+    archive: &ImportedPak,
+    path: &str,
+    limit: usize,
+) -> Result<Vec<u8>, LibraryError> {
     let inventory = imported_archive_preview_inventory(archive)?;
     let member = inventory
         .entries
@@ -517,6 +527,27 @@ pub fn read_imported_gameplay_member(
         return Err(LibraryError::Modified);
     }
     Ok(bytes)
+}
+
+/// Validate an exact imported member for source-backed read-only discovery,
+/// without loading large meshes or cooked texture fragments into memory.
+pub fn verify_imported_member(archive: &ImportedPak, path: &str) -> Result<(), LibraryError> {
+    let inventory = imported_archive_preview_inventory(archive)?;
+    let member = inventory
+        .entries
+        .iter()
+        .find(|item| item.relative_path == path)
+        .ok_or(LibraryError::UnsafeArchive)?;
+    let root = Path::new(&inventory.root);
+    let file = root.join(path);
+    let meta = fs::symlink_metadata(&file)?;
+    if !meta.file_type().is_file()
+        || meta.len() != member.byte_size
+        || !fs::canonicalize(&file)?.starts_with(root)
+    {
+        return Err(LibraryError::Modified);
+    }
+    Ok(())
 }
 
 /// Validate every listed asset's location and original byte count before
@@ -1130,6 +1161,8 @@ mod tests {
             read_imported_gameplay_member(&archive, member, 100).unwrap(),
             b"<Actor/>"
         );
+        verify_imported_member(&archive, member).unwrap();
+        assert!(verify_imported_member(&archive, "../outside.xml").is_err());
         assert!(read_imported_gameplay_member(&archive, "../outside.xml", 100).is_err());
         assert!(
             read_imported_gameplay_member(&archive, "libs/Items/Mercs/Maggie.xml", 100).is_err()
@@ -1137,9 +1170,11 @@ mod tests {
         assert!(read_imported_gameplay_member(&archive, member, 4).is_err());
         write_manifest("D:/foreign/libs.pak");
         assert!(read_imported_gameplay_member(&archive, member, 100).is_err());
+        assert!(verify_imported_member(&archive, member).is_err());
         write_manifest("C:/game/libs.pak");
         fs::write(&file, b"changed").unwrap();
         assert!(read_imported_gameplay_member(&archive, member, 100).is_err());
+        assert!(verify_imported_member(&archive, member).is_err());
     }
     #[test]
     fn source_game_identity_never_crosses_independent_installations() {

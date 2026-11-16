@@ -29,6 +29,7 @@ pub struct Editor {
     preview_request: u64,
     links_request: u64,
     links_status: LinkStatus,
+    appearance: VerifiedAppearance,
     note: String,
 }
 #[derive(Default)]
@@ -38,6 +39,12 @@ enum LinkStatus {
     Pending,
     Ready(usize),
     Failed(String),
+}
+#[derive(Default, Debug, Clone)]
+pub struct VerifiedAppearance {
+    models: Vec<(evolve_core::ImportedPak, String)>,
+    materials: Vec<(evolve_core::ImportedPak, String)>,
+    textures: Vec<(evolve_core::ImportedPak, String)>,
 }
 #[derive(Debug, Clone)]
 pub enum Target {
@@ -79,6 +86,7 @@ pub enum Action {
     PreviewImport(usize),
     PreviewReady(u64, usize, Result<Vec<SourceField>, String>),
     LinksReady(u64, Result<Vec<(evolve_core::ImportedPak, String)>, String>),
+    ModelsReady(u64, Result<VerifiedAppearance, String>),
     Discard,
     Refresh,
 }
@@ -197,12 +205,154 @@ fn actor_linked_imports(
     Ok(linked)
 }
 
+fn authored_model_imports(
+    archives: &[evolve_core::ImportedPak],
+    build: &str,
+    character: &str,
+) -> Result<VerifiedAppearance, String> {
+    let id = evolve_core::character_gameplay::internal_id(character)
+        .ok_or("Unknown playable character")?;
+    let subtype = format!(
+        "scripts/entities/actor/subtypes_{}.lua",
+        id.to_ascii_lowercase()
+    );
+    let mut sources = Vec::new();
+    for archive in archives.iter().filter(|archive| {
+        archive.builds.iter().any(|label| label == build) && archive.name == "Scripts.pak"
+    }) {
+        let inventory = evolve_core::library_catalog::imported_archive_preview_inventory(archive)
+            .map_err(|error| error.to_string())?;
+        for entry in inventory.entries {
+            if entry.relative_path.eq_ignore_ascii_case(&subtype) {
+                sources.push((archive, entry.relative_path));
+            }
+        }
+    }
+    let [(source, path)] = sources.as_slice() else {
+        return if sources.is_empty() {
+            Ok(VerifiedAppearance::default())
+        } else {
+            Err("More than one authored subtype source in the selected build".into())
+        };
+    };
+    let bytes =
+        evolve_core::library_catalog::read_imported_member_bounded(source, path, 256 * 1024)
+            .map_err(|error| error.to_string())?;
+    let references = evolve_core::character_gameplay::authored_subtype_models(&bytes)?;
+    let mut models = Vec::new();
+    for archive in archives
+        .iter()
+        .filter(|archive| archive.builds.iter().any(|label| label == build))
+    {
+        let paths = modding_projects::guided_import_members(archive, true)?;
+        for path in paths {
+            if path.to_ascii_lowercase().ends_with(".cdf")
+                && references
+                    .iter()
+                    .any(|reference| reference.eq_ignore_ascii_case(&path))
+            {
+                models.push((archive.clone(), path));
+            }
+        }
+    }
+    let mut verified = VerifiedAppearance::default();
+    let mut material_references = std::collections::BTreeSet::new();
+    for reference in references {
+        let mut matches = models
+            .iter()
+            .filter(|(_, path)| path.eq_ignore_ascii_case(&reference));
+        if let Some((archive, path)) = matches.next()
+            && matches.next().is_none()
+        {
+            let bytes = evolve_core::library_catalog::read_imported_member_bounded(
+                archive,
+                path,
+                2 * 1024 * 1024,
+            )
+            .map_err(|error| error.to_string())?;
+            material_references.extend(evolve_core::character_gameplay::authored_cdf_materials(
+                &bytes,
+            )?);
+            verified.models.push((archive.clone(), path.clone()));
+        }
+    }
+    if verified.models.is_empty() {
+        return Ok(verified);
+    }
+    let mut candidates = Vec::new();
+    for archive in archives
+        .iter()
+        .filter(|archive| archive.builds.iter().any(|label| label == build))
+    {
+        let inventory = evolve_core::library_catalog::imported_archive_preview_inventory(archive)
+            .map_err(|error| error.to_string())?;
+        candidates.extend(
+            inventory
+                .entries
+                .into_iter()
+                .map(|entry| (archive.clone(), entry.relative_path)),
+        );
+    }
+    let unique = |path: &str| {
+        let mut found = candidates
+            .iter()
+            .filter(|(_, entry)| entry.eq_ignore_ascii_case(path));
+        let first = found.next()?;
+        found.next().is_none().then(|| first.clone())
+    };
+    let mut texture_references = Vec::new();
+    for material in material_references {
+        let Some((archive, path)) = unique(&material) else {
+            continue;
+        };
+        let bytes = evolve_core::library_catalog::read_imported_member_bounded(
+            &archive,
+            &path,
+            2 * 1024 * 1024,
+        )
+        .map_err(|error| error.to_string())?;
+        let document = evolve_core::parse_material(&bytes).map_err(|error| error.to_string())?;
+        for slot in document.slots {
+            for texture in slot.maps {
+                texture_references.push((path.clone(), texture.path));
+            }
+        }
+        verified.materials.push((archive, path));
+    }
+    let mut textures = std::collections::BTreeMap::new();
+    for (material, authored) in texture_references {
+        let Ok(paths) = evolve_core::scoped_texture_candidates(&authored, &material) else {
+            continue;
+        };
+        for path in paths {
+            let mut matches = candidates
+                .iter()
+                .filter(|(_, entry)| entry.eq_ignore_ascii_case(&path));
+            let Some((archive, member)) = matches.next() else {
+                continue;
+            };
+            if matches.next().is_some() {
+                break;
+            }
+            evolve_core::library_catalog::verify_imported_member(archive, member)
+                .map_err(|error| error.to_string())?;
+            textures.insert(
+                (archive.id.clone(), member.clone()),
+                (archive.clone(), member.clone()),
+            );
+            break;
+        }
+    }
+    verified.textures = textures.into_values().collect();
+    Ok(verified)
+}
+
 pub(super) fn link_task(state: &mut State) -> Task<Message> {
     let editor = &mut state.guided_editor;
     let (Some(build), Some(library)) = (&editor.build, &state.library_catalog) else {
         return Task::none();
     };
-    if editor.models || editor.target.is_none() {
+    if editor.target.is_none() {
         return Task::none();
     }
     let direct = editor.imports.clone();
@@ -210,14 +360,34 @@ pub(super) fn link_task(state: &mut State) -> Task<Message> {
     let build = build.clone();
     let request = editor.links_request;
     editor.links_status = LinkStatus::Pending;
-    Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || actor_linked_imports(&direct, &archives, &build))
+    if editor.models {
+        let Target::Character(name) = editor.target.as_ref().unwrap() else {
+            editor.links_status = LinkStatus::Idle;
+            return Task::none();
+        };
+        let name = name.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    authored_model_imports(&archives, &build, &name)
+                })
                 .await
                 .map_err(|error| error.to_string())?
-        },
-        move |result| message(Action::LinksReady(request, result)),
-    )
+            },
+            move |result| message(Action::ModelsReady(request, result)),
+        )
+    } else {
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    actor_linked_imports(&direct, &archives, &build)
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            },
+            move |result| message(Action::LinksReady(request, result)),
+        )
+    }
 }
 /// Repopulate imported edit targets from the already-indexed library without
 /// resetting unsaved gameplay fields or requiring another source-PAK import.
@@ -229,6 +399,7 @@ pub fn refresh_imports(state: &mut State) {
     editor.preview_request = editor.preview_request.wrapping_add(1);
     editor.links_request = editor.links_request.wrapping_add(1);
     editor.links_status = LinkStatus::Idle;
+    editor.appearance = VerifiedAppearance::default();
     editor.preview = None;
     editor.imports.clear();
     editor.imports_page = 0;
@@ -283,7 +454,12 @@ pub fn refresh_imports(state: &mut State) {
 }
 
 pub fn update(state: &mut State, action: Action) -> Task<Message> {
-    if state.busy && !matches!(action, Action::PreviewReady(..) | Action::LinksReady(..)) {
+    if state.busy
+        && !matches!(
+            action,
+            Action::PreviewReady(..) | Action::LinksReady(..) | Action::ModelsReady(..)
+        )
+    {
         state.status = "Wait for the current operation before editing.".into();
         return Task::none();
     }
@@ -450,6 +626,18 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                 Err(error) => editor.links_status = LinkStatus::Failed(error),
             }
         }
+        Action::ModelsReady(request, result) => {
+            if !editor.open || editor.links_request != request || !editor.models {
+                return Task::none();
+            }
+            match result {
+                Ok(appearance) => {
+                    editor.links_status = LinkStatus::Ready(appearance.models.len());
+                    editor.appearance = appearance;
+                }
+                Err(error) => editor.links_status = LinkStatus::Failed(error),
+            }
+        }
         Action::Discard => {
             for f in &mut editor.fields {
                 f.value = f.original.clone();
@@ -599,7 +787,7 @@ pub fn view(state: &State) -> Element<'_, Message> {
             .style(design::text_button),
         );
     }
-    let imported: Vec<_> = e
+    let mut imported: Vec<_> = e
         .imports
         .iter()
         .enumerate()
@@ -609,6 +797,15 @@ pub fn view(state: &State) -> Element<'_, Message> {
                 .contains(&query)
         })
         .collect();
+    let verified = |archive: &evolve_core::ImportedPak, path: &str| {
+        e.appearance
+            .models
+            .iter()
+            .any(|(source, member)| source.id == archive.id && member == path)
+    };
+    if e.models {
+        imported.sort_by_key(|(_, (archive, path))| !verified(archive, path));
+    }
     let start = e.imports_page.saturating_mul(40).min(imported.len());
     for (i, (archive, path)) in imported.iter().skip(start).take(40) {
         rows = rows.push(
@@ -616,7 +813,11 @@ pub fn view(state: &State) -> Element<'_, Message> {
                 text(format!(
                     "{}: {} · {} · {} · {}",
                     if e.models {
-                        "Create editable copy"
+                        if verified(archive, path) {
+                            "Verified subtype model · create editable copy"
+                        } else {
+                            "Build search result · create editable copy"
+                        }
                     } else {
                         "Preview values"
                     },
@@ -652,8 +853,11 @@ pub fn view(state: &State) -> Element<'_, Message> {
         text(e.note.as_str()).size(12),
         text(match &e.links_status {
             LinkStatus::Idle => "".to_owned(),
+            LinkStatus::Pending if e.models => "Checking authored subtype model links…".to_owned(),
             LinkStatus::Pending => "Checking authored actor references in this build…".to_owned(),
+            LinkStatus::Ready(count) if e.models => format!("{count} model definitions, {} explicit materials and {} referenced textures verified. Other files are build search results, not character ownership.", e.appearance.materials.len(), e.appearance.textures.len()),
             LinkStatus::Ready(count) => format!("{count} additional documents linked by authored actor equipment, abilities or item effect sets. Ambiguous matches remain unassigned."),
+            LinkStatus::Failed(error) if e.models => format!("Could not verify subtype models: {error}"),
             LinkStatus::Failed(error) => format!("Could not check actor references: {error}"),
         }).size(12),
         design::label("Search documents"),
@@ -682,6 +886,18 @@ pub fn view(state: &State) -> Element<'_, Message> {
         .spacing(8),
     ]
     .spacing(6);
+    if e.models && (!e.appearance.materials.is_empty() || !e.appearance.textures.is_empty()) {
+        let mut sources = column![].spacing(3);
+        for (archive, path) in &e.appearance.materials {
+            sources = sources
+                .push(text(format!("Material · {} · {path}", archive.name)).size(design::CAPTION));
+        }
+        for (archive, path) in &e.appearance.textures {
+            sources = sources
+                .push(text(format!("Texture · {} · {path}", archive.name)).size(design::CAPTION));
+        }
+        panel = panel.push(scrollable(sources).height(140));
+    }
     if let Some((_, path)) = e.selected.and_then(|i| e.rows.get(i)) {
         let mut fields = column![].spacing(3);
         let query = e.fields_search.to_ascii_lowercase();
@@ -821,6 +1037,147 @@ mod tests {
     use super::*;
     use evolve_core::{ImportedLibrary, ImportedPak};
     #[test]
+    fn authored_2012_model_requires_unique_cdf_in_same_build() {
+        let root = tempfile::tempdir().unwrap();
+        let subtype = "Scripts/Entities/actor/subtypes_grounder.lua";
+        let cdf = "Objects/Characters/Monsters/Grounder/Grounder1.cdf";
+        let mut archives = Vec::new();
+        for (index, (name, path, bytes)) in [
+            (
+                "Scripts.pak",
+                subtype,
+                b"fileModel = \"Objects/Characters/Monsters/Grounder/Grounder1.cdf\",\n".as_slice(),
+            ),
+            (
+                "Objects.pak",
+                cdf,
+                b"<CharacterDefinition><Model File=\"Objects/rig.chr\"/></CharacterDefinition>"
+                    .as_slice(),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let folder = root.path().join(index.to_string());
+            let file = folder.join("files").join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, bytes).unwrap();
+            let source = format!("C:/2012/{name}");
+            std::fs::write(
+                folder.join("asset-library.json"),
+                serde_json::json!({
+                    "version": 1, "name": name, "source": source,
+                    "entries": [{"path": path, "bytes": bytes.len()}]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            archives.push(ImportedPak {
+                id: format!("{index:020}"),
+                name: name.into(),
+                source,
+                directory: folder.to_string_lossy().into_owned(),
+                group: String::new(),
+                description: String::new(),
+                entries: 1,
+                extracted_bytes: bytes.len() as u64,
+                warnings: 0,
+                builds: vec!["2012".into()],
+            });
+        }
+        let models = authored_model_imports(&archives, "2012", "Kraken").unwrap();
+        assert_eq!(models.models.len(), 1);
+        assert_eq!(models.models[0].1, cdf);
+        assert!(
+            authored_model_imports(&archives, "Legacy", "Kraken")
+                .unwrap()
+                .models
+                .is_empty()
+        );
+        let duplicate = archives[1].clone();
+        archives.push(ImportedPak {
+            id: "f".repeat(20),
+            ..duplicate
+        });
+        assert!(
+            authored_model_imports(&archives, "2012", "Kraken")
+                .unwrap()
+                .models
+                .is_empty()
+        );
+        std::fs::write(root.path().join("0/files").join(subtype), b"tampered").unwrap();
+        assert!(authored_model_imports(&archives, "2012", "Kraken").is_err());
+    }
+
+    #[test]
+    fn explicit_cdf_material_and_mtl_texture_cross_paks_without_guessing() {
+        let root = tempfile::tempdir().unwrap();
+        let cdf = "Objects/Characters/Monsters/Grounder/Grounder1.cdf";
+        let material = "Objects/Materials/Blue.mtl";
+        let texture = "Objects/Materials/Blue.dds.0";
+        let assets: [(&str, &str, &[u8]); 4] = [
+            ("Scripts.pak", "Scripts/Entities/actor/subtypes_grounder.lua", b"fileModel = \"Objects/Characters/Monsters/Grounder/Grounder1.cdf\",\n"),
+            ("Objects.pak", cdf, b"<CharacterDefinition><Model File=\"Objects/rig.chr\" Material=\"Objects/Materials/Blue\"/></CharacterDefinition>"),
+            ("Materials.pak", material, b"<Material><Textures><Texture Map=\"Diffuse\" File=\"Objects/Materials/Blue.tif\"/></Textures></Material>"),
+            ("Textures.pak", texture, b"verified cooked texture"),
+        ];
+        let mut archives = Vec::new();
+        for (index, (name, path, bytes)) in assets.into_iter().enumerate() {
+            let folder = root.path().join(index.to_string());
+            let file = folder.join("files").join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, bytes).unwrap();
+            let source = format!("C:/2012/{name}");
+            std::fs::write(
+                folder.join("asset-library.json"),
+                serde_json::json!({
+                    "version": 1, "name": name, "source": source,
+                    "entries": [{"path": path, "bytes": bytes.len()}]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            archives.push(ImportedPak {
+                id: format!("{index:020}"),
+                name: name.into(),
+                source,
+                directory: folder.to_string_lossy().into_owned(),
+                group: String::new(),
+                description: String::new(),
+                entries: 1,
+                extracted_bytes: bytes.len() as u64,
+                warnings: 0,
+                builds: vec!["2012".into()],
+            });
+        }
+        let appearance = authored_model_imports(&archives, "2012", "Kraken").unwrap();
+        assert_eq!(appearance.models.len(), 1);
+        assert_eq!(appearance.materials[0].1, material);
+        assert_eq!(appearance.textures[0].1, texture);
+        archives[3].builds = vec!["Legacy".into()];
+        assert!(
+            authored_model_imports(&archives, "2012", "Kraken")
+                .unwrap()
+                .textures
+                .is_empty()
+        );
+        archives[3].builds = vec!["2012".into()];
+        let duplicate = archives[3].clone();
+        archives.push(ImportedPak {
+            id: "f".repeat(20),
+            ..duplicate
+        });
+        assert!(
+            authored_model_imports(&archives, "2012", "Kraken")
+                .unwrap()
+                .textures
+                .is_empty()
+        );
+        archives.pop();
+        std::fs::write(root.path().join("3/files").join(texture), b"changed").unwrap();
+        assert!(authored_model_imports(&archives, "2012", "Kraken").is_err());
+    }
+    #[test]
     fn late_actor_links_do_not_change_reopened_or_refreshed_editor() {
         let mut state = State {
             guided_editor: Editor {
@@ -947,6 +1304,38 @@ mod tests {
             !linked
                 .iter()
                 .any(|(archive, _)| !archive.builds.contains(build))
+        );
+    }
+
+    #[test]
+    #[ignore = "requires EVOLVE_BENCH_LIBRARY pointing to a local imported Asset Library"]
+    fn local_2012_grounder_model_is_bound_by_authored_subtype() {
+        let root = std::path::PathBuf::from(std::env::var_os("EVOLVE_BENCH_LIBRARY").unwrap());
+        let library = evolve_core::imported_library(&root).unwrap();
+        let source = library
+            .archives
+            .iter()
+            .find(|archive| archive.name == "Scripts.pak")
+            .unwrap();
+        let build = source.builds.first().unwrap();
+        let models = authored_model_imports(&library.archives, build, "Kraken").unwrap();
+        assert!(
+            models
+                .models
+                .iter()
+                .any(|(archive, path)| archive.builds.contains(build)
+                    && path.eq_ignore_ascii_case(
+                        "Objects/Characters/Monsters/Grounder/Grounder1.cdf"
+                    ))
+        );
+        assert!(
+            models
+                .materials
+                .iter()
+                .any(|(archive, path)| archive.builds.contains(build)
+                    && path.eq_ignore_ascii_case(
+                        "Objects/Characters/Monsters/Grounder/Grounder1_Skeleton.mtl"
+                    ))
         );
     }
 
