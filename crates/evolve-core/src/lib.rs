@@ -35,6 +35,7 @@ pub mod library_build_updates;
 pub mod library_catalog;
 pub mod library_import;
 pub mod library_paths;
+pub mod lua51;
 pub mod material_effects;
 pub mod materials;
 pub mod model;
@@ -135,7 +136,7 @@ pub use library_build_updates::{
     remove_managed_library_build, rename_managed_library_build, scan_library_build_updates,
 };
 pub use library_catalog::{
-    ImportedLibrary, ImportedLookupGuard, ImportedPak, LibraryError, LibraryReference,
+    Edition, ImportedLibrary, ImportedLookupGuard, ImportedPak, LibraryError, LibraryReference,
     LibraryReferenceStatus, SharedImportedLookup, begin_imported_lookup_session,
     begin_imported_lookup_session_any_build, begin_imported_lookup_session_for_source,
     describe_archive, imported_archive_files, imported_archive_preview_inventory, imported_library,
@@ -218,5 +219,6 @@ pub use materials::{
     TextureReference, authored_damage_layer, blend_damage_rgba, material_texture_candidates,
     parse_material, read_material, resolve_materials, scoped_texture_candidates,
 };
+pub mod character_gameplay;
 pub mod gameplay_values;
 pub mod mod_safety;

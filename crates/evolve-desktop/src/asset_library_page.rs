@@ -1511,6 +1511,7 @@ mod browser_tests {
         State {
             library_catalog: Some(evolve_core::ImportedLibrary {
                 root: "/library".to_owned(),
+                editions: Default::default(),
                 archives: items,
                 builds: vec!["Stage 2".to_owned()],
                 total_bytes: 1200,
@@ -1601,6 +1602,7 @@ mod browser_tests {
         let mut state = State {
             library_catalog: Some(evolve_core::ImportedLibrary {
                 root: "/library".to_owned(),
+                editions: Default::default(),
                 archives: items,
                 builds: vec!["Stage 2".to_owned()],
                 total_bytes: 600,

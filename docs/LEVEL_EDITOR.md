@@ -25,6 +25,10 @@ Version-24 vegetation records put brightness at byte 56 and Z/X/Y rotation at
 bytes 57–59, just like version 25. Reading brightness as the first angle tilts
 foliage incorrectly; regression tests keep yaw-only plants upright. Brush
 matrices retain their separate source-authored orientation and scale.
+The 2012 Forest Cliffs compiled terrain also flags some brush model references
+with bit 13; the reader strips only this v24 flag before looking up the model,
+so the flagged rock and cliff placements remain visible. Unknown v24 object
+record kinds remain unsupported and may leave other geometry absent.
 
 Import both `Game/streaming/dds_low.pak` and `Game/streaming/dds_high.pak`
 from this same build for the complete cooked texture resolution. When a

@@ -54,6 +54,20 @@ pub struct SignedEntry {
     pub encrypted_data_offset: u64,
 }
 
+impl SignedEntry {
+    /// Retail PAKs store empty placeholder files (e.g. Legacy
+    /// `Libs/Dialogs/DLG Files Go Here.txt`) as method 14 with no payload
+    /// bytes, which is not a valid DEFLATE stream. Read those as empty; the
+    /// verified size and CRC are still checked by every caller.
+    fn decoded<'a>(&self, payload: impl Read + 'a) -> Box<dyn Read + 'a> {
+        if self.method == 14 && self.compressed_size != 0 {
+            Box::new(DeflateDecoder::new(payload))
+        } else {
+            Box::new(payload)
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SignedPakInfo {
     pub version: u32,
@@ -100,11 +114,7 @@ impl VerifiedSignedPak {
             &self.keys[slot],
             entry_iv(entry),
         );
-        let decoded: Box<dyn Read> = if entry.method == 14 {
-            Box::new(DeflateDecoder::new(decrypt))
-        } else {
-            Box::new(decrypt)
-        };
+        let decoded = entry.decoded(decrypt);
         let mut bytes = Vec::with_capacity(entry.size as usize);
         decoded.take(entry.size + 1).read_to_end(&mut bytes)?;
         if bytes.len() as u64 != entry.size || crc32fast::hash(&bytes) != entry.crc32 {
@@ -529,11 +539,7 @@ pub fn extract_signed_pak(
             .open(target)?;
         let mut hasher = Hasher::new();
         let mut written = 0u64;
-        let mut stream: Box<dyn Read + '_> = if entry.method == 14 {
-            Box::new(DeflateDecoder::new(ctr))
-        } else {
-            Box::new(ctr)
-        };
+        let mut stream = entry.decoded(ctr);
         let mut buffer = [0u8; 128 * 1024];
         loop {
             let n = stream.read(&mut buffer)?;
@@ -947,11 +953,7 @@ fn verify_replaced_data(
         &verified.keys[slot],
         entry_iv(entry),
     );
-    let mut decoded: Box<dyn Read> = if entry.method == 14 {
-        Box::new(DeflateDecoder::new(decrypt))
-    } else {
-        Box::new(decrypt)
-    };
+    let mut decoded = entry.decoded(decrypt);
     let mut original = File::open(replacement)?;
     let mut got = [0u8; 128 * 1024];
     let mut expected = [0u8; 128 * 1024];
@@ -1380,6 +1382,48 @@ fn rebuild_signed_pak_changes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn empty_deflated_placeholder_reads_as_empty_but_missing_payload_stays_short() {
+        let entry = |size: u64, compressed_size: u64| SignedEntry {
+            path: "Libs/Dialogs/DLG Files Go Here.txt".into(),
+            method: 14,
+            flags: 0,
+            crc32: 0,
+            compressed_size,
+            size,
+            encrypted_data_offset: 0,
+        };
+        let mut bytes = Vec::new();
+        entry(0, 0)
+            .decoded(&[][..])
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert!(bytes.is_empty());
+        // Callers compare against the verified size, so a non-empty member
+        // with no payload is still rejected rather than read as empty.
+        entry(5, 0)
+            .decoded(&[][..])
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert!(bytes.is_empty());
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(9));
+        encoder.write_all(b"hello").unwrap();
+        let packed = encoder.finish().unwrap();
+        entry(5, packed.len() as u64)
+            .decoded(packed.as_slice())
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(bytes, b"hello");
+        // A truncated non-empty DEFLATE stream still fails.
+        assert!(
+            entry(5, 1)
+                .decoded(&packed[..1])
+                .read_to_end(&mut Vec::new())
+                .is_err()
+        );
+    }
+
     #[test]
     fn ctr_is_symmetric_across_arbitrary_reader_boundaries() {
         let key = [7u8; 16];

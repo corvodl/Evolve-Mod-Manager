@@ -2322,6 +2322,26 @@ pub fn guided_import_members(
     archive: &evolve_core::library_catalog::ImportedPak,
     models: bool,
 ) -> Result<Vec<String>, String> {
+    imported_members(archive, |path| {
+        if models {
+            evolve_core::mod_safety::model_document(path)
+        } else {
+            evolve_core::mod_safety::gameplay_document(path)
+        }
+    })
+}
+
+/// Compiled actor and creature scripts: read-only sources, never edit targets.
+pub fn imported_actor_scripts(
+    archive: &evolve_core::library_catalog::ImportedPak,
+) -> Result<Vec<String>, String> {
+    imported_members(archive, evolve_core::character_gameplay::actor_script)
+}
+
+fn imported_members(
+    archive: &evolve_core::library_catalog::ImportedPak,
+    keep: impl Fn(&str) -> bool,
+) -> Result<Vec<String>, String> {
     let manifest = read_json(
         &Path::new(&archive.directory).join("asset-library.json"),
         32 * 1024 * 1024,
@@ -2347,11 +2367,7 @@ pub fn guided_import_members(
         if !safe_member(p) {
             return Err("Unsafe imported member".into());
         }
-        if if models {
-            evolve_core::mod_safety::model_document(p)
-        } else {
-            evolve_core::mod_safety::gameplay_document(p)
-        } {
+        if keep(p) {
             paths.push(p.to_owned());
         }
     }
