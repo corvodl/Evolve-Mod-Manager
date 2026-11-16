@@ -134,7 +134,9 @@ starts compact with Export visible and expands to editing details; failed launch
 notices link to persistent Activity details; and managed-build deletion
 shows the exact target and consequences with an explicit Cancel and
 confirmation instead of relying on a hold gesture. Import stages do not
-pretend that an idle import is complete. The activity island and existing
+pretend that an idle import is complete. Home offers setup when no game client
+is configured and project-creation/browsing paths rather than a dead Open
+Project action when no project exists. The activity island and existing
 toasts retain subtle motion rather than animating dense archive rows.
 
 No web runtime or new component dependency is added. These patterns do not

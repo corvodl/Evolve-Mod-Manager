@@ -696,12 +696,43 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         ].spacing(18).align_y(iced::Center), wallpaper,
     ).padding([14, 20]);
 
-    let project = super::home_recent_workspace(state)
+    let recent_project = super::home_recent_workspace(state);
+    let project = recent_project
+        .as_ref()
         .and_then(|path| {
             path.file_name()
                 .map(|name| name.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "No project selected".into());
+    let project_actions: Element<'_, Message> = if recent_project.is_some() {
+        row![
+            design::button("Open Project")
+                .on_press(Message::HomeContinueEditing)
+                .width(Fill),
+            crate::ui_kit::shimmer_button(
+                &state.ui,
+                "Package Mod",
+                Message::HomeOpenProject,
+                false,
+                state.preferences.reduce_motion,
+            ),
+        ]
+        .spacing(8)
+        .into()
+    } else {
+        row![
+            design::button("Create or choose project")
+                .style(design::primary)
+                .on_press(Message::Navigate(Page::Files))
+                .width(Fill),
+            design::button("Browse source assets")
+                .style(design::secondary)
+                .on_press(Message::Navigate(Page::AssetLibrary))
+                .width(Fill),
+        ]
+        .spacing(8)
+        .into()
+    };
     let launchpads = row![
         home_launch_card(
             "Launch Evolve",
@@ -718,23 +749,15 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         home_surface(
             column![
                 text(project).size(17),
-                text("Continue with your selected, isolated Modding workspace.")
-                    .size(design::LABEL)
-                    .style(design::muted),
+                text(if recent_project.is_some() {
+                    "Continue with your selected, isolated Modding workspace."
+                } else {
+                    "Choose an editable project or start one from imported source assets."
+                })
+                .size(design::LABEL)
+                .style(design::muted),
                 iced::widget::space().height(Fill),
-                row![
-                    design::button("Open Project")
-                        .on_press(Message::HomeContinueEditing)
-                        .width(Fill),
-                    crate::ui_kit::shimmer_button(
-                        &state.ui,
-                        "Package Mod",
-                        Message::HomeOpenProject,
-                        false,
-                        state.preferences.reduce_motion,
-                    ),
-                ]
-                .spacing(8),
+                project_actions,
             ]
             .spacing(8),
             wallpaper
@@ -786,21 +809,31 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         state.preferences.reduce_motion,
     );
 
+    let mut home_content = column![whats_new_intro(state), hero].spacing(18);
+    if state.preferences.client_executable.trim().is_empty() {
+        home_content = home_content.push(crate::ui_kit::empty_state(
+            Some(crate::icons::drive()),
+            "Game client not configured",
+            "Choose your Evolve installation before preparing or launching mods.",
+            Some((
+                "Set up game client",
+                Message::OpenSettingsTab(crate::settings_page::Tab::Storage),
+            )),
+        ));
+    }
     let content = scrollable(
-        column![
-            whats_new_intro(state),
-            hero,
-            marquee_ribbon,
-            dashboard,
-            launchpads,
-            row![
-                container(latest_announcement(state, wallpaper)).width(Length::FillPortion(2)),
-                tools
-            ]
-            .spacing(16),
-        ]
-        .spacing(18)
-        .padding(24),
+        home_content
+            .push(marquee_ribbon)
+            .push(dashboard)
+            .push(launchpads)
+            .push(
+                row![
+                    container(latest_announcement(state, wallpaper)).width(Length::FillPortion(2)),
+                    tools
+                ]
+                .spacing(16),
+            )
+            .padding(24),
     )
     .width(Fill)
     .height(Fill);
@@ -3499,6 +3532,15 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
 #[cfg(test)]
 mod home_layout_tests {
     use super::{ai_address_valid, keybind_conflicts, short_client_version, status_value_preview};
+
+    #[test]
+    fn home_without_game_or_project_renders_setup_paths() {
+        let mut state = super::State::default();
+        state.preferences.ui_theme = "Evolve".into();
+        state.preferences.client_executable.clear();
+        state.preferences.current_workspace.clear();
+        let _ = super::home(&state);
+    }
 
     #[test]
     fn ai_address_accepts_absolute_and_module_relative_hex_only() {
