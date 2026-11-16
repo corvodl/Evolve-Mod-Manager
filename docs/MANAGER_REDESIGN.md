@@ -114,3 +114,28 @@ cursor-following effects and marketing bento grids. They compete with game
 art and dense editing work, increase rendering/accessibility cost and conflict
 with the restrained workstation direction above. Validate any prototype in
 Modern dark/light and keyboard/reduced-motion modes before adopting it.
+
+### Implementation follow-up — 2026-11-16 00:15 EST (UTC-05:00)
+
+The native UI already has shared work snapshots and real worker stages
+(`work_progress.rs`, `activity_window.rs`, `play_dialog.rs`), compact sorted
+and filtered/paged lists (`asset_library_page.rs`, `modding_page.rs`), reusable
+empty states, a paged keyboard-oriented file hierarchy (`explorer_tree.rs`),
+and stage/confirmation helpers (`ui_kit.rs`). Recent activity already appears
+in the status island and Activity window; the island respects reduced motion.
+The Asset Library's pinnable PAK details sheet exposes exact source and
+extraction paths, and now links directly to browsing that archive's files.
+
+This follow-up closes the practical gaps: launch stage markers are **not**
+presented as a completion percentage; project copy percentage is computed
+from actual copied bytes rather than scaled to 95%; empty search results
+offer a real clear-search-and-filters action; the selected-project panel
+starts compact with Export visible and expands to editing details; failed launch/task
+notices link to persistent Activity details; and managed-build deletion
+shows the exact target and consequences with an explicit Cancel and
+confirmation instead of relying on a hold gesture. Import stages do not
+pretend that an idle import is complete. The activity island and existing
+toasts retain subtle motion rather than animating dense archive rows.
+
+No web runtime or new component dependency is added. These patterns do not
+change signing, provenance, safety checks or Legacy navigation.

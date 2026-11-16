@@ -760,6 +760,8 @@ struct State {
     library_update_plan: Option<LibraryBuildUpdatePlan>,
     library_manage_builds_open: bool,
     library_managed_builds: Vec<ManagedLibraryBuild>,
+    /// A build can only be removed after its target and impact are reviewed.
+    library_remove_review: Option<String>,
     library_rename_build: Option<String>,
     library_rename_value: String,
     library_import_scanning: bool,
@@ -889,6 +891,7 @@ struct State {
     editor_replace_dialog: Option<usize>,
     modding_menu: Option<&'static str>,
     modding_advanced: bool,
+    modding_project_details_open: bool,
     modding_profiles: bool,
     modding_open_editor_when_scanned: bool,
     modding_pending_focus: Option<PathBuf>,
@@ -3139,6 +3142,7 @@ enum Message {
     LibraryChipPicked(String),
     LibraryChipInput(String),
     LibraryChipRemove(usize),
+    LibraryClearFilters,
     ModdingChipPicked(String),
     ModdingChipInput(String),
     ModdingChipRemove(usize),
@@ -3174,6 +3178,8 @@ enum Message {
     LibraryManageBuildsRefresh,
     LibraryManagedBuildsLoaded(Result<Vec<ManagedLibraryBuild>, String>),
     LibraryDeleteBuildNow(String),
+    LibraryDeleteBuildReview(String),
+    LibraryDeleteBuildCancel,
     LibraryRenameBuildBegin(String),
     LibraryRenameBuildValue(String),
     LibraryRenameBuildCancel,
@@ -3209,6 +3215,7 @@ enum Message {
     ModdingSaveName,
     ModdingRefresh,
     ModdingToggleAdvanced,
+    ModdingToggleProjectDetails,
     ModdingBrowsePaks,
     ModdingSelectArchive(usize),
     ModdingSelectImported(usize),
@@ -6843,6 +6850,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return Task::batch([projects, signed]);
         }
         Message::ModdingToggleAdvanced => state.modding_advanced = !state.modding_advanced,
+        Message::ModdingToggleProjectDetails => {
+            state.modding_project_details_open = !state.modding_project_details_open;
+        }
         Message::ModdingToggleProfiles => {
             state.modding_profiles = !state.modding_profiles;
             if state.modding_profiles && !state.preferences.stage.trim().is_empty() {
@@ -7360,6 +7370,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LibraryManageBuildsToggle => {
             state.library_manage_builds_open = !state.library_manage_builds_open;
             state.library_rename_build = None;
+            state.library_remove_review = None;
             if !state.library_manage_builds_open {
                 return Task::none();
             }
@@ -7381,10 +7392,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LibraryManagedBuildsLoaded(result) => match result {
             Ok(builds) => {
+                state.library_remove_review = None;
                 state.status = format!("Found {} managed Asset Library build(s).", builds.len());
                 state.library_managed_builds = builds;
             }
             Err(error) => {
+                state.library_remove_review = None;
                 state.library_managed_builds.clear();
                 state.status = format!("Cannot inspect managed builds: {error}");
             }
@@ -7449,10 +7462,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
+        Message::LibraryDeleteBuildReview(id) => {
+            if !state.busy
+                && !state.library_import_scanning
+                && state
+                    .library_managed_builds
+                    .iter()
+                    .any(|build| build.id == id)
+            {
+                state.library_remove_review = Some(id);
+            }
+        }
+        Message::LibraryDeleteBuildCancel => state.library_remove_review = None,
         Message::LibraryDeleteBuildNow(id) => {
-            // Hold-to-confirm (or the reduce-motion second click) is the
-            // confirmation; there is no separate confirm step.
             if state.busy || state.library_import_scanning {
+                return Task::none();
+            }
+            if state.library_remove_review.as_deref() != Some(id.as_str()) {
                 return Task::none();
             }
             let Some(build) = state
@@ -7461,9 +7487,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .find(|build| build.id == id)
                 .cloned()
             else {
+                state.library_remove_review = None;
                 state.status = "Refresh managed builds before deletion.".into();
                 return Task::none();
             };
+            state.library_remove_review = None;
             state.library_update_plan = None;
             return launch(
                 state,
@@ -14166,6 +14194,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 refresh_library_matches(state);
             }
         }
+        Message::LibraryClearFilters => {
+            state.library_search.clear();
+            state.library_chip_query.clear();
+            state.library_chips.clear();
+            state.library_page = 0;
+            refresh_library_matches(state);
+        }
         Message::ModdingChipPicked(chip) => {
             if !state.modding_chips.contains(&chip) {
                 state.modding_chips.push(chip);
@@ -20714,6 +20749,51 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn managed_build_removal_requires_review_of_the_exact_build() {
+        let mut state = State {
+            library_managed_builds: vec![ManagedLibraryBuild {
+                id: "build-a".into(),
+                source_root: "C:\\Games\\Evolve".into(),
+                display_name: "Stage 2".into(),
+                aliases: 1,
+                pak_count: 2,
+                extracted_bytes: 2048,
+                reclaimable_paks: 1,
+                reclaimable_bytes: 1024,
+            }],
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::LibraryDeleteBuildNow("build-a".into()));
+        assert!(state.library_remove_review.is_none());
+        let _ = update(
+            &mut state,
+            Message::LibraryDeleteBuildReview("other".into()),
+        );
+        assert!(state.library_remove_review.is_none());
+        let _ = update(
+            &mut state,
+            Message::LibraryDeleteBuildReview("build-a".into()),
+        );
+        assert_eq!(state.library_remove_review.as_deref(), Some("build-a"));
+        let _ = update(&mut state, Message::LibraryDeleteBuildCancel);
+        assert!(state.library_remove_review.is_none());
+    }
+
+    #[test]
+    fn library_empty_state_clears_search_and_chips_together() {
+        let mut state = State {
+            library_search: "missing".into(),
+            library_chips: vec!["Category: Levels".into()],
+            library_page: 2,
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::LibraryClearFilters);
+        assert!(state.library_search.is_empty());
+        assert!(state.library_chips.is_empty());
+        assert_eq!(state.library_page, 0);
+    }
 
     #[test]
     fn outdated_update_results_cannot_change_the_selected_channel_or_retry() {

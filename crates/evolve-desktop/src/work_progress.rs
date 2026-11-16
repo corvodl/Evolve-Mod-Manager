@@ -87,7 +87,7 @@ pub fn snapshot(state: &State) -> Option<Snapshot> {
             _ => "Opening project",
         };
         let percent = if size > 0 && phase == 1 {
-            Some(((bytes.min(size) as f64 / size as f64) * 95.0) as u32)
+            Some(((bytes.min(size) as f64 / size as f64) * 100.0) as u32)
         } else {
             None
         };
@@ -114,10 +114,17 @@ pub fn snapshot(state: &State) -> Option<Snapshot> {
             95..=97 => "Launcher ready — press Play",
             _ => "Confirming PAK swap and game release",
         };
+        // The worker publishes stage markers, not a measured percentage of
+        // the entire launch. Do not present 95 as "95% complete" while the
+        // user still needs to press Play and the swap remains unconfirmed.
         let mut snapshot = make(
             label.into(),
-            format!("Launch stage {percent}% · {elapsed}"),
-            Some(percent),
+            format!(
+                "Stage {} of {} · {elapsed}",
+                launch_step(percent) + 1,
+                LAUNCH_STEPS.len()
+            ),
+            None,
         );
         snapshot.steps = Some(crate::ui_kit::Steps::new(
             &LAUNCH_STEPS,
@@ -225,7 +232,7 @@ mod tests {
         };
         let measured = snapshot(&state).unwrap();
         assert!(measured.label.contains("press Play"));
-        assert_eq!(measured.percent, Some(95));
+        assert_eq!(measured.percent, None);
         let steps = measured.steps.unwrap();
         assert_eq!(steps.current, 4);
         assert_eq!(steps.state(3), crate::ui_kit::StepState::Done);
@@ -241,5 +248,21 @@ mod tests {
         let measured = snapshot(&state).unwrap();
         assert!(measured.detail.contains("123 entries"));
         assert_eq!(measured.percent, None);
+    }
+
+    #[test]
+    fn project_copy_percentage_tracks_only_actual_bytes() {
+        let progress = Arc::new(crate::modding_projects::ProjectCopyProgress::default());
+        progress.phase.store(1, Ordering::Relaxed);
+        progress.bytes_done.store(40, Ordering::Relaxed);
+        progress.bytes_total.store(100, Ordering::Relaxed);
+        let state = State {
+            busy: true,
+            project_copy_progress: Some(progress),
+            ..State::default()
+        };
+        let measured = snapshot(&state).unwrap();
+        assert_eq!(measured.percent, Some(40));
+        assert_eq!(measured.steps.unwrap().current, 1);
     }
 }

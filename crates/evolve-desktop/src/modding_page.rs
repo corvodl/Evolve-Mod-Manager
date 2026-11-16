@@ -1735,32 +1735,57 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .align_y(iced::Center);
     let mut selected_content = column![
         row![
-            text("Selected project").size(design::BODY),
+            text(chosen.map_or("Selected project", |project| project.label.as_str()))
+                .size(design::BODY),
             space().width(Fill),
-            text(
-                chosen
-                    .map(|p| p.target.as_str())
-                    .unwrap_or("Select a project above")
-            )
-            .size(design::LABEL)
-            .style(design::muted),
+            text(chosen.map_or("Select a project above", |project| project.status.as_str()))
+                .size(design::CAPTION)
+                .style(design::muted),
+            design::button(if state.modding_project_details_open {
+                "Hide details"
+            } else {
+                "Show details…"
+            })
+            .style(design::secondary)
+            .on_press_maybe(chosen.map(|_| Message::ModdingToggleProjectDetails)),
         ]
         .spacing(8)
         .align_y(iced::Center),
-        row![crate::ui_kit::popover_form(
-            &state.ui,
-            "rename-mod",
-            "Rename mod…",
-            "Mod name…",
-            &state.modding_name_input,
-            Message::ModdingNameChanged,
-            state.modding_selected.map(|_| Message::ModdingSaveName),
-        ),]
-        .spacing(8)
-        .align_y(iced::Center),
+        text(chosen.map_or("", |project| project.target.as_str()))
+            .size(design::LABEL)
+            .style(design::muted),
+        text(chosen.map_or(String::new(), |project| format!(
+            "{} changed files · {}",
+            project.modified.len(),
+            if project.enabled {
+                "Enabled for Play"
+            } else {
+                "Disabled for Play"
+            }
+        )))
+        .size(design::CAPTION)
+        .style(design::muted),
         export_split,
     ]
-    .spacing(10);
+    .spacing(8);
+    if state.modding_project_details_open && chosen.is_some() {
+        selected_content = selected_content.push(
+            column![
+                row![crate::ui_kit::popover_form(
+                    &state.ui,
+                    "rename-mod",
+                    "Rename mod…",
+                    "Mod name…",
+                    &state.modding_name_input,
+                    Message::ModdingNameChanged,
+                    state.modding_selected.map(|_| Message::ModdingSaveName),
+                ),]
+                .spacing(8)
+                .align_y(iced::Center),
+            ]
+            .spacing(10),
+        );
+    }
     if state.modding_export_options_open && chosen.is_some() {
         selected_content = selected_content.push(PakExportMode::ALL.into_iter().fold(
             column![text("Export format").size(design::LABEL).style(design::muted)].spacing(4),
