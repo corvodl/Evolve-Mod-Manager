@@ -5,6 +5,7 @@ use crate::{
     modding_projects::{self, ProjectRow},
 };
 use evolve_core::gameplay_values::{self, SourceField, ValueField};
+use evolve_core::lua51;
 use iced::widget::{Id, column, row, scrollable, text};
 use iced::{Element, Fill, Task};
 use std::path::Path;
@@ -65,6 +66,138 @@ impl Target {
             }
         }
     }
+    fn owns_global(&self, path: &str, global: &str) -> bool {
+        use evolve_core::character_gameplay::{RosterEntry, script_global_owner};
+        match (self, script_global_owner(path, global)) {
+            (Self::Character(name), Some(RosterEntry::Character(owner)))
+            | (Self::Wildlife(name), Some(RosterEntry::Wildlife(owner))) => name == owner,
+            _ => false,
+        }
+    }
+}
+
+const SCRIPT_LIMIT: usize = 4 * 1024 * 1024;
+
+/// A compiled actor script whose literal tables were read without running it.
+pub(crate) struct DecodedScript {
+    pub archive: evolve_core::ImportedPak,
+    pub path: String,
+    pub globals: Vec<(String, lua51::Table)>,
+}
+
+/// Decode the Lua 5.1 actor scripts in `archives`. Plain-text 2012 scripts
+/// and Stage 2's custom bytecode are not Lua 5.1 and are skipped here.
+pub(crate) fn decoded_scripts(
+    archives: &[evolve_core::ImportedPak],
+) -> Result<Vec<DecodedScript>, String> {
+    let mut scripts = Vec::new();
+    for archive in archives {
+        for path in modding_projects::imported_actor_scripts(archive)? {
+            let bytes = evolve_core::library_catalog::read_imported_member_bounded(
+                archive,
+                &path,
+                SCRIPT_LIMIT,
+            )
+            .map_err(|error| error.to_string())?;
+            if !lua51::is_bytecode(&bytes) {
+                continue;
+            }
+            let globals =
+                lua51::authored_globals(&bytes).map_err(|error| format!("{path}: {error}"))?;
+            scripts.push(DecodedScript {
+                archive: archive.clone(),
+                path,
+                globals,
+            });
+        }
+    }
+    Ok(scripts)
+}
+
+#[derive(Default)]
+struct ScriptSources {
+    /// Scripts assigning at least one global the target owns.
+    owned: Vec<(evolve_core::ImportedPak, String)>,
+    /// Scripts defining a `baseType` the target inherits from.
+    bases: Vec<(evolve_core::ImportedPak, String)>,
+    references: Vec<evolve_core::character_gameplay::DocumentReference>,
+}
+
+/// Follow the target's own globals and their authored `baseType` chain.
+/// A base resolves in the same script first, else to the single script in
+/// the build that defines it; a name defined in several scripts stays unlinked.
+fn script_sources(target: &Target, scripts: &[DecodedScript]) -> Result<ScriptSources, String> {
+    let mut sources = ScriptSources::default();
+    let mut pending = Vec::new();
+    for (index, script) in scripts.iter().enumerate() {
+        let mut owned = false;
+        for (global, _) in &script.globals {
+            if target.owns_global(&script.path, global) {
+                pending.push((index, global.clone()));
+                owned = true;
+            }
+        }
+        if owned {
+            sources
+                .owned
+                .push((script.archive.clone(), script.path.clone()));
+        }
+    }
+    let defines = |index: usize, name: &str| {
+        scripts[index]
+            .globals
+            .iter()
+            .any(|(global, _)| global == name)
+    };
+    let mut visited = std::collections::HashSet::new();
+    let mut base_files = std::collections::BTreeSet::new();
+    while let Some((index, global)) = pending.pop() {
+        if !visited.insert((index, global.clone())) {
+            continue;
+        }
+        if visited.len() > 512 {
+            return Err("Script inheritance chain is too long".into());
+        }
+        let Some((_, table)) = scripts[index]
+            .globals
+            .iter()
+            .find(|(name, _)| *name == global)
+        else {
+            continue;
+        };
+        sources
+            .references
+            .extend(evolve_core::character_gameplay::script_references(table));
+        let Some(lua51::Value::Global(base)) = table.get("baseType") else {
+            continue;
+        };
+        let base_index = if defines(index, base) {
+            Some(index)
+        } else {
+            let mut found = (0..scripts.len()).filter(|&other| defines(other, base));
+            match (found.next(), found.next()) {
+                (Some(other), None) => Some(other),
+                _ => None,
+            }
+        };
+        if let Some(base_index) = base_index {
+            pending.push((base_index, base.clone()));
+            base_files.insert(base_index);
+        }
+    }
+    for index in base_files {
+        let script = &scripts[index];
+        if !sources
+            .owned
+            .iter()
+            .any(|(archive, path)| archive.id == script.archive.id && *path == script.path)
+        {
+            sources
+                .bases
+                .push((script.archive.clone(), script.path.clone()));
+        }
+    }
+    Ok(sources)
 }
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -100,7 +233,37 @@ fn search_id() -> Id {
 fn preview_imported_values(
     archive: &evolve_core::ImportedPak,
     path: &str,
+    target: Option<&Target>,
 ) -> Result<Vec<SourceField>, String> {
+    if evolve_core::character_gameplay::actor_script(path) {
+        if !modding_projects::imported_actor_scripts(archive)?
+            .iter()
+            .any(|candidate| candidate == path)
+        {
+            return Err("Imported source changed since discovery".into());
+        }
+        let bytes =
+            evolve_core::library_catalog::read_imported_member_bounded(archive, path, SCRIPT_LIMIT)
+                .map_err(|error| error.to_string())?;
+        if !lua51::is_bytecode(&bytes) {
+            return Err("Only compiled Lua 5.1 scripts can be previewed".into());
+        }
+        let globals = lua51::authored_globals(&bytes)?;
+        // A shared script (Goliath's also defines Meteor Goliath) shows only
+        // the target's own tables; a base script shows everything it defines.
+        let owns = |global: &str| target.is_some_and(|target| target.owns_global(path, global));
+        let owned = globals.iter().any(|(global, _)| owns(global));
+        let mut flat = Vec::new();
+        for (global, table) in &globals {
+            if !owned || owns(global) {
+                table.flatten(global, &mut flat);
+            }
+        }
+        return Ok(flat
+            .into_iter()
+            .map(|(label, value)| SourceField { label, value })
+            .collect());
+    }
     // The source identity is checked again, not just when the list was built.
     if !modding_projects::guided_import_members(archive, false)?
         .iter()
@@ -117,10 +280,12 @@ fn preview_imported_values(
     gameplay_values::source_fields(&bytes)
 }
 
+/// `seed` carries references already read from the target's scripts.
 fn actor_linked_imports(
     direct: &[(Arc<evolve_core::ImportedPak>, String)],
     archives: &[evolve_core::ImportedPak],
     build: &str,
+    seed: Vec<evolve_core::character_gameplay::DocumentReference>,
 ) -> Result<Vec<(evolve_core::ImportedPak, String)>, String> {
     let mut imports = Vec::new();
     for archive in archives
@@ -164,7 +329,7 @@ fn actor_linked_imports(
     }
     // Inherited parameters apply to the character, so each base actor's own
     // equipment and abilities are followed too.
-    let mut references = Vec::new();
+    let mut references = seed;
     let mut actor_links = Vec::new();
     let mut visited = std::collections::HashSet::new();
     while let Some((archive, path)) = actors.pop() {
@@ -284,17 +449,43 @@ fn authored_model_imports(
             }
         }
     }
-    let [(source, path)] = sources.as_slice() else {
-        return if sources.is_empty() {
-            Ok(VerifiedAppearance::default())
-        } else {
-            Err("More than one authored subtype source in the selected build".into())
-        };
-    };
-    let bytes =
-        evolve_core::library_catalog::read_imported_member_bounded(source, path, 256 * 1024)
+    let mut references = Vec::new();
+    match sources.as_slice() {
+        [] => {}
+        [(source, path)] => {
+            let bytes = evolve_core::library_catalog::read_imported_member_bounded(
+                source,
+                path,
+                256 * 1024,
+            )
             .map_err(|error| error.to_string())?;
-    let references = evolve_core::character_gameplay::authored_subtype_models(&bytes)?;
+            // The 2012 layout is plain text; compiled scripts are read below.
+            if !lua51::is_bytecode(&bytes) {
+                references = evolve_core::character_gameplay::authored_subtype_models(&bytes)?;
+            }
+        }
+        _ => return Err("More than one authored subtype source in the selected build".into()),
+    }
+    let in_build: Vec<_> = archives
+        .iter()
+        .filter(|archive| archive.builds.iter().any(|label| label == build))
+        .cloned()
+        .collect();
+    let target = Target::Character(character.to_owned());
+    for script in decoded_scripts(&in_build)? {
+        for (global, table) in &script.globals {
+            if target.owns_global(&script.path, global)
+                && let Some(model) = evolve_core::character_gameplay::script_model(table)?
+            {
+                references.push(model);
+            }
+        }
+    }
+    references.sort();
+    references.dedup();
+    if references.is_empty() {
+        return Ok(VerifiedAppearance::default());
+    }
     let mut models = Vec::new();
     for archive in archives
         .iter()
@@ -433,10 +624,28 @@ pub(super) fn link_task(state: &mut State) -> Task<Message> {
             move |result| message(Action::ModelsReady(request, result)),
         )
     } else {
+        let target = editor.target.clone().unwrap();
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    actor_linked_imports(&direct, &archives, &build)
+                    let in_build: Vec<_> = archives
+                        .iter()
+                        .filter(|archive| archive.builds.contains(&build))
+                        .cloned()
+                        .collect();
+                    let scripts = script_sources(&target, &decoded_scripts(&in_build)?)?;
+                    let mut linked = scripts.owned;
+                    linked.extend(scripts.bases);
+                    linked.extend(actor_linked_imports(
+                        &direct,
+                        &archives,
+                        &build,
+                        scripts.references,
+                    )?);
+                    let mut seen = std::collections::HashSet::new();
+                    linked
+                        .retain(|(archive, path)| seen.insert((archive.id.clone(), path.clone())));
+                    Ok(linked)
                 })
                 .await
                 .map_err(|error| error.to_string())?
@@ -609,9 +818,13 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
             ]);
         }
         Action::Prepare(i) => {
-            let Some((archive, _)) = editor.imports.get(i).cloned() else {
+            let Some((archive, path)) = editor.imports.get(i).cloned() else {
                 return Task::none();
             };
+            if evolve_core::character_gameplay::actor_script(&path) {
+                editor.note = "Compiled Lua scripts are read-only.".into();
+                return Task::none();
+            }
             if state.busy {
                 return Task::none();
             }
@@ -639,11 +852,14 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
             let request = editor.preview_request;
             editor.preview = None;
             editor.note = format!("Checking {} before preview…", archive.name);
+            let target = editor.target.clone();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || preview_imported_values(&archive, &path))
-                        .await
-                        .map_err(|e| e.to_string())?
+                    tokio::task::spawn_blocking(move || {
+                        preview_imported_values(&archive, &path, target.as_ref())
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
                 },
                 move |result| message(Action::PreviewReady(request, index, result)),
             );
@@ -874,6 +1090,8 @@ pub fn view(state: &State) -> Element<'_, Message> {
                         } else {
                             "Build search result · create editable copy"
                         }
+                    } else if evolve_core::character_gameplay::actor_script(path) {
+                        "Preview script values (read-only)"
                     } else {
                         "Preview values"
                     },
@@ -1078,9 +1296,18 @@ pub fn view(state: &State) -> Element<'_, Message> {
                     design::button("Next values").on_press_maybe(
                         (start + 80 < matching.len()).then_some(message(Action::FieldsPage(true)))
                     ),
-                    design::button("Create editable copy")
-                        .style(design::primary)
-                        .on_press(message(Action::Prepare(*index))),
+                    {
+                        let script = evolve_core::character_gameplay::actor_script(path);
+                        crate::ui_kit::why_disabled(
+                            design::button("Create editable copy")
+                                .style(design::primary)
+                                .on_press_maybe(
+                                    (!script).then_some(message(Action::Prepare(*index))),
+                                ),
+                            script,
+                            "Compiled Lua scripts are read-only",
+                        )
+                    },
                 ]
                 .spacing(8),
             );
@@ -1092,6 +1319,206 @@ pub fn view(state: &State) -> Element<'_, Message> {
 mod tests {
     use super::*;
     use evolve_core::{ImportedLibrary, ImportedPak};
+    #[test]
+    #[ignore = "requires EVOLVE_LEGACY_LIBRARY pointing to an Asset Library with Legacy Scripts and GameData PAKs"]
+    fn local_legacy_meteor_goliath_scripts_link_preview_and_model() {
+        let root = std::path::PathBuf::from(std::env::var_os("EVOLVE_LEGACY_LIBRARY").unwrap());
+        let mut catalog = evolve_core::imported_library(&root).unwrap();
+        // A plan-only import has no build snapshot; scope everything to one label.
+        for archive in &mut catalog.archives {
+            if archive.builds.is_empty() {
+                archive.builds = vec!["Legacy".into()];
+            }
+        }
+        let build = catalog.archives[0].builds[0].clone();
+        let in_build: Vec<_> = catalog
+            .archives
+            .iter()
+            .filter(|archive| archive.builds.contains(&build))
+            .cloned()
+            .collect();
+        let (characters, wildlife) = crate::modding_page::discover_roster(&in_build);
+        println!(
+            "roster {} characters, {} wildlife",
+            characters.len(),
+            wildlife.len()
+        );
+        let missing: Vec<_> = evolve_core::character_gameplay::CHARACTERS
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !characters.contains(index))
+            .map(|(_, (name, _))| *name)
+            .collect();
+        assert_eq!(
+            missing,
+            ["Glacial Behemoth", "Quantum Caira", "Battle Cabot"],
+            "Legacy defines every other roster character"
+        );
+        assert_eq!(
+            wildlife.len(),
+            evolve_core::character_gameplay::WILDLIFE.len()
+        );
+
+        let meteor = Target::Character("Meteor Goliath".into());
+        let scripts = decoded_scripts(&in_build).unwrap();
+        let sources = script_sources(&meteor, &scripts).unwrap();
+        let linked = actor_linked_imports(&[], &in_build, &build, sources.references).unwrap();
+        let linked: Vec<_> = linked.iter().map(|(_, path)| path.as_str()).collect();
+        println!(
+            "Meteor links {} documents, bases {:?}",
+            linked.len(),
+            sources
+                .bases
+                .iter()
+                .map(|(_, path)| path)
+                .collect::<Vec<_>>()
+        );
+        for expected in [
+            "Libs/Abilities/Goliath/GoliathMeteorCharge1.xml",
+            "Libs/Items/Monsters/Goliath/GoliathMeteorClaw1.xml",
+            // Inherited from GoliathA1 -> Goliath1.
+            "Libs/Items/Monsters/Goliath/GoliathClaw1.xml",
+        ] {
+            assert!(
+                linked
+                    .iter()
+                    .any(|path| path.eq_ignore_ascii_case(expected)),
+                "{expected} not linked"
+            );
+        }
+        let (archive, path) = &sources.owned[0];
+        let fields = preview_imported_values(archive, path, Some(&meteor)).unwrap();
+        assert!(
+            fields
+                .iter()
+                .all(|field| field.label.starts_with("GoliathMeteor"))
+        );
+        assert!(
+            fields
+                .iter()
+                .any(|field| field.label.ends_with("Properties / fileModel"))
+        );
+
+        let appearance = authored_model_imports(&in_build, &build, "Meteor Goliath").unwrap();
+        println!(
+            "Meteor models {:?}, {} materials, {} textures",
+            appearance
+                .models
+                .iter()
+                .map(|(_, path)| path)
+                .collect::<Vec<_>>(),
+            appearance.materials.len(),
+            appearance.textures.len()
+        );
+    }
+
+    #[test]
+    fn script_sources_follow_bases_across_files_but_not_ambiguous_names() {
+        use evolve_core::lua51::{Table, Value};
+        let table = |base: Option<&str>, item: Option<&str>| {
+            let mut fields = Vec::new();
+            if let Some(base) = base {
+                fields.push(("baseType".to_owned(), Value::Global(base.into())));
+            }
+            if let Some(item) = item {
+                let slot = Table {
+                    fields: vec![("name".into(), Value::Str(item.into()))],
+                    items: vec![],
+                };
+                let items = Table {
+                    fields: vec![("claw".into(), Value::Table(slot))],
+                    items: vec![],
+                };
+                let inventory = Table {
+                    fields: vec![("items".into(), Value::Table(items))],
+                    items: vec![],
+                };
+                let game = Table {
+                    fields: vec![("inventory".into(), Value::Table(inventory))],
+                    items: vec![],
+                };
+                fields.push(("gameParams".to_owned(), Value::Table(game)));
+            }
+            Table {
+                fields,
+                items: vec![],
+            }
+        };
+        let archive = ImportedPak {
+            id: "a".repeat(20),
+            name: "Scripts.pak".into(),
+            source: "C:/game/Scripts.pak".into(),
+            directory: String::new(),
+            group: String::new(),
+            description: String::new(),
+            entries: 0,
+            extracted_bytes: 0,
+            warnings: 0,
+            builds: vec!["Legacy".into()],
+        };
+        let script = |path: &str, globals: Vec<(&str, Table)>| DecodedScript {
+            archive: archive.clone(),
+            path: path.into(),
+            globals: globals
+                .into_iter()
+                .map(|(name, table)| (name.to_owned(), table))
+                .collect(),
+        };
+        let goliath = "Scripts/Entities/actor/subtypes/subtypes_goliath.lua";
+        let scripts = vec![
+            script(
+                goliath,
+                vec![
+                    ("GoliathBase", table(Some("Player"), None)),
+                    ("Goliath1", table(Some("GoliathBase"), Some("GoliathClaw1"))),
+                    ("GoliathA1", table(Some("Goliath1"), None)),
+                    (
+                        "GoliathMeteor1",
+                        table(Some("GoliathA1"), Some("GoliathMeteorClaw1")),
+                    ),
+                ],
+            ),
+            script(
+                "Scripts/Entities/actor/player.lua",
+                vec![("Player", table(None, Some("PlayerFists")))],
+            ),
+            script(
+                "Scripts/Entities/actor/subtypes/subtype_crow.lua",
+                vec![("TrackingF", table(Some("Tracking"), None))],
+            ),
+            script(
+                "Scripts/Entities/actor/subtypes_merc.lua",
+                vec![("Tracking", table(None, None))],
+            ),
+            script(
+                "Scripts/Entities/actor/subtypes_merc_copy.lua",
+                vec![("Tracking", table(None, None))],
+            ),
+        ];
+        let meteor = script_sources(&Target::Character("Meteor Goliath".into()), &scripts).unwrap();
+        assert_eq!(meteor.owned.len(), 1);
+        assert_eq!(meteor.owned[0].1, goliath);
+        assert_eq!(meteor.bases.len(), 1);
+        assert_eq!(meteor.bases[0].1, "Scripts/Entities/actor/player.lua");
+        let mut items: Vec<_> = meteor
+            .references
+            .iter()
+            .map(|reference| reference.name.as_str())
+            .collect();
+        items.sort();
+        assert_eq!(items, ["GoliathClaw1", "GoliathMeteorClaw1", "PlayerFists"]);
+        let crow = script_sources(&Target::Character("Crow".into()), &scripts).unwrap();
+        assert_eq!(crow.owned.len(), 1);
+        assert!(crow.bases.is_empty());
+        let goliath_only = script_sources(&Target::Character("Goliath".into()), &scripts).unwrap();
+        assert!(
+            !goliath_only
+                .references
+                .iter()
+                .any(|reference| reference.name == "GoliathMeteorClaw1")
+        );
+    }
+
     #[test]
     fn authored_2012_model_requires_unique_cdf_in_same_build() {
         let root = tempfile::tempdir().unwrap();
@@ -1312,18 +1739,18 @@ mod tests {
             });
         }
         let direct = vec![(Arc::new(archives[0].clone()), actor.to_owned())];
-        let linked = actor_linked_imports(&direct, &archives, "Stage 2").unwrap();
+        let linked = actor_linked_imports(&direct, &archives, "Stage 2", vec![]).unwrap();
         assert_eq!(linked.len(), 1);
         assert_eq!(linked[0].0.id, archives[1].id);
-        assert!(actor_linked_imports(&direct, &archives, "2012").is_err());
+        assert!(actor_linked_imports(&direct, &archives, "2012", vec![]).is_err());
         archives[2].builds = vec!["Stage 2".into()];
         assert!(
-            actor_linked_imports(&direct, &archives, "Stage 2")
+            actor_linked_imports(&direct, &archives, "Stage 2", vec![])
                 .unwrap()
                 .is_empty()
         );
         std::fs::write(root.path().join("0/files").join(actor), b"tampered").unwrap();
-        assert!(actor_linked_imports(&direct, &archives, "Stage 2").is_err());
+        assert!(actor_linked_imports(&direct, &archives, "Stage 2", vec![]).is_err());
     }
 
     #[test]
@@ -1378,7 +1805,7 @@ mod tests {
             builds: vec!["Stage 2".into()],
         };
         let direct = vec![(Arc::new(archive.clone()), files[0].0.to_owned())];
-        let mut linked: Vec<_> = actor_linked_imports(&direct, &[archive], "Stage 2")
+        let mut linked: Vec<_> = actor_linked_imports(&direct, &[archive], "Stage 2", vec![])
             .unwrap()
             .into_iter()
             .map(|(_, path)| path)
@@ -1410,7 +1837,7 @@ mod tests {
             Arc::new(archive.clone()),
             "libs/Actor/Mercs/Maggie.actorparams".into(),
         )];
-        let linked = actor_linked_imports(&direct, &catalog.archives, build).unwrap();
+        let linked = actor_linked_imports(&direct, &catalog.archives, build, vec![]).unwrap();
         assert!(
             linked
                 .iter()
@@ -1500,22 +1927,23 @@ mod tests {
             warnings: 0,
             builds: vec![],
         };
-        let fields = preview_imported_values(&archive, path).unwrap();
+        let fields = preview_imported_values(&archive, path, None).unwrap();
         assert!(fields.iter().any(|field| field.value == "42"));
         assert_eq!(std::fs::read(&file).unwrap(), content);
-        assert!(preview_imported_values(&archive, "../outside.xml").is_err());
+        assert!(preview_imported_values(&archive, "../outside.xml", None).is_err());
         assert!(
             preview_imported_values(
                 &ImportedPak {
                     source: "D:/Other/libs.pak".into(),
                     ..archive.clone()
                 },
-                path
+                path,
+                None
             )
             .is_err()
         );
         std::fs::write(&file, b"changed").unwrap();
-        assert!(preview_imported_values(&archive, path).is_err());
+        assert!(preview_imported_values(&archive, path, None).is_err());
     }
 
     #[test]
@@ -1529,7 +1957,8 @@ mod tests {
             .find(|archive| archive.name == "libs.pak")
             .unwrap();
         let fields =
-            preview_imported_values(archive, "libs/Actor/Monsters/GoliathA.actorparams").unwrap();
+            preview_imported_values(archive, "libs/Actor/Monsters/GoliathA.actorparams", None)
+                .unwrap();
         assert!(
             fields
                 .iter()

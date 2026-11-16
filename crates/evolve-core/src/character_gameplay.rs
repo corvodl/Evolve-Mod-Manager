@@ -76,9 +76,12 @@ pub fn owns_wildlife_document(name: &str, path: &str) -> bool {
     let Some(filename) = lower.strip_prefix("libs/actor/creatures/") else {
         return false;
     };
+    wildlife_stem(id, filename.strip_suffix(".actorparams").unwrap_or(""))
+}
+
+/// Avoid attributing a pet or another species with a shared prefix.
+fn wildlife_stem(id: &str, stem: &str) -> bool {
     let id = id.to_ascii_lowercase();
-    let stem = filename.strip_suffix(".actorparams").unwrap_or("");
-    // Avoid attributing a pet or another species with a shared prefix.
     stem == id
         || ["elite", "rabid", "protected"]
             .iter()
@@ -90,6 +93,158 @@ pub fn internal_id(display_name: &str) -> Option<&'static str> {
         .iter()
         .find(|(name, _)| *name == display_name)
         .map(|(_, id)| *id)
+}
+
+/// A roster entry: a playable character or a wildlife species.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RosterEntry {
+    Character(&'static str),
+    Wildlife(&'static str),
+}
+
+enum ScriptFile {
+    /// `subtypes_<id>.lua`: numbered stages, with variants named by their ID.
+    Monster(&'static str),
+    /// `subtype_<id>.lua`: one class global, variants as `<Class>_<Suffix>`.
+    Hunter(&'static str),
+    /// `Scripts/Entities/AI/<Species>[Elite|Rabid|Protected]_x.lua`.
+    Creature(&'static str),
+}
+
+fn script_file(path: &str) -> Option<ScriptFile> {
+    let lower = path.to_ascii_lowercase();
+    let filename = lower.rsplit('/').next()?.strip_suffix(".lua")?;
+    let roster_id = |id: &str| {
+        CHARACTERS
+            .iter()
+            .find(|(_, candidate)| candidate.eq_ignore_ascii_case(id))
+            .map(|(name, _)| *name)
+    };
+    if lower.starts_with("scripts/entities/actor/") {
+        if let Some(id) = filename.strip_prefix("subtypes_") {
+            return roster_id(id).map(ScriptFile::Monster);
+        }
+        return roster_id(filename.strip_prefix("subtype_")?).map(ScriptFile::Hunter);
+    }
+    let stem = lower
+        .strip_prefix("scripts/entities/ai/")?
+        .strip_suffix("_x.lua")?;
+    WILDLIFE
+        .iter()
+        .find(|(_, id)| wildlife_stem(id, stem))
+        .map(|(name, _)| ScriptFile::Creature(name))
+}
+
+/// Legacy actor or creature script that can define a roster entry.
+pub fn roster_script(path: &str) -> bool {
+    script_file(path).is_some()
+}
+
+/// Any actor script (including shared bases such as `player.lua`) or roster
+/// creature script, as a read-only source for inheritance and preview.
+pub fn actor_script(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    (lower.starts_with("scripts/entities/actor/") && lower.ends_with(".lua")) || roster_script(path)
+}
+
+/// The roster entry a global in a Legacy script defines. Global names repeat
+/// across files (`SupportF` is both Sunny and Kala), so a global is only ever
+/// interpreted inside the file that assigns it. Shared bases and minions
+/// (`GoliathBase`, `GoliathMinion1`) belong to no entry.
+pub fn script_global_owner(path: &str, global: &str) -> Option<RosterEntry> {
+    let global = global.to_ascii_lowercase();
+    let by_id = |id: &str| {
+        CHARACTERS
+            .iter()
+            .find(|(_, candidate)| candidate.eq_ignore_ascii_case(id))
+            .map(|(name, _)| RosterEntry::Character(name))
+    };
+    match script_file(path)? {
+        ScriptFile::Monster(name) => {
+            let stem = global.trim_end_matches(|c: char| c.is_ascii_digit());
+            let id = internal_id(name)?.to_ascii_lowercase();
+            if stem.len() == global.len() {
+                None
+            } else if stem == id || stem == format!("{id}a") {
+                Some(RosterEntry::Character(name))
+            } else {
+                by_id(stem)
+            }
+        }
+        ScriptFile::Hunter(name) => match global.split_once('_') {
+            Some((_, suffix)) => by_id(&format!("{}{suffix}", internal_id(name)?)),
+            None => Some(RosterEntry::Character(name)),
+        },
+        ScriptFile::Creature(name) => {
+            let filename = path.rsplit('/').next()?.strip_suffix(".lua")?;
+            filename
+                .eq_ignore_ascii_case(&global)
+                .then_some(RosterEntry::Wildlife(name))
+        }
+    }
+}
+
+/// Explicit references in a decoded subtype table: its `loadout` abilities,
+/// `gameParams.inventory.items.<slot>.name` items and `gameParams.effectSets`.
+pub fn script_references(table: &crate::lua51::Table) -> Vec<DocumentReference> {
+    use crate::lua51::Value;
+    let mut references = Vec::new();
+    let mut push = |kind, value: &Value| {
+        if let Value::Str(name) = value
+            && !name.is_empty()
+            && name.len() <= 120
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            references.push(DocumentReference {
+                kind,
+                name: name.clone(),
+            });
+        }
+    };
+    for ability in table.table("loadout").map_or(&[][..], |list| &list.items) {
+        push(ReferenceKind::Ability, ability);
+    }
+    if let Some(game) = table.table("gameParams") {
+        for set in game.table("effectSets").map_or(&[][..], |list| &list.items) {
+            push(ReferenceKind::EffectSet, set);
+        }
+        for (_, slot) in game
+            .table("inventory")
+            .and_then(|inventory| inventory.table("items"))
+            .map_or(&[][..], |items| &items.fields)
+        {
+            if let Value::Table(slot) = slot
+                && let Some(item) = slot.get("name")
+            {
+                push(ReferenceKind::Item, item);
+            }
+        }
+    }
+    references.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| (left.kind as u8).cmp(&(right.kind as u8)))
+    });
+    references.dedup();
+    references
+}
+
+/// `Properties.fileModel` of a decoded subtype table, if it names a CDF.
+pub fn script_model(table: &crate::lua51::Table) -> Result<Option<String>, String> {
+    let Some(model) = table
+        .table("Properties")
+        .and_then(|properties| properties.str("fileModel"))
+    else {
+        return Ok(None);
+    };
+    if !model.to_ascii_lowercase().ends_with(".cdf") {
+        return Ok(None);
+    }
+    crate::archive::safe_member_name(&model.replace('\\', "/"))
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 /// Read literal `fileModel` assignments in a verified 2012 subtype document.
@@ -676,6 +831,184 @@ mod tests {
     }
 
     #[test]
+    fn legacy_script_globals_belong_to_their_file_and_named_variant() {
+        use RosterEntry::{Character, Wildlife};
+        let goliath = "Scripts/Entities/actor/subtypes/subtypes_goliath.lua";
+        assert_eq!(
+            script_global_owner(goliath, "Goliath2"),
+            Some(Character("Goliath"))
+        );
+        assert_eq!(
+            script_global_owner(goliath, "GoliathA3"),
+            Some(Character("Goliath"))
+        );
+        assert_eq!(
+            script_global_owner(goliath, "GoliathMeteor1"),
+            Some(Character("Meteor Goliath"))
+        );
+        for shared in ["GoliathBase", "GoliathMinion1", "Player"] {
+            assert_eq!(script_global_owner(goliath, shared), None);
+        }
+        assert_eq!(
+            script_global_owner(
+                "Scripts/Entities/actor/subtypes/subtypes_grounder.lua",
+                "KrakenElder2"
+            ),
+            Some(Character("Elder Kraken"))
+        );
+        let maggie = "Scripts/Entities/actor/subtype_maggie.lua";
+        assert_eq!(
+            script_global_owner(maggie, "TrackingE"),
+            Some(Character("Maggie"))
+        );
+        assert_eq!(
+            script_global_owner(maggie, "TrackingE_Savage"),
+            Some(Character("Wasteland Maggie"))
+        );
+        // Variants missing from the roster are not given to the base.
+        assert_eq!(
+            script_global_owner(
+                "Scripts/Entities/actor/subtype_hyde.lua",
+                "AssaultD_Hellfire"
+            ),
+            None
+        );
+        // The same global in another hunter's file is that hunter's.
+        assert_eq!(
+            script_global_owner(
+                "Scripts/Entities/actor/subtypes/subtype_tech.lua",
+                "SupportF"
+            ),
+            Some(Character("Kala"))
+        );
+        assert_eq!(
+            script_global_owner(
+                "Scripts/Entities/AI/ArmadonBullElite_x.lua",
+                "ArmadonBullElite_x"
+            ),
+            Some(Wildlife("Armadon Bull"))
+        );
+        assert_eq!(
+            script_global_owner("Scripts/Entities/AI/TrapjawPet_x.lua", "TrapjawPet_x"),
+            None
+        );
+        assert_eq!(
+            script_global_owner("Scripts/Entities/actor/subtypes_merc.lua", "Tracking"),
+            None
+        );
+        assert!(!roster_script("Scripts/Entities/AI/Trapjaw.lua"));
+        assert!(!roster_script("Scripts/Entities/actor/player.lua"));
+    }
+
+    #[test]
+    fn script_references_and_model_come_only_from_authored_fields() {
+        use crate::lua51::{Table, Value};
+        let table = |fields: Vec<(&str, Value)>, items: Vec<Value>| {
+            Value::Table(Table {
+                fields: fields
+                    .into_iter()
+                    .map(|(key, value)| (key.to_owned(), value))
+                    .collect(),
+                items,
+            })
+        };
+        let text = |value: &str| Value::Str(value.into());
+        let Value::Table(meteor) = table(
+            vec![
+                ("baseType", Value::Global("GoliathA1".into())),
+                (
+                    "loadout",
+                    table(vec![], vec![text("GoliathMeteorCharge1"), text("../x")]),
+                ),
+                (
+                    "gameParams",
+                    table(
+                        vec![
+                            (
+                                "effectSets",
+                                table(vec![], vec![text("GoliathMeteorBurningSelf")]),
+                            ),
+                            (
+                                "inventory",
+                                table(
+                                    vec![(
+                                        "items",
+                                        table(
+                                            vec![(
+                                                "claw",
+                                                table(
+                                                    vec![("name", text("GoliathMeteorClaw1"))],
+                                                    vec![],
+                                                ),
+                                            )],
+                                            vec![],
+                                        ),
+                                    )],
+                                    vec![],
+                                ),
+                            ),
+                        ],
+                        vec![],
+                    ),
+                ),
+                (
+                    "Properties",
+                    table(
+                        vec![(
+                            "fileModel",
+                            text("Objects/GoliathMeteor/goliathmeteor1.cdf"),
+                        )],
+                        vec![],
+                    ),
+                ),
+                ("description", text("GoliathClaw1")),
+            ],
+            vec![],
+        ) else {
+            unreachable!()
+        };
+        let references = script_references(&meteor);
+        assert_eq!(references.len(), 3);
+        assert!(
+            references
+                .iter()
+                .any(|reference| reference.kind == ReferenceKind::Ability
+                    && referenced_document(
+                        reference,
+                        "Libs/Abilities/Goliath/GoliathMeteorCharge1.xml"
+                    ))
+        );
+        assert!(
+            references
+                .iter()
+                .any(|reference| reference.kind == ReferenceKind::Item
+                    && referenced_document(
+                        reference,
+                        "Libs/Items/Monsters/Goliath/GoliathMeteorClaw1.xml"
+                    ))
+        );
+        assert!(
+            references
+                .iter()
+                .any(|reference| reference.kind == ReferenceKind::EffectSet)
+        );
+        assert_eq!(
+            script_model(&meteor).unwrap().as_deref(),
+            Some("Objects/GoliathMeteor/goliathmeteor1.cdf")
+        );
+        let Value::Table(unsafe_model) = table(
+            vec![(
+                "Properties",
+                table(vec![("fileModel", text("../outside.cdf"))], vec![]),
+            )],
+            vec![],
+        ) else {
+            unreachable!()
+        };
+        assert!(script_model(&unsafe_model).is_err());
+    }
+
+    #[test]
     fn item_effect_sets_are_only_linked_by_authored_attribute() {
         let item = br#"<item name="MercHealthRegen"><feature autoApplyEffectSet="MercHealthRegen" other="Unrelated"/></item>"#;
         let refs = item_effect_set_references(item).unwrap();
@@ -735,6 +1068,58 @@ mod tests {
                 "No directly authored gameplay document for {name}"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "requires EVOLVE_LEGACY_LIBRARY pointing to an Asset Library with Legacy Scripts and GameData PAKs"]
+    fn local_legacy_scripts_define_variants_wildlife_and_models() {
+        let root = std::path::PathBuf::from(std::env::var_os("EVOLVE_LEGACY_LIBRARY").unwrap());
+        let catalog = crate::library_catalog::imported_library(&root).unwrap();
+        let mut owners = std::collections::BTreeMap::new();
+        for archive in &catalog.archives {
+            let inventory =
+                crate::library_catalog::imported_archive_preview_inventory(archive).unwrap();
+            for entry in inventory.entries {
+                if !roster_script(&entry.relative_path) {
+                    continue;
+                }
+                let bytes = crate::library_catalog::read_imported_member_bounded(
+                    archive,
+                    &entry.relative_path,
+                    4 * 1024 * 1024,
+                )
+                .unwrap();
+                for (global, table) in crate::lua51::authored_globals(&bytes).unwrap() {
+                    if let Some(owner) = script_global_owner(&entry.relative_path, &global) {
+                        let models = owners.entry(format!("{owner:?}")).or_insert_with(Vec::new);
+                        models.extend(script_model(&table).unwrap());
+                        if std::env::var_os("EVOLVE_LEGACY_VERBOSE").is_some() {
+                            println!(
+                                "{owner:?} {global} refs={}",
+                                script_references(&table).len()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for (owner, models) in &owners {
+            println!("{owner}: {models:?}");
+        }
+        for expected in [
+            "Character(\"Meteor Goliath\")",
+            "Character(\"Wasteland Maggie\")",
+            "Character(\"Electro Griffin\")",
+            "Wildlife(\"Armadon Bull\")",
+            "Wildlife(\"Trapjaw\")",
+        ] {
+            assert!(owners.contains_key(expected), "{expected} not defined");
+        }
+        assert!(owners["Character(\"Meteor Goliath\")"].iter().any(|model| {
+            model.eq_ignore_ascii_case(
+                "Objects/characters/Monsters/GoliathMeteor/goliathmeteor1.cdf",
+            )
+        }));
     }
 
     #[test]

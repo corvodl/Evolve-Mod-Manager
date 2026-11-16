@@ -35,6 +35,7 @@ pub mod library_build_updates;
 pub mod library_catalog;
 pub mod library_import;
 pub mod library_paths;
+pub mod lua51;
 pub mod material_effects;
 pub mod materials;
 pub mod model;

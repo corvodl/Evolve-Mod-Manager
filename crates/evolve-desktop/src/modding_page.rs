@@ -1708,6 +1708,21 @@ pub(super) fn discover_roster(archives: &[evolve_core::ImportedPak]) -> (Vec<usi
             }
         }
     }
+    // Legacy defines actors and creatures in compiled Lua instead of XML.
+    use evolve_core::character_gameplay::{CHARACTERS, RosterEntry, WILDLIFE, script_global_owner};
+    for script in crate::guided_modding::decoded_scripts(archives).unwrap_or_default() {
+        for (global, _) in &script.globals {
+            match script_global_owner(&script.path, global) {
+                Some(RosterEntry::Character(owner)) => {
+                    characters.extend(CHARACTERS.iter().position(|(name, _)| *name == owner));
+                }
+                Some(RosterEntry::Wildlife(owner)) => {
+                    wildlife.extend(WILDLIFE.iter().position(|(name, _)| *name == owner));
+                }
+                None => {}
+            }
+        }
+    }
     (
         characters.into_iter().collect(),
         wildlife.into_iter().collect(),

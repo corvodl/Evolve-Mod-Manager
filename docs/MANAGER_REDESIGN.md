@@ -65,9 +65,21 @@ the redesign retains both and corrects hierarchy instead of replacing them.
   Ambiguous matches stay unassigned.
 - Legacy files a variant's abilities and items in its base character's folder
   under the variant's internal ID (`Libs/Abilities/Goliath/GoliathMeteor…`);
-  those belong to the variant, not the base. Legacy has no `libs/Actor`
-  documents (actors are compiled Lua 5.1), so it has no inherited actor links
-  and no wildlife entries until that bytecode is read.
+  those belong to the variant, not the base.
+- Legacy has no `libs/Actor` documents; actors and creatures are compiled
+  Lua 5.1 scripts (`Scripts/Entities/actor/**`, `Scripts/Entities/AI/*_x.lua`).
+  `evolve_core::lua51` reads the table literals the main chunk assigns to
+  globals without running anything; a branch, call or computed value makes a
+  register unknown, so only authored constants are reported. A global belongs
+  to a roster entry only inside its own file: numbered monster stages
+  (`Goliath1`, `GoliathA1`) or a variant's ID (`GoliathMeteor1`,
+  `KrakenElder1`); a hunter's class global (`TrackingE`) or
+  `<Class>_<Suffix>` when base ID plus suffix is a roster ID
+  (`TrackingE_Savage`). Shared bases and minions belong to no entry. Its
+  `loadout`, inventory item names and `effectSets` link documents like actor
+  references, `baseType` follows inheritance (same file first, else the one
+  script defining it), and `Properties.fileModel` supplies verified models.
+  Scripts preview read-only and cannot become editable copies.
 
 ## Acceptance
 
