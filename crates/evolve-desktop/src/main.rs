@@ -22318,6 +22318,7 @@ mod project_edit_tests {
 
         let catalog = ImportedLibrary {
             root: root.clone(),
+            editions: Default::default(),
             archives: vec![ImportedPak {
                 id: "a".repeat(20),
                 name: "models.pak".into(),
@@ -22715,6 +22716,7 @@ mod animation_playback_tests {
             }),
             library_catalog: Some(ImportedLibrary {
                 root: "library".into(),
+                editions: Default::default(),
                 archives: vec![
                     pak("library/old", &[], r"C:\Games\Modded\a.pak"),
                     pak("library/new", &["Modded"], r"\\?\C:\Games\Modded\a.pak"),

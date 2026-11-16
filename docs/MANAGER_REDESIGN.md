@@ -37,16 +37,19 @@ the redesign retains both and corrects hierarchy instead of replacing them.
   redesign, not an asset-provenance or security change.
 - Modding opens with a searchable character roster and the site's mapped
   headshots. Select an imported build before browsing; only entries with
-  directly authored gameplay documents in that build appear. Build labels
-  containing 2012 or Legacy show that edition alongside a character's name and
-  portrait. Wildlife with direct actor documents lives in a collapsed section
+  directly authored gameplay documents in that build appear. The edition shown
+  beside a name comes from the recorded install, never the editable build
+  label: `Evolve.xex` beside the imported `Game` folder marks the 2012 Xbox 360
+  build, and `GameDLC01` with `Bin64_SteamRetail/Evolve.exe` marks Legacy.
+  Stage 2, moved installs and older build collections show no edition. Wildlife with direct actor documents lives in a collapsed section
   with text thumbnails. A bounded plain-text 2012 subtype source can explicitly
   assign a CDF model; verified matches are distinguished from the broader build
   search, which is not a character association. Explicit CDF material references
   and MTL texture maps are checked for unique, build-scoped imported sources;
   unresolved or ambiguous assets are not listed as verified. Compiled Lua is
-  never executed or scanned for apparent string matches. Most Stage 2 models,
-  unreferenced textures and inherited gameplay values still need authored links.
+  never executed or scanned for apparent string matches. Stage 2 subtype
+  scripts are a custom `\x1BJee` bytecode, so Stage 2 models and unreferenced
+  textures have no verified owner until that format is decoded.
   Advanced Modding retains the project,
   archive, conflict, recovery, and signed-PAK controls.
 - Guided gameplay searches retain distinct imported archives with the same
@@ -54,10 +57,12 @@ the redesign retains both and corrects hierarchy instead of replacing them.
   each source, and page imported files and scalar fields. Imported values are
   validated again for read-only preview before making an editable project copy.
   Preview includes authored attributes and text; editing supports numeric and
-  boolean attributes only. Explicit actor item/ability and item effect-set
-  references link shared documents when their source is unique in the selected
-  build. Ambiguous matches stay unassigned; other inheritance and dependencies
-  still require source-backed tracing rather than name-only search.
+  boolean attributes only. The root actor's `base` chain, explicit actor
+  item/ability and item effect-set references link shared documents when their
+  source is unique in the selected build; base actors' own equipment is
+  followed because it is inherited. A level token such as `BaseMonster2` links
+  `BaseMonster` only when that actor declares at least that many `levels`.
+  Ambiguous matches stay unassigned.
 
 ## Acceptance
 

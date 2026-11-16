@@ -135,7 +135,7 @@ pub use library_build_updates::{
     remove_managed_library_build, rename_managed_library_build, scan_library_build_updates,
 };
 pub use library_catalog::{
-    ImportedLibrary, ImportedLookupGuard, ImportedPak, LibraryError, LibraryReference,
+    Edition, ImportedLibrary, ImportedLookupGuard, ImportedPak, LibraryError, LibraryReference,
     LibraryReferenceStatus, SharedImportedLookup, begin_imported_lookup_session,
     begin_imported_lookup_session_any_build, begin_imported_lookup_session_for_source,
     describe_archive, imported_archive_files, imported_archive_preview_inventory, imported_library,

@@ -136,24 +136,80 @@ fn actor_linked_imports(
         .iter()
         .map(|(archive, path)| (archive.id.clone(), path.clone()))
         .collect();
-    let mut references = Vec::new();
-    for (archive, path) in direct {
-        if !archive.builds.iter().any(|label| label == build) {
-            return Err("Actor source no longer belongs to the selected build".into());
-        }
-        if !path.to_ascii_lowercase().ends_with(".actorparams") {
-            continue;
-        }
-        let bytes = evolve_core::library_catalog::read_imported_gameplay_member(
+    use evolve_core::character_gameplay::{self as gameplay, ReferenceKind};
+    let read = |archive: &evolve_core::ImportedPak, path: &str| {
+        evolve_core::library_catalog::read_imported_gameplay_member(
             archive,
             path,
             gameplay_values::LIMIT,
         )
-        .map_err(|error| error.to_string())?;
-        references.extend(evolve_core::character_gameplay::actor_references(&bytes)?);
+        .map_err(|error| error.to_string())
+    };
+    let matching = |reference: &gameplay::DocumentReference| -> Vec<usize> {
+        candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, path))| gameplay::referenced_document(reference, path))
+            .map(|(index, _)| index)
+            .collect()
+    };
+    let mut actors = Vec::new();
+    for (archive, path) in direct {
+        if !archive.builds.iter().any(|label| label == build) {
+            return Err("Actor source no longer belongs to the selected build".into());
+        }
+        if path.to_ascii_lowercase().ends_with(".actorparams") {
+            actors.push((archive.as_ref().clone(), path.clone()));
+        }
     }
-    let actor_links =
-        evolve_core::character_gameplay::unique_referenced_members(&references, &candidates);
+    // Inherited parameters apply to the character, so each base actor's own
+    // equipment and abilities are followed too.
+    let mut references = Vec::new();
+    let mut actor_links = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    while let Some((archive, path)) = actors.pop() {
+        if !visited.insert((archive.id.clone(), path.clone())) {
+            continue;
+        }
+        if visited.len() > 64 {
+            return Err("Actor inheritance chain is too long".into());
+        }
+        for reference in gameplay::actor_references(&read(&archive, &path)?)? {
+            if reference.kind != ReferenceKind::ActorBase {
+                references.push(reference);
+                continue;
+            }
+            let base = match matching(&reference).as_slice() {
+                [index] => Some(*index),
+                [] => match gameplay::leveled_base(&reference) {
+                    Some((actor, level)) => match matching(&actor).as_slice() {
+                        [index]
+                            if gameplay::actor_levels(&read(
+                                &imports[*index].0,
+                                &imports[*index].1,
+                            )?)?
+                            .is_some_and(|count| level <= count) =>
+                        {
+                            Some(*index)
+                        }
+                        _ => None,
+                    },
+                    None => None,
+                },
+                _ => None,
+            };
+            if let Some(index) = base
+                && !actor_links.contains(&index)
+            {
+                actor_links.push(index);
+                actors.push(imports[index].clone());
+            }
+        }
+    }
+    actor_links.extend(gameplay::unique_referenced_members(
+        &references,
+        &candidates,
+    ));
     let mut effect_refs = Vec::new();
     let mut inspected_items = std::collections::HashSet::new();
     for (archive, path) in direct
@@ -856,7 +912,7 @@ pub fn view(state: &State) -> Element<'_, Message> {
             LinkStatus::Pending if e.models => "Checking authored subtype model links…".to_owned(),
             LinkStatus::Pending => "Checking authored actor references in this build…".to_owned(),
             LinkStatus::Ready(count) if e.models => format!("{count} model definitions, {} explicit materials and {} referenced textures verified. Other files are build search results, not character ownership.", e.appearance.materials.len(), e.appearance.textures.len()),
-            LinkStatus::Ready(count) => format!("{count} additional documents linked by authored actor equipment, abilities or item effect sets. Ambiguous matches remain unassigned."),
+            LinkStatus::Ready(count) => format!("{count} additional documents linked by authored base actors, equipment, abilities or item effect sets. Ambiguous matches remain unassigned."),
             LinkStatus::Failed(error) if e.models => format!("Could not verify subtype models: {error}"),
             LinkStatus::Failed(error) => format!("Could not check actor references: {error}"),
         }).size(12),
@@ -1271,6 +1327,75 @@ mod tests {
     }
 
     #[test]
+    fn inherited_bases_link_their_chain_and_levels_only_when_declared() {
+        let root = tempfile::tempdir().unwrap();
+        let files: [(&str, &[u8]); 5] = [
+            (
+                "libs/Actor/Monsters/GoliathA.actorparams",
+                br#"<Actor name="GoliathA" levels="3" base="BaseMonster1|BaseMonster4"/>"#,
+            ),
+            (
+                "libs/Actor/BaseMonster.actorparams",
+                br#"<Actor name="BaseMonster" levels="3" base="BaseGameplayActor"/>"#,
+            ),
+            (
+                "libs/Actor/BaseGameplayActor.actorparams",
+                br#"<Actor name="BaseGameplayActor" base="BaseMonster"><param name="sItem" value="SharedRegen"/></Actor>"#,
+            ),
+            ("libs/Items/Shared/SharedRegen.xml", b"<Item/>"),
+            (
+                "libs/Actor/Unrelated.actorparams",
+                br#"<Actor name="Unrelated"/>"#,
+            ),
+        ];
+        let folder = root.path().join("libs");
+        let mut entries = Vec::new();
+        for (path, bytes) in files {
+            let file = folder.join("files").join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, bytes).unwrap();
+            entries.push(serde_json::json!({"path": path, "bytes": bytes.len()}));
+        }
+        std::fs::write(
+            folder.join("asset-library.json"),
+            serde_json::json!({
+                "version": 1, "name": "libs.pak", "source": "C:/game/libs.pak",
+                "entries": entries
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let archive = ImportedPak {
+            id: "a".repeat(20),
+            name: "libs.pak".into(),
+            source: "C:/game/libs.pak".into(),
+            directory: folder.to_string_lossy().into_owned(),
+            group: String::new(),
+            description: String::new(),
+            entries: files.len(),
+            extracted_bytes: 1,
+            warnings: 0,
+            builds: vec!["Stage 2".into()],
+        };
+        let direct = vec![(Arc::new(archive.clone()), files[0].0.to_owned())];
+        let mut linked: Vec<_> = actor_linked_imports(&direct, &[archive], "Stage 2")
+            .unwrap()
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect();
+        linked.sort();
+        // BaseMonster4 exceeds the declared three levels; the base cycle ends.
+        assert_eq!(
+            linked,
+            [
+                "libs/Actor/BaseGameplayActor.actorparams",
+                "libs/Actor/BaseMonster.actorparams",
+                "libs/Items/Shared/SharedRegen.xml",
+            ]
+        );
+    }
+
+    #[test]
     #[ignore = "requires EVOLVE_BENCH_LIBRARY pointing to a local imported Asset Library"]
     fn local_maggie_actor_links_shared_items_only_within_its_build() {
         let root = std::path::PathBuf::from(std::env::var_os("EVOLVE_BENCH_LIBRARY").unwrap());
@@ -1300,6 +1425,13 @@ mod tests {
                 .any(|(archive, path)| archive.builds.contains(build)
                     && path.eq_ignore_ascii_case("libs/EffectSets/MercHealthRegen.xml"))
         );
+        for base in ["BaseMerc", "BaseGameplayActor", "BaseActor"] {
+            assert!(
+                linked.iter().any(|(_, path)| path
+                    .eq_ignore_ascii_case(&format!("libs/Actor/{base}.actorparams"))),
+                "{base} is not in Maggie's inherited chain"
+            );
+        }
         assert!(
             !linked
                 .iter()
@@ -1429,6 +1561,7 @@ mod tests {
         let mut state = State {
             library_catalog: Some(ImportedLibrary {
                 root: dir.path().to_string_lossy().into_owned(),
+                editions: Default::default(),
                 archives: vec![archive],
                 builds: vec![],
                 total_bytes: 1,
@@ -1471,6 +1604,7 @@ mod tests {
         let mut state = State {
             library_catalog: Some(ImportedLibrary {
                 root: dir.path().to_string_lossy().into_owned(),
+                editions: Default::default(),
                 archives: vec![archive],
                 builds: vec![],
                 total_bytes: 1,
@@ -1520,6 +1654,7 @@ mod tests {
         let mut state = State {
             library_catalog: Some(ImportedLibrary {
                 root: dir.path().to_string_lossy().into_owned(),
+                editions: Default::default(),
                 archives,
                 builds: vec!["Stage 2".into()],
                 total_bytes: 2,

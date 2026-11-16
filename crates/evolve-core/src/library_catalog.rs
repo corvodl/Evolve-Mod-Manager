@@ -69,11 +69,34 @@ pub struct ImportedPak {
     pub warnings: usize,
     pub builds: Vec<String>,
 }
+/// Edition of an imported installation, established from files beside its
+/// archives. Build labels are user-editable and never decide the edition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Edition {
+    /// October 2012 Xbox 360 development build, identified by `Evolve.xex`.
+    Xbox2012,
+    /// Retail PC client that keeps DLC in separate `GameDLC` folders.
+    Legacy,
+}
+
+impl Edition {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Xbox2012 => "2012",
+            Self::Legacy => "Legacy",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportedLibrary {
     pub root: String,
     pub archives: Vec<ImportedPak>,
     pub builds: Vec<String>,
+    /// Builds without recognised install evidence (Stage 2, moved or removed
+    /// installs, older build collections) are absent rather than guessed.
+    #[serde(default)]
+    pub editions: HashMap<String, Edition>,
     pub total_bytes: u64,
     pub ignored: usize,
 }
@@ -188,9 +211,52 @@ pub fn describe_archive(filename: &str) -> (String, String) {
     ("Other PAKs".into(), readable(stem))
 }
 
-fn manifests_by_build(root: &Path) -> Result<HashMap<String, Vec<String>>, LibraryError> {
+/// Read the edition from the folder holding each imported member's `Game` or
+/// `Engine` directory. Only existence is checked; nothing in the install is
+/// opened. Members that disagree, or an install that has moved, yield `None`.
+fn install_edition<'a>(
+    source_root: &Path,
+    members: impl IntoIterator<Item = &'a str>,
+) -> Option<Edition> {
+    let is_file = |path: PathBuf| fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file());
+    let is_dir = |path: PathBuf| fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
+    let mut install_folders = HashSet::new();
+    for member in members {
+        let member = safe_member_name(member).ok()?;
+        let parts: Vec<_> = member.split('/').collect();
+        let Some(content) = parts.iter().position(|part| {
+            part.eq_ignore_ascii_case("game") || part.eq_ignore_ascii_case("engine")
+        }) else {
+            continue;
+        };
+        install_folders.insert(parts[..content].join("/"));
+        if install_folders.len() > 4 {
+            return None;
+        }
+    }
+    let mut editions = install_folders.into_iter().map(|folder| {
+        let folder = source_root.join(folder);
+        let xbox = is_file(folder.join("Evolve.xex"));
+        let legacy = is_dir(folder.join("GameDLC01"))
+            && is_file(folder.join("Bin64_SteamRetail").join("Evolve.exe"));
+        match (xbox, legacy) {
+            (true, false) => Some(Edition::Xbox2012),
+            (false, true) => Some(Edition::Legacy),
+            _ => None,
+        }
+    });
+    let first = editions.next()??;
+    editions
+        .all(|edition| edition == Some(first))
+        .then_some(first)
+}
+
+type BuildOwners = (HashMap<String, Vec<String>>, HashMap<String, Edition>);
+
+fn manifests_by_build(root: &Path) -> Result<BuildOwners, LibraryError> {
     let path = root.join("build-collections.json");
     let mut lookup = HashMap::<String, Vec<String>>::new();
+    let mut editions = HashMap::new();
     if path.exists() {
         let data: BuildCollections =
             serde_json::from_slice(&read_bounded(&path, MAX_BUILD_BYTES)?)?;
@@ -294,6 +360,12 @@ fn manifests_by_build(root: &Path) -> Result<HashMap<String, Vec<String>>, Libra
                     .join("/")),
                 &logical_id[..8]
             );
+            if let Some(edition) = install_edition(
+                Path::new(&normalized_root),
+                members.keys().map(String::as_str),
+            ) {
+                editions.insert(label.clone(), edition);
+            }
             for member in members.values() {
                 if let Some(archive_id) = member["archive_id"].as_str()
                     && archive_id.len() == 20
@@ -311,18 +383,19 @@ fn manifests_by_build(root: &Path) -> Result<HashMap<String, Vec<String>>, Libra
         labels.sort_unstable();
         labels.dedup();
     }
-    Ok(lookup)
+    Ok((lookup, editions))
 }
 
 /// Inspect manifests from the established private manager's AssetLibrary.
-/// No file is decrypted, extracted, written, or opened from the game directory.
+/// No file is decrypted, extracted, written, or opened from the game directory;
+/// the recorded install is only checked for edition marker files.
 pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
     let meta = fs::symlink_metadata(root).map_err(|_| LibraryError::InvalidRoot)?;
     if !meta.file_type().is_dir() {
         return Err(LibraryError::InvalidRoot);
     }
     let root = fs::canonicalize(root)?;
-    let owners = manifests_by_build(&root)?;
+    let (owners, mut editions) = manifests_by_build(&root)?;
     let mut archives: Vec<ImportedPak> = Vec::new();
     let mut ignored = 0usize;
     let mut total_bytes = 0u64;
@@ -423,10 +496,12 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
         .collect::<Vec<_>>();
     builds.sort_unstable();
     builds.dedup();
+    editions.retain(|label, _| builds.contains(label));
     Ok(ImportedLibrary {
         root: ordinary_path(&root.to_string_lossy()),
         archives,
         builds,
+        editions,
         total_bytes,
         ignored,
     })
@@ -1125,6 +1200,43 @@ fn resolve_imported_reference_scoped(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn edition_comes_from_install_markers_not_labels() {
+        let root = tempfile::tempdir().unwrap();
+        let xbox = root.path().join("Evolve (2012)");
+        fs::create_dir_all(xbox.join("build_3/Game")).unwrap();
+        fs::write(xbox.join("build_3/Evolve.xex"), b"").unwrap();
+        assert_eq!(
+            install_edition(
+                &xbox,
+                ["build_3/Game/Scripts.pak", "build_3/Engine/Engine.pak"]
+            ),
+            Some(Edition::Xbox2012)
+        );
+        // Markers beside a different folder, or none at all, prove nothing.
+        assert_eq!(install_edition(&xbox, ["Game/Scripts.pak"]), None);
+        assert_eq!(install_edition(&xbox, ["build_3/Scripts.pak"]), None);
+        assert_eq!(
+            install_edition(&xbox, ["../build_3/Game/Scripts.pak"]),
+            None
+        );
+
+        let legacy = root.path().join("Legacy 2012 label");
+        fs::create_dir_all(legacy.join("GameDLC01")).unwrap();
+        assert_eq!(install_edition(&legacy, ["Game/libs.pak"]), None);
+        fs::create_dir_all(legacy.join("Bin64_SteamRetail")).unwrap();
+        fs::write(legacy.join("Bin64_SteamRetail/Evolve.exe"), b"").unwrap();
+        assert_eq!(
+            install_edition(&legacy, ["Game/libs.pak", "GameDLC01/x.pak"]),
+            Some(Edition::Legacy)
+        );
+        fs::write(legacy.join("Evolve.xex"), b"").unwrap();
+        assert_eq!(install_edition(&legacy, ["Game/libs.pak"]), None);
+        assert_eq!(
+            install_edition(&root.path().join("moved"), ["Game/a.pak"]),
+            None
+        );
+    }
     #[test]
     fn relationship_read_rejects_foreign_manifest_changed_file_and_unlisted_member() {
         let root = tempfile::tempdir().unwrap();

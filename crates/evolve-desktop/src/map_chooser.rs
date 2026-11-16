@@ -1194,6 +1194,7 @@ mod tests {
         let state = State {
             library_catalog: Some(evolve_core::ImportedLibrary {
                 root: "/library".into(),
+                editions: Default::default(),
                 archives: vec![
                     archive(
                         "level",

@@ -229,6 +229,8 @@ pub enum ReferenceKind {
     Ability,
     Item,
     EffectSet,
+    /// The root actor's authored `base`; its parameters are inherited.
+    ActorBase,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -237,8 +239,33 @@ pub struct DocumentReference {
     pub name: String,
 }
 
-/// Only explicit sItem/sAbility actor parameters establish a relationship.
-/// Filename similarity, blueprint text and generic actor inheritance do not.
+fn push_tokens(
+    references: &mut Vec<DocumentReference>,
+    kind: ReferenceKind,
+    value: &str,
+) -> Result<(), String> {
+    for token in value.split('|') {
+        if token.is_empty()
+            || token.len() > 120
+            || !token
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            continue;
+        }
+        if references.len() >= 10_000 {
+            return Err("Too many authored actor references".into());
+        }
+        references.push(DocumentReference {
+            kind,
+            name: token.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Only explicit sItem/sAbility actor parameters and the root actor's `base`
+/// establish a relationship. Filename similarity and blueprint text do not.
 pub fn actor_references(bytes: &[u8]) -> Result<Vec<DocumentReference>, String> {
     let xml = crate::cryxml::xml_bytes(bytes, crate::gameplay_values::LIMIT)
         .map_err(|error| error.to_string())?;
@@ -246,8 +273,24 @@ pub fn actor_references(bytes: &[u8]) -> Result<Vec<DocumentReference>, String> 
         .map_err(|error| error.to_string())?;
     let mut reader = Reader::from_reader(xml.as_ref());
     let mut references = Vec::new();
+    let mut root_seen = false;
     loop {
         match reader.read_event().map_err(|error| error.to_string())? {
+            Event::Start(tag) | Event::Empty(tag) if !root_seen => {
+                root_seen = true;
+                if tag.name().as_ref() != b"Actor" {
+                    continue;
+                }
+                for attribute in tag.attributes() {
+                    let attribute = attribute.map_err(|error| error.to_string())?;
+                    if attribute.key.as_ref() == b"base" {
+                        let value = attribute
+                            .decode_and_unescape_value(reader.decoder())
+                            .map_err(|error| error.to_string())?;
+                        push_tokens(&mut references, ReferenceKind::ActorBase, &value)?;
+                    }
+                }
+            }
             Event::Start(tag) | Event::Empty(tag) if tag.name().as_ref() == b"param" => {
                 let mut name = None;
                 let mut value = None;
@@ -270,23 +313,7 @@ pub fn actor_references(bytes: &[u8]) -> Result<Vec<DocumentReference>, String> 
                     Some("sItem") => ReferenceKind::Item,
                     _ => continue,
                 };
-                for token in value.unwrap_or_default().split('|') {
-                    if token.is_empty()
-                        || token.len() > 120
-                        || !token
-                            .bytes()
-                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                    {
-                        continue;
-                    }
-                    if references.len() >= 10_000 {
-                        return Err("Too many authored actor references".into());
-                    }
-                    references.push(DocumentReference {
-                        kind,
-                        name: token.to_owned(),
-                    });
-                }
+                push_tokens(&mut references, kind, &value.unwrap_or_default())?;
             }
             Event::Eof => break,
             _ => (),
@@ -357,7 +384,12 @@ pub fn referenced_document(reference: &DocumentReference, path: &str) -> bool {
     let Some(filename) = parts.last() else {
         return false;
     };
-    if filename.strip_suffix(".xml") != Some(name.as_str()) {
+    let extension = if reference.kind == ReferenceKind::ActorBase {
+        ".actorparams"
+    } else {
+        ".xml"
+    };
+    if filename.strip_suffix(extension) != Some(name.as_str()) {
         return false;
     }
     matches!(
@@ -373,7 +405,60 @@ pub fn referenced_document(reference: &DocumentReference, path: &str) -> bool {
                 ["scripts", "entities", "items", "xml", ..]
             )
             | (ReferenceKind::EffectSet, ["libs", "effectsets", ..])
+            | (ReferenceKind::ActorBase, ["libs", "actor", ..])
     )
+}
+
+/// A leveled actor names its per-level bases `BaseMonster1|BaseMonster2|…`.
+/// Split such a token into the actor it may name and the level; the caller
+/// must still confirm the actor declares that many `levels`.
+pub fn leveled_base(reference: &DocumentReference) -> Option<(DocumentReference, u32)> {
+    if reference.kind != ReferenceKind::ActorBase {
+        return None;
+    }
+    let stem = reference
+        .name
+        .trim_end_matches(|c: char| c.is_ascii_digit());
+    let level = reference.name[stem.len()..].parse().ok()?;
+    (!stem.is_empty() && level > 0).then(|| {
+        (
+            DocumentReference {
+                kind: ReferenceKind::ActorBase,
+                name: stem.to_owned(),
+            },
+            level,
+        )
+    })
+}
+
+/// The root actor's authored `levels` count, if it declares one.
+pub fn actor_levels(bytes: &[u8]) -> Result<Option<u32>, String> {
+    let xml = crate::cryxml::xml_bytes(bytes, crate::gameplay_values::LIMIT)
+        .map_err(|error| error.to_string())?;
+    crate::cryxml::encode_xml(&xml, crate::gameplay_values::LIMIT)
+        .map_err(|error| error.to_string())?;
+    let mut reader = Reader::from_reader(xml.as_ref());
+    loop {
+        match reader.read_event().map_err(|error| error.to_string())? {
+            Event::Start(tag) | Event::Empty(tag) => {
+                if tag.name().as_ref() != b"Actor" {
+                    return Ok(None);
+                }
+                for attribute in tag.attributes() {
+                    let attribute = attribute.map_err(|error| error.to_string())?;
+                    if attribute.key.as_ref() == b"levels" {
+                        let value = attribute
+                            .decode_and_unescape_value(reader.decoder())
+                            .map_err(|error| error.to_string())?;
+                        return Ok(value.trim().parse().ok());
+                    }
+                }
+                return Ok(None);
+            }
+            Event::Eof => return Ok(None),
+            _ => (),
+        }
+    }
 }
 
 /// Resolve only unique source-qualified members. Two PAKs with the same
@@ -458,7 +543,15 @@ mod tests {
     fn actor_links_require_explicit_typed_parameters_and_exact_document_names() {
         let xml = br#"<Actor base="BaseMerc"><param name="sBlueprint" value="Maggie"/><param name="sItem" value="MobileArenaTriggerWeapon|SubMachineGunA"/><param name="sAbility" value="RockyDome1"/><param name="sItem" value="../foreign"/></Actor>"#;
         let links = actor_references(xml).unwrap();
-        assert_eq!(links.len(), 3);
+        assert_eq!(links.len(), 4);
+        let base = links.iter().find(|link| link.name == "BaseMerc").unwrap();
+        assert_eq!(base.kind, ReferenceKind::ActorBase);
+        assert!(referenced_document(base, "libs/Actor/BaseMerc.actorparams"));
+        assert!(!referenced_document(base, "libs/Items/BaseMerc.xml"));
+        assert!(!referenced_document(
+            base,
+            "libs/Actor/BaseMercs.actorparams"
+        ));
         let item = links
             .iter()
             .find(|link| link.name == "SubMachineGunA")
@@ -498,6 +591,49 @@ mod tests {
         ];
         assert_eq!(unique_referenced_members(&links, &candidates), vec![2]);
         assert_eq!(unique_referenced_members(&links, &candidates[..1]), vec![0]);
+    }
+
+    #[test]
+    fn actor_bases_come_only_from_the_root_actor_and_levels_need_a_declared_count() {
+        let goliath = br#"<Actor name="GoliathA" levels="3" base="BaseMonster1|BaseMonster2|BaseMonster3"><Child base="NotAnActorBase"/></Actor>"#;
+        let bases: Vec<_> = actor_references(goliath)
+            .unwrap()
+            .into_iter()
+            .filter(|link| link.kind == ReferenceKind::ActorBase)
+            .map(|link| link.name)
+            .collect();
+        assert_eq!(bases, ["BaseMonster1", "BaseMonster2", "BaseMonster3"]);
+        let (actor, level) = leveled_base(&DocumentReference {
+            kind: ReferenceKind::ActorBase,
+            name: "BaseMonster3".into(),
+        })
+        .unwrap();
+        assert_eq!((actor.name.as_str(), level), ("BaseMonster", 3));
+        assert!(
+            leveled_base(&DocumentReference {
+                kind: ReferenceKind::ActorBase,
+                name: "BaseMerc".into(),
+            })
+            .is_none()
+        );
+        assert!(
+            leveled_base(&DocumentReference {
+                kind: ReferenceKind::Item,
+                name: "Gun2".into(),
+            })
+            .is_none()
+        );
+        assert_eq!(
+            actor_levels(br#"<Actor name="BaseMonster" levels="3"/>"#).unwrap(),
+            Some(3)
+        );
+        assert_eq!(actor_levels(br#"<Actor name="BaseMerc"/>"#).unwrap(), None);
+        assert_eq!(actor_levels(br#"<Item levels="3"/>"#).unwrap(), None);
+        assert!(
+            actor_references(br#"<Item base="BaseMerc"/>"#)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

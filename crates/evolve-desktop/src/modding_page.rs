@@ -1721,16 +1721,9 @@ fn character_browser(state: &State) -> Element<'_, Message> {
             .as_ref()
             .is_some_and(|catalog| catalog.builds.iter().any(|entry| entry == build))
     });
-    let edition = selected_build.map_or("", |build| {
-        let label = build.to_ascii_lowercase();
-        if label.contains("2012") {
-            " (2012)"
-        } else if label.contains("legacy") {
-            " (Legacy)"
-        } else {
-            ""
-        }
-    });
+    let edition = selected_build
+        .and_then(|build| state.library_catalog.as_ref()?.editions.get(build))
+        .map_or(String::new(), |edition| format!(" ({})", edition.label()));
     let mut builds = row![].spacing(8);
     if let Some(catalog) = &state.library_catalog {
         for (index, build) in catalog.builds.iter().enumerate() {
@@ -2409,10 +2402,10 @@ mod tests {
     fn local_imported_builds_keep_2012_separate_from_stage_two_wildlife() {
         let root = std::path::PathBuf::from(std::env::var_os("EVOLVE_BENCH_LIBRARY").unwrap());
         let library = evolve_core::imported_library(&root).unwrap();
-        let older = library
-            .builds
+        let (older, _) = library
+            .editions
             .iter()
-            .find(|build| build.contains("2012"))
+            .find(|(_, edition)| **edition == evolve_core::Edition::Xbox2012)
             .unwrap();
         let archives: Vec<_> = library
             .archives
