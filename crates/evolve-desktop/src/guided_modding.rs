@@ -32,6 +32,15 @@ pub struct Editor {
     links_status: LinkStatus,
     appearance: VerifiedAppearance,
     note: String,
+    /// Every linked document's values, read once the links are known.
+    values: Vec<(usize, Vec<SourceField>)>,
+    values_failed: usize,
+    values_loading: bool,
+    values_request: u64,
+    /// Documents the user folded away in the values list.
+    folded: std::collections::HashSet<usize>,
+    /// The raw document list, for people who want the files.
+    show_files: bool,
 }
 #[derive(Default)]
 enum LinkStatus {
@@ -220,6 +229,10 @@ pub enum Action {
     PreviewReady(u64, usize, Result<Vec<SourceField>, String>),
     LinksReady(u64, Result<Vec<(evolve_core::ImportedPak, String)>, String>),
     ModelsReady(u64, Result<VerifiedAppearance, String>),
+    ValuesReady(u64, Vec<(usize, Result<Vec<SourceField>, String>)>),
+    Fold(usize),
+    ShowFiles,
+    BackToValues,
     Discard,
     Refresh,
 }
@@ -595,6 +608,45 @@ fn authored_model_imports(
     Ok(verified)
 }
 
+/// Most documents a character links to; the rest stay under the file list.
+const VALUE_DOCUMENTS: usize = 200;
+
+/// Read the values of every document the target links to, off the UI thread.
+fn values_task(editor: &mut Editor) -> Task<Message> {
+    if editor.models || editor.target.is_none() || editor.imports.is_empty() {
+        return Task::none();
+    }
+    editor.values_request = editor.values_request.wrapping_add(1);
+    editor.values_loading = true;
+    let request = editor.values_request;
+    let target = editor.target.clone();
+    let documents: Vec<_> = editor
+        .imports
+        .iter()
+        .take(VALUE_DOCUMENTS)
+        .cloned()
+        .enumerate()
+        .collect();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                documents
+                    .into_iter()
+                    .map(|(index, (archive, path))| {
+                        (
+                            index,
+                            preview_imported_values(&archive, &path, target.as_ref()),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default()
+        },
+        move |results| message(Action::ValuesReady(request, results)),
+    )
+}
+
 pub(super) fn link_task(state: &mut State) -> Task<Message> {
     let editor = &mut state.guided_editor;
     let (Some(build), Some(library)) = (&editor.build, &state.library_catalog) else {
@@ -669,6 +721,10 @@ pub fn refresh_imports(state: &mut State) {
     editor.preview = None;
     editor.imports.clear();
     editor.imports_page = 0;
+    editor.values.clear();
+    editor.values_failed = 0;
+    editor.values_loading = false;
+    editor.values_request = editor.values_request.wrapping_add(1);
     let mut skipped = 0;
     if let Some(library) = &state.library_catalog {
         let build = editor.build.as_ref().or_else(|| {
@@ -723,7 +779,10 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
     if state.busy
         && !matches!(
             action,
-            Action::PreviewReady(..) | Action::LinksReady(..) | Action::ModelsReady(..)
+            Action::PreviewReady(..)
+                | Action::LinksReady(..)
+                | Action::ModelsReady(..)
+                | Action::ValuesReady(..)
         )
     {
         state.status = "Wait for the current operation before editing.".into();
@@ -738,6 +797,7 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
             | Action::Select(_)
             | Action::Prepare(_)
             | Action::PreviewImport(_)
+            | Action::BackToValues
             | Action::Refresh
     ) && editor.fields.iter().any(|f| f.value != f.original)
     {
@@ -898,6 +958,37 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                 }
                 Err(error) => editor.links_status = LinkStatus::Failed(error),
             }
+            return values_task(editor);
+        }
+        Action::ValuesReady(request, results) => {
+            if !editor.open || editor.values_request != request {
+                return Task::none();
+            }
+            editor.values_loading = false;
+            editor.values_failed = 0;
+            editor.values.clear();
+            for (index, result) in results {
+                match result {
+                    Ok(fields) if !fields.is_empty() => editor.values.push((index, fields)),
+                    Ok(_) => {}
+                    Err(_) => editor.values_failed += 1,
+                }
+            }
+        }
+        Action::Fold(index) => {
+            if !editor.folded.remove(&index) {
+                editor.folded.insert(index);
+            }
+        }
+        Action::ShowFiles => editor.show_files = !editor.show_files,
+        Action::BackToValues => {
+            editor.preview_request = editor.preview_request.wrapping_add(1);
+            editor.preview = None;
+            editor.selected = None;
+            editor.fields.clear();
+            editor.snapshot.clear();
+            editor.fields_search.clear();
+            editor.fields_page = 0;
         }
         Action::ModelsReady(request, result) => {
             if !editor.open || editor.links_request != request || !editor.models {
@@ -1033,8 +1124,382 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
     }
     Task::none()
 }
+/// "fMaxHealth" -> "Max health", "m_iAmmo" -> "Ammo", "fileModel" -> "File model".
+pub(crate) fn readable(name: &str) -> String {
+    let name = name.trim().trim_start_matches("m_");
+    let bytes = name.as_bytes();
+    // Hungarian prefixes: one lowercase letter before a capital.
+    let name = if bytes.len() > 2
+        && bytes[0].is_ascii_lowercase()
+        && bytes[1].is_ascii_uppercase()
+        && matches!(bytes[0], b'f' | b'i' | b'b' | b's' | b'n' | b'v' | b'e')
+    {
+        &name[1..]
+    } else {
+        name
+    };
+    if let Some(index) = name
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
+        return format!("#{index}");
+    }
+    let mut words = String::new();
+    let chars: Vec<char> = name.chars().collect();
+    for (index, &c) in chars.iter().enumerate() {
+        if c == '_' || c == '-' {
+            words.push(' ');
+            continue;
+        }
+        let next_lower = chars.get(index + 1).is_some_and(|n| n.is_ascii_lowercase());
+        let prev = index.checked_sub(1).map(|i| chars[i]);
+        let boundary = c.is_ascii_uppercase()
+            && prev.is_some_and(|p| {
+                p.is_ascii_lowercase()
+                    || p.is_ascii_digit()
+                    || (p.is_ascii_uppercase() && next_lower)
+            });
+        if boundary && !words.ends_with(' ') {
+            words.push(' ');
+        }
+        words.push(c);
+    }
+    let mut words = words.split_whitespace().map(|word| {
+        // Keep acronyms (HP, DLC) as they are.
+        if word.len() > 1
+            && word
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        {
+            word.to_owned()
+        } else {
+            word.to_ascii_lowercase()
+        }
+    });
+    let mut out = String::new();
+    if let Some(first) = words.next() {
+        let mut chars = first.chars();
+        if let Some(c) = chars.next() {
+            out.extend(c.to_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    for word in words {
+        out.push(' ');
+        out.push_str(&word);
+    }
+    if out.is_empty() { name.to_owned() } else { out }
+}
+
+/// A document's display name and kind, from its path:
+/// "Libs/Abilities/Goliath/GoliathMeteorCharge1.xml" -> ("Goliath meteor charge", "Ability").
+pub(crate) fn document_title(path: &str) -> (String, &'static str) {
+    let lower = path.to_ascii_lowercase().replace('\\', "/");
+    let stem = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .rsplit_once('.')
+        .map_or(path, |(stem, _)| stem)
+        .trim_end_matches(|c: char| c.is_ascii_digit());
+    let kind = if evolve_core::character_gameplay::actor_script(path) {
+        "Character"
+    } else if lower.contains("/abilities/") {
+        "Ability"
+    } else if lower.contains("/perks/") {
+        "Perk"
+    } else if lower.contains("/items/") || lower.contains("/weapons/") {
+        "Weapon or item"
+    } else if lower.contains("effect") {
+        "Effect"
+    } else if lower.contains("/entities/") || lower.contains("/characters/") {
+        "Character"
+    } else {
+        "Gameplay"
+    };
+    (readable(stem), kind)
+}
+
+/// A value's name and where it sits inside its document.
+pub(crate) fn field_title(label: &str) -> Option<(String, String)> {
+    let (path, key) = match label.rsplit_once(" · ") {
+        Some((path, key)) => (path, Some(key)),
+        None => (label, None),
+    };
+    let mut parts: Vec<&str> = path.split(" / ").collect();
+    let name = match key {
+        // The "name" attribute only repeats the element's label.
+        Some("name" | "Name") => return None,
+        Some("value" | "Value" | "text") | None => parts.pop().unwrap_or(path),
+        Some(key) => key,
+    };
+    // The root element or script table says nothing the header doesn't.
+    let context: Vec<String> = parts
+        .iter()
+        .skip(1)
+        .rev()
+        .take(2)
+        .rev()
+        .map(|part| readable(part))
+        .collect();
+    Some((readable(name), context.join(" › ")))
+}
+
+const VALUES_SHOWN: usize = 1500;
+
+fn values_view(state: &State) -> Element<'_, Message> {
+    use crate::ui_kit::{BadgeKind, badge};
+    use iced::widget::{button, container, space};
+    let e = &state.guided_editor;
+    let name = e.target.as_ref().map_or("", Target::name);
+    let query = e.fields_search.trim().to_ascii_lowercase();
+    let header = row![
+        column![
+            text(format!("{name} · gameplay values")).size(20),
+            design::caption(format!(
+                "From {}. Shown as the build has them; Edit a copy to change any of them in a mod.",
+                e.build.as_deref().unwrap_or("the selected build")
+            )),
+        ]
+        .spacing(4)
+        .width(Fill),
+        crate::ui_kit::icon_label_button(crate::icons::refresh(), "Refresh")
+            .style(design::secondary)
+            .on_press(message(Action::Refresh)),
+        crate::ui_kit::icon_label_button(crate::icons::chevron_left(), "Back to characters")
+            .style(design::secondary)
+            .on_press(message(Action::Close)),
+    ]
+    .spacing(10)
+    .align_y(iced::Center);
+
+    let total: usize = e.values.iter().map(|(_, fields)| fields.len()).sum();
+    let mut page = column![
+        header,
+        crate::forms::search_field(
+            "Find a value, e.g. health, cooldown, damage…",
+            &e.fields_search,
+            None,
+            |s| message(Action::FieldSearch(s)),
+        ),
+    ]
+    .spacing(12);
+
+    // Mods the user already made for this character, editable in place.
+    if !e.rows.is_empty() {
+        let mut copies = row![].spacing(8);
+        for (index, (project, path)) in e.rows.iter().enumerate() {
+            let (title, _) = document_title(path);
+            copies = copies.push(
+                design::button(
+                    row![
+                        crate::icons::glyph(crate::icons::pencil(), 14.0),
+                        text(format!("{title} · {}", project.label)).size(design::LABEL),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Center),
+                )
+                .style(design::secondary)
+                .on_press(message(Action::Select(index))),
+            );
+        }
+        page = page.push(
+            column![
+                text("YOUR EDITABLE COPIES")
+                    .size(design::CAPTION)
+                    .style(design::muted),
+                copies.wrap().vertical_spacing(8),
+            ]
+            .spacing(6),
+        );
+    }
+
+    let mut list = column![].spacing(10);
+    let mut shown = 0;
+    let mut matched_docs = 0;
+    for (index, fields) in &e.values {
+        let Some((archive, path)) = e.imports.get(*index) else {
+            continue;
+        };
+        let (title, kind) = document_title(path);
+        let doc_matches = !query.is_empty() && title.to_ascii_lowercase().contains(&query);
+        let rows: Vec<_> = fields
+            .iter()
+            .filter_map(|field| {
+                let (name, context) = field_title(&field.label)?;
+                let hit = query.is_empty()
+                    || doc_matches
+                    || name.to_ascii_lowercase().contains(&query)
+                    || context.to_ascii_lowercase().contains(&query)
+                    || field.label.to_ascii_lowercase().contains(&query)
+                    || field.value.to_ascii_lowercase().contains(&query);
+                hit.then_some((name, context, field))
+            })
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        matched_docs += 1;
+        let folded = e.folded.contains(index) && query.is_empty();
+        let script = evolve_core::character_gameplay::actor_script(path);
+        let edit: Element<'_, Message> = if script {
+            design::tooltip(
+                badge(BadgeKind::ReadOnly, "Read-only"),
+                "Compiled scripts can't be edited",
+                None,
+                iced::widget::tooltip::Position::Left,
+            )
+        } else {
+            design::button(text("Edit a copy").size(design::LABEL))
+                .style(design::secondary)
+                .on_press_maybe((!state.busy).then(|| message(Action::Prepare(*index))))
+                .into()
+        };
+        let head = row![
+            button(
+                row![
+                    crate::icons::glyph(
+                        if folded {
+                            crate::icons::chevron()
+                        } else {
+                            crate::icons::chevron_down()
+                        },
+                        14.0
+                    ),
+                    text(title).size(design::HEADING),
+                    badge(BadgeKind::Neutral, kind),
+                    design::caption(format!("{} values", rows.len())),
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            )
+            .padding([4, 6])
+            .style(design::text_button)
+            .on_press(message(Action::Fold(*index))),
+            space().width(Fill),
+            design::tooltip(
+                design::caption(archive.name.as_str()),
+                path.as_str(),
+                None,
+                iced::widget::tooltip::Position::Left,
+            ),
+            edit,
+        ]
+        .spacing(8)
+        .align_y(iced::Center);
+        let mut card = column![head].spacing(2);
+        if !folded {
+            for (name, context, field) in rows {
+                if shown >= VALUES_SHOWN {
+                    break;
+                }
+                shown += 1;
+                card = card.push(
+                    row![
+                        column![
+                            text(name).size(design::BODY),
+                            text(context).size(design::CAPTION).style(design::muted),
+                        ]
+                        .width(Fill),
+                        container(design::mono(field.value.as_str()))
+                            .padding([3, 8])
+                            .style(|theme: &iced::Theme| container::Style {
+                                background: Some(iced::Background::Color(design::field(theme))),
+                                border: iced::Border {
+                                    radius: design::radius(theme, design::Radius::Small).into(),
+                                    ..iced::Border::default()
+                                },
+                                ..container::Style::default()
+                            }),
+                    ]
+                    .spacing(12)
+                    .padding([3, 28])
+                    .align_y(iced::Center),
+                );
+            }
+        }
+        list = list.push(container(card).padding(10).width(Fill).style(design::panel));
+    }
+    if shown >= VALUES_SHOWN {
+        list = list.push(design::caption(
+            "Only the first values are shown. Search to find the rest.",
+        ));
+    }
+    let status: Element<'_, Message> = if e.values_loading
+        || matches!(e.links_status, LinkStatus::Pending)
+    {
+        crate::ui_kit::empty_state(
+            None,
+            "Reading values…",
+            "Collecting every file this character uses in the build.",
+            None,
+        )
+    } else if e.values.is_empty() {
+        crate::ui_kit::empty_state(
+            None,
+            "No values found",
+            "This build has no readable gameplay files for this character. Refresh after importing more of the game.",
+            None,
+        )
+    } else if matched_docs == 0 {
+        crate::ui_kit::empty_state(
+            Some(crate::icons::search()),
+            "Nothing matches",
+            "Try another word, such as health, speed or damage.",
+            Some(("Clear search", message(Action::FieldSearch(String::new())))),
+        )
+    } else {
+        design::caption(format!(
+            "{total} values across {} files{}",
+            e.values.len(),
+            if e.values_failed > 0 {
+                format!(" · {} files couldn't be read", e.values_failed)
+            } else {
+                String::new()
+            }
+        ))
+        .into()
+    };
+    page = page.push(status);
+    let mut files = column![
+        design::button(
+            text(if e.show_files {
+                "Hide source files"
+            } else {
+                "Show source files"
+            })
+            .size(design::LABEL)
+        )
+        .style(design::text_button)
+        .on_press(message(Action::ShowFiles))
+    ]
+    .spacing(4);
+    if e.show_files {
+        for (index, (archive, path)) in e.imports.iter().enumerate() {
+            files = files.push(
+                design::button(text(format!("{path} · {}", archive.name)).size(design::CAPTION))
+                    .style(design::text_button)
+                    .on_press(message(Action::PreviewImport(index))),
+            );
+        }
+    }
+    list = list.push(files);
+    page.push(
+        scrollable(container(list).padding(iced::Padding {
+            right: 14.0,
+            ..iced::Padding::ZERO
+        }))
+        .height(Fill),
+    )
+    .height(Fill)
+    .into()
+}
+
 pub fn view(state: &State) -> Element<'_, Message> {
     let e = &state.guided_editor;
+    if e.target.is_some() && !e.models && e.selected.is_none() && e.preview.is_none() {
+        return values_view(state);
+    }
     let mut rows = column![].spacing(3);
     let query = e.search.to_ascii_lowercase();
     let matching: Vec<_> = e
@@ -1122,7 +1587,16 @@ pub fn view(state: &State) -> Element<'_, Message> {
             })
             .size(17),
             design::button("Refresh assets").on_press(message(Action::Refresh)),
-            design::button("Close").on_press(message(Action::Close))
+            design::button(if e.target.is_some() && !e.models {
+                "Back to values"
+            } else {
+                "Close"
+            })
+            .on_press(message(if e.target.is_some() && !e.models {
+                Action::BackToValues
+            } else {
+                Action::Close
+            }))
         ]
         .spacing(10),
         text(e.note.as_str()).size(12),
@@ -1319,6 +1793,32 @@ pub fn view(state: &State) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_get_readable_names() {
+        assert_eq!(readable("fMaxHealth"), "Max health");
+        assert_eq!(readable("m_iAmmoCount"), "Ammo count");
+        assert_eq!(readable("fileModel"), "File model");
+        assert_eq!(readable("maxHP"), "Max HP");
+        assert_eq!(readable("[3]"), "#3");
+        assert_eq!(
+            document_title("Libs/Abilities/Goliath/GoliathMeteorCharge1.xml"),
+            ("Goliath meteor charge".to_owned(), "Ability")
+        );
+        assert_eq!(
+            field_title("Item / params / fMaxHealth · value"),
+            Some(("Max health".to_owned(), "Params".to_owned()))
+        );
+        assert_eq!(field_title("Item / params / fMaxHealth · name"), None);
+        assert_eq!(
+            field_title("GoliathMeteor / Properties · fileModel"),
+            Some(("File model".to_owned(), "Properties".to_owned()))
+        );
+        assert_eq!(
+            field_title("GoliathA1 / gameParams / inventory / speed"),
+            Some(("Speed".to_owned(), "Game params › Inventory".to_owned()))
+        );
+    }
     use evolve_core::{ImportedLibrary, ImportedPak};
     #[test]
     #[ignore = "requires EVOLVE_LEGACY_LIBRARY pointing to an Asset Library with Legacy Scripts and GameData PAKs"]

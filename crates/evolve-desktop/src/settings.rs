@@ -30,6 +30,8 @@ pub struct Preferences {
     /// Keep Evolve artwork and translucent Home panels on by default.
     /// Turning it off restores opaque Home surfaces, independent of theme.
     pub show_home_background: bool,
+    /// The imported build last browsed on the Modding page.
+    pub modding_build: String,
     /// Hovering the collapsed sidebar opens it briefly (off: the button only).
     pub sidebar_hover_peek: bool,
     pub appearance_colors: BTreeMap<String, String>,
@@ -140,6 +142,7 @@ impl Default for Preferences {
             appearance_mode: "Dark".into(),
             ui_theme: "Modern".into(),
             show_home_background: true,
+            modding_build: String::new(),
             sidebar_hover_peek: false,
             appearance_colors: BTreeMap::new(),
             keybinds: BTreeMap::new(),

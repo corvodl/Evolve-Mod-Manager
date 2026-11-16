@@ -2,196 +2,201 @@
 pub struct Character {
     pub name: &'static str,
     pub group: &'static str,
-    pub headshot: &'static str,
+    /// Full-body cut-out, 180x240 with the feet on the bottom edge.
+    pub portrait: &'static [u8],
 }
 
-// Names and headshots follow modded-evolve.com/assets/js/images.js (IMAGES.heads).
-// These URLs are presentation assets, never evidence that a game file belongs to a character.
+/// Classes in the order the roster shows them.
+pub const GROUPS: [&str; 5] = ["Monster", "Assault", "Medic", "Support", "Trapper"];
+
+// Names follow modded-evolve.com; portraits are its full-body images, made
+// small by scripts/build-roster-portraits.py. They are presentation only,
+// never evidence that a game file belongs to a character.
 pub const CHARACTERS: &[Character] = &[
     Character {
         name: "Goliath",
         group: "Monster",
-        headshot: "thumb_mnstr_goliatha.png",
+        portrait: include_bytes!("../../../assets/roster/goliath.png"),
     },
     Character {
         name: "Meteor Goliath",
         group: "Monster",
-        headshot: "thumb_mnstr_goliathmeteor.png",
+        portrait: include_bytes!("../../../assets/roster/goliathmeteor.png"),
     },
     Character {
         name: "Kraken",
         group: "Monster",
-        headshot: "thumb_mnstr_groundera.png",
+        portrait: include_bytes!("../../../assets/roster/kraken.png"),
     },
     Character {
         name: "Elder Kraken",
         group: "Monster",
-        headshot: "thumb_mnstr_krakenelder.png",
+        portrait: include_bytes!("../../../assets/roster/krakenelder.png"),
     },
     Character {
         name: "Wraith",
         group: "Monster",
-        headshot: "thumb_mnstr_teleportera.png",
+        portrait: include_bytes!("../../../assets/roster/wraith.png"),
     },
     Character {
         name: "Behemoth",
         group: "Monster",
-        headshot: "thumb_mnstr_rocky.png",
+        portrait: include_bytes!("../../../assets/roster/behemoth.png"),
     },
     Character {
         name: "Glacial Behemoth",
         group: "Monster",
-        headshot: "thumb_mnstr_rockybobcicle.png",
+        portrait: include_bytes!("../../../assets/roster/rockybobcicle.png"),
     },
     Character {
         name: "Gorgon",
         group: "Monster",
-        headshot: "thumb_mnstr_lurker.png",
+        portrait: include_bytes!("../../../assets/roster/gorgon.png"),
     },
     Character {
         name: "Markov",
         group: "Assault",
-        headshot: "thumb_markov.png",
+        portrait: include_bytes!("../../../assets/roster/markov.png"),
     },
     Character {
         name: "Blitz Markov",
         group: "Assault",
-        headshot: "thumb_markovblitz.png",
+        portrait: include_bytes!("../../../assets/roster/markovblitz.png"),
     },
     Character {
         name: "Hyde",
         group: "Assault",
-        headshot: "thumb_hyde.png",
+        portrait: include_bytes!("../../../assets/roster/hyde.png"),
     },
     Character {
         name: "Parnell",
         group: "Assault",
-        headshot: "thumb_parnell.png",
+        portrait: include_bytes!("../../../assets/roster/parnell.png"),
     },
     Character {
         name: "Torvald",
         group: "Assault",
-        headshot: "thumb_torvald.png",
+        portrait: include_bytes!("../../../assets/roster/torvald.png"),
     },
     Character {
         name: "Lennox",
         group: "Assault",
-        headshot: "thumb_lennox.png",
+        portrait: include_bytes!("../../../assets/roster/lennox.png"),
     },
     Character {
         name: "Val",
         group: "Medic",
-        headshot: "thumb_val.png",
+        portrait: include_bytes!("../../../assets/roster/val.png"),
     },
     Character {
         name: "Rogue Val",
         group: "Medic",
-        headshot: "thumb_valrogue.png",
+        portrait: include_bytes!("../../../assets/roster/valrogue.png"),
     },
     Character {
         name: "Lazarus",
         group: "Medic",
-        headshot: "thumb_lazarus.png",
+        portrait: include_bytes!("../../../assets/roster/lazarus.png"),
     },
     Character {
         name: "Caira",
         group: "Medic",
-        headshot: "thumb_caira.png",
+        portrait: include_bytes!("../../../assets/roster/caira.png"),
     },
     Character {
         name: "Quantum Caira",
         group: "Medic",
-        headshot: "thumb_cairalowgrav.png",
+        portrait: include_bytes!("../../../assets/roster/cairaquantum.png"),
     },
     Character {
         name: "Slim",
         group: "Medic",
-        headshot: "thumb_slim.png",
+        portrait: include_bytes!("../../../assets/roster/slim.png"),
     },
     Character {
         name: "Emet",
         group: "Medic",
-        headshot: "thumb_emet.png",
+        portrait: include_bytes!("../../../assets/roster/emet.png"),
     },
     Character {
         name: "Paladin Parnell",
         group: "Medic",
-        headshot: "thumb_parnelltank.png",
+        portrait: include_bytes!("../../../assets/roster/parnelltank.png"),
     },
     Character {
         name: "Hank",
         group: "Support",
-        headshot: "thumb_hank.png",
+        portrait: include_bytes!("../../../assets/roster/hank.png"),
     },
     Character {
         name: "Tech Sergeant Hank",
         group: "Support",
-        headshot: "thumb_hanksgt.png",
+        portrait: include_bytes!("../../../assets/roster/hanksgt.png"),
     },
     Character {
         name: "Bucket",
         group: "Support",
-        headshot: "thumb_bucket.png",
+        portrait: include_bytes!("../../../assets/roster/bucket.png"),
     },
     Character {
         name: "Cabot",
         group: "Support",
-        headshot: "thumb_cabot.png",
+        portrait: include_bytes!("../../../assets/roster/cabot.png"),
     },
     Character {
         name: "Battle Cabot",
         group: "Support",
-        headshot: "thumb_cabotbattle.png",
+        portrait: include_bytes!("../../../assets/roster/cabotbattle.png"),
     },
     Character {
         name: "Sunny",
         group: "Support",
-        headshot: "thumb_sunny.png",
+        portrait: include_bytes!("../../../assets/roster/sunny.png"),
     },
     Character {
         name: "Kala",
         group: "Support",
-        headshot: "thumb_tech.png",
+        portrait: include_bytes!("../../../assets/roster/kala.png"),
     },
     Character {
         name: "Maggie",
         group: "Trapper",
-        headshot: "thumb_maggie.png",
+        portrait: include_bytes!("../../../assets/roster/maggiedaisy.png"),
     },
     Character {
         name: "Wasteland Maggie",
         group: "Trapper",
-        headshot: "thumb_maggiewasteland.png",
+        portrait: include_bytes!("../../../assets/roster/maggiewastelanddaisy.png"),
     },
     Character {
         name: "Griffin",
         group: "Trapper",
-        headshot: "thumb_griffin.png",
+        portrait: include_bytes!("../../../assets/roster/griffin.png"),
     },
     Character {
         name: "Electro Griffin",
         group: "Trapper",
-        headshot: "thumb_griffinelectro.png",
+        portrait: include_bytes!("../../../assets/roster/griffinelectro.png"),
     },
     Character {
         name: "Abe",
         group: "Trapper",
-        headshot: "thumb_abe.png",
+        portrait: include_bytes!("../../../assets/roster/abe.png"),
     },
     Character {
         name: "Renegade Abe",
         group: "Trapper",
-        headshot: "thumb_aberenegade.png",
+        portrait: include_bytes!("../../../assets/roster/aberenegade.png"),
     },
     Character {
         name: "Crow",
         group: "Trapper",
-        headshot: "thumb_crow.png",
+        portrait: include_bytes!("../../../assets/roster/crow.png"),
     },
     Character {
         name: "Jack",
         group: "Trapper",
-        headshot: "thumb_jackal.png",
+        portrait: include_bytes!("../../../assets/roster/jack.png"),
     },
 ];
 
@@ -203,55 +208,6 @@ pub fn matches_search(name: &str, group: &str, search: &str) -> bool {
             .contains(&search.to_ascii_lowercase())
 }
 
-pub fn load_headshots() -> iced::Task<super::Message> {
-    iced::Task::perform(
-        async {
-            tokio::task::spawn_blocking(|| {
-                use std::io::Read;
-                let Ok(client) = reqwest::blocking::Client::builder()
-                    .timeout(std::time::Duration::from_secs(4))
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()
-                else {
-                    return Vec::new();
-                };
-                CHARACTERS
-                    .iter()
-                    .filter_map(|character| {
-                        let url = format!(
-                            "https://assets.modded-evolve.com/images/thumbnails/{}",
-                            character.headshot
-                        );
-                        let response = client.get(url).send().ok()?.error_for_status().ok()?;
-                        if response
-                            .content_length()
-                            .is_some_and(|size| size > 512 * 1024)
-                        {
-                            return None;
-                        }
-                        let mut bytes = Vec::new();
-                        response.take(512 * 1024 + 1).read_to_end(&mut bytes).ok()?;
-                        if bytes.len() > 512 * 1024 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-                            return None;
-                        }
-                        let (width, height) = image::ImageReader::with_format(
-                            std::io::Cursor::new(&bytes),
-                            image::ImageFormat::Png,
-                        )
-                        .into_dimensions()
-                        .ok()?;
-                        (width > 0 && height > 0 && width <= 1024 && height <= 1024)
-                            .then_some((character.name, bytes))
-                    })
-                    .collect()
-            })
-            .await
-            .unwrap_or_default()
-        },
-        super::Message::ModdingHeadshotsLoaded,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,7 +217,8 @@ mod tests {
         let mut names = std::collections::HashSet::new();
         for character in CHARACTERS {
             assert!(names.insert(character.name));
-            assert!(!character.headshot.contains('/'));
+            assert!(character.portrait.starts_with(b"\x89PNG"));
+            assert!(GROUPS.contains(&character.group));
         }
         assert!(matches_search("Meteor Goliath", "Monster", "gOlIaTh"));
         assert!(!matches_search("Goliath", "Monster", "val"));

@@ -78,6 +78,7 @@ mod map_chooser;
 mod map_preview;
 mod menu_popup;
 mod mod_play;
+mod modding_browser;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
@@ -904,8 +905,8 @@ struct State {
     modding_roster_loading: bool,
     modding_roster_error: Option<String>,
     modding_roster_request: u64,
-    modding_headshots: std::collections::HashMap<&'static str, image::Handle>,
-    modding_headshots_requested: bool,
+    /// Roster filter: 0 all, 1-5 a class from `character_roster::GROUPS`, 6 wildlife.
+    modding_class: usize,
     modding_profiles: bool,
     modding_open_editor_when_scanned: bool,
     modding_pending_focus: Option<PathBuf>,
@@ -3219,7 +3220,7 @@ enum Message {
     ModdingCharacterBuild(usize),
     ModdingRosterReady(u64, String, Result<(Vec<usize>, Vec<usize>), String>),
     ModdingBasicAdvanced,
-    ModdingHeadshotsLoaded(Vec<(&'static str, Vec<u8>)>),
+    ModdingClass(usize),
     ModdingCharacterEdit(bool),
     /// Clear the Modding search, kind filter and chips together.
     ModdingClearFilters,
@@ -5981,6 +5982,28 @@ fn verified_viewer_file(state: &State) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+/// The Modding page always browses a build: the one used last, else the
+/// first imported one. Nothing happens while one is already chosen.
+fn pick_modding_build(state: &mut State) -> Task<Message> {
+    let Some(catalog) = &state.library_catalog else {
+        return Task::none();
+    };
+    if state
+        .modding_character_build
+        .as_ref()
+        .is_some_and(|build| catalog.builds.contains(build))
+        || catalog.builds.is_empty()
+    {
+        return Task::none();
+    }
+    let index = catalog
+        .builds
+        .iter()
+        .position(|build| *build == state.preferences.modding_build)
+        .unwrap_or(0);
+    update(state, Message::ModdingCharacterBuild(index))
+}
+
 fn persist_preferences(state: &mut State) {
     state.settings_status =
         match settings_path().and_then(|path| save_to(&path, &state.preferences)) {
@@ -6464,9 +6487,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 mark_news_seen(state);
             }
             let mut tasks = Vec::new();
-            if page == Page::Files && !state.modding_headshots_requested {
-                state.modding_headshots_requested = true;
-                tasks.push(character_roster::load_headshots());
+            if page == Page::Files {
+                tasks.push(pick_modding_build(state));
             }
             if page == Page::Home {
                 tasks.push(inspect_client_version_task(
@@ -6570,6 +6592,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .cloned()
                     .collect::<Vec<_>>();
                 state.modding_character_build = Some(build.clone());
+                if state.preferences.modding_build != build {
+                    state.preferences.modding_build = build.clone();
+                    persist_preferences(state);
+                }
                 state.modding_character = None;
                 state.modding_wildlife = None;
                 state.modding_available_characters.clear();
@@ -6618,12 +6644,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ModdingBasicAdvanced => {
             state.modding_basic_advanced = !state.modding_basic_advanced
         }
-        Message::ModdingHeadshotsLoaded(images) => {
-            for (name, bytes) in images {
-                state
-                    .modding_headshots
-                    .insert(name, image::Handle::from_bytes(bytes));
-            }
+        Message::ModdingClass(class) => {
+            state.modding_class = class.min(character_roster::GROUPS.len() + 1);
         }
         Message::ModdingCharacterEdit(models) => {
             if state.modding_roster_loading {
@@ -7919,7 +7941,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_page = 0;
                     refresh_library_matches(state);
                     guided_modding::refresh_imports(state);
-                    return guided_modding::link_task(state);
+                    return Task::batch([
+                        guided_modding::link_task(state),
+                        pick_modding_build(state),
+                    ]);
                 }
                 Err(error) => {
                     state.status = format!("Could not index saved Asset Library: {error}");
