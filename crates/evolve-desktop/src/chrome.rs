@@ -1004,9 +1004,18 @@ fn sheet_contents(state: &State, sheet: Sheet) -> (String, Element<'_, Message>)
                             archive.warnings.to_string()
                         }
                     ),
+                    design::button("Browse files in Asset Viewer")
+                        .style(design::secondary)
+                        .on_press(Message::Sequence(vec![
+                            Message::LibrarySelect(index),
+                            Message::LibraryPreview,
+                        ])),
                     design::button("Open map in Level Editor")
                         .style(design::secondary)
-                        .on_press(Message::LibraryOpenMap(index)),
+                        .on_press_maybe(
+                            crate::level_archive::offers_as_map(archive)
+                                .then_some(Message::LibraryOpenMap(index))
+                        ),
                 ]
                 .spacing(10)
                 .into(),

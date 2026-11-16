@@ -641,7 +641,7 @@ fn import_split(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-/// Scan → Review → Import → Done for both import flows.
+/// Scan → Review → Import. Completion is reported only by the worker.
 fn import_steps<'a>(state: &State, has_plan: bool, importing: bool) -> Element<'a, Message> {
     let step = if state.library_import_scanning {
         0
@@ -650,7 +650,7 @@ fn import_steps<'a>(state: &State, has_plan: bool, importing: bool) -> Element<'
     } else if has_plan {
         1
     } else {
-        3
+        0
     };
     crate::ui_kit::stepper(
         &crate::ui_kit::Steps::new(&["Scan", "Review", "Import", "Done"], step),
@@ -1198,15 +1198,19 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 Some(("Import PAKs…", Message::LibraryToggleConfiguration)),
             )
         } else if by_build && build.is_none() {
-            container(
-                text("No build snapshot is available. Use By Category or import snapshot metadata.")
-                    .size(design::BODY)
-                    .style(design::muted),
+            crate::ui_kit::empty_state(
+                None,
+                "No build snapshot",
+                "This build has no saved snapshot. Browse all imported PAKs instead.",
+                Some(("By Category", Message::LibrarySetByBuild(false))),
             )
-            .padding(18)
-            .into()
         } else {
-            crate::ui_kit::empty_state(None, "No matches", "No imported PAKs match this search.", None)
+            crate::ui_kit::empty_state(
+                None,
+                "No matches",
+                "No imported PAKs match these search terms or filters.",
+                Some(("Clear search and filters", Message::LibraryClearFilters)),
+            )
         });
     }
     let table_heading = container(
@@ -1393,7 +1397,7 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
             .into()
         } else {
             design::tooltip(
-                design::button(design::heading(name))
+                design::button(design::heading(name.clone()))
                     .padding([2, 4])
                     .style(design::text_button)
                     .on_press_maybe(
@@ -1427,14 +1431,29 @@ fn manage_builds_dialog(state: &State) -> Element<'_, Message> {
                 build.extracted_bytes as f32 / total as f32,
                 crate::ui_kit::format_bytes(build.extracted_bytes as f64),
             ),
-            crate::ui_kit::hold_button(
-                &state.ui,
-                &format!("remove-build:{}", build.id),
-                "Hold to remove build",
-                Message::LibraryDeleteBuildNow(build.id.clone()),
-                !state.busy,
-                state.preferences.reduce_motion,
-            ),
+            if state.library_remove_review.as_deref() == Some(build.id.as_str()) {
+                column![
+                    design::caption(format!(
+                        "Remove “{name}”? This deletes its imported snapshot history and only extractions unused by other builds. Original installations and mod projects remain untouched."
+                    )),
+                    row![
+                        design::button("Remove this build")
+                            .style(design::primary)
+                            .on_press_maybe((!state.busy && !state.library_import_scanning)
+                                .then(|| Message::LibraryDeleteBuildNow(build.id.clone()))),
+                        design::button("Cancel")
+                            .style(design::secondary)
+                            .on_press(Message::LibraryDeleteBuildCancel),
+                    ].spacing(8),
+                ].spacing(8)
+            } else {
+                column![
+                    design::button("Review removal…")
+                        .style(design::secondary)
+                        .on_press_maybe((!state.busy && !state.library_import_scanning)
+                            .then(|| Message::LibraryDeleteBuildReview(build.id.clone()))),
+                ]
+            },
         ]
         .spacing(8);
         content = content.push(panel(container(card).padding(12)));
