@@ -12,6 +12,7 @@ mod asset_viewer;
 mod audio_tools;
 mod auto_resources;
 mod blender_install;
+mod character_roster;
 mod chrome;
 mod client_version;
 mod color_picker;
@@ -889,6 +890,19 @@ struct State {
     editor_replace_dialog: Option<usize>,
     modding_menu: Option<&'static str>,
     modding_advanced: bool,
+    modding_basic_advanced: bool,
+    modding_character_search: String,
+    modding_character: Option<usize>,
+    modding_wildlife_open: bool,
+    modding_wildlife: Option<usize>,
+    modding_character_build: Option<String>,
+    modding_available_characters: Vec<usize>,
+    modding_available_wildlife: Vec<usize>,
+    modding_roster_loading: bool,
+    modding_roster_error: Option<String>,
+    modding_roster_request: u64,
+    modding_headshots: std::collections::HashMap<&'static str, image::Handle>,
+    modding_headshots_requested: bool,
     modding_profiles: bool,
     modding_open_editor_when_scanned: bool,
     modding_pending_focus: Option<PathBuf>,
@@ -3192,6 +3206,15 @@ enum Message {
     DismissMenus,
     MenuCommand(Box<Message>),
     ModdingFilterChanged(String),
+    ModdingCharacterSearch(String),
+    ModdingCharacterSelected(usize),
+    ModdingWildlifeToggle,
+    ModdingWildlifeSelected(usize),
+    ModdingCharacterBuild(usize),
+    ModdingRosterReady(u64, String, Result<(Vec<usize>, Vec<usize>), String>),
+    ModdingBasicAdvanced,
+    ModdingHeadshotsLoaded(Vec<(&'static str, Vec<u8>)>),
+    ModdingCharacterEdit(bool),
     /// Clear the Modding search, kind filter and chips together.
     ModdingClearFilters,
     ModdingPage(bool),
@@ -6434,6 +6457,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 mark_news_seen(state);
             }
             let mut tasks = Vec::new();
+            if page == Page::Files && !state.modding_headshots_requested {
+                state.modding_headshots_requested = true;
+                tasks.push(character_roster::load_headshots());
+            }
             if page == Page::Home {
                 tasks.push(inspect_client_version_task(
                     &state.preferences.client_executable,
@@ -6495,6 +6522,138 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ModdingFilterChanged(value) => {
             state.modding_filter = value;
             state.modding_page = 0;
+        }
+        Message::ModdingCharacterSearch(value) => state.modding_character_search = value,
+        Message::ModdingCharacterSelected(index) => {
+            if index < character_roster::CHARACTERS.len()
+                && (state.modding_character_build.is_none()
+                    || (!state.modding_roster_loading
+                        && state.modding_available_characters.contains(&index)))
+            {
+                state.modding_character = Some(index);
+                state.modding_wildlife = None;
+            }
+        }
+        Message::ModdingWildlifeToggle => {
+            state.modding_wildlife_open = !state.modding_wildlife_open
+        }
+        Message::ModdingWildlifeSelected(index) => {
+            if index < evolve_core::character_gameplay::WILDLIFE.len()
+                && !state.modding_roster_loading
+                && state.modding_available_wildlife.contains(&index)
+            {
+                state.modding_wildlife = Some(index);
+                state.modding_character = None;
+            }
+        }
+        Message::ModdingCharacterBuild(index) => {
+            if let Some(build) = state
+                .library_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.builds.get(index))
+            {
+                let build = build.clone();
+                let archives = state
+                    .library_catalog
+                    .as_ref()
+                    .unwrap()
+                    .archives
+                    .iter()
+                    .filter(|archive| archive.builds.contains(&build))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                state.modding_character_build = Some(build.clone());
+                state.modding_character = None;
+                state.modding_wildlife = None;
+                state.modding_available_characters.clear();
+                state.modding_available_wildlife.clear();
+                state.modding_roster_loading = true;
+                state.modding_roster_error = None;
+                state.modding_roster_request = state.modding_roster_request.wrapping_add(1);
+                let request = state.modding_roster_request;
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            modding_page::discover_roster(&archives)
+                        })
+                        .await
+                    },
+                    move |result| match result {
+                        Ok(roster) => Message::ModdingRosterReady(request, build, roster),
+                        Err(error) => Message::ModdingRosterReady(
+                            request,
+                            build,
+                            Err(format!("Roster worker failed: {error}")),
+                        ),
+                    },
+                );
+            }
+        }
+        Message::ModdingRosterReady(request, build, result) => {
+            if state.modding_roster_request == request
+                && state.modding_character_build.as_deref() == Some(build.as_str())
+            {
+                state.modding_roster_loading = false;
+                match result {
+                    Ok((characters, wildlife)) => {
+                        state.modding_available_characters = characters;
+                        state.modding_available_wildlife = wildlife;
+                        state.modding_roster_error = None;
+                    }
+                    Err(error) => {
+                        state.modding_available_characters.clear();
+                        state.modding_available_wildlife.clear();
+                        state.modding_roster_error = Some(error);
+                    }
+                }
+            }
+        }
+        Message::ModdingBasicAdvanced => {
+            state.modding_basic_advanced = !state.modding_basic_advanced
+        }
+        Message::ModdingHeadshotsLoaded(images) => {
+            for (name, bytes) in images {
+                state
+                    .modding_headshots
+                    .insert(name, image::Handle::from_bytes(bytes));
+            }
+        }
+        Message::ModdingCharacterEdit(models) => {
+            if state.modding_roster_loading {
+                return Task::none();
+            }
+            let Some(build) = state.modding_character_build.clone().filter(|build| {
+                state
+                    .library_catalog
+                    .as_ref()
+                    .is_some_and(|catalog| catalog.builds.contains(build))
+            }) else {
+                state.status = "Select an imported build before viewing character files.".into();
+                return Task::none();
+            };
+            let target = if let Some(character) = state
+                .modding_character
+                .filter(|index| state.modding_available_characters.contains(index))
+                .and_then(|index| character_roster::CHARACTERS.get(index))
+            {
+                guided_modding::Target::Character(character.name.to_owned())
+            } else if let Some((name, _)) = state
+                .modding_wildlife
+                .filter(|index| state.modding_available_wildlife.contains(index))
+                .and_then(|index| evolve_core::character_gameplay::WILDLIFE.get(index))
+            {
+                guided_modding::Target::Wildlife((*name).to_owned())
+            } else {
+                return Task::none();
+            };
+            return guided_modding::update(
+                state,
+                guided_modding::Action::OpenTarget {
+                    models,
+                    target,
+                    build,
+                },
+            );
         }
         Message::ModdingClearFilters => {
             state.modding_filter.clear();
@@ -7732,6 +7891,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_page = 0;
                     refresh_library_matches(state);
                     guided_modding::refresh_imports(state);
+                    return guided_modding::link_task(state);
                 }
                 Err(error) => {
                     state.status = format!("Could not index saved Asset Library: {error}");
@@ -22172,6 +22332,7 @@ mod project_edit_tests {
 
         let catalog = ImportedLibrary {
             root: root.clone(),
+            editions: Default::default(),
             archives: vec![ImportedPak {
                 id: "a".repeat(20),
                 name: "models.pak".into(),
@@ -22199,6 +22360,78 @@ mod project_edit_tests {
         assert_eq!(state.library_selected, Some(0));
         assert_eq!(state.library_selection.indices.len(), 1);
         assert!(state.library_selection.indices.contains(&0));
+    }
+
+    #[test]
+    fn basic_modding_selection_keeps_advanced_tools_and_rejects_invalid_characters() {
+        let mut state = State::default();
+        assert!(!state.modding_basic_advanced);
+        let _ = update(&mut state, Message::ModdingCharacterSelected(usize::MAX));
+        assert!(state.modding_character.is_none());
+        let _ = update(&mut state, Message::ModdingCharacterSelected(0));
+        assert_eq!(state.modding_character, Some(0));
+        let _ = update(
+            &mut state,
+            Message::ModdingCharacterSearch("Goliath".into()),
+        );
+        let _ = update(&mut state, Message::ModdingBasicAdvanced);
+        assert!(state.modding_basic_advanced);
+        let _ = update(&mut state, Message::ModdingBasicAdvanced);
+        assert_eq!(state.modding_character_search, "Goliath");
+        assert_eq!(state.modding_character, Some(0));
+    }
+
+    #[test]
+    fn late_or_wrong_build_roster_cannot_replace_current_selection() {
+        let mut state = State {
+            modding_character_build: Some("Legacy".into()),
+            modding_roster_request: 3,
+            modding_roster_loading: true,
+            ..State::default()
+        };
+        let _ = update(
+            &mut state,
+            Message::ModdingRosterReady(2, "Legacy".into(), Ok((vec![0], vec![0]))),
+        );
+        let _ = update(
+            &mut state,
+            Message::ModdingRosterReady(3, "2012".into(), Ok((vec![0], vec![0]))),
+        );
+        assert!(state.modding_roster_loading);
+        assert!(state.modding_available_characters.is_empty());
+        let _ = update(
+            &mut state,
+            Message::ModdingRosterReady(3, "Legacy".into(), Ok((vec![1], vec![2]))),
+        );
+        assert!(!state.modding_roster_loading);
+        assert_eq!(state.modding_available_characters, vec![1]);
+        assert_eq!(state.modding_available_wildlife, vec![2]);
+    }
+
+    #[test]
+    fn roster_decode_failure_is_visible_and_stale_failures_are_ignored() {
+        let mut state = State {
+            modding_character_build: Some("Legacy".into()),
+            modding_roster_request: 3,
+            modding_roster_loading: true,
+            ..State::default()
+        };
+        let _ = update(
+            &mut state,
+            Message::ModdingRosterReady(2, "Legacy".into(), Err("old failure".into())),
+        );
+        assert!(state.modding_roster_loading);
+        assert!(state.modding_roster_error.is_none());
+        let _ = update(
+            &mut state,
+            Message::ModdingRosterReady(3, "Legacy".into(), Err("invalid script".into())),
+        );
+        assert!(!state.modding_roster_loading);
+        assert_eq!(
+            state.modding_roster_error.as_deref(),
+            Some("invalid script")
+        );
+        assert!(state.modding_available_characters.is_empty());
     }
 
     #[test]
@@ -22523,6 +22756,7 @@ mod animation_playback_tests {
             }),
             library_catalog: Some(ImportedLibrary {
                 root: "library".into(),
+                editions: Default::default(),
                 archives: vec![
                     pak("library/old", &[], r"C:\Games\Modded\a.pak"),
                     pak("library/new", &["Modded"], r"\\?\C:\Games\Modded\a.pak"),

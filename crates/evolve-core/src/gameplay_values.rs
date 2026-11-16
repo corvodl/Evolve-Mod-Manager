@@ -10,6 +10,106 @@ pub struct ValueField {
     pub original: String,
     pub value: String,
 }
+#[derive(Clone, Debug)]
+pub struct SourceField {
+    pub label: String,
+    pub value: String,
+}
+
+/// Inspect every authored XML attribute and non-empty text node without
+/// implying that every field is safe to edit. Editing has stricter shape rules.
+pub fn source_fields(bytes: &[u8]) -> Result<Vec<SourceField>, String> {
+    let xml = crate::cryxml::xml_bytes(bytes, LIMIT).map_err(|error| error.to_string())?;
+    crate::cryxml::encode_xml(&xml, LIMIT).map_err(|error| error.to_string())?;
+    let mut reader = Reader::from_reader(xml.as_ref());
+    let mut parents = Vec::<String>::new();
+    let mut fields = Vec::new();
+    let mut text_value = String::new();
+    let flush_text = |fields: &mut Vec<SourceField>,
+                      parents: &[String],
+                      text_value: &mut String|
+     -> Result<(), String> {
+        if !text_value.trim().is_empty() {
+            if fields.len() >= 20_000 {
+                return Err("Too many source fields".into());
+            }
+            fields.push(SourceField {
+                label: format!("{} · text", parents.join(" / ")),
+                value: text_value.clone(),
+            });
+        }
+        text_value.clear();
+        Ok(())
+    };
+    loop {
+        match reader.read_event().map_err(|error| error.to_string())? {
+            Event::Start(tag) | Event::Empty(tag) => {
+                flush_text(&mut fields, &parents, &mut text_value)?;
+                let empty = xml[..reader.buffer_position() as usize].ends_with(b"/>");
+                let element = std::str::from_utf8(tag.name().as_ref())
+                    .map_err(|error| error.to_string())?
+                    .to_owned();
+                let mut attributes = Vec::new();
+                for attribute in tag.attributes() {
+                    let attribute = attribute.map_err(|error| error.to_string())?;
+                    attributes.push((
+                        std::str::from_utf8(attribute.key.as_ref())
+                            .map_err(|error| error.to_string())?
+                            .to_owned(),
+                        attribute
+                            .decode_and_unescape_value(reader.decoder())
+                            .map_err(|error| error.to_string())?
+                            .into_owned(),
+                    ));
+                }
+                let label = attributes
+                    .iter()
+                    .find(|(key, _)| key == "name" || key == "Name")
+                    .map_or(element.as_str(), |(_, value)| value.as_str())
+                    .to_owned();
+                parents.push(label);
+                for (key, value) in attributes {
+                    if fields.len() >= 20_000 {
+                        return Err("Too many source fields".into());
+                    }
+                    fields.push(SourceField {
+                        label: format!("{} · {key}", parents.join(" / ")),
+                        value,
+                    });
+                }
+                if empty {
+                    parents.pop();
+                }
+            }
+            Event::End(_) => {
+                flush_text(&mut fields, &parents, &mut text_value)?;
+                parents.pop();
+            }
+            Event::Text(text) => {
+                let value = text.xml_content().map_err(|error| error.to_string())?;
+                text_value.push_str(&value);
+            }
+            Event::CData(text) => {
+                let value = text.decode().map_err(|error| error.to_string())?;
+                text_value.push_str(&value);
+            }
+            Event::GeneralRef(reference) => {
+                let reference =
+                    std::str::from_utf8(reference.as_ref()).map_err(|error| error.to_string())?;
+                let escaped = format!("&{reference};");
+                text_value.push_str(
+                    &quick_xml::escape::unescape(&escaped).map_err(|error| error.to_string())?,
+                );
+            }
+            Event::Eof => {
+                flush_text(&mut fields, &parents, &mut text_value)?;
+                break;
+            }
+            _ => (),
+        }
+    }
+    Ok(fields)
+}
 fn numeric_shape(value: &str) -> Option<Vec<usize>> {
     value
         .split('|')
@@ -186,6 +286,31 @@ pub fn apply(bytes: &[u8], edits: &[ValueField]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_inspection_preserves_text_references_and_numbers_without_enabling_them_for_edit() {
+        let xml = br#"<Actor name="Maggie" base="BaseMerc"><param name="sItem" value="MobileArenaTriggerWeapon"/><param name="fMaxHealth" value="200"/><note>Inherited &amp; shared</note></Actor>"#;
+        let source = source_fields(xml).unwrap();
+        assert!(source.iter().any(
+            |field| field.label.contains("sItem") && field.value == "MobileArenaTriggerWeapon"
+        ));
+        assert!(
+            source
+                .iter()
+                .any(|field| field.label.contains("base") && field.value == "BaseMerc")
+        );
+        assert!(
+            source
+                .iter()
+                .any(|field| field.label.contains("text") && field.value == "Inherited & shared")
+        );
+        assert!(
+            source
+                .iter()
+                .any(|field| field.label.contains("fMaxHealth") && field.value == "200")
+        );
+        assert_eq!(fields(xml).unwrap().len(), 1);
+        assert!(source_fields(b"<!DOCTYPE bad><Actor/>").is_err());
+    }
     #[test]
     fn repeated_params_edit_only_selected_value_and_preserve_strings() {
         let xml = br#"<ability name="A"><params><param name="cooldown" value="11"/><param name="cooldown" value="22"/><param name="icon" value="a&amp;b"/></params></ability>"#;
