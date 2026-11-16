@@ -212,6 +212,12 @@ pub fn view(state: &State) -> Element<'_, Message> {
         .height(Length::Fill),
         row![
             space().width(Fill),
+            design::button("View activity details")
+                .style(design::secondary)
+                .on_press_maybe(
+                    (notice.phase == Phase::Error || notice.phase == Phase::Warning)
+                        .then_some(Message::ToggleActivity)
+                ),
             design::button("Close").on_press(Message::DismissPlayNotice)
         ],
     ]
