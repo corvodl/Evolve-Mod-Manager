@@ -85,8 +85,8 @@ pub(crate) struct DecodedScript {
     pub globals: Vec<(String, lua51::Table)>,
 }
 
-/// Decode the Lua 5.1 actor scripts in `archives`. Plain-text 2012 scripts
-/// and Stage 2's custom bytecode are not Lua 5.1 and are skipped here.
+/// Decode the compiled actor scripts in `archives` (Legacy Lua 5.1 and Stage 2
+/// Jee bytecode). Plain-text 2012 scripts are not compiled bytecode and are skipped here.
 pub(crate) fn decoded_scripts(
     archives: &[evolve_core::ImportedPak],
 ) -> Result<Vec<DecodedScript>, String> {
@@ -246,7 +246,7 @@ fn preview_imported_values(
             evolve_core::library_catalog::read_imported_member_bounded(archive, path, SCRIPT_LIMIT)
                 .map_err(|error| error.to_string())?;
         if !lua51::is_bytecode(&bytes) {
-            return Err("Only compiled Lua 5.1 scripts can be previewed".into());
+            return Err("Only compiled Lua scripts can be previewed".into());
         }
         let globals = lua51::authored_globals(&bytes)?;
         // A shared script (Goliath's also defines Meteor Goliath) shows only
@@ -439,7 +439,8 @@ fn authored_model_imports(
     );
     let mut sources = Vec::new();
     for archive in archives.iter().filter(|archive| {
-        archive.builds.iter().any(|label| label == build) && archive.name == "Scripts.pak"
+        archive.builds.iter().any(|label| label == build)
+            && archive.name.eq_ignore_ascii_case("scripts.pak")
     }) {
         let inventory = evolve_core::library_catalog::imported_archive_preview_inventory(archive)
             .map_err(|error| error.to_string())?;
@@ -1895,6 +1896,35 @@ mod tests {
                     && path.eq_ignore_ascii_case(
                         "Objects/Characters/Monsters/Grounder/Grounder1_Skeleton.mtl"
                     ))
+        );
+    }
+
+    #[test]
+    #[ignore = "requires EVOLVE_BENCH_LIBRARY pointing to a local imported Asset Library"]
+    fn local_stage2_goliath_model_is_bound_by_authored_subtype() {
+        let root = std::path::PathBuf::from(std::env::var_os("EVOLVE_BENCH_LIBRARY").unwrap());
+        let library = evolve_core::imported_library(&root).unwrap();
+        let source = library
+            .archives
+            .iter()
+            .find(|archive| {
+                archive.name.eq_ignore_ascii_case("scripts.pak")
+                    && archive.builds.iter().any(|b| b.contains("306e52cd"))
+            })
+            .unwrap();
+        let build = source
+            .builds
+            .iter()
+            .find(|b| b.contains("306e52cd"))
+            .unwrap();
+        let models = authored_model_imports(&library.archives, build, "Goliath").unwrap();
+        assert!(
+            models
+                .models
+                .iter()
+                .any(|(archive, path)| archive.builds.contains(build)
+                    && path.eq_ignore_ascii_case("characters/Monsters/Goliath/Goliath1.cdf")),
+            "Goliath1.cdf not bound in Stage 2"
         );
     }
 

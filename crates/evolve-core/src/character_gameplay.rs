@@ -1103,9 +1103,6 @@ mod tests {
                 }
             }
         }
-        for (owner, models) in &owners {
-            println!("{owner}: {models:?}");
-        }
         for expected in [
             "Character(\"Meteor Goliath\")",
             "Character(\"Wasteland Maggie\")",
@@ -1141,6 +1138,64 @@ mod tests {
         let models = authored_subtype_models(&bytes).unwrap();
         assert!(models.iter().any(|model| {
             model.eq_ignore_ascii_case("Objects/Characters/Monsters/Grounder/Grounder1.cdf")
+        }));
+    }
+
+    #[test]
+    #[ignore = "requires EVOLVE_BENCH_LIBRARY pointing to an Asset Library with Stage 2 scripts.pak"]
+    fn local_stage2_subtypes_and_creatures_have_owned_models() {
+        let root = std::path::PathBuf::from(std::env::var_os("EVOLVE_BENCH_LIBRARY").unwrap());
+        let catalog = crate::library_catalog::imported_library(&root).unwrap();
+        let mut owners = std::collections::BTreeMap::new();
+        for archive in &catalog.archives {
+            if !archive.name.eq_ignore_ascii_case("scripts.pak") {
+                continue;
+            }
+            let inventory =
+                crate::library_catalog::imported_archive_preview_inventory(archive).unwrap();
+            for entry in inventory.entries {
+                if !roster_script(&entry.relative_path) {
+                    continue;
+                }
+                let bytes = crate::library_catalog::read_imported_member_bounded(
+                    archive,
+                    &entry.relative_path,
+                    4 * 1024 * 1024,
+                )
+                .unwrap();
+                if !crate::lua51::is_jee(&bytes) {
+                    continue;
+                }
+                for (global, table) in crate::lua51::authored_globals(&bytes).unwrap() {
+                    if let Some(owner) = script_global_owner(&entry.relative_path, &global) {
+                        let models = owners.entry(format!("{owner:?}")).or_insert_with(Vec::new);
+                        models.extend(script_model(&table).unwrap());
+                    }
+                }
+            }
+        }
+        for expected in [
+            "Character(\"Goliath\")",
+            "Character(\"Meteor Goliath\")",
+            "Character(\"Elder Kraken\")",
+            "Wildlife(\"Armadon Bull\")",
+        ] {
+            assert!(
+                owners.contains_key(expected),
+                "{expected} not defined in Stage 2"
+            );
+        }
+        assert!(owners["Character(\"Goliath\")"].iter().any(|model| {
+            model.eq_ignore_ascii_case("characters/Monsters/Goliath/Goliath1.cdf")
+        }));
+        assert!(owners["Character(\"Meteor Goliath\")"].iter().any(|model| {
+            model.eq_ignore_ascii_case("characters/Monsters/GoliathMeteor/goliathmeteor1.cdf")
+        }));
+        assert!(owners["Character(\"Elder Kraken\")"].iter().any(|model| {
+            model.eq_ignore_ascii_case("characters/Monsters/KrakenElder/KrakenElder1.cdf")
+        }));
+        assert!(owners["Wildlife(\"Armadon Bull\")"].iter().any(|model| {
+            model.eq_ignore_ascii_case("characters/creatures/armadonbull/ArmadonBull_Elite.cdf")
         }));
     }
 }

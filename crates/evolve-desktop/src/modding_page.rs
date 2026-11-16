@@ -1706,7 +1706,7 @@ pub(super) fn discover_roster(
             }
         }
     }
-    // Legacy defines actors and creatures in compiled Lua instead of XML.
+    // Legacy and Stage 2 define actors and creatures in compiled Lua instead of XML.
     use evolve_core::character_gameplay::{CHARACTERS, RosterEntry, WILDLIFE, script_global_owner};
     for script in crate::guided_modding::decoded_scripts(archives)? {
         for (global, _) in &script.globals {

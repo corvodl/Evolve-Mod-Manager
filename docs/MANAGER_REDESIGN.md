@@ -49,9 +49,9 @@ the redesign retains both and corrects hierarchy instead of replacing them.
   search, which is not a character association. Explicit CDF material references
   and MTL texture maps are checked for unique, build-scoped imported sources;
   unresolved or ambiguous assets are not listed as verified. Compiled Lua is
-  never executed or scanned for apparent string matches. Stage 2 subtype
-  scripts are a custom `\x1BJee` bytecode, so Stage 2 models and unreferenced
-  textures have no verified owner until that format is decoded.
+  never executed or scanned for apparent string matches: straight-line code in
+  both Legacy Lua 5.1 and Stage 2 `\x1bJee` bytecode is followed to recover
+  authored table literals, enabling Stage 2 model and document verification.
   Advanced Modding retains the project,
   archive, conflict, recovery, and signed-PAK controls.
 - Guided gameplay searches retain distinct imported archives with the same
