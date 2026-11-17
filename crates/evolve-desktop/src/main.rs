@@ -5,6 +5,8 @@
 mod activity_window;
 mod anchored;
 mod anim;
+mod animation_audio;
+mod animation_prop;
 mod assembly_materials;
 mod asset_cache;
 mod asset_library_page;
@@ -3927,35 +3929,81 @@ fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
 /// viewport continues rendering textured geometry. Source geometry, UVs and
 /// on-disk assets are never modified by the animation preview.
 fn apply_current_skin_frame(state: &mut State) {
-    let layers = state
-        .caf_layer
+    let caf_layer_clone = state.caf_layer.clone();
+    let layers = caf_layer_clone
         .as_ref()
         .map(|motion| evolve_core::CafLayer {
-            motion,
+            motion: motion.as_ref(),
             seconds: state.motion_time,
             weight: state.caf_layer_weight,
         })
         .into_iter()
         .collect::<Vec<_>>();
-    if let Some(blend) = &state.active_blendspace
-        && (state.cdf_caf_preview.is_some() || state.skin_preview.is_some())
+
+    let clip_name = state
+        .current_caf_virtual_path
+        .as_deref()
+        .or_else(|| state.active_blendspace.as_ref().map(|b| b.path.as_str()))
+        .unwrap_or("")
+        .to_owned();
+    let stage = if state.input.contains("goliath2") {
+        2
+    } else if state.input.contains("goliath3") {
+        3
+    } else {
+        1
+    };
+    let assets_root = state.preferences.asset_library_root.clone();
+    let motion_time = state.motion_time;
+    let motion_in_place = state.motion_in_place;
+    let base_surfaces_clone = state
+        .cdf_base_surfaces
+        .clone()
+        .or_else(|| state.cdf_surfaces.clone());
+    let assembly_clone = state.cdf_caf_preview.clone();
+    let skin_clone = state.skin_preview.clone();
+
+    if let Some(blend) = state.active_blendspace.clone()
+        && (assembly_clone.is_some() || skin_clone.is_some())
     {
-        let result = blend
-            .weighted_sources(state.motion_time)
+        let weighted = blend.weighted_sources(motion_time);
+        let result = weighted
+            .as_ref()
+            .map_err(|e| e.to_string())
             .and_then(|weights| {
-                if let Some(assembly) = &state.cdf_caf_preview {
+                if let Some(assembly) = &assembly_clone {
                     assembly
-                        .mesh_at_weighted(&weights, state.motion_in_place)
+                        .mesh_at_weighted(weights, motion_in_place)
                         .map_err(|e| e.to_string())
-                } else if let Some(skin) = &state.skin_preview {
-                    skin.mesh_at_weighted(&weights, state.motion_in_place)
+                } else if let Some(skin) = &skin_clone {
+                    skin.mesh_at_weighted(weights, motion_in_place)
                         .map_err(|e| e.to_string())
                 } else {
                     Err("No verified character skin".into())
                 }
             });
         match result {
-            Ok(mesh) => state.model = Some(Arc::new(mesh)),
+            Ok(mesh) => {
+                let sim = animation_prop::simulate_frame_props(
+                    mesh,
+                    base_surfaces_clone.as_ref(),
+                    &clip_name,
+                    motion_time,
+                    assembly_clone.as_deref(),
+                    skin_clone.as_deref(),
+                    &layers,
+                    weighted.ok().as_deref(),
+                    motion_in_place,
+                    &assets_root,
+                    stage,
+                );
+                state.model = Some(Arc::new(sim.combined_mesh));
+                if let Some(surfaces) = sim.surfaces {
+                    state.cdf_surfaces = Some(surfaces);
+                } else if let Some(base) = &state.cdf_base_surfaces {
+                    state.cdf_surfaces = Some(base.clone());
+                }
+            }
             Err(error) => {
                 state.playing = false;
                 state.status = format!("Authored blendspace pose unavailable: {error}");
@@ -3963,17 +4011,58 @@ fn apply_current_skin_frame(state: &mut State) {
         }
         return;
     }
-    if let Some(assembly) = &state.cdf_caf_preview {
-        match assembly.mesh_at_layers(state.motion_time, &layers, state.motion_in_place) {
-            Ok(mesh) => state.model = Some(Arc::new(mesh)),
+
+    if let Some(assembly) = &assembly_clone {
+        match assembly.mesh_at_layers(motion_time, &layers, motion_in_place) {
+            Ok(mesh) => {
+                let sim = animation_prop::simulate_frame_props(
+                    mesh,
+                    base_surfaces_clone.as_ref(),
+                    &clip_name,
+                    motion_time,
+                    Some(assembly.as_ref()),
+                    skin_clone.as_deref(),
+                    &layers,
+                    None,
+                    motion_in_place,
+                    &assets_root,
+                    stage,
+                );
+                state.model = Some(Arc::new(sim.combined_mesh));
+                if let Some(surfaces) = sim.surfaces {
+                    state.cdf_surfaces = Some(surfaces);
+                } else if let Some(base) = &state.cdf_base_surfaces {
+                    state.cdf_surfaces = Some(base.clone());
+                }
+            }
             Err(error) => {
                 state.playing = false;
                 state.status = format!("Whole-character CAF playback stopped: {error}");
             }
         }
-    } else if let Some(skin) = &state.skin_preview {
-        match skin.mesh_at_layers(state.motion_time, &layers, state.motion_in_place) {
-            Ok(mesh) => state.model = Some(Arc::new(mesh)),
+    } else if let Some(skin) = &skin_clone {
+        match skin.mesh_at_layers(motion_time, &layers, motion_in_place) {
+            Ok(mesh) => {
+                let sim = animation_prop::simulate_frame_props(
+                    mesh,
+                    base_surfaces_clone.as_ref(),
+                    &clip_name,
+                    motion_time,
+                    None,
+                    Some(skin.as_ref()),
+                    &layers,
+                    None,
+                    motion_in_place,
+                    &assets_root,
+                    stage,
+                );
+                state.model = Some(Arc::new(sim.combined_mesh));
+                if let Some(surfaces) = sim.surfaces {
+                    state.cdf_surfaces = Some(surfaces);
+                } else if let Some(base) = &state.cdf_base_surfaces {
+                    state.cdf_surfaces = Some(base.clone());
+                }
+            }
             Err(error) => {
                 state.playing = false;
                 state.status = format!("CAF playback stopped: {error}");
@@ -3997,6 +4086,89 @@ fn apply_current_skin_frame(state: &mut State) {
             Err(error) => {
                 state.playing = false;
                 state.status = format!("Converted GLB mesh playback stopped: {error}");
+            }
+        }
+    }
+}
+
+fn check_and_trigger_audio_events(
+    state: &State,
+    prev_time: f32,
+    curr_time: f32,
+    duration: f32,
+    looped: bool,
+) {
+    let (Some(events), Some(clip_path)) =
+        (&state.animation_events, &state.current_caf_virtual_path)
+    else {
+        return;
+    };
+    let stage = if state.input.contains("goliath2") {
+        2
+    } else if state.input.contains("goliath3") {
+        3
+    } else {
+        1
+    };
+
+    for timeline in events.timelines_for(clip_path) {
+        for event in &timeline.events {
+            let event_time = event.start_seconds(duration);
+            let fired = if looped {
+                (event_time > prev_time && event_time <= duration)
+                    || (event_time >= 0.0 && event_time <= curr_time)
+            } else {
+                event_time > prev_time && event_time <= curr_time
+            };
+
+            if fired {
+                animation_audio::trigger_animation_event(
+                    &event.name,
+                    &event.parameter,
+                    clip_path,
+                    &state.preferences.asset_library_root,
+                    &state.preferences.vgmstream_executable,
+                    stage,
+                );
+            }
+        }
+    }
+}
+
+fn trigger_matching_event_on_scrub(state: &State, scrub_time: f32) {
+    let (Some(events), Some(clip_path)) =
+        (&state.animation_events, &state.current_caf_virtual_path)
+    else {
+        return;
+    };
+    let duration = state
+        .active_blendspace
+        .as_ref()
+        .map(|b| b.duration)
+        .or_else(|| state.native_caf.as_ref().map(|c| c.duration_seconds()))
+        .unwrap_or(1.0);
+
+    let stage = if state.input.contains("goliath2") {
+        2
+    } else if state.input.contains("goliath3") {
+        3
+    } else {
+        1
+    };
+
+    for timeline in events.timelines_for(clip_path) {
+        for event in &timeline.events {
+            let event_time = event.start_seconds(duration);
+            if (event_time - scrub_time).abs() < 0.05 {
+                animation_audio::trigger_animation_event(
+                    &event.name,
+                    &event.parameter,
+                    clip_path,
+                    &state.preferences.asset_library_root,
+                    &state.preferences.vgmstream_executable,
+                    stage,
+                );
+                return;
             }
         }
     }
@@ -15640,6 +15812,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.motion_time = value;
             state.motion_tick = None;
             apply_current_skin_frame(state);
+            trigger_matching_event_on_scrub(state, value);
         }
         Message::ToggleMotion => {
             state.motion_tick = None;
@@ -15723,6 +15896,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     })
                 };
                 if let Some(duration) = duration {
+                    let prev_time = state.motion_time;
+                    let mut looped = false;
                     state.motion_time += evolve_core::animation::playback_step(
                         elapsed,
                         state.playback_speed.max(0.1),
@@ -15732,11 +15907,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     } else if state.motion_time >= duration {
                         if state.playback_loop {
                             state.motion_time %= duration;
+                            looped = true;
                         } else {
                             state.motion_time = duration;
                             state.playing = false;
                         }
                     }
+                    check_and_trigger_audio_events(
+                        state,
+                        prev_time,
+                        state.motion_time,
+                        duration,
+                        looped,
+                    );
                 } else {
                     state.playing = false;
                 }

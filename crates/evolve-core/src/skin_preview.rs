@@ -28,13 +28,51 @@ fn column_major(m: &Mat4) -> [f32; 16] {
 fn rigid_components(m: &Mat4) -> Result<([f32; 3], [f32; 4]), RigError> {
     crate::rig::rigid_trs(&json!(column_major(m)))
 }
-fn transform_point(matrix: &Mat4, point: [f32; 3]) -> [f32; 3] {
+pub fn transform_point(matrix: &Mat4, point: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|axis| {
         (0..3).map(|c| matrix[axis][c] * point[c]).sum::<f32>() + matrix[axis][3]
     })
 }
-fn transform_normal(matrix: &Mat4, normal: [f32; 3]) -> [f32; 3] {
+pub fn transform_normal(matrix: &Mat4, normal: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|axis| (0..3).map(|c| matrix[axis][c] * normal[c]).sum::<f32>())
+}
+
+pub fn transform_render_mesh(mesh: &RenderMesh, matrix: &[[f32; 4]; 4]) -> RenderMesh {
+    let mut transformed = mesh.clone();
+    for pos in &mut transformed.positions {
+        *pos = transform_point(matrix, *pos);
+    }
+    if let Some(normals) = &mut transformed.normals {
+        for norm in normals {
+            let n = transform_normal(matrix, *norm);
+            let len = n.iter().map(|v| v * v).sum::<f32>().sqrt();
+            if len.is_finite() && len > 1e-6 {
+                *norm = n.map(|v| v / len);
+            }
+        }
+    }
+    transformed
+}
+
+pub fn append_render_mesh(target: &mut RenderMesh, source: &RenderMesh) {
+    let base_idx = target.positions.len() as u32;
+    target.positions.extend_from_slice(&source.positions);
+    for idx in &source.indices {
+        target.indices.push(base_idx + idx);
+    }
+    if let (Some(t_uv), Some(s_uv)) = (&mut target.uv0, &source.uv0) {
+        t_uv.extend_from_slice(s_uv);
+    } else if let Some(t_uv) = &mut target.uv0 {
+        t_uv.resize(target.positions.len(), [0.0, 0.0]);
+    }
+    if let (Some(t_norm), Some(s_norm)) = (&mut target.normals, &source.normals) {
+        t_norm.extend_from_slice(s_norm);
+    } else if let Some(t_norm) = &mut target.normals {
+        t_norm.resize(target.positions.len(), [0.0, 1.0, 0.0]);
+    }
+    if let (Some(t_alpha), Some(s_alpha)) = (&mut target.vertex_alpha, &source.vertex_alpha) {
+        t_alpha.extend_from_slice(s_alpha);
+    }
 }
 fn trs(translation: [f32; 3], q: [f32; 4]) -> Result<Mat4, RigError> {
     if translation.iter().any(|v| !v.is_finite() || v.abs() > 1e7) {
@@ -409,6 +447,36 @@ impl VerifiedCafSkin {
     pub fn original_bones(&self) -> usize {
         self.skeleton.names.len()
     }
+    pub fn skeleton_bone_names(&self) -> &[String] {
+        &self.skeleton.names
+    }
+    pub fn bone_index(&self, bone_name: &str) -> Option<usize> {
+        self.skeleton
+            .names
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case(bone_name))
+    }
+    pub fn posed_bone_world(
+        &self,
+        bone_name: &str,
+        seconds: f32,
+        layers: &[CafLayer<'_>],
+        in_place: bool,
+    ) -> Option<[[f32; 4]; 4]> {
+        let idx = self.bone_index(bone_name)?;
+        let world = self.posed_world(seconds, layers, in_place).ok()?;
+        world.get(idx).copied()
+    }
+    pub fn posed_bone_world_weighted(
+        &self,
+        bone_name: &str,
+        clips: &[WeightedCaf<'_>],
+        in_place: bool,
+    ) -> Option<[[f32; 4]; 4]> {
+        let idx = self.bone_index(bone_name)?;
+        let world = self.posed_world_weighted(clips, in_place).ok()?;
+        world.get(idx).copied()
+    }
     pub fn source_motion(&self) -> &NativeCafMotion {
         &self.motion
     }
@@ -542,6 +610,28 @@ impl VerifiedCafAssembly {
 
     pub fn mesh_at(&self, seconds: f32) -> Result<RenderMesh, RigError> {
         self.mesh_at_layers(seconds, &[], false)
+    }
+    pub fn primary_skin(&self) -> Option<&VerifiedCafSkin> {
+        self.skins.first().map(|(_, skin)| skin)
+    }
+    pub fn posed_bone_world(
+        &self,
+        bone_name: &str,
+        seconds: f32,
+        layers: &[CafLayer<'_>],
+        in_place: bool,
+    ) -> Option<[[f32; 4]; 4]> {
+        self.primary_skin()?
+            .posed_bone_world(bone_name, seconds, layers, in_place)
+    }
+    pub fn posed_bone_world_weighted(
+        &self,
+        bone_name: &str,
+        clips: &[WeightedCaf<'_>],
+        in_place: bool,
+    ) -> Option<[[f32; 4]; 4]> {
+        self.primary_skin()?
+            .posed_bone_world_weighted(bone_name, clips, in_place)
     }
     pub fn mesh_at_layers(
         &self,
