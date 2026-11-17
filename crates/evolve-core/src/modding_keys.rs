@@ -89,7 +89,7 @@ pub fn verified_archive_key(
     let original = original_public_key(stage).ok();
     let custom = public_key(stage).ok();
     for candidate in [original, custom].into_iter().flatten() {
-        if evolve_core::inspect_signed_pak(source, &candidate, signed_basename).is_ok() {
+        if crate::inspect_signed_pak(source, &candidate, signed_basename).is_ok() {
             return Ok(candidate);
         }
     }
@@ -166,7 +166,7 @@ pub fn staged_target(stage: &Path, source: &Path) -> Result<String, String> {
 /// needs it. Sparse setups intentionally have NO full-game staging copy.
 /// Never modify installed PAKs; publish one verified file atomically.
 pub fn ensure_selected_stage_pak(stage: &Path, relative: &str) -> Result<(), String> {
-    use evolve_core::signed_pak::{inspect_signed_pak, resign_signed_pak_with_original_name};
+    use crate::signed_pak::{inspect_signed_pak, resign_signed_pak_with_original_name};
     use sha2::{Digest, Sha256};
     if !relative.to_ascii_lowercase().ends_with(".pak")
         || relative

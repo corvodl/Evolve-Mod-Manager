@@ -587,7 +587,7 @@ pub fn ensure_index(state: &mut State) -> iced::Task<Message> {
             catalog
                 .archives
                 .iter()
-                .filter(|a| crate::level_library::likely_level_pak(a))
+                .filter(|a| crate::level_archive::likely_level_pak(a))
                 .cloned()
                 .collect::<Vec<_>>()
         })

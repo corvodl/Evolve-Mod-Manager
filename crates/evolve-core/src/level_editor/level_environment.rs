@@ -97,7 +97,7 @@ impl Curve {
     }
 }
 #[derive(Clone, Debug)]
-pub(super) struct TimeOfDay {
+pub struct TimeOfDay {
     pub initial_hour: f32,
     /// Source's playback bounds and speed, for inspection only. The map
     /// preview deliberately keeps its manual 0–24 hour slider independent.
@@ -210,7 +210,7 @@ impl TimeOfDay {
         // CryXmlB. Reuse the bounded core decoder before touching attributes;
         // never guess the header or mutate an imported source file.
         let decoded =
-            evolve_core::cryxml::xml_bytes(source, MAX_XML).map_err(|error| error.to_string())?;
+            crate::cryxml::xml_bytes(source, MAX_XML).map_err(|error| error.to_string())?;
         let mut reader = Reader::from_reader(decoded.as_ref());
         let mut curves = BTreeMap::new();
         let mut pending: Option<(String, Curve)> = None;
@@ -393,7 +393,7 @@ impl TimeOfDay {
 /// Source-backed height-density curve samples. These are read-only TimeOfDay
 /// values, not a claim that the general FreeSDK matches Evolve's renderer.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct HeightFog {
+pub struct HeightFog {
     pub bottom_height: f32,
     pub top_height: f32,
     pub bottom_density: f32,
@@ -493,7 +493,7 @@ impl TimeOfDay {
 
 /// Bounded, read-only fog parameters from an exact imported map owner.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct FogProfile {
+pub struct FogProfile {
     pub view_distance: f32,
     pub ldr_density_multiplier: f32,
 }
@@ -504,7 +504,7 @@ impl FogProfile {
             return Err("Environment.xml exceeds 4 MiB".into());
         }
         let decoded =
-            evolve_core::cryxml::xml_bytes(source, MAX_XML).map_err(|error| error.to_string())?;
+            crate::cryxml::xml_bytes(source, MAX_XML).map_err(|error| error.to_string())?;
         let mut reader = Reader::from_reader(decoded.as_ref());
         let mut parsed = None;
         loop {
@@ -623,7 +623,7 @@ impl FogProfile {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct ResourceSummary {
+pub struct ResourceSummary {
     pub particle_libraries: usize,
     pub particle_effects: Vec<String>,
     pub material_files: usize,
@@ -644,11 +644,11 @@ impl ResourceSummary {
         )
     }
 }
-pub(super) fn named_items(source: &[u8], tag: &[u8], key: &[u8]) -> Vec<String> {
+pub fn named_items(source: &[u8], tag: &[u8], key: &[u8]) -> Vec<String> {
     if source.len() > MAX_XML {
         return Vec::new();
     }
-    let Ok(decoded) = evolve_core::cryxml::xml_bytes(source, MAX_XML) else {
+    let Ok(decoded) = crate::cryxml::xml_bytes(source, MAX_XML) else {
         return Vec::new();
     };
     let mut reader = Reader::from_reader(decoded.as_ref());
@@ -844,7 +844,7 @@ mod tests {
     fn binary_cryxmlb_environment_fog_matches_plain_xml() {
         let original =
             br#"<Environment><Fog ViewDistance="2400" LDRGlobalDensMult="1"/></Environment>"#;
-        let compiled = evolve_core::cryxml::encode_xml(original, MAX_XML).unwrap();
+        let compiled = crate::cryxml::encode_xml(original, MAX_XML).unwrap();
         assert_eq!(
             FogProfile::parse(&compiled).unwrap(),
             FogProfile::parse(original).unwrap()
@@ -894,14 +894,14 @@ mod tests {
     #[test]
     fn binary_cryxmlb_time_of_day_matches_text_source() {
         let original = br#"<TimeOfDay Time="14"><Variable Name="Sun intensity" Value="123"><Spline Keys="0:0:36,0.5:456:36,1:0:36,"/></Variable></TimeOfDay>"#;
-        let compiled = evolve_core::cryxml::encode_xml(original, MAX_XML).unwrap();
+        let compiled = crate::cryxml::encode_xml(original, MAX_XML).unwrap();
         let from_binary = TimeOfDay::parse(&compiled).unwrap();
         let from_text = TimeOfDay::parse(original).unwrap();
         assert_eq!(from_binary.count(), from_text.count());
         assert_eq!(from_binary.keyed_variables, from_text.keyed_variables);
         assert_eq!(from_binary.scalar("Sun intensity", 12.0), Some(456.0));
         let particle_xml = br#"<Particles><Item Name="dust"/><Item Name="sparks"/></Particles>"#;
-        let compiled_particles = evolve_core::cryxml::encode_xml(particle_xml, MAX_XML).unwrap();
+        let compiled_particles = crate::cryxml::encode_xml(particle_xml, MAX_XML).unwrap();
         assert_eq!(
             named_items(&compiled_particles, b"Item", b"Name"),
             named_items(particle_xml, b"Item", b"Name")

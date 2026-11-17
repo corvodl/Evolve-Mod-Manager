@@ -5,13 +5,13 @@
 //! the ground mesh to the GPU, so the viewport updates as the mouse moves.
 //! Nothing touches the project file until Save writes the edited rectangle as
 //! one [`TerrainPatch`] through the verified project save.
-use evolve_core::{TerrainInfo, TerrainPatch};
+use crate::{TerrainInfo, TerrainPatch};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// The editor's active tool, shown in the tool bar of an editable project.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum LevelTool {
+pub enum LevelTool {
     #[default]
     Select,
     Sculpt,
@@ -22,7 +22,7 @@ pub(super) enum LevelTool {
 
 /// What a left-button sculpt stroke does; holding Ctrl always lowers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum SculptMode {
+pub enum SculptMode {
     #[default]
     Raise,
     Flatten,
@@ -33,7 +33,7 @@ pub(super) enum SculptMode {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct BrushSettings {
+pub struct BrushSettings {
     pub mode: SculptMode,
     /// World metres.
     pub radius: f32,
@@ -59,10 +59,10 @@ impl Default for BrushSettings {
 
 /// Floats per ground vertex: position, UV, normal, layer paint, vertex color.
 /// Must match `world_instances::Vertex`.
-pub(super) const VERTEX_FLOATS: usize = 12;
+pub const VERTEX_FLOATS: usize = 12;
 
 /// Consecutive ground-mesh vertices to overwrite on the GPU.
-pub(super) struct GroundPatch {
+pub struct GroundPatch {
     pub first_vertex: u32,
     pub data: Vec<f32>,
 }
@@ -70,7 +70,7 @@ pub(super) struct GroundPatch {
 /// A rectangle of the ground's paint-ID texture to overwrite: RGBA8 texels
 /// row by row, with the LayerId or SurfaceTypeID byte in red, the layout
 /// `terrain_material_probe::GpuTerrainSource::paint` uploads.
-pub(super) struct PaintPatch {
+pub struct PaintPatch {
     pub x: u32,
     pub y: u32,
     pub width: u32,
@@ -80,14 +80,14 @@ pub(super) struct PaintPatch {
 
 /// Pending ground-mesh updates for the renderer.
 #[derive(Default)]
-pub(super) struct GroundUpdates {
+pub struct GroundUpdates {
     pub rows: Vec<GroundPatch>,
     /// A whole new index list, after holes were filled or restored.
     pub indices: Option<Vec<u32>>,
     pub paint: Vec<PaintPatch>,
 }
 
-pub(super) type GroundPatches = Arc<Mutex<GroundUpdates>>;
+pub type GroundPatches = Arc<Mutex<GroundUpdates>>;
 
 /// A rectangle of samples (x0, y0, x1, y1 inclusive) and its old contents.
 struct Snapshot {
@@ -107,7 +107,7 @@ struct Stroke {
     touched: Option<[u32; 4]>,
 }
 
-pub(super) struct TerrainSession {
+pub struct TerrainSession {
     pub source: PathBuf,
     pub compiled: bool,
     width: u32,
@@ -134,7 +134,7 @@ pub(super) struct TerrainSession {
 }
 
 /// Where a ray first passes below a height field, refined by bisection.
-pub(super) fn march(
+pub fn march(
     height_at: impl Fn(f32, f32) -> Option<f32>,
     origin: [f32; 3],
     direction: [f32; 3],
@@ -167,14 +167,9 @@ pub(super) fn march(
 
 /// Ground height at world XY from the on-screen terrain mesh (a grid of
 /// `render_positions` columns and rows), bilinear within a cell.
-pub(super) fn mesh_height(
-    mesh: &evolve_core::RenderMesh,
-    info: &TerrainInfo,
-    x: f32,
-    y: f32,
-) -> Option<f32> {
-    let xs = evolve_core::render_positions(info.width, info.stride);
-    let ys = evolve_core::render_positions(info.height, info.stride);
+pub fn mesh_height(mesh: &crate::RenderMesh, info: &TerrainInfo, x: f32, y: f32) -> Option<f32> {
+    let xs = crate::render_positions(info.width, info.stride);
+    let ys = crate::render_positions(info.height, info.stride);
     if xs.len() < 2 || ys.len() < 2 || mesh.positions.len() != xs.len() * ys.len() {
         return None;
     }
@@ -221,8 +216,7 @@ impl TerrainSession {
         let bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
         let mut holes = None;
         let (width, height, unit, max_height, heights, surfaces) = if compiled {
-            let terrain =
-                evolve_core::decode_compiled_terrain(&bytes).map_err(|e| e.to_string())?;
+            let terrain = crate::decode_compiled_terrain(&bytes).map_err(|e| e.to_string())?;
             let side = terrain.units + 1;
             holes = Some(terrain.holes);
             (
@@ -235,7 +229,7 @@ impl TerrainSession {
             )
         } else {
             let (info, heights, paint) =
-                evolve_core::decode_terrain_samples(&bytes).map_err(|e| e.to_string())?;
+                crate::decode_terrain_samples(&bytes).map_err(|e| e.to_string())?;
             (
                 info.width,
                 info.height,
@@ -268,8 +262,8 @@ impl TerrainSession {
             undo: Vec::new(),
             redo: Vec::new(),
             stroke: None,
-            xs: evolve_core::render_positions(width, render.stride),
-            ys: evolve_core::render_positions(height, render.stride),
+            xs: crate::render_positions(width, render.stride),
+            ys: crate::render_positions(height, render.stride),
             patches,
         })
     }
@@ -393,7 +387,7 @@ impl TerrainSession {
                 if paint {
                     if w >= 0.5
                         && let Some(surfaces) = self.surfaces.as_mut()
-                        && !(self.compiled && surfaces[index] == evolve_core::HOLE_ID)
+                        && !(self.compiled && surfaces[index] == crate::HOLE_ID)
                         && surfaces[index] != settings.surface
                     {
                         surfaces[index] = settings.surface;
@@ -474,7 +468,7 @@ impl TerrainSession {
                         continue;
                     }
                     let index = self.index(nx, ny);
-                    if !holes[index] && surfaces[index] != evolve_core::HOLE_ID {
+                    if !holes[index] && surfaces[index] != crate::HOLE_ID {
                         return Some(surfaces[index]);
                     }
                 }
@@ -749,8 +743,8 @@ mod tests {
             undo: Vec::new(),
             redo: Vec::new(),
             stroke: None,
-            xs: evolve_core::render_positions(width, 1),
-            ys: evolve_core::render_positions(height, 1),
+            xs: crate::render_positions(width, 1),
+            ys: crate::render_positions(height, 1),
             patches: GroundPatches::default(),
         }
     }
@@ -825,14 +819,14 @@ mod tests {
         ];
         for (path, compiled) in cases {
             let bytes = std::fs::read(&path).unwrap();
-            let mesh = |bytes: &[u8]| -> evolve_core::TerrainMesh {
+            let mesh = |bytes: &[u8]| -> crate::TerrainMesh {
                 if compiled {
-                    evolve_core::decode_compiled_terrain(bytes)
+                    crate::decode_compiled_terrain(bytes)
                         .unwrap()
                         .mesh()
                         .unwrap()
                 } else {
-                    evolve_core::decode_terrain_bytes(bytes, evolve_core::MAX_RENDER_GRID).unwrap()
+                    crate::decode_terrain_bytes(bytes, crate::MAX_RENDER_GRID).unwrap()
                 }
             };
             let before = mesh(&bytes);
@@ -862,9 +856,9 @@ mod tests {
             session.end_stroke();
             let patch = session.patch().unwrap();
             let saved = if compiled {
-                evolve_core::patch_compiled_terrain_bytes(&bytes, &patch).unwrap()
+                crate::patch_compiled_terrain_bytes(&bytes, &patch).unwrap()
             } else {
-                evolve_core::patch_terrain_bytes(&bytes, &patch).unwrap()
+                crate::patch_terrain_bytes(&bytes, &patch).unwrap()
             };
             let after = mesh(&saved);
             assert_eq!(after.vertices.len(), before.vertices.len());
@@ -944,8 +938,8 @@ mod tests {
             session.end_stroke();
             let patch = session.patch().unwrap();
             assert!(patch.surfaces.iter().any(Option::is_some));
-            let saved = evolve_core::patch_compiled_terrain_bytes(&bytes, &patch).unwrap();
-            let decoded = evolve_core::decode_compiled_terrain(&saved).unwrap();
+            let saved = crate::patch_compiled_terrain_bytes(&bytes, &patch).unwrap();
+            let decoded = crate::decode_compiled_terrain(&saved).unwrap();
             let filled = before_holes(&bytes) - decoded.holes.iter().filter(|h| **h).count();
             assert!(filled > 0, "no holes filled");
             let after = mesh(&saved);
@@ -961,7 +955,7 @@ mod tests {
     }
 
     fn before_holes(bytes: &[u8]) -> usize {
-        evolve_core::decode_compiled_terrain(bytes)
+        crate::decode_compiled_terrain(bytes)
             .unwrap()
             .holes
             .iter()
@@ -986,8 +980,8 @@ mod tests {
                 positions.push([x as f32 * 2.0, y as f32 * 2.0, (x + y) as f32]);
             }
         }
-        let mesh = evolve_core::RenderMesh {
-            info: evolve_core::ModelInfo {
+        let mesh = crate::RenderMesh {
+            info: crate::ModelInfo {
                 format: String::new(),
                 version: 1,
                 chunk_count: 0,

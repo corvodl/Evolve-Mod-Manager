@@ -1,7 +1,7 @@
 //! Read-only exact shared PAK inventory relevant to terrain and particle FX.
 //! No proprietary asset bytes are embedded; these labels are the original
 //! installed PAK names, not guesses based on user-supplied ZIP filenames.
-use evolve_core::{ImportedPak, imported_archive_preview_inventory, imported_library};
+use crate::{ImportedPak, imported_archive_preview_inventory, imported_library};
 use std::path::{Path, PathBuf};
 
 const SHARED_EFFECT_PAKS: [&str; 8] = [
@@ -83,7 +83,7 @@ fn count_asset(counts: &mut EffectCounts, original: &str) {
         }
     }
 }
-pub(super) fn shared_effect_sources(selected: &ImportedPak) -> Vec<String> {
+pub fn shared_effect_sources(selected: &ImportedPak) -> Vec<String> {
     let Some(game) = installation_root(selected) else {
         return vec!["Shared textures/effects lookup unavailable: original map Game directory cannot be verified.".into()];
     };
@@ -150,9 +150,9 @@ pub(super) fn shared_effect_sources(selected: &ImportedPak) -> Vec<String> {
 /// Resolve only map-requested particle libraries, by original exact
 /// namespace, from the SAME installation and uniquely selected build.
 /// This is an inventory/decoder step, not yet a live GPU particle renderer.
-pub(super) fn verify_source_particle_placements(
+pub fn verify_source_particle_placements(
     selected: &ImportedPak,
-    placed: &[crate::level_atmosphere::ParticlePlacement],
+    placed: &[super::level_atmosphere::ParticlePlacement],
 ) -> Vec<String> {
     if placed.is_empty() {
         return Vec::new();
@@ -201,7 +201,7 @@ pub(super) fn verify_source_particle_placements(
                 .map(|(lib, _)| lib.to_ascii_lowercase())
         })
         .collect::<std::collections::BTreeSet<_>>();
-    let mut found = std::collections::HashMap::<String, Vec<evolve_core::ParticleEmitter>>::new();
+    let mut found = std::collections::HashMap::<String, Vec<crate::ParticleEmitter>>::new();
     let mut warnings = Vec::new();
     for lib in requests.into_iter().take(32) {
         // Do not join an authored untrusted XML value into a filesystem path.
@@ -239,7 +239,7 @@ pub(super) fn verify_source_particle_placements(
         };
         match std::fs::read(source)
             .map_err(|e| e.to_string())
-            .and_then(|bytes| evolve_core::decode_particle_library(&bytes))
+            .and_then(|bytes| crate::decode_particle_library(&bytes))
         {
             Ok(emitters) => {
                 found.insert(lib, emitters);

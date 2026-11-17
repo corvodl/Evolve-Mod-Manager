@@ -1,7 +1,7 @@
 //! Read-only original-map atmosphere and local light inputs.
 //! SDK-derived *preview* only. No embedded proprietary shader or sky assets.
 //! The source map, rather than a global art preset, owns every attachment.
-use evolve_core::LevelScene;
+use crate::LevelScene;
 use quick_xml::events::{BytesStart, Event};
 use std::collections::HashMap;
 
@@ -9,7 +9,7 @@ const MAX_LIGHTS: usize = 2048;
 const MAX_LAYER_BYTES: usize = 48 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct LocalLight {
+pub struct LocalLight {
     pub position: [f32; 3],
     pub direction: [f32; 3],
     pub color: [f32; 3],
@@ -28,7 +28,7 @@ pub(super) struct LocalLight {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct SkySource {
+pub struct SkySource {
     pub material: Option<String>,
     pub angle_degrees: f32,
     pub stretching: f32,
@@ -236,7 +236,7 @@ impl PendingLight {
 /// Parse authored placement XML, then match exact GUIDs to the scene's
 /// resolved world transforms; nesting/hierarchical placement is not guessed.
 /// No global active light, generic object name or bare-geometry fallback.
-pub(super) fn lights(
+pub fn lights(
     sources: &[(String, Vec<u8>)],
     scene: Option<&LevelScene>,
 ) -> (Vec<LocalLight>, Vec<String>, Vec<String>) {
@@ -256,7 +256,7 @@ pub(super) fn lights(
         if raw.len() > MAX_LAYER_BYTES {
             continue;
         }
-        let Ok(xml) = evolve_core::cryxml::xml_bytes(raw, MAX_LAYER_BYTES) else {
+        let Ok(xml) = crate::cryxml::xml_bytes(raw, MAX_LAYER_BYTES) else {
             continue;
         };
         let mut reader = quick_xml::Reader::from_reader(xml.as_ref());
@@ -349,7 +349,7 @@ pub(super) fn lights(
 }
 fn finalize(
     pending: &mut Option<PendingLight>,
-    objects: &HashMap<&str, &evolve_core::PlacedObject>,
+    objects: &HashMap<&str, &crate::PlacedObject>,
     output: &mut Vec<LocalLight>,
     cookies: &mut Vec<String>,
 ) {
@@ -394,7 +394,7 @@ fn finalize(
 /// Resolve exact scene GUIDs for world transforms. An authored emitter is
 /// source data, not proof its XML particle library/texture is present.
 #[derive(Clone, Debug)]
-pub(super) struct ParticlePlacement {
+pub struct ParticlePlacement {
     pub effect: String,
     pub position: [f32; 3],
     /// w, x, y, z.
@@ -407,7 +407,7 @@ pub(super) struct ParticlePlacement {
 /// radius it wraps around the camera (0 stays put), whether it adds light, its
 /// X and Y scale with whether it stretches along its motion, and its fade.
 #[derive(Clone, Debug)]
-pub(super) struct ParticleBatch {
+pub struct ParticleBatch {
     pub sprite: std::sync::Arc<image::RgbaImage>,
     pub instances: Vec<[f32; 32]>,
 }
@@ -424,7 +424,7 @@ fn particle_library_path(
     source: &str,
     library: &str,
 ) -> Option<std::path::PathBuf> {
-    let catalog = evolve_core::imported_library(root).ok()?;
+    let catalog = crate::imported_library(root).ok()?;
     let pak = catalog.archives.iter().find(|pak| {
         pak.name.eq_ignore_ascii_case("libs.pak")
             && std::path::Path::new(&pak.source).parent() == std::path::Path::new(source).parent()
@@ -445,17 +445,16 @@ fn particle_library_path(
 }
 
 /// Expand every placed effect into the looping particles its emitters keep alive.
-pub(super) fn authored_particles(
-    archive: &evolve_core::ImportedPak,
+pub fn authored_particles(
+    archive: &crate::ImportedPak,
     placed: &[ParticlePlacement],
 ) -> Result<Vec<ParticleBatch>, String> {
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
-    let mut libraries = HashMap::<String, Vec<evolve_core::ParticleEmitter>>::new();
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
+    let mut libraries = HashMap::<String, Vec<crate::ParticleEmitter>>::new();
     let mut sprites = HashMap::<String, Option<std::sync::Arc<image::RgbaImage>>>::new();
     let mut batches = HashMap::<String, ParticleBatch>::new();
     let mut total = 0usize;
@@ -476,7 +475,7 @@ pub(super) fn authored_particles(
         if !libraries.contains_key(&key) {
             let emitters = particle_library_path(root, &archive.source, library)
                 .and_then(|path| std::fs::read(path).ok())
-                .and_then(|bytes| evolve_core::decode_particle_library(&bytes).ok())
+                .and_then(|bytes| crate::decode_particle_library(&bytes).ok())
                 .unwrap_or_default();
             libraries.insert(key.clone(), emitters);
         }
@@ -496,7 +495,7 @@ pub(super) fn authored_particles(
                     .rsplit_once('.')
                     .map_or(texture.as_str(), |(stem, _)| stem);
                 let path = indexed_source(root, &build, &format!("{stem}.dds.0")).ok()??;
-                evolve_core::decode_dds_rgba(&path)
+                crate::decode_dds_rgba(&path)
                     .ok()
                     .map(|(_, image)| std::sync::Arc::new(image))
             });
@@ -580,7 +579,7 @@ pub(super) fn authored_particles(
     }
     Ok(batches.into_values().collect())
 }
-pub(super) fn particle_placements(
+pub fn particle_placements(
     sources: &[(String, Vec<u8>)],
     scene: Option<&LevelScene>,
 ) -> (Vec<ParticlePlacement>, Vec<String>) {
@@ -599,7 +598,7 @@ pub(super) fn particle_placements(
         if bytes.len() > MAX_LAYER_BYTES {
             continue;
         }
-        let Ok(xml) = evolve_core::cryxml::xml_bytes(bytes, MAX_LAYER_BYTES) else {
+        let Ok(xml) = crate::cryxml::xml_bytes(bytes, MAX_LAYER_BYTES) else {
             continue;
         };
         let mut xml = quick_xml::Reader::from_reader(xml.as_ref());
@@ -676,7 +675,7 @@ pub(super) fn particle_placements(
 }
 fn complete_particle(
     pending: &mut Option<(usize, String, Option<String>, bool)>,
-    placed: &HashMap<&str, &evolve_core::PlacedObject>,
+    placed: &HashMap<&str, &crate::PlacedObject>,
     out: &mut Vec<ParticlePlacement>,
 ) {
     let Some((_, id, effect, active)) = pending.take() else {
@@ -703,8 +702,8 @@ fn complete_particle(
 
 /// Map-owned Environment.xml sky material reference. Only exact references
 /// are acceptable for the static sky; no guess by basename or map name.
-pub(super) fn sky_source(bytes: &[u8]) -> Result<SkySource, String> {
-    let xml = evolve_core::cryxml::xml_bytes(bytes, 4 * 1024 * 1024).map_err(|e| e.to_string())?;
+pub fn sky_source(bytes: &[u8]) -> Result<SkySource, String> {
+    let xml = crate::cryxml::xml_bytes(bytes, 4 * 1024 * 1024).map_err(|e| e.to_string())?;
     let mut reader = quick_xml::Reader::from_reader(xml.as_ref());
     let mut found = SkySource::default();
     let mut seen = false;
@@ -746,7 +745,7 @@ pub(super) fn sky_source(bytes: &[u8]) -> Result<SkySource, String> {
 /// Mapped original sky/TOD controls, sampled per-frame on slider changes.
 /// This is physically motivated atmospheric shading, not proprietary Evolve
 /// Rayleigh/Mie integration or its HDR adaptation history.
-pub(super) fn atmosphere_uniform(
+pub fn atmosphere_uniform(
     source: Option<&super::level_environment::TimeOfDay>,
     hour: f32,
     sky: &SkySource,
@@ -917,7 +916,7 @@ pub(super) fn atmosphere_uniform(
 /// The sun the map records for its authored mission time. Other hours rotate
 /// from this reference; the rotation axis is a preview choice, not engine data.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct AuthoredSun {
+pub struct AuthoredSun {
     pub to_sun: [f32; 3],
     pub hour: f32,
     /// Lighting SunRotation and Longitude in degrees, when EnvState links the
@@ -928,7 +927,7 @@ pub(super) struct AuthoredSun {
 /// Toward the sun at this hour for a sun linked to the time of day, from the
 /// CRYENGINE 3.5.8 SDK's Cry3DEngine (CTimeOfDay update, sinf/cosf of these
 /// three angles).
-pub(super) fn time_of_day_sun(rotation: f32, longitude: f32, hour: f32) -> [f32; 3] {
+pub fn time_of_day_sun(rotation: f32, longitude: f32, hour: f32) -> [f32; 3] {
     let time = std::f32::consts::TAU * (hour + 12.0) / 24.0;
     let tilt = std::f32::consts::FRAC_PI_2 - longitude.to_radians();
     let turn = -rotation.to_radians();
@@ -1001,8 +1000,8 @@ fn parse_authored_sun(mission: &str) -> Option<AuthoredSun> {
 }
 
 /// Read the mission from the same installation's `levels/<map>/level.pak`.
-pub(super) fn authored_sun(
-    archive: &evolve_core::ImportedPak,
+pub fn authored_sun(
+    archive: &crate::ImportedPak,
     map_name: &str,
 ) -> Result<Option<AuthoredSun>, String> {
     let root = std::path::Path::new(&archive.directory)
@@ -1016,7 +1015,7 @@ pub(super) fn authored_sun(
         .trim_start_matches("//?/")
         .to_ascii_lowercase();
     let wanted = format!("{game}/levels/{}/level.pak", map_name.to_ascii_lowercase());
-    let library = evolve_core::imported_library(root).map_err(|e| e.to_string())?;
+    let library = crate::imported_library(root).map_err(|e| e.to_string())?;
     for candidate in &library.archives {
         let source = candidate.source.replace('\\', "/");
         if source.trim_start_matches("//?/").to_ascii_lowercase() != wanted {
@@ -1081,13 +1080,13 @@ fn cubemap_face_means(bytes: &[u8]) -> Result<[[f32; 3]; 6], String> {
 
 /// One cubemap mip as half-float RGBA per face, largest level first.
 #[derive(Clone, Debug)]
-pub(super) struct ProbeLevel {
+pub struct ProbeLevel {
     pub side: u32,
     pub faces: [Vec<u16>; 6],
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct ProbeCube {
+pub struct ProbeCube {
     pub levels: Vec<ProbeLevel>,
     pub tint: [f32; 3],
 }
@@ -1189,11 +1188,11 @@ fn decode_probe_cube(
     Ok(ProbeCube { levels, tint })
 }
 /// Ambient color per direction: +X, -X, +Y, -Y, +Z, -Z.
-pub(super) type AmbientCube = [[f32; 4]; 6];
+pub type AmbientCube = [[f32; 4]; 6];
 
 /// Baked ambient per direction from the widest EnvironmentLight in the layers.
-pub(super) fn authored_ambient_cube(
-    archive: &evolve_core::ImportedPak,
+pub fn authored_ambient_cube(
+    archive: &crate::ImportedPak,
     layers: &[(String, Vec<u8>)],
 ) -> Result<Option<(AmbientCube, ProbeCube)>, String> {
     let mut best: Option<(f32, String, [f32; 3])> = None;
@@ -1230,9 +1229,8 @@ pub(super) fn authored_ambient_cube(
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
     let stem = cubemap
         .rsplit_once('.')
         .map_or(cubemap.as_str(), |(stem, _)| stem);
@@ -1260,7 +1258,7 @@ pub(super) fn authored_ambient_cube(
 
 /// An authored EnvironmentLight box other than the map's global probe.
 #[derive(Clone, Debug)]
-pub(super) struct LocalProbe {
+pub struct LocalProbe {
     pub center: [f32; 3],
     /// World axes of the box, each with its inverse half size.
     pub axes: [[f32; 4]; 3],
@@ -1273,11 +1271,11 @@ pub(super) struct LocalProbe {
 }
 
 /// The side of each local probe's largest uploaded mip.
-pub(super) const LOCAL_PROBE_SIDE: u32 = 64;
+pub const LOCAL_PROBE_SIDE: u32 = 64;
 
 /// Every EnvironmentLight except the widest, which is already the global probe.
-pub(super) fn authored_local_probes(
-    archive: &evolve_core::ImportedPak,
+pub fn authored_local_probes(
+    archive: &crate::ImportedPak,
     layers: &[(String, Vec<u8>)],
 ) -> Result<Vec<LocalProbe>, String> {
     struct Pending {
@@ -1332,9 +1330,8 @@ pub(super) fn authored_local_probes(
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
     let mut located = Vec::new();
     for probe in pending {
         let stem = probe
@@ -1404,16 +1401,15 @@ pub(super) fn authored_local_probes(
 }
 
 /// Each named projector texture, in list order; absent ones leave a gap.
-pub(super) fn authored_light_cookies(
-    archive: &evolve_core::ImportedPak,
+pub fn authored_light_cookies(
+    archive: &crate::ImportedPak,
     files: &[String],
 ) -> Result<Vec<Option<image::RgbaImage>>, String> {
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
     Ok(files
         .iter()
         .map(|file| {
@@ -1421,7 +1417,7 @@ pub(super) fn authored_light_cookies(
                 .rsplit_once('.')
                 .map_or(file.as_str(), |(stem, _)| stem);
             let path = indexed_source(root, &build, &format!("{stem}.dds.0")).ok()??;
-            evolve_core::decode_dds_rgba(&path).ok().map(|(_, image)| {
+            crate::decode_dds_rgba(&path).ok().map(|(_, image)| {
                 image::imageops::resize(&image, 128, 128, image::imageops::FilterType::Triangle)
             })
         })
@@ -1431,7 +1427,7 @@ pub(super) fn authored_light_cookies(
 /// Decals sharing one material. Each instance is the box's X, Y and Z world
 /// axes with half sizes, its center with DecalFalloff, then tint with opacity.
 #[derive(Clone, Debug)]
-pub(super) struct DecalBatch {
+pub struct DecalBatch {
     pub priority: f32,
     pub image: std::sync::Arc<image::RgbaImage>,
     pub instances: Vec<[f32; 20]>,
@@ -1444,16 +1440,15 @@ pub(super) struct DecalBatch {
 }
 
 /// Every placed deferred decal, grouped by material and ordered by SortPriority.
-pub(super) fn authored_decals(
-    archive: &evolve_core::ImportedPak,
+pub fn authored_decals(
+    archive: &crate::ImportedPak,
     layers: &[(String, Vec<u8>)],
 ) -> Result<Vec<DecalBatch>, String> {
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
     let mut materials = HashMap::<String, DecalMaterial>::new();
     let mut batches = HashMap::<String, DecalBatch>::new();
     for (_, bytes) in layers {
@@ -1533,14 +1528,14 @@ fn load_decal_material(root: &std::path::Path, build: &str, material: &str) -> D
         .flatten()
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|raw| {
-            evolve_core::cryxml::xml_bytes(&raw, 4 * 1024 * 1024)
+            crate::cryxml::xml_bytes(&raw, 4 * 1024 * 1024)
                 .ok()
                 .map(|xml| String::from_utf8_lossy(xml.as_ref()).into_owned())
         })?;
     let file = xml_attribute(&mtl[mtl.find("Map=\"Diffuse\"")?..], "File")?;
     let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
     let path = indexed_source(root, build, &format!("{stem}.dds.0")).ok()??;
-    let (_, image) = evolve_core::decode_dds_rgba(&path).ok()?;
+    let (_, image) = crate::decode_dds_rgba(&path).ok()?;
     let image = if image.width().max(image.height()) > MAX_SIDE {
         image::imageops::resize(
             &image,
@@ -1569,14 +1564,14 @@ fn load_road_surface(
     root: &std::path::Path,
     build: &str,
     material: &str,
-    inventory: &evolve_core::Inventory,
+    inventory: &crate::Inventory,
 ) -> (Option<std::sync::Arc<image::RgbaImage>>, [f32; 4]) {
     let mtl = indexed_source(root, build, &format!("{material}.mtl"))
         .ok()
         .flatten()
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|raw| {
-            evolve_core::cryxml::xml_bytes(&raw, 4 * 1024 * 1024)
+            crate::cryxml::xml_bytes(&raw, 4 * 1024 * 1024)
                 .ok()
                 .map(|xml| String::from_utf8_lossy(xml.as_ref()).into_owned())
         })
@@ -1725,19 +1720,18 @@ fn road_pieces(
 }
 
 /// Every placed Road, grouped by material and SortPriority, lowest priority first.
-pub(super) fn authored_roads(
-    archive: &evolve_core::ImportedPak,
+pub fn authored_roads(
+    archive: &crate::ImportedPak,
     layers: &[(String, Vec<u8>)],
 ) -> Result<Vec<DecalBatch>, String> {
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
     let mut materials = HashMap::<String, DecalMaterial>::new();
     let mut surfaces = HashMap::new();
-    let inventory = evolve_core::imported_archive_files(archive).map_err(|e| e.to_string())?;
+    let inventory = crate::imported_archive_files(archive).map_err(|e| e.to_string())?;
     let mut batches = HashMap::<String, DecalBatch>::new();
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
@@ -1803,7 +1797,7 @@ pub(super) fn authored_roads(
     Ok(ordered)
 }
 /// How much the map's Rain entity darkens wet surfaces, when it has one.
-pub(super) fn authored_rain_darkening(layers: &[(String, Vec<u8>)]) -> f32 {
+pub fn authored_rain_darkening(layers: &[(String, Vec<u8>)]) -> f32 {
     layers
         .iter()
         .find_map(|(_, bytes)| {
@@ -1841,7 +1835,7 @@ fn flow_nodes(graph: &str) -> HashMap<&str, &str> {
 /// reacts to; a trigger wired straight into a different state is that state's
 /// instead. Every AreaShape listing one of those triggers is part of the zone.
 /// Each outline comes with its bottom and top height; Height 0 is unbounded.
-pub(super) fn weather_state_areas(
+pub fn weather_state_areas(
     layers: &[(String, Vec<u8>)],
     state: &str,
 ) -> Vec<(Vec<[f32; 2]>, f32, f32)> {
@@ -1933,7 +1927,7 @@ pub(super) fn weather_state_areas(
 
 /// One authored WaterVolume, as triangles at its world height.
 #[derive(Clone, Debug)]
-pub(super) struct WaterSurface {
+pub struct WaterSurface {
     pub triangles: Vec<[f32; 3]>,
     pub tint: [f32; 3],
     pub decal_strength: f32,
@@ -2011,16 +2005,15 @@ fn mtl_value(text: &str, name: &str, default: f32) -> f32 {
 }
 
 /// Every authored WaterVolume in the map's layers, with its material values.
-pub(super) fn authored_water(
-    archive: &evolve_core::ImportedPak,
+pub fn authored_water(
+    archive: &crate::ImportedPak,
     layers: &[(String, Vec<u8>)],
 ) -> Result<Vec<WaterSurface>, String> {
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
     let mut surfaces = Vec::new();
     for (_, bytes) in layers {
         let text = String::from_utf8_lossy(bytes);
@@ -2087,7 +2080,7 @@ fn water_surface(
             .and_then(|file| {
                 let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
                 let path = indexed_source(root, build, &format!("{stem}.dds.0")).ok()??;
-                evolve_core::decode_dds_rgba(&path).ok()
+                crate::decode_dds_rgba(&path).ok()
             })
             .map(|(_, image)| std::sync::Arc::new(image))
     };
@@ -2153,17 +2146,16 @@ fn water_polygon(points: &[[f32; 3]]) -> Vec<[f32; 3]> {
 }
 
 /// Water volumes and river pieces baked into a Legacy-ported terrain.dat.
-pub(super) fn compiled_water(
-    archive: &evolve_core::ImportedPak,
-    terrain: &evolve_core::CompiledTerrain,
+pub fn compiled_water(
+    archive: &crate::ImportedPak,
+    terrain: &crate::CompiledTerrain,
     excluded_layers: &std::collections::HashSet<u16>,
 ) -> Result<Vec<WaterSurface>, String> {
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
     Ok(terrain
         .water
         .iter()
@@ -2185,9 +2177,9 @@ pub(super) fn compiled_water(
 /// Decals and roads baked into a Legacy-ported terrain.dat, as the same
 /// batches the layer readers build. The compiled mission also lists most of
 /// the decals; one already in `existing` at the same spot is not added again.
-pub(super) fn compiled_decals(
-    archive: &evolve_core::ImportedPak,
-    terrain: &evolve_core::CompiledTerrain,
+pub fn compiled_decals(
+    archive: &crate::ImportedPak,
+    terrain: &crate::CompiledTerrain,
     excluded_layers: &std::collections::HashSet<u16>,
     existing: &[DecalBatch],
 ) -> Result<Vec<DecalBatch>, String> {
@@ -2201,10 +2193,9 @@ pub(super) fn compiled_decals(
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
-    let inventory = evolve_core::imported_archive_files(archive).map_err(|e| e.to_string())?;
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
+    let inventory = crate::imported_archive_files(archive).map_err(|e| e.to_string())?;
     let mut materials = HashMap::<String, DecalMaterial>::new();
     let mut surfaces = HashMap::new();
     let mut batches = HashMap::<String, DecalBatch>::new();
@@ -2349,7 +2340,7 @@ fn compiled_road_pieces(vertices: &[[f32; 3]], texture_end: f32, tint: [f32; 4])
 
 /// One planet or moon from Environment.xml.
 #[derive(Clone, Debug)]
-pub(super) struct CelestialBody {
+pub struct CelestialBody {
     /// Unit direction, then authored Size.
     pub direction_size: [f32; 4],
     pub rotation_degrees: f32,
@@ -2358,17 +2349,16 @@ pub(super) struct CelestialBody {
 
 /// CelestialBody1..N. The size scale is calibrated
 /// to in-game captures; only the authored numbers come from the map.
-pub(super) fn authored_celestial_bodies(
-    archive: &evolve_core::ImportedPak,
+pub fn authored_celestial_bodies(
+    archive: &crate::ImportedPak,
     environment: &[u8],
 ) -> Result<Vec<CelestialBody>, String> {
     let text = String::from_utf8_lossy(environment);
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
     let mut bodies = Vec::new();
     for index in 1..=4 {
         let Some(at) = text.find(&format!("<CelestialBody{index} ")) else {
@@ -2384,7 +2374,7 @@ pub(super) fn authored_celestial_bodies(
         let Some(path) = indexed_source(root, &build, &format!("{stem}.dds.0"))? else {
             continue;
         };
-        let (_, image) = evolve_core::decode_dds_rgba(&path).map_err(|e| e.to_string())?;
+        let (_, image) = crate::decode_dds_rgba(&path).map_err(|e| e.to_string())?;
         // CryEngine's moon placement: latitude turns from -180 degrees, and
         // longitude tips down from straight up.
         let (azimuth, polar) = (
@@ -2406,8 +2396,8 @@ pub(super) fn authored_celestial_bodies(
 }
 
 /// The map's authored color chart, read from the same installation.
-pub(super) fn authored_color_chart(
-    archive: &evolve_core::ImportedPak,
+pub fn authored_color_chart(
+    archive: &crate::ImportedPak,
     environment: &[u8],
 ) -> Result<Option<image::RgbaImage>, String> {
     let text = String::from_utf8_lossy(environment);
@@ -2417,14 +2407,13 @@ pub(super) fn authored_color_chart(
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Imported library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
     let stem = chart.rsplit_once('.').map_or(chart, |(stem, _)| stem);
     let Some(path) = indexed_source(root, &build, &format!("{stem}.dds.0"))? else {
         return Ok(None);
     };
-    let (_, image) = evolve_core::decode_dds_rgba(&path).map_err(|e| e.to_string())?;
+    let (_, image) = crate::decode_dds_rgba(&path).map_err(|e| e.to_string())?;
     if image.dimensions() != (256, 16) {
         return Err(format!(
             "Unexpected color chart size {:?}",
@@ -2438,7 +2427,7 @@ pub(super) fn authored_color_chart(
 /// in _12 and _34, and the zenith in _5. No sky image is generated when
 /// one of the three original cooked textures is absent.
 #[derive(Clone, Debug)]
-pub(super) struct StaticSky {
+pub struct StaticSky {
     pub images: [std::sync::Arc<image::RgbaImage>; 3],
 }
 fn indexed_source(
@@ -2446,12 +2435,12 @@ fn indexed_source(
     build: &str,
     virtual_name: &str,
 ) -> Result<Option<std::path::PathBuf>, String> {
-    match evolve_core::resolve_imported_reference(root, virtual_name, Some(build))
+    match crate::resolve_imported_reference(root, virtual_name, Some(build))
         .map_err(|e| e.to_string())?
     {
-        evolve_core::LibraryReferenceStatus::Found(item) => Ok(Some(item.absolute_path.into())),
-        evolve_core::LibraryReferenceStatus::Missing => Ok(None),
-        evolve_core::LibraryReferenceStatus::Ambiguous(_) => Err(format!(
+        crate::LibraryReferenceStatus::Found(item) => Ok(Some(item.absolute_path.into())),
+        crate::LibraryReferenceStatus::Missing => Ok(None),
+        crate::LibraryReferenceStatus::Ambiguous(_) => Err(format!(
             "Ambiguous sky asset {virtual_name}; no arbitrary source choice"
         )),
     }
@@ -2462,7 +2451,7 @@ fn sky_texture(
     material: &str,
     authored: &str,
 ) -> Result<image::RgbaImage, String> {
-    for cooked in evolve_core::scoped_texture_candidates(authored, material)? {
+    for cooked in crate::scoped_texture_candidates(authored, material)? {
         let Some(source) = indexed_source(root, build, &cooked)? else {
             continue;
         };
@@ -2474,9 +2463,9 @@ fn sky_texture(
                     parts.push(path);
                 }
             }
-            evolve_core::decode_dds_rgba_with_parts(&source, &parts).map_err(|e| e.to_string())?
+            crate::decode_dds_rgba_with_parts(&source, &parts).map_err(|e| e.to_string())?
         } else {
-            evolve_core::decode_dds_rgba(&source).map_err(|e| e.to_string())?
+            crate::decode_dds_rgba(&source).map_err(|e| e.to_string())?
         };
         if info.width > 4096 || info.height > 4096 || info.width < 2 || info.height < 2 {
             return Err("Authored sky texture dimensions unsupported".into());
@@ -2487,8 +2476,8 @@ fn sky_texture(
         "No same-install cooked texture for original sky {authored}"
     ))
 }
-pub(super) fn load_static_sky(
-    archive: &evolve_core::ImportedPak,
+pub fn load_static_sky(
+    archive: &crate::ImportedPak,
     sky: &SkySource,
 ) -> Result<Option<StaticSky>, String> {
     let Some(material) = sky.material.as_deref() else {
@@ -2497,9 +2486,8 @@ pub(super) fn load_static_sky(
     let root = std::path::Path::new(&archive.directory)
         .parent()
         .ok_or("Original imported sky library unavailable")?;
-    let (build, _guard) =
-        evolve_core::begin_imported_lookup_session_for_source(root, &archive.source)
-            .map_err(|e| e.to_string())?;
+    let (build, _guard) = crate::begin_imported_lookup_session_for_source(root, &archive.source)
+        .map_err(|e| e.to_string())?;
     let material = if material.to_ascii_lowercase().ends_with(".mtl") {
         material.to_owned()
     } else {
@@ -2507,7 +2495,7 @@ pub(super) fn load_static_sky(
     };
     let path = indexed_source(root, &build, &material)?
         .ok_or_else(|| format!("Original SkyBox material missing: {material}"))?;
-    let doc = evolve_core::read_material(&path).map_err(|e| e.to_string())?;
+    let doc = crate::read_material(&path).map_err(|e| e.to_string())?;
     if doc
         .slots
         .iter()
@@ -2676,7 +2664,7 @@ mod tests {
             <Properties ParticleEffect="Dust.Disabled" Active="0"/>
           </Object>
         </Objects>"#;
-        let scene = evolve_core::parse_level_scene(&[("effects.lyr", xml.as_slice())]).unwrap();
+        let scene = crate::parse_level_scene(&[("effects.lyr", xml.as_slice())]).unwrap();
         assert_eq!(scene.objects[0].kind, "Object");
         let (emissions, warnings) =
             particle_placements(&[("effects.lyr".into(), xml.to_vec())], Some(&scene));
@@ -2709,7 +2697,7 @@ mod tests {
     #[test]
     fn authored_projector_light_uses_original_properties_and_world_position() {
         let xml = br#"<Objects><Object Id="light-a" EntityClass="Light" Pos="3,5,7"><Properties Radius="30" DiffuseColor="1,0.5,0.25" DiffuseMultiplier="2" ProjectorFov="60"/></Object></Objects>"#;
-        let scene = evolve_core::parse_level_scene(&[("map.lyr", xml.as_slice())]).unwrap();
+        let scene = crate::parse_level_scene(&[("map.lyr", xml.as_slice())]).unwrap();
         let (found, warnings, _) = lights(&[("map.lyr".into(), xml.to_vec())], Some(&scene));
         assert!(warnings.is_empty());
         assert_eq!(found.len(), 1);

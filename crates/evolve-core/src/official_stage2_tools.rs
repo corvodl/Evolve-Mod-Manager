@@ -161,7 +161,7 @@ impl OfficialTools {
         signed_name: &str,
         output: &Path,
     ) -> Result<(), String> {
-        use evolve_core::signed_pak::inspect_signed_pak;
+        use crate::signed_pak::inspect_signed_pak;
         if output.exists() {
             return Err("Official target already exists".into());
         }
@@ -194,7 +194,7 @@ impl OfficialTools {
         replacements: &[(String, PathBuf)],
         output: &Path,
     ) -> Result<(), String> {
-        use evolve_core::signed_pak::{inspect_signed_pak, open_verified_signed_pak};
+        use crate::signed_pak::{inspect_signed_pak, open_verified_signed_pak};
         if replacements.is_empty() {
             return Err("No changed files to encode".into());
         }
@@ -318,7 +318,7 @@ impl OfficialTools {
         changed_members: &[String],
         output: &Path,
     ) -> Result<(), String> {
-        use evolve_core::signed_pak::open_verified_signed_pak;
+        use crate::signed_pak::open_verified_signed_pak;
         if changed_members.is_empty() || changed_members.len() > 64 {
             return Err("Sparse PAK export requires 1–64 changed members".into());
         }

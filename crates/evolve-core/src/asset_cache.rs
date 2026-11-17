@@ -1,7 +1,7 @@
 //! Per-process, bounded decoded DDS cache for all native preview windows.
 //! Entries are keyed by canonical location + size + file modification time.
 //! Work happens on existing background workers; no decoded game data is saved.
-use evolve_core::{
+use crate::{
     AssetResolution, DdsInfo, DdsLayout, Inventory, LibraryReferenceStatus,
     decode_dds_rgba_with_layout, resolve_imported_reference, resolve_virtual,
 };
@@ -651,7 +651,7 @@ mod tests {
         assert_eq!(normal.get_pixel(3, 3).0, [10, 20, 0, 200]);
     }
     use super::*;
-    use evolve_core::DdsFormat;
+    use crate::DdsFormat;
     #[test]
     fn split_dds_decodes_once_and_a_changed_fragment_invalidates_it() {
         let temp = tempfile::tempdir().unwrap();
@@ -659,7 +659,7 @@ mod tests {
         let mut header = rgba_header(4, 4, 1, false);
         header.extend_from_slice(&[9u8; 64]);
         fs::write(&head, &header).unwrap();
-        let inventory = evolve_core::scan_directory(temp.path()).unwrap();
+        let inventory = crate::scan_directory(temp.path()).unwrap();
         let cache = SharedCache::default();
         let decode = || {
             decoded_dds_indexed(&cache, &head, "shared.dds.0", &inventory, None, None)
@@ -670,7 +670,7 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &decode()));
         header.extend_from_slice(&[0u8; 4]);
         fs::write(&head, &header).unwrap();
-        let inventory = evolve_core::scan_directory(temp.path()).unwrap();
+        let inventory = crate::scan_directory(temp.path()).unwrap();
         let reread =
             decoded_dds_indexed(&cache, &head, "shared.dds.0", &inventory, None, None).map(|r| r.1);
         assert!(reread.is_err() || !Arc::ptr_eq(&first, &reread.unwrap()));
@@ -771,7 +771,7 @@ mod tests {
         header.extend_from_slice(&[200u8; 16]);
         let path = temp.path().join("scope_ddn.dds.0a");
         fs::write(&path, &header[4..]).unwrap();
-        let inventory = evolve_core::scan_directory(temp.path()).unwrap();
+        let inventory = crate::scan_directory(temp.path()).unwrap();
         let cache = Arc::new(Mutex::new(PreviewCache::default()));
         let (info, pixels) =
             decoded_dds_indexed(&cache, &path, "scope_ddn.dds.0a", &inventory, None, None).unwrap();
@@ -820,7 +820,7 @@ mod tests {
         )
         .unwrap();
         let source = low_path.unwrap();
-        let inventory = evolve_core::scan_directory(
+        let inventory = crate::scan_directory(
             source
                 .parent()
                 .unwrap()

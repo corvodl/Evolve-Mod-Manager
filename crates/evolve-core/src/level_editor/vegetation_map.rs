@@ -5,7 +5,7 @@
 //! archive contains an MFC-style UTF-8 XML string followed by named blocks.
 //! VegetationInstancesArray is packed 19/30/33-byte records for versions 1/2/3.
 //! Reject unsupported or corrupted streams instead of guessing their layout.
-use evolve_core::{LevelScene, PlacedObject, Transform};
+use crate::{LevelScene, PlacedObject, Transform};
 use flate2::read::ZlibDecoder;
 use quick_xml::{Reader, events::Event};
 use std::{fs, io::Read, path::Path};
@@ -25,7 +25,7 @@ struct Prototype {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct VegetationInfo {
+pub struct VegetationInfo {
     pub version: u32,
     pub prototypes: usize,
     pub instances: usize,
@@ -278,7 +278,7 @@ fn quat_from_angles(x: f32, y: f32, z: f32) -> [f32; 4] {
     ]
 }
 
-pub(super) fn decode(bytes: &[u8], scene: &mut LevelScene) -> Result<VegetationInfo, String> {
+pub fn decode(bytes: &[u8], scene: &mut LevelScene) -> Result<VegetationInfo, String> {
     if bytes.len() > MAX_FILE {
         return Err("VegetationMap.dat exceeds file limit".into());
     }
@@ -357,7 +357,7 @@ pub(super) fn decode(bytes: &[u8], scene: &mut LevelScene) -> Result<VegetationI
             populations: Vec::new(),
             home_area: String::new(),
             shape_points: Vec::new(),
-            wildlife: evolve_core::scene::WildlifeMetadata::default(),
+            wildlife: crate::scene::WildlifeMetadata::default(),
         });
     }
     let instances = new_objects.len();
@@ -376,7 +376,7 @@ pub(super) fn decode(bytes: &[u8], scene: &mut LevelScene) -> Result<VegetationI
     })
 }
 
-pub(super) fn inspect_file(path: &Path, scene: &mut LevelScene) -> Result<VegetationInfo, String> {
+pub fn inspect_file(path: &Path, scene: &mut LevelScene) -> Result<VegetationInfo, String> {
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !meta.file_type().is_file() || meta.len() > MAX_FILE as u64 {
         return Err("Vegetation map must be a bounded regular file".into());
@@ -390,14 +390,14 @@ pub(super) fn inspect_file(path: &Path, scene: &mut LevelScene) -> Result<Vegeta
 /// blocks are preserved. Import the resulting bytes through the verified
 /// managed Modding project transaction, never directly into game/Asset Library.
 #[derive(Clone, Debug)]
-pub(super) enum VegetationEdit {
+pub enum VegetationEdit {
     Move { index: usize, position: [f32; 3] },
     Scale { index: usize, scale: f32 },
     Duplicate { index: usize, position: [f32; 3] },
     Delete { index: usize },
 }
 
-pub(super) fn edit_instances(bytes: &[u8], edit: VegetationEdit) -> Result<Vec<u8>, String> {
+pub fn edit_instances(bytes: &[u8], edit: VegetationEdit) -> Result<Vec<u8>, String> {
     use flate2::{Compression, write::ZlibEncoder};
     use std::io::Write;
     if bytes.len() > MAX_FILE {
@@ -562,7 +562,7 @@ mod tests {
     #[ignore = "requires a local read-only Tutorial Asset Library (EVOLVE_BENCH_LIBRARY)"]
     fn imported_tutorial_vegetation_edit_round_trips_without_touching_source() {
         let library = std::env::var("EVOLVE_BENCH_LIBRARY").unwrap();
-        let imports = evolve_core::imported_library(Path::new(&library)).unwrap();
+        let imports = crate::imported_library(Path::new(&library)).unwrap();
         let archive = imports
             .archives
             .iter()
@@ -571,7 +571,7 @@ mod tests {
                     && pak.source.to_ascii_lowercase().contains("moddedevolve")
             })
             .unwrap();
-        let inventory = evolve_core::imported_archive_files(archive).unwrap();
+        let inventory = crate::imported_archive_files(archive).unwrap();
         let entry = inventory
             .entries
             .iter()

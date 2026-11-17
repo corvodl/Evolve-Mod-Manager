@@ -3,16 +3,36 @@
 //! drawn world at once, without writing any file or reassembling the map.
 //! Each change is a snapshot to undo and redo; saving writes the difference
 //! from the map as it was loaded.
-use crate::world_instances::{Instance, World};
-use evolve_core::{LevelScene, Transform};
+use crate::{LevelScene, Transform};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+/// One drawn placement of a scene object.
+#[derive(Clone, Copy, Debug)]
+pub struct Instance {
+    pub object_index: usize,
+    pub transform: Transform,
+}
+
+/// What draws the scene, kept in step with every draft change so an edit
+/// shows without reassembling the map. Headless callers use `()`.
+pub trait DrawnWorld: Sized {
+    /// This world with every placement moved to its object's new place in
+    /// `scene` (object indices are unchanged).
+    fn updated(&self, scene: &LevelScene) -> Self;
+    /// Change each drawn model's placements in place.
+    fn edit_instances(&mut self, edit: impl FnMut(&mut Vec<Instance>));
+}
+
+impl DrawnWorld for () {
+    fn updated(&self, _: &LevelScene) -> Self {}
+    fn edit_instances(&mut self, _: impl FnMut(&mut Vec<Instance>)) {}
+}
+
 /// The map as one change left it.
-#[derive(Clone)]
-pub(super) struct Snapshot {
+pub struct Snapshot<W> {
     pub scene: Arc<LevelScene>,
-    pub world: Option<Arc<World>>,
+    pub world: Option<Arc<W>>,
     /// Copies made in this draft: the new object's id, and the id it copies.
     pub origins: Arc<HashMap<String, String>>,
     /// Ids deleted in this draft. Their objects stay, hidden, so every
@@ -20,19 +40,31 @@ pub(super) struct Snapshot {
     pub deleted: Arc<HashSet<String>>,
 }
 
+// Written out so `W` itself need not be Clone: the world sits behind an Arc.
+impl<W> Clone for Snapshot<W> {
+    fn clone(&self) -> Self {
+        Self {
+            scene: self.scene.clone(),
+            world: self.world.clone(),
+            origins: self.origins.clone(),
+            deleted: self.deleted.clone(),
+        }
+    }
+}
+
 /// The most changes kept for undo.
 const MAX_UNDO: usize = 200;
 
-pub(super) struct Draft {
+pub struct Draft<W> {
     /// The map as loaded: what saving compares against.
-    pub original: Snapshot,
-    pub current: Snapshot,
-    pub undo: Vec<Snapshot>,
-    pub redo: Vec<Snapshot>,
+    pub original: Snapshot<W>,
+    pub current: Snapshot<W>,
+    pub undo: Vec<Snapshot<W>>,
+    pub redo: Vec<Snapshot<W>>,
 }
 
-impl Draft {
-    pub fn new(loaded: Snapshot) -> Self {
+impl<W> Draft<W> {
+    pub fn new(loaded: Snapshot<W>) -> Self {
         Self {
             original: loaded.clone(),
             current: loaded,
@@ -46,7 +78,7 @@ impl Draft {
         !Arc::ptr_eq(&self.original.scene, &self.current.scene)
     }
 
-    pub fn push(&mut self, next: Snapshot) {
+    pub fn push(&mut self, next: Snapshot<W>) {
         let previous = std::mem::replace(&mut self.current, next);
         self.undo.push(previous);
         if self.undo.len() > MAX_UNDO {
@@ -57,7 +89,7 @@ impl Draft {
 
     /// Replace the current state without a new undo step: the rest of a
     /// brush stroke whose first dab was pushed.
-    pub fn amend(&mut self, next: Snapshot) {
+    pub fn amend(&mut self, next: Snapshot<W>) {
         self.current = next;
         self.redo.clear();
     }
@@ -81,10 +113,10 @@ impl Draft {
 }
 
 /// New local transforms for several objects, by index.
-pub(super) fn transform(
-    snapshot: &Snapshot,
+pub fn transform<W: DrawnWorld>(
+    snapshot: &Snapshot<W>,
     edits: &[(usize, Transform)],
-) -> Result<Snapshot, String> {
+) -> Result<Snapshot<W>, String> {
     let named = edits
         .iter()
         .map(|(index, local)| {
@@ -96,7 +128,7 @@ pub(super) fn transform(
                 .ok_or_else(|| "That placement is no longer in the map".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let scene = evolve_core::edit_level_transforms(&snapshot.scene, &named)
+    let scene = crate::edit_level_transforms(&snapshot.scene, &named)
         .map_err(|error| format!("Invalid transform: {error}"))?;
     Ok(Snapshot {
         world: snapshot
@@ -110,12 +142,12 @@ pub(super) fn transform(
 
 /// A copy of object `index` with id `new_id` and local transform `local`,
 /// drawn with the same model. Returns the copy's index.
-pub(super) fn copy(
-    snapshot: &Snapshot,
+pub fn copy<W: DrawnWorld>(
+    snapshot: &Snapshot<W>,
     index: usize,
     new_id: String,
     local: Transform,
-) -> Result<(Snapshot, usize), String> {
+) -> Result<(Snapshot<W>, usize), String> {
     let source = snapshot
         .scene
         .objects
@@ -127,20 +159,19 @@ pub(super) fn copy(
     copied.name = format!("{}_copy", source.name);
     let new_index = scene.objects.len();
     scene.objects.push(copied);
-    let scene = evolve_core::edit_level_transforms(&scene, &[(new_id.clone(), local)])
+    let scene = crate::edit_level_transforms(&scene, &[(new_id.clone(), local)])
         .map_err(|error| format!("Invalid transform: {error}"))?;
     let world = snapshot.world.as_ref().map(|world| {
         let mut next = world.updated(&scene);
         let placed = scene.objects[new_index].world;
-        for group in &mut next.groups {
-            if group.instances.iter().any(|i| i.object_index == index) {
-                group.instances.push(Instance {
+        next.edit_instances(|instances| {
+            if instances.iter().any(|i| i.object_index == index) {
+                instances.push(Instance {
                     object_index: new_index,
                     transform: placed,
                 });
             }
-        }
-        next.instance_count = next.groups.iter().map(|g| g.instances.len()).sum();
+        });
         Arc::new(next)
     });
     let mut origins = (*snapshot.origins).clone();
@@ -158,10 +189,10 @@ pub(super) fn copy(
 
 /// Many copies at once: each of object `origin` with a new id and local
 /// transform, in one pass over the scene (as a vegetation brush dab makes).
-pub(super) fn copy_many(
-    snapshot: &Snapshot,
+pub fn copy_many<W: DrawnWorld>(
+    snapshot: &Snapshot<W>,
     copies: &[(usize, String, Transform)],
-) -> Result<Snapshot, String> {
+) -> Result<Snapshot<W>, String> {
     if copies.is_empty() {
         return Ok(snapshot.clone());
     }
@@ -185,7 +216,7 @@ pub(super) fn copy_many(
         .iter()
         .map(|(_, id, local)| (id.clone(), *local))
         .collect::<Vec<_>>();
-    let scene = evolve_core::edit_level_transforms(&scene, &edits)
+    let scene = crate::edit_level_transforms(&scene, &edits)
         .map_err(|error| format!("Invalid transform: {error}"))?;
     let world = snapshot.world.as_ref().map(|world| {
         let mut next = world.updated(&scene);
@@ -193,9 +224,9 @@ pub(super) fn copy_many(
         for &(origin, index) in &added {
             by_origin.entry(origin).or_default().push(index);
         }
-        for group in &mut next.groups {
+        next.edit_instances(|instances| {
             let mut extra = Vec::new();
-            for instance in &group.instances {
+            for instance in instances.iter() {
                 if let Some(indices) = by_origin.get(&instance.object_index) {
                     extra.extend(indices.iter().map(|&index| Instance {
                         object_index: index,
@@ -203,9 +234,8 @@ pub(super) fn copy_many(
                     }));
                 }
             }
-            group.instances.extend(extra);
-        }
-        next.instance_count = next.groups.iter().map(|g| g.instances.len()).sum();
+            instances.extend(extra);
+        });
         Arc::new(next)
     });
     Ok(Snapshot {
@@ -217,7 +247,7 @@ pub(super) fn copy_many(
 }
 
 /// Delete objects by index: hidden and no longer drawn or picked.
-pub(super) fn delete(snapshot: &Snapshot, indices: &[usize]) -> Snapshot {
+pub fn delete<W: DrawnWorld>(snapshot: &Snapshot<W>, indices: &[usize]) -> Snapshot<W> {
     let mut scene = (*snapshot.scene).clone();
     let mut deleted = (*snapshot.deleted).clone();
     for &index in indices {
@@ -229,12 +259,9 @@ pub(super) fn delete(snapshot: &Snapshot, indices: &[usize]) -> Snapshot {
     let gone = indices.iter().copied().collect::<HashSet<_>>();
     let world = snapshot.world.as_ref().map(|world| {
         let mut next = world.updated(&scene);
-        for group in &mut next.groups {
-            group
-                .instances
-                .retain(|instance| !gone.contains(&instance.object_index));
-        }
-        next.instance_count = next.groups.iter().map(|g| g.instances.len()).sum();
+        next.edit_instances(|instances| {
+            instances.retain(|instance| !gone.contains(&instance.object_index));
+        });
         Arc::new(next)
     });
     Snapshot {
@@ -246,7 +273,11 @@ pub(super) fn delete(snapshot: &Snapshot, indices: &[usize]) -> Snapshot {
 }
 
 /// New polygon vertices (local) for an area object.
-pub(super) fn shape(snapshot: &Snapshot, index: usize, points: Vec<[f32; 3]>) -> Snapshot {
+pub fn shape<W: DrawnWorld>(
+    snapshot: &Snapshot<W>,
+    index: usize,
+    points: Vec<[f32; 3]>,
+) -> Snapshot<W> {
     let mut scene = (*snapshot.scene).clone();
     if let Some(object) = scene.objects.get_mut(index) {
         object.shape_points = points;
@@ -264,7 +295,7 @@ pub(super) fn shape(snapshot: &Snapshot, index: usize, points: Vec<[f32; 3]>) ->
 /// One difference between the loaded map and the draft, by object index in
 /// the draft's scene.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) enum Change {
+pub enum Change {
     /// A new object copying the object with this id.
     Copy {
         index: usize,
@@ -284,7 +315,7 @@ pub(super) enum Change {
 /// What saving `current` must write, compared with `original`: copies first
 /// (in the order made, so a copy of a copy follows its origin), then moves
 /// and polygons, then deletions.
-pub(super) fn changes(original: &Snapshot, current: &Snapshot) -> Vec<Change> {
+pub fn changes<W>(original: &Snapshot<W>, current: &Snapshot<W>) -> Vec<Change> {
     let loaded = original
         .scene
         .objects
@@ -328,7 +359,7 @@ pub(super) fn changes(original: &Snapshot, current: &Snapshot) -> Vec<Change> {
 }
 
 /// The object a copy (or a copy of a copy) was made from in the loaded map.
-pub(super) fn root_origin<'a>(snapshot: &'a Snapshot, id: &'a str) -> &'a str {
+pub fn root_origin<'a, W>(snapshot: &'a Snapshot<W>, id: &'a str) -> &'a str {
     let mut at = id;
     for _ in 0..snapshot.origins.len() + 1 {
         match snapshot.origins.get(at) {
@@ -343,12 +374,12 @@ pub(super) fn root_origin<'a>(snapshot: &'a Snapshot, id: &'a str) -> &'a str {
 mod tests {
     use super::*;
 
-    fn object(id: &str, x: f32) -> evolve_core::PlacedObject {
+    fn object(id: &str, x: f32) -> crate::PlacedObject {
         let at = Transform {
             position: [x, 0.0, 0.0],
             ..Transform::default()
         };
-        evolve_core::PlacedObject {
+        crate::PlacedObject {
             id: id.into(),
             parent: String::new(),
             layer: "layers/main.lyr".into(),
@@ -367,7 +398,7 @@ mod tests {
         }
     }
 
-    fn loaded() -> Snapshot {
+    fn loaded() -> Snapshot<()> {
         Snapshot {
             scene: Arc::new(LevelScene {
                 schema: 1,

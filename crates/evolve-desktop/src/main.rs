@@ -8,7 +8,6 @@ mod anim;
 mod animation_audio;
 mod animation_prop;
 mod assembly_materials;
-mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
 mod audio_tools;
@@ -55,26 +54,17 @@ mod icons;
 mod initial_setup;
 mod keybinds;
 mod launcher_bridge;
-mod level_archive;
-mod level_atmosphere;
 mod level_authoring;
 #[cfg(test)]
 mod level_bench;
-mod level_camera;
 #[cfg(test)]
 mod level_capture;
-mod level_draft;
-mod level_edit_history;
 mod level_editor_shell;
-mod level_effect_sources;
-mod level_environment;
 mod level_gizmo;
 mod level_library;
-mod level_lighting;
 mod level_palette;
 mod level_pick;
 mod level_scene_renderer;
-mod level_transform;
 mod level_workspace;
 mod library_picker;
 mod loading_wheel;
@@ -83,10 +73,7 @@ mod map_preview;
 mod menu_popup;
 mod mod_play;
 mod modding_browser;
-mod modding_keys;
 mod modding_page;
-mod modding_projects;
-mod official_stage2_tools;
 mod online_guard;
 mod orientation_gizmo;
 mod play_dialog;
@@ -115,9 +102,6 @@ mod system_meters;
 #[cfg(windows)]
 #[path = "../../evolve-teleport-overlay/src/lib.rs"]
 mod teleport_overlay;
-mod terrain_brush;
-mod terrain_material_probe;
-// Native RGB24 source-backed output stage; UI activation awaits verified\n// per-pixel Evolve paint alpha and original multi-layer shader ordering.\n#[allow(dead_code)]\nmod terrain_rebake_project;
 mod text_asset_editor;
 mod textured;
 mod toast;
@@ -125,7 +109,6 @@ mod ui_kit;
 mod updater;
 mod updater_apply;
 mod uv_preview;
-mod vegetation_map;
 mod view_navigation;
 mod viewer_grid;
 mod viewer_inspector;
@@ -136,7 +119,17 @@ mod windows_system32;
 mod work_progress;
 mod world_instances;
 mod world_mips;
+// UI-free Level Editor and Modding-project logic lives in evolve-core; these
+// keep the crate-root paths the desktop modules already use.
 use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
+use evolve_core::level_editor::level_save::{
+    self, LevelFileEdit, compiled_placement, is_compiled_kind,
+};
+use evolve_core::level_editor::{
+    level_archive, level_atmosphere, level_camera, level_draft, level_edit_history,
+    level_effect_sources, level_environment, level_lighting, level_transform, terrain_brush,
+    terrain_material_probe, vegetation_map,
+};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsFormat, DdsInfo, DependencyGraph,
@@ -161,6 +154,7 @@ use evolve_core::{
     scan_directory, scan_directory_with_progress, scan_library_build_updates,
     scan_library_import_sources, stage_status,
 };
+use evolve_core::{asset_cache, modding_keys, modding_projects, official_stage2_tools};
 use iced::widget::{
     canvas, column, container, image, mouse_area, row, scrollable, shader, slider, space, svg, text,
 };
@@ -863,7 +857,7 @@ struct State {
     /// The gizmo shown on the selection.
     level_gizmo: level_transform::Mode,
     /// Unsaved map changes, shown live; Save Map writes them.
-    level_draft: Option<level_draft::Draft>,
+    level_draft: Option<level_draft::Draft<world_instances::World>>,
     /// A polygon vertex being dragged: its index and the height it moves at.
     level_vertex_drag: Option<(usize, f32)>,
     /// The dragged vertex has moved, so releasing saves the polygon.
@@ -1185,13 +1179,6 @@ enum ViewerTab {
     Uv,
     Dependencies,
     Compare,
-}
-
-/// All of a map draft's changes to one project file.
-#[derive(Debug, Clone)]
-enum LevelFileEdit {
-    Xml(Vec<evolve_core::scene_authoring::LayerAuthoringEdit>),
-    Compiled(evolve_core::CompiledEdits),
 }
 
 #[derive(Debug, Clone)]
@@ -2517,67 +2504,7 @@ impl Operation {
                 ))
             }
             Self::SaveLevelDraft(project, files, projects_root) => {
-                // Every file is edited in memory first: nothing is written
-                // unless all of them succeed.
-                let root = std::fs::canonicalize(project.workspace.join("files"))
-                    .map_err(|e| e.to_string())?;
-                let mut outputs = Vec::with_capacity(files.len());
-                for (source, edit) in files {
-                    let metadata = std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
-                    let source = std::fs::canonicalize(&source).map_err(|e| e.to_string())?;
-                    if !metadata.file_type().is_file()
-                        || metadata.len() > 192 * 1024 * 1024
-                        || !source.starts_with(&root)
-                    {
-                        return Err("Source is not a regular managed project member".into());
-                    }
-                    let member = source
-                        .strip_prefix(&root)
-                        .map_err(|_| "Level source is outside this Modding project")?
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    let lower = member.to_ascii_lowercase();
-                    let original = std::fs::read(&source).map_err(|e| e.to_string())?;
-                    let output = match edit {
-                        LevelFileEdit::Xml(edits) => {
-                            if !(lower.ends_with(".lyr") || lower.ends_with(".xml")) {
-                                return Err(format!("{member} is not an XML layer"));
-                            }
-                            let mut bytes = original.clone();
-                            for edit in &edits {
-                                bytes = evolve_core::scene_authoring::edit_native_layer_bytes(
-                                    &bytes, edit,
-                                )
-                                .map_err(|e| format!("{member}: {e}"))?;
-                            }
-                            bytes
-                        }
-                        LevelFileEdit::Compiled(edits) => {
-                            if lower != "terrain/terrain.dat"
-                                && !lower.ends_with("/terrain/terrain.dat")
-                            {
-                                return Err(format!("{member} is not the map's terrain.dat"));
-                            }
-                            evolve_core::apply_compiled_edits(&original, &edits)
-                                .map_err(|e| format!("{member}: {e}"))?
-                        }
-                    };
-                    outputs.push((member, original, output));
-                }
-                let mut saved = 0;
-                for (member, original, output) in outputs {
-                    if output != original
-                        && modding_projects::save_level_member_checked(
-                            &project,
-                            &projects_root,
-                            &member,
-                            &original,
-                            &output,
-                        )?
-                    {
-                        saved += 1;
-                    }
-                }
+                let saved = level_save::save_files(&project, &projects_root, files)?;
                 Ok(Completed::LevelDraftSaved(project, saved))
             }
             Self::RestoreCommittedLevel(project, revision, undo, root) => {
@@ -4671,7 +4598,7 @@ fn draft_pending(state: &State) -> bool {
 }
 
 /// The map as the editor shows it now, for the next change.
-fn draft_current(state: &State) -> Option<level_draft::Snapshot> {
+fn draft_current(state: &State) -> Option<level_draft::Snapshot<world_instances::World>> {
     if let Some(draft) = &state.level_draft {
         return Some(draft.current.clone());
     }
@@ -4714,7 +4641,11 @@ fn show_draft(state: &mut State) {
 }
 
 /// Make `next` the map's current state, undoably.
-fn apply_draft_edit(state: &mut State, next: level_draft::Snapshot, done: &str) {
+fn apply_draft_edit(
+    state: &mut State,
+    next: level_draft::Snapshot<world_instances::World>,
+    done: &str,
+) {
     if state.level_draft.is_none()
         && let Some(loaded) = draft_current(state)
     {
@@ -4851,90 +4782,8 @@ fn draft_object_edit(state: &mut State, message: &Message) -> Task<Message> {
 
 /// Every unsaved change as edits to the project files that hold them.
 fn draft_file_edits(state: &State) -> Result<Vec<(PathBuf, LevelFileEdit)>, String> {
-    use evolve_core::scene_authoring::LayerAuthoringEdit;
     let draft = state.level_draft.as_ref().ok_or("No unsaved changes")?;
-    let current = &draft.current;
-    let loaded = |id: &str| {
-        draft
-            .original
-            .scene
-            .objects
-            .iter()
-            .find(|object| object.id == id)
-    };
-    let mut files: Vec<(PathBuf, LevelFileEdit)> = Vec::new();
-    fn file(files: &mut Vec<(PathBuf, LevelFileEdit)>, path: PathBuf, compiled: bool) -> usize {
-        if let Some(at) = files.iter().position(|(p, _)| *p == path) {
-            return at;
-        }
-        files.push((
-            path,
-            if compiled {
-                LevelFileEdit::Compiled(evolve_core::CompiledEdits::default())
-            } else {
-                LevelFileEdit::Xml(Vec::new())
-            },
-        ));
-        files.len() - 1
-    }
-    for change in level_draft::changes(&draft.original, current) {
-        let index = match &change {
-            level_draft::Change::Copy { index, .. }
-            | level_draft::Change::Transform { index }
-            | level_draft::Change::Shape { index }
-            | level_draft::Change::Delete { index } => *index,
-        };
-        let (object, path) = project_object_source(state, index)?;
-        let compiled = is_compiled_kind(&object);
-        let at = file(&mut files, path, compiled);
-        let placement = |object: &evolve_core::PlacedObject| {
-            compiled_placement(object)
-                .ok_or_else(|| format!("{} is not a terrain.dat placement", object.name))
-        };
-        match (&mut files[at].1, change) {
-            (LevelFileEdit::Compiled(edits), level_draft::Change::Copy { .. }) => {
-                let root = level_draft::root_origin(current, &object.id);
-                let origin = loaded(root).ok_or("A copy's original placement is missing")?;
-                edits.copies.push((placement(origin)?, object.world));
-            }
-            (LevelFileEdit::Compiled(edits), level_draft::Change::Transform { .. }) => {
-                // A copy is written where it is now.
-                if !current.origins.contains_key(&object.id) {
-                    edits.transforms.push((placement(&object)?, object.world));
-                }
-            }
-            (LevelFileEdit::Compiled(edits), level_draft::Change::Delete { .. }) => {
-                edits.deletes.push(placement(&object)?);
-            }
-            (LevelFileEdit::Compiled(_), level_draft::Change::Shape { .. }) => {}
-            (LevelFileEdit::Xml(edits), level_draft::Change::Copy { origin, .. }) => {
-                edits.push(LayerAuthoringEdit::Duplicate {
-                    guid: origin,
-                    new_guid: object.id.clone(),
-                    name: object.name.clone(),
-                    position: Some(object.local.position),
-                });
-            }
-            (LevelFileEdit::Xml(edits), level_draft::Change::Transform { .. }) => {
-                edits.push(LayerAuthoringEdit::Transform {
-                    guid: object.id.clone(),
-                    transform: object.local,
-                });
-            }
-            (LevelFileEdit::Xml(edits), level_draft::Change::Shape { .. }) => {
-                edits.push(LayerAuthoringEdit::Shape {
-                    guid: object.id.clone(),
-                    points: object.shape_points.clone(),
-                });
-            }
-            (LevelFileEdit::Xml(edits), level_draft::Change::Delete { .. }) => {
-                edits.push(LayerAuthoringEdit::Delete {
-                    guid: object.id.clone(),
-                });
-            }
-        }
-    }
-    Ok(files)
+    level_save::file_edits(draft, |index| project_object_source(state, index))
 }
 
 /// Start a G/R/S transform of the selected placements.
@@ -5226,26 +5075,6 @@ fn level_ground_hit(state: &State, origin: [f32; 3], direction: [f32; 3]) -> Opt
         info.unit * info.stride.max(1) as f32 * 0.5,
         far,
     )
-}
-
-/// The terrain.dat record behind a Legacy-ported map's brush or vegetation.
-/// A placement stored in terrain.dat, including copies made in a draft.
-fn is_compiled_kind(object: &evolve_core::PlacedObject) -> bool {
-    object.kind.eq_ignore_ascii_case("CompiledBrush")
-        || object.kind.eq_ignore_ascii_case("CompiledVegetation")
-}
-
-fn compiled_placement(
-    object: &evolve_core::PlacedObject,
-) -> Option<evolve_core::CompiledPlacement> {
-    let index = |prefix: &str| object.id.strip_prefix(prefix)?.parse::<usize>().ok();
-    if object.kind.eq_ignore_ascii_case("CompiledBrush") {
-        index("__compiled_brush_").map(evolve_core::CompiledPlacement::Brush)
-    } else if object.kind.eq_ignore_ascii_case("CompiledVegetation") {
-        index("__compiled_vegetation_").map(evolve_core::CompiledPlacement::Vegetation)
-    } else {
-        None
-    }
 }
 
 fn selected_project_object_source(
