@@ -3940,12 +3940,13 @@ fn apply_current_skin_frame(state: &mut State) {
         .into_iter()
         .collect::<Vec<_>>();
 
-    let raw_clip = state
+    let clip_name = state
         .current_caf_virtual_path
         .as_deref()
         .or_else(|| state.active_blendspace.as_ref().map(|b| b.path.as_str()))
-        .unwrap_or("");
-    let clip_name = format!("{raw_clip} {}", state.input);
+        .unwrap_or("")
+        .to_owned();
+    let character_path = state.input.clone();
     let lower_input = state.input.to_ascii_lowercase();
     let stage = if lower_input.contains('3') {
         3
@@ -3992,6 +3993,7 @@ fn apply_current_skin_frame(state: &mut State) {
                     mesh,
                     base_surfaces_clone.as_ref(),
                     &clip_name,
+                    &character_path,
                     motion_time,
                     assembly_clone.as_deref(),
                     skin_clone.as_deref(),
@@ -4023,6 +4025,7 @@ fn apply_current_skin_frame(state: &mut State) {
                     mesh,
                     base_surfaces_clone.as_ref(),
                     &clip_name,
+                    &character_path,
                     motion_time,
                     Some(assembly.as_ref()),
                     skin_clone.as_deref(),
@@ -4051,6 +4054,7 @@ fn apply_current_skin_frame(state: &mut State) {
                     mesh,
                     base_surfaces_clone.as_ref(),
                     &clip_name,
+                    &character_path,
                     motion_time,
                     None,
                     Some(skin.as_ref()),
