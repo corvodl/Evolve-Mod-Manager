@@ -379,7 +379,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let mut outliner = column![].spacing(2);
     let query = state.level_filter.to_ascii_lowercase();
     let mut visible = 0usize;
-    let mut groups = std::collections::BTreeMap::<String, Vec<(usize, &_)>>::new();
+    // Borrowed keys: this runs on every redraw of the level window, and large
+    // maps have tens of thousands of objects.
+    let mut groups = std::collections::BTreeMap::<&str, Vec<(usize, &_)>>::new();
     let wildlife_count = scene
         .objects
         .iter()
@@ -394,16 +396,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             continue;
         }
         let group = if obj.is_wildlife_spawn() || obj.kind.eq_ignore_ascii_case("ZooKeeperShape") {
-            "Wildlife Spawns (Source-Backed)".to_owned()
+            "Wildlife Spawns (Source-Backed)"
         } else {
-            obj.layer.clone()
+            obj.layer.as_str()
         };
         groups.entry(group).or_default().push((index, obj));
         visible += 1;
     }
     let mut shown = 0;
     for (group, objects) in groups {
-        let collapsed = state.level_collapsed_groups.contains(&group);
+        let collapsed = state.level_collapsed_groups.contains(group);
         outliner = outliner.push(
             design::button(
                 text(format!(
@@ -416,7 +418,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             )
             .width(Fill)
             .style(design::secondary)
-            .on_press(Message::LevelToggleOutlinerGroup(group)),
+            .on_press(Message::LevelToggleOutlinerGroup(group.to_owned())),
         );
         if collapsed {
             continue;
