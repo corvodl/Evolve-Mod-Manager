@@ -1,6 +1,7 @@
 //! Dedicated level-world GPU renderer. Model geometry is uploaded once per
 //! exact virtual source/material pair; authored placements remain a separate
 //! instanced vertex stream (not baked into one enormous CPU mesh).
+use super::world_mips::{MipKind, MipLevels, MipPrep};
 use crate::{level_camera, textured::Surface};
 use evolve_core::{RenderMesh, Transform};
 use iced::wgpu;
@@ -42,7 +43,7 @@ const MAX_MIP_WRITE_BYTES_PER_FRAME: usize = 8 * 1024 * 1024;
 // mip chain fits in one bounded upload; starting every material at 128 px and
 // refining one mip per redraw leaves large maps visibly blurry for minutes.
 // Oversized textures still use the existing striped, progressive path.
-fn eager_diffuse_mips(width: u32, height: u32) -> bool {
+pub(super) fn eager_diffuse_mips(width: u32, height: u32) -> bool {
     width > 0
         && height > 0
         && mip_chain_bytes(width, height) <= MAX_MIP_WRITE_BYTES_PER_FRAME as u64
@@ -222,8 +223,24 @@ fn upload_rgba_mips(
     format: wgpu::TextureFormat,
     label: &'static str,
 ) -> (wgpu::Texture, wgpu::TextureView) {
+    upload_rgba_mips_prepared(device, queue, source, None, fallback, format, label)
+}
+
+/// `upload_rgba_mips`, taking levels 1.. from `prepared` (the same chained
+/// resizes, made by `world_mips` workers) instead of resizing here.
+fn upload_rgba_mips_prepared<'a>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    source: Option<&'a image::RgbaImage>,
+    prepared: Option<&'a [image::RgbaImage]>,
+    fallback: [u8; 4],
+    format: wgpu::TextureFormat,
+    label: &'static str,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let (width, height) = source.map_or((1, 1), image::RgbaImage::dimensions);
     let mip_count = width.max(height).ilog2() + 1;
+    let prepared =
+        prepared.filter(|levels| source.is_some() && levels.len() + 1 == mip_count as usize);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -240,6 +257,11 @@ fn upload_rgba_mips(
     });
     let mut current = source.map(Cow::Borrowed);
     for level in 0..mip_count {
+        if level > 0
+            && let Some(levels) = prepared
+        {
+            current = Some(Cow::Borrowed(&levels[level as usize - 1]));
+        }
         let w = (width >> level).max(1);
         let h = (height >> level).max(1);
         let pixels = current
@@ -264,15 +286,11 @@ fn upload_rgba_mips(
                 depth_or_array_layers: 1,
             },
         );
-        if level + 1 < mip_count
+        if prepared.is_none()
+            && level + 1 < mip_count
             && let Some(img) = current.as_ref()
         {
-            current = Some(Cow::Owned(image::imageops::resize(
-                img.as_ref(),
-                (w / 2).max(1),
-                (h / 2).max(1),
-                image::imageops::FilterType::Triangle,
-            )));
+            current = Some(Cow::Owned(super::world_mips::chained_next(img)));
         }
     }
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -284,6 +302,8 @@ fn upload_rgba_mips(
 // level, so never samples uninitialized GPU texture data.
 struct PendingDiffuseMip {
     source: Arc<image::RgbaImage>,
+    /// Levels 1.. made by `world_mips` workers; otherwise resized per level.
+    levels: Option<MipLevels>,
     next_level: u32,
     next_row: u32,
     prepared: Option<image::RgbaImage>,
@@ -336,6 +356,7 @@ fn create_streaming_diffuse(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     source: &image::RgbaImage,
+    prepared: Option<&[image::RgbaImage]>,
 ) -> (wgpu::Texture, wgpu::TextureView, u32) {
     let count = source.width().max(source.height()).ilog2() + 1;
     let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -353,9 +374,14 @@ fn create_streaming_diffuse(
         view_formats: &[],
     });
     let first_valid = initial_diffuse_mip(source.width(), source.height());
+    let prepared = prepared.filter(|levels| levels.len() + 1 == count as usize);
     for level in first_valid..count {
-        let coarse = next_diffuse_mip(source, level);
-        write_rgba_level(queue, &tex, &coarse, level);
+        match prepared {
+            Some(levels) if level > 0 => {
+                write_rgba_level(queue, &tex, &levels[level as usize - 1], level);
+            }
+            _ => write_rgba_level(queue, &tex, &next_diffuse_mip(source, level), level),
+        }
     }
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     (tex, view, first_valid)
@@ -402,13 +428,27 @@ fn write_mip_rows(
     end_row
 }
 
-fn next_diffuse_mip(source: &image::RgbaImage, level: u32) -> image::RgbaImage {
+pub(super) fn next_diffuse_mip(source: &image::RgbaImage, level: u32) -> image::RgbaImage {
     image::imageops::resize(
         source,
         (source.width() >> level).max(1),
         (source.height() >> level).max(1),
         image::imageops::FilterType::Triangle,
     )
+}
+
+/// Worker-made levels for `source`, only when it uploads at its own size.
+fn prepared_levels<'a>(
+    prep: Option<&'a MipPrep>,
+    source: Option<&Arc<image::RgbaImage>>,
+    selected: Option<&Cow<'_, image::RgbaImage>>,
+    kind: MipKind,
+) -> Option<&'a MipLevels> {
+    let source = source?;
+    match selected? {
+        Cow::Borrowed(image) if std::ptr::eq(*image, source.as_ref()) => prep?.levels(source, kind),
+        _ => None,
+    }
 }
 
 /// Bounded, source-verified auxiliary MTL maps (normal/specular/gloss/emissive).
@@ -426,6 +466,7 @@ fn auxiliary_map(
     label: &'static str,
     full_textures: bool,
     device_limit: u32,
+    prep: Option<&MipPrep>,
     cache: &mut TextureCache,
     hashes: &mut SourceKeys,
     used_bytes: &mut u64,
@@ -449,8 +490,16 @@ fn auxiliary_map(
         )
     });
     let (w, h) = selected.as_ref().map_or((1, 1), |img| img.dimensions());
-    let (texture, view) =
-        upload_rgba_mips(device, queue, selected.as_deref(), fallback, format, label);
+    let prepared = prepared_levels(prep, source, selected.as_ref(), MipKind::Chained);
+    let (texture, view) = upload_rgba_mips_prepared(
+        device,
+        queue,
+        selected.as_deref(),
+        prepared.map(|levels| levels.as_slice()),
+        fallback,
+        format,
+        label,
+    );
     let bytes = mip_chain_bytes(w, h);
     *used_bytes = used_bytes.saturating_add(bytes);
     cache.insert(key, (texture.clone(), view.clone(), bytes));
@@ -533,7 +582,7 @@ fn group_new_bytes(
     bytes
 }
 
-fn group_distance_sq(group: &ModelGroup, camera: level_camera::Camera) -> f32 {
+pub(super) fn group_distance_sq(group: &ModelGroup, camera: level_camera::Camera) -> f32 {
     if is_ground(group) {
         return -1.0;
     }
@@ -569,7 +618,7 @@ fn resident_geometry_bytes(groups: &[Option<GpuGroup>]) -> u64 {
     })
 }
 
-fn is_ground(group: &ModelGroup) -> bool {
+pub(super) fn is_ground(group: &ModelGroup) -> bool {
     group.instances.len() == 1 && group.instances[0].object_index == usize::MAX
 }
 
@@ -1437,7 +1486,8 @@ struct TerrainGpuTextures {
     layer_view: wgpu::TextureView,
     _normals: wgpu::Texture,
     normal_view: wgpu::TextureView,
-    _paint: wgpu::Texture,
+    /// Live terrain brush paint is written here (apply_ground_patches).
+    paint: wgpu::Texture,
     paint_view: wgpu::TextureView,
     uniforms: wgpu::Buffer,
     bytes: u64,
@@ -1469,14 +1519,29 @@ fn upload_terrain_layers(
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
+        // Every smaller level of every layer is independent: resize them on
+        // all cores. Level 0 resized to its own size is the source itself.
+        let jobs = (0..depth as usize)
+            .filter_map(|layer| Some((layer, picks.get(layer).copied().flatten()?)))
+            .flat_map(|(layer, image)| (1..count).map(move |mip| (layer, image, mip)))
+            .collect::<Vec<_>>();
+        let resized =
+            super::world_mips::parallel_map(&jobs, |(_, image, mip)| next_diffuse_mip(image, *mip));
+        let mut smaller = vec![Vec::new(); depth as usize];
+        for ((layer, _, _), image) in jobs.iter().zip(resized) {
+            smaller[*layer].push(image);
+        }
         for layer in 0..depth {
             let src = picks.get(layer as usize).copied().flatten();
             for mip in 0..count {
                 let w = (dimensions.0 >> mip).max(1);
                 let h = (dimensions.1 >> mip).max(1);
-                let pixels = src.map(|image| next_diffuse_mip(image, mip));
+                let pixels = src.map(|image| match mip {
+                    0 => image,
+                    _ => &smaller[layer as usize][mip as usize - 1],
+                });
                 let flat;
-                let bytes = match &pixels {
+                let bytes = match pixels {
                     Some(image) => image.as_raw().as_slice(),
                     None => {
                         flat = fallback.repeat((w * h) as usize);
@@ -1618,7 +1683,7 @@ fn upload_terrain_layers(
         layer_view,
         _normals: normals,
         normal_view,
-        _paint: texture,
+        paint: texture,
         paint_view,
         uniforms,
         bytes: 2 * depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
@@ -2343,6 +2408,8 @@ pub(super) struct Renderer {
     source_hashes: SourceKeys,
     pending_diffuse: HashMap<TextureKey, PendingDiffuseMip>,
     mip_min_level: HashMap<TextureKey, u32>,
+    /// Background mip preparation for the current world at full quality.
+    mip_prep: Option<MipPrep>,
     mip_round_robin_cursor: usize,
     peak_gpu_bytes: u64,
     last_camera: Option<CameraGpu>,
@@ -4068,6 +4135,7 @@ impl Renderer {
             source_hashes: SourceKeys::new(),
             pending_diffuse: HashMap::new(),
             mip_min_level: HashMap::new(),
+            mip_prep: None,
             mip_round_robin_cursor: 0,
             peak_gpu_bytes: 0,
             last_camera: None,
@@ -4229,11 +4297,19 @@ impl Renderer {
                         }
                         _ => Arc::new(selected.as_ref().clone()),
                     };
+                    let prep = self.mip_prep.as_ref().filter(|_| {
+                        surf.diffuse
+                            .as_ref()
+                            .is_some_and(|d| Arc::ptr_eq(d, &original))
+                    });
                     if eager_diffuse_mips(w, h) {
-                        let (tex, view) = upload_rgba_mips(
+                        let prepared =
+                            prep.and_then(|prep| prep.levels(&original, MipKind::Chained));
+                        let (tex, view) = upload_rgba_mips_prepared(
                             device,
                             queue,
                             Some(&original),
+                            prepared.map(|levels| levels.as_slice()),
                             fallback,
                             wgpu::TextureFormat::Rgba8UnormSrgb,
                             "Full source diffuse (bounded eager mip chain)",
@@ -4241,14 +4317,22 @@ impl Renderer {
                         mip_min_level.insert(key, 0);
                         (tex, view)
                     } else {
-                        let (tex, view, lowest) =
-                            create_streaming_diffuse(device, queue, &original);
+                        let prepared = prep
+                            .and_then(|prep| prep.levels(&original, MipKind::FromSource))
+                            .cloned();
+                        let (tex, view, lowest) = create_streaming_diffuse(
+                            device,
+                            queue,
+                            &original,
+                            prepared.as_ref().map(|levels| levels.as_slice()),
+                        );
                         mip_min_level.insert(key, lowest);
                         if lowest > 0 {
                             pending_diffuse.insert(
                                 key,
                                 PendingDiffuseMip {
                                     source: original,
+                                    levels: prepared,
                                     next_level: lowest - 1,
                                     next_row: 0,
                                     prepared: None,
@@ -4295,10 +4379,17 @@ impl Renderer {
                     )
                 });
                 let (mw, mh) = mask.as_ref().map_or((1, 1), |img| img.dimensions());
-                let (opacity_tex, view) = upload_rgba_mips(
+                let prepared = prepared_levels(
+                    self.mip_prep.as_ref(),
+                    surf.opacity.as_ref(),
+                    mask.as_ref(),
+                    MipKind::Chained,
+                );
+                let (opacity_tex, view) = upload_rgba_mips_prepared(
                     device,
                     queue,
                     mask.as_deref(),
+                    prepared.map(|levels| levels.as_slice()),
                     opaque,
                     wgpu::TextureFormat::Rgba8Unorm,
                     "Original authored opacity mask",
@@ -4318,6 +4409,7 @@ impl Renderer {
                 "Original linear BC5 normal",
                 full_textures,
                 limit_2d,
+                self.mip_prep.as_ref(),
                 cache,
                 hashes,
                 used_bytes,
@@ -4332,6 +4424,7 @@ impl Renderer {
                 "Original specular reflectance",
                 full_textures,
                 limit_2d,
+                self.mip_prep.as_ref(),
                 cache,
                 hashes,
                 used_bytes,
@@ -4346,6 +4439,7 @@ impl Renderer {
                 "Original gloss smoothness",
                 full_textures,
                 limit_2d,
+                self.mip_prep.as_ref(),
                 cache,
                 hashes,
                 used_bytes,
@@ -4360,6 +4454,7 @@ impl Renderer {
                 "Original emissive color",
                 full_textures,
                 limit_2d,
+                self.mip_prep.as_ref(),
                 cache,
                 hashes,
                 used_bytes,
@@ -4378,6 +4473,7 @@ impl Renderer {
                 "Original terrain signed high-pass detail overlay",
                 full_textures,
                 limit_2d,
+                self.mip_prep.as_ref(),
                 cache,
                 hashes,
                 used_bytes,
@@ -4392,6 +4488,7 @@ impl Renderer {
                 "Original Illum second layer diffuse",
                 full_textures,
                 limit_2d,
+                self.mip_prep.as_ref(),
                 cache,
                 hashes,
                 used_bytes,
@@ -4406,6 +4503,7 @@ impl Renderer {
                 "Original Illum layer blend mask",
                 full_textures,
                 limit_2d,
+                self.mip_prep.as_ref(),
                 cache,
                 hashes,
                 used_bytes,
@@ -4632,8 +4730,43 @@ impl Renderer {
         let Ok(mut patches) = world.ground_patches.lock() else {
             return;
         };
-        if patches.rows.is_empty() && patches.indices.is_none() {
+        if patches.rows.is_empty() && patches.indices.is_none() && patches.paint.is_empty() {
             return;
+        }
+        // Without decoded source layers the ground draws the CPU-baked
+        // detail atlas, which has no paint IDs to update.
+        let paint = gpu._terrain_source.as_ref().map(|source| &source.paint);
+        for patch in patches.paint.drain(..) {
+            let Some(texture) = paint else {
+                continue;
+            };
+            let size = texture.size();
+            if patch.x + patch.width > size.width || patch.y + patch.height > size.height {
+                continue;
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: patch.x,
+                        y: patch.y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &patch.texels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(patch.width * 4),
+                    rows_per_image: Some(patch.height),
+                },
+                wgpu::Extent3d {
+                    width: patch.width,
+                    height: patch.height,
+                    depth_or_array_layers: 1,
+                },
+            );
         }
         let vertices = ground.mesh.positions.len();
         // Filled or restored holes change which quads the ground draws.
@@ -4816,6 +4949,7 @@ impl Renderer {
             self.source_hashes.clear();
             self.pending_diffuse.clear();
             self.mip_min_level.clear();
+            self.mip_prep = None;
             self.mip_round_robin_cursor = 0;
             self.peak_gpu_bytes = 0;
             self.world_identity = 0;
@@ -4847,6 +4981,15 @@ impl Renderer {
                 self.mip_min_level.clear();
             }
             self.source_hashes = (*world.source_pixel_hashes).clone();
+            // Balanced quality sizes textures by a running budget, so only
+            // full quality knows each upload's size ahead of the render thread.
+            self.mip_prep = full_textures.then(|| {
+                MipPrep::start(
+                    world.clone(),
+                    camera.map(|camera| camera.position),
+                    device.limits().max_texture_dimension_2d,
+                )
+            });
             self.preview_generation = 0;
             self.preview_groups.clear();
             self.mip_round_robin_cursor = 0;
@@ -4988,6 +5131,9 @@ impl Renderer {
         // aliasing the immutable Renderer borrow with mutable fields.
         let mut pending_diffuse = std::mem::take(&mut self.pending_diffuse);
         let mut mip_min_level = std::mem::take(&mut self.mip_min_level);
+        if let Some(prep) = self.mip_prep.as_mut() {
+            prep.receive();
+        }
         // Ground first, then all unresolved source groups by camera distance.
         // No camera-facing/frustum test may exclude a group from streaming:
         // every resolved scene placement is loaded in bounded GPU batches.
@@ -5000,6 +5146,21 @@ impl Renderer {
         });
         for idx in candidates {
             if uploaded == MAX_NEW_GROUPS_PER_FRAME {
+                pending += 1;
+                continue;
+            }
+            // A group whose mips are still being prepared waits; a nearer
+            // one that is ready goes first instead of stalling this redraw.
+            if self.mip_prep.as_ref().is_some_and(|prep| {
+                prep.waiting_for(world, &world.groups[idx], |source| {
+                    cache.contains_key(&texture_key(
+                        Some(source.image),
+                        source.role,
+                        source.ground,
+                        &mut hashes,
+                    ))
+                })
+            }) {
                 pending += 1;
                 continue;
             }
@@ -5058,6 +5219,9 @@ impl Renderer {
                 used_bytes.saturating_add(gpu._terrain_source.as_ref().map_or(0, |tex| tex.bytes));
             self.groups[idx] = Some(gpu);
             self.group_sources[idx] = Some(GroupSource::of(world, idx));
+            if let Some(prep) = self.mip_prep.as_mut() {
+                prep.release(world, &world.groups[idx]);
+            }
             uploaded += 1;
         }
         self.pending_diffuse = pending_diffuse;
@@ -5091,6 +5255,8 @@ impl Renderer {
             let level = pending.next_level;
             let mip = if level == 0 {
                 &*pending.source
+            } else if let Some(levels) = &pending.levels {
+                &levels[level as usize - 1]
             } else {
                 pending
                     .prepared
@@ -5629,6 +5795,16 @@ impl Renderer {
     }
 
     fn update_decals(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
+        let chains = super::world_mips::chained_levels(world.decals.iter().flat_map(|batch| {
+            [Some(batch.image.as_ref()), batch.normal.as_deref()]
+                .into_iter()
+                .flatten()
+        }));
+        let prepared = |image: Option<&image::RgbaImage>| {
+            image
+                .and_then(|image| chains.get(&(std::ptr::from_ref(image) as usize)))
+                .map(Vec::as_slice)
+        };
         let (roads, decals): (Vec<_>, Vec<_>) = world
             .decals
             .iter()
@@ -5639,18 +5815,20 @@ impl Renderer {
                     contents: bytemuck::cast_slice(&batch.instances),
                     usage: wgpu::BufferUsages::VERTEX,
                 });
-                let (sprite, sprite_view) = upload_rgba_mips(
+                let (sprite, sprite_view) = upload_rgba_mips_prepared(
                     device,
                     queue,
                     Some(batch.image.as_ref()),
+                    prepared(Some(batch.image.as_ref())),
                     [255, 255, 255, 0],
                     wgpu::TextureFormat::Rgba8UnormSrgb,
                     "Authored decal",
                 );
-                let (_normal, normal_view) = upload_rgba_mips(
+                let (_normal, normal_view) = upload_rgba_mips_prepared(
                     device,
                     queue,
                     batch.normal.as_deref(),
+                    prepared(batch.normal.as_deref()),
                     [128, 128, 255, 255],
                     wgpu::TextureFormat::Rgba8Unorm,
                     "Authored road normal",
@@ -5722,6 +5900,9 @@ impl Renderer {
     }
 
     fn update_particles(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World) {
+        let chains = super::world_mips::chained_levels(
+            world.particles.iter().map(|batch| batch.sprite.as_ref()),
+        );
         self.particle_batches = world
             .particles
             .iter()
@@ -5732,10 +5913,13 @@ impl Renderer {
                     contents: bytemuck::cast_slice(&batch.instances),
                     usage: wgpu::BufferUsages::VERTEX,
                 });
-                let (sprite, sprite_view) = upload_rgba_mips(
+                let (sprite, sprite_view) = upload_rgba_mips_prepared(
                     device,
                     queue,
                     Some(batch.sprite.as_ref()),
+                    chains
+                        .get(&(std::ptr::from_ref(batch.sprite.as_ref()) as usize))
+                        .map(Vec::as_slice),
                     [255, 255, 255, 255],
                     wgpu::TextureFormat::Rgba8UnormSrgb,
                     "Authored particle sprite",

@@ -285,6 +285,64 @@ impl shader::Program<super::Message> for Scene {
         _cursor: mouse::Cursor,
         bounds: Rectangle,
     ) -> Self::Primitive {
+        // In level mode the GPU world renderer clips actual world-space
+        // triangles against the camera near plane. Do not draw a second copy
+        // of terrain through legacy CPU NDC projection: it turns triangles
+        // crossing the camera into giant apparent surfaces. Nor project it at
+        // all: this runs on the UI thread for every redraw of a whole map.
+        let (points, ground, indices) = if self.level_camera.is_some() {
+            (Vec::new(), Vec::new(), Vec::new())
+        } else {
+            let (points, ground) = self.cpu_projection(bounds);
+            (points, ground, self.mesh.indices.clone())
+        };
+        Primitive {
+            overlay: Vec::new(),
+            points,
+            ground,
+            indices,
+            surfaces: self.surfaces.clone(),
+            diffuse: self.diffuse.clone(),
+            normal_map: self.normal_map.clone(),
+            emissive: self.emissive.clone(),
+            specular: self.specular.clone(),
+            gloss: self.gloss.clone(),
+            mesh_identity: Arc::as_ptr(&self.mesh) as usize,
+            texture_identity: self.diffuse.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
+            normal_identity: self
+                .normal_map
+                .as_ref()
+                .map_or(0, |t| Arc::as_ptr(t) as usize),
+            emissive_identity: self
+                .emissive
+                .as_ref()
+                .map_or(0, |t| Arc::as_ptr(t) as usize),
+            specular_identity: self
+                .specular
+                .as_ref()
+                .map_or(0, |t| Arc::as_ptr(t) as usize),
+            gloss_identity: self.gloss.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
+            emissive_gain: self.emissive_gain,
+            armor_level: self.armor_level,
+            emissive_time: self.emissive_time,
+            world: self.world.clone(),
+            level_hour: self.level_hour,
+            level_full_textures: self.level_full_textures,
+            level_terrain_unlit: self.level_terrain_unlit,
+            viewer_full_textures: self.viewer_full_textures,
+            viewer_gpu_remaining: self.viewer_gpu_remaining.clone(),
+            camera: self.level_camera,
+            yaw: self.yaw,
+            pitch: self.pitch,
+            zoom: self.zoom,
+        }
+    }
+}
+
+impl Scene {
+    /// Model Viewer vertices and floor grid, projected on the CPU for the
+    /// orbit camera. The Level Editor never uses these.
+    fn cpu_projection(&self, bounds: Rectangle) -> (Vec<Vertex>, Vec<GroundVertex>) {
         let data = &self.mesh;
         let framed = self
             .framing
@@ -322,15 +380,11 @@ impl shader::Program<super::Message> for Scene {
             // 3D perspective and depth test, with original source UV winding.
             let perspective = (2.5 - depth).max(0.12);
             let scale = self.zoom.clamp(0.2, 80.0) * 1.6;
-            let projected = if let Some(camera) = self.level_camera {
-                camera.project(*raw, self.yaw, self.pitch, ratio, self.zoom)
-            } else {
-                [
-                    xr * scale / perspective / ratio + self.pan_x,
-                    yr * scale / perspective + self.pan_y,
-                    ((2.5 - depth) / 5.0).clamp(0., 1.),
-                ]
-            };
+            let projected = [
+                xr * scale / perspective / ratio + self.pan_x,
+                yr * scale / perspective + self.pan_y,
+                ((2.5 - depth) / 5.0).clamp(0., 1.),
+            ];
             let mut normal = data
                 .normals
                 .as_ref()
@@ -368,77 +422,18 @@ impl shader::Program<super::Message> for Scene {
                 let yr = z * cp - back * sp;
                 let depth = z * sp + back * cp;
                 let perspective = (2.5 - depth).max(0.12);
-                let position = if let Some(camera) = self.level_camera {
-                    camera.project(raw, self.yaw, self.pitch, ratio, self.zoom)
-                } else {
-                    [
-                        xr * scale / perspective / ratio + self.pan_x,
-                        yr * scale / perspective + self.pan_y,
-                        ((2.5 - depth) / 5.0).clamp(0., 1.),
-                    ]
-                };
+                let position = [
+                    xr * scale / perspective / ratio + self.pan_x,
+                    yr * scale / perspective + self.pan_y,
+                    ((2.5 - depth) / 5.0).clamp(0., 1.),
+                ];
                 ground.push(GroundVertex {
                     position,
                     rgba: line.color,
                 });
             }
         }
-        Primitive {
-            overlay: Vec::new(),
-            // In level mode the GPU world renderer clips actual world-space
-            // triangles against the camera near plane. Do not draw a second
-            // copy of terrain through legacy CPU NDC projection: it turns
-            // triangles crossing the camera into giant apparent surfaces.
-            points: if self.level_camera.is_some() {
-                Vec::new()
-            } else {
-                points
-            },
-            ground: if self.level_camera.is_some() {
-                Vec::new()
-            } else {
-                ground
-            },
-            indices: if self.level_camera.is_some() {
-                Vec::new()
-            } else {
-                data.indices.clone()
-            },
-            surfaces: self.surfaces.clone(),
-            diffuse: self.diffuse.clone(),
-            normal_map: self.normal_map.clone(),
-            emissive: self.emissive.clone(),
-            specular: self.specular.clone(),
-            gloss: self.gloss.clone(),
-            mesh_identity: Arc::as_ptr(&self.mesh) as usize,
-            texture_identity: self.diffuse.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
-            normal_identity: self
-                .normal_map
-                .as_ref()
-                .map_or(0, |t| Arc::as_ptr(t) as usize),
-            emissive_identity: self
-                .emissive
-                .as_ref()
-                .map_or(0, |t| Arc::as_ptr(t) as usize),
-            specular_identity: self
-                .specular
-                .as_ref()
-                .map_or(0, |t| Arc::as_ptr(t) as usize),
-            gloss_identity: self.gloss.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
-            emissive_gain: self.emissive_gain,
-            armor_level: self.armor_level,
-            emissive_time: self.emissive_time,
-            world: self.world.clone(),
-            level_hour: self.level_hour,
-            level_full_textures: self.level_full_textures,
-            level_terrain_unlit: self.level_terrain_unlit,
-            viewer_full_textures: self.viewer_full_textures,
-            viewer_gpu_remaining: self.viewer_gpu_remaining.clone(),
-            camera: self.level_camera,
-            yaw: self.yaw,
-            pitch: self.pitch,
-            zoom: self.zoom,
-        }
+        (points, ground)
     }
 }
 

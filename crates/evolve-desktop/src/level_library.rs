@@ -66,6 +66,50 @@ fn set_load_step(step: usize) {
 
 thread_local! { static PREVIEWING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
+/// Wall time of each map-open phase, written to the diagnostics log so a slow
+/// load on another PC can be reported with numbers rather than impressions.
+struct LoadTimer {
+    started: std::time::Instant,
+    lap: std::time::Instant,
+    phases: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl LoadTimer {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            lap: now,
+            phases: Vec::new(),
+        }
+    }
+
+    fn lap(&mut self, phase: &'static str) {
+        let now = std::time::Instant::now();
+        self.phases.push((phase, now - self.lap));
+        self.lap = now;
+    }
+
+    fn record(&self, map: &str) {
+        let phases = self
+            .phases
+            .iter()
+            .map(|(phase, time)| format!("{phase} {} ms", time.as_millis()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let line = format!(
+            "{map}: {} ms total ({phases})",
+            self.started.elapsed().as_millis()
+        );
+        crate::crash_diagnostics::record("level_load_timing", &line);
+        #[cfg(test)]
+        LAST_LOAD_TIMING.with(|last| *last.borrow_mut() = line);
+    }
+}
+
+#[cfg(test)]
+thread_local! { pub(super) static LAST_LOAD_TIMING: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
+
 /// Decode source assets on a single chooser worker; never install this map in
 /// the editor or write to its imported archive. Failures leave a blank card.
 pub(super) fn preview_archive(archive: ImportedPak, name: &str) -> Option<Vec<u8>> {
@@ -1682,6 +1726,7 @@ fn open_selected(
     previous: Option<std::sync::Arc<crate::world_instances::World>>,
 ) -> Result<LoadedMap, String> {
     set_load_step(1);
+    let mut timer = LoadTimer::new();
     let index = index.min(maps.len().saturating_sub(1));
     let chosen = &maps[index];
     // Reuse decoded assets only within one project's map and build.
@@ -2285,6 +2330,7 @@ fn open_selected(
     let terrain_xml = terrain_xml.ok().flatten();
     let terrain_pak = terrain_pak.ok().flatten();
 
+    timer.lap("layers and environment");
     set_load_step(2);
     let mut terrain_paint: Option<TerrainPaintMap> = None;
     let terrain = if let Some(relative) = &chosen.terrain {
@@ -2464,6 +2510,7 @@ fn open_selected(
     if scene.is_none() && terrain.is_none() {
         return Err(diagnostics.join(" "));
     }
+    timer.lap("terrain");
     set_load_step(3);
     let mut full_scene = level_scene_renderer::assemble(
         &archive,
@@ -2473,6 +2520,7 @@ fn open_selected(
         false,
         &bulk_instances,
     )?;
+    timer.lap("assemble scene");
     if terrain.is_some()
         && let Some(package) = &terrain_pak
     {
@@ -2558,6 +2606,7 @@ fn open_selected(
             )),
         }
     }
+    timer.lap("terrain color and materials");
     let interior_weather =
         authored_interior_weather(&archive, chosen, &inventory, &sources, &mut diagnostics);
     let mut resources = authored_fx_catalog(&root, &inventory, scene.as_ref());
@@ -2591,6 +2640,7 @@ fn open_selected(
         assembled.world = std::sync::Arc::new(world);
         diagnostics.push(assembled.report.status());
     }
+    timer.lap("effects and source hashes");
     let thumbnail = authored_minimap_thumbnail(&archive, chosen, &inventory, &root)
         .or_else(|| {
             crate::map_preview::render(
@@ -2606,6 +2656,8 @@ fn open_selected(
     if thumbnail.is_some() {
         diagnostics.push("Level thumbnail wholly loaded.".into());
     }
+    timer.lap("thumbnail");
+    timer.record(&chosen.name);
     Ok(LoadedMap {
         thumbnail,
         archive,

@@ -58,6 +58,8 @@ mod launcher_bridge;
 mod level_archive;
 mod level_atmosphere;
 mod level_authoring;
+#[cfg(test)]
+mod level_bench;
 mod level_camera;
 #[cfg(test)]
 mod level_capture;
@@ -133,6 +135,7 @@ mod whats_new;
 mod windows_system32;
 mod work_progress;
 mod world_instances;
+mod world_mips;
 use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
