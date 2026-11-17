@@ -4225,20 +4225,20 @@ fn check_and_trigger_audio_events(
                     stage,
                 );
             }
-        } else if lower_clip.contains("leap_attack_smash")
-            || (lower_clip.contains("leap") && lower_clip.contains("smash"))
+        } else if (lower_clip.contains("leap_attack_smash")
+            || (lower_clip.contains("leap") && lower_clip.contains("smash")))
+            && prev_time < 0.12
+            && curr_time >= 0.12
         {
-            if prev_time < 0.12 && curr_time >= 0.12 {
-                animation_audio::trigger_animation_event(
-                    "foley",
-                    "Clawbash_Double",
-                    clip_path,
-                    character_path,
-                    assets_root,
-                    &state.preferences.vgmstream_executable,
-                    stage,
-                );
-            }
+            animation_audio::trigger_animation_event(
+                "foley",
+                "Clawbash_Double",
+                clip_path,
+                character_path,
+                assets_root,
+                &state.preferences.vgmstream_executable,
+                stage,
+            );
         }
     }
 }
@@ -4298,18 +4298,18 @@ fn trigger_matching_event_on_scrub(state: &State, scrub_time: f32) {
     }
 
     let lower_clip = clip_path.to_ascii_lowercase();
-    if lower_clip.contains("fire_breath") || lower_clip.contains("flame_breath") {
-        if (scrub_time - 0.1).abs() < 0.08 {
-            animation_audio::trigger_animation_event(
-                "foley",
-                "FlameBreath",
-                clip_path,
-                character_path,
-                assets_root,
-                &state.preferences.vgmstream_executable,
-                stage,
-            );
-        }
+    if (lower_clip.contains("fire_breath") || lower_clip.contains("flame_breath"))
+        && (scrub_time - 0.1).abs() < 0.08
+    {
+        animation_audio::trigger_animation_event(
+            "foley",
+            "FlameBreath",
+            clip_path,
+            character_path,
+            assets_root,
+            &state.preferences.vgmstream_executable,
+            stage,
+        );
     }
 }
 

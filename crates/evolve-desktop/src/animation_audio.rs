@@ -57,12 +57,11 @@ fn find_fsb_bank(assets_root: &str, fsb_name: &str) -> Option<PathBuf> {
     let lower_target = fsb_name.to_ascii_lowercase();
 
     // Check cached location first
-    if let Ok(locs) = fsb_locations().lock() {
-        if let Some(path) = locs.get(&lower_target) {
-            if path.is_file() {
-                return Some(path.clone());
-            }
-        }
+    if let Ok(locs) = fsb_locations().lock()
+        && let Some(path) = locs.get(&lower_target)
+        && path.is_file()
+    {
+        return Some(path.clone());
     }
 
     let mut candidate_roots = Vec::new();
@@ -134,15 +133,15 @@ fn search_recursive_fsb(dir: &Path, target: &str, depth: usize) -> Option<PathBu
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_file() {
-            if let Some(file_name) = p.file_name() {
-                if file_name.to_string_lossy().to_ascii_lowercase() == target {
-                    return Some(p);
-                }
+            if let Some(file_name) = p.file_name()
+                && file_name.to_string_lossy().to_ascii_lowercase() == target
+            {
+                return Some(p);
             }
-        } else if p.is_dir() {
-            if let Some(found) = search_recursive_fsb(&p, target, depth - 1) {
-                return Some(found);
-            }
+        } else if p.is_dir()
+            && let Some(found) = search_recursive_fsb(&p, target, depth - 1)
+        {
+            return Some(found);
         }
     }
     None
@@ -207,10 +206,11 @@ pub fn play_fsb_subsong(fsb_path: &Path, subsong: u32, vgmstream_exe: &Path) {
         }
         let status = cmd.status();
 
-        if let Ok(s) = status {
-            if s.success() && wav.is_file() {
-                play_wav_file(&wav);
-            }
+        if let Ok(s) = status
+            && s.success()
+            && wav.is_file()
+        {
+            play_wav_file(&wav);
         }
     });
 }
@@ -518,6 +518,17 @@ pub fn trigger_animation_event(
     }
 }
 
+static RAND_STATE: Mutex<u32> = Mutex::new(12345);
+
+fn fast_pseudo_rand() -> u32 {
+    if let Ok(mut state) = RAND_STATE.lock() {
+        *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        *state >> 16
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,16 +753,5 @@ mod tests {
         let r1 = fast_pseudo_rand();
         let r2 = fast_pseudo_rand();
         assert_ne!(r1, r2);
-    }
-}
-
-static RAND_STATE: Mutex<u32> = Mutex::new(12345);
-
-fn fast_pseudo_rand() -> u32 {
-    if let Ok(mut state) = RAND_STATE.lock() {
-        *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
-        *state >> 16
-    } else {
-        0
     }
 }
