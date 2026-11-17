@@ -54,6 +54,7 @@ pub mod staging;
 pub mod terrain;
 pub mod terrain_rebake;
 mod terrain_tiles;
+pub mod wildlife_spawns;
 pub mod zookeeper;
 
 pub use animation::{

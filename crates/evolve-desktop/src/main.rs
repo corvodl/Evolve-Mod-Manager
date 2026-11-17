@@ -592,6 +592,8 @@ struct State {
     level_wildlife_resolved: bool,
     level_spawn_distances: Option<evolve_core::zookeeper::SpawnDistances>,
     level_show_wildlife: bool,
+    /// The outliner's wildlife list shows only this spawn type when set.
+    level_wildlife_type: Option<evolve_core::wildlife_spawns::SpawnType>,
     level_project: Option<modding_projects::ProjectRow>,
     /// Duplicate original GUIDs across LYR layers are previewable, not
     /// editable. The source owner is ambiguous even inside one Modding project.
@@ -3338,11 +3340,16 @@ enum Message {
     LevelAuthoringChanged(level_authoring::TextField, String),
     LevelAuthoringToggleEnabled,
     LevelAuthoringToggleRoundStart,
+    LevelAuthoringToggleZoneTerrain,
+    LevelAuthoringToggleZoneRestrict,
+    LevelWildlifeType(Option<evolve_core::wildlife_spawns::SpawnType>),
     LevelAddGeometry,
     LevelDuplicateSelected,
     LevelDeleteSelected,
     LevelSaveWildlifeSpawn,
     LevelSaveWildlifeShape,
+    LevelSaveWildlifeSettings,
+    LevelSaveWildlifeLinks,
     LevelSculptTerrain,
     LevelPaintTerrain,
     LevelSetTool(terrain_brush::LevelTool),
@@ -5418,6 +5425,7 @@ fn refresh_wildlife_visibility(state: &mut State) {
     filtered.wildlife_distances = None;
     filtered.wildlife_shapes = Arc::new(Vec::new());
     filtered.wildlife_links = Arc::new(Vec::new());
+    filtered.wildlife_circles = Arc::new(Vec::new());
     if let Some(scene) = &state.level_scene {
         for group in &mut filtered.groups {
             group.instances.retain(|instance| {
@@ -5448,7 +5456,9 @@ fn sync_level_fields(state: &mut State) {
     let selected = state
         .level_selected
         .and_then(|index| state.level_scene.as_ref()?.objects.get(index));
-    state.level_authoring.sync(selected);
+    state
+        .level_authoring
+        .sync(state.level_scene.as_deref(), selected);
     if let Some(transform) = transform {
         (
             state.level_edit_position,
@@ -8673,11 +8683,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     !state.level_authoring.spawn_on_round_start;
             }
         }
+        Message::LevelAuthoringToggleZoneTerrain => {
+            if !state.level_read_only {
+                state.level_authoring.zone_terrain = !state.level_authoring.zone_terrain;
+            }
+        }
+        Message::LevelAuthoringToggleZoneRestrict => {
+            if !state.level_read_only {
+                state.level_authoring.zone_restrict = !state.level_authoring.zone_restrict;
+            }
+        }
+        Message::LevelWildlifeType(spawn_type) => state.level_wildlife_type = spawn_type,
         Message::LevelAddGeometry
         | Message::LevelDuplicateSelected
         | Message::LevelDeleteSelected
         | Message::LevelSaveWildlifeSpawn
         | Message::LevelSaveWildlifeShape
+        | Message::LevelSaveWildlifeSettings
+        | Message::LevelSaveWildlifeLinks
         | Message::LevelMoveVegetation
         | Message::LevelScaleVegetation
         | Message::LevelDuplicateVegetation
@@ -8830,6 +8853,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 },
                 Message::LevelSaveWildlifeShape => match state.level_authoring.shape(object.id) {
+                    Ok(edit) => ProjectLevelMutation::Xml(edit),
+                    Err(reason) => {
+                        state.status = reason;
+                        return Task::none();
+                    }
+                },
+                Message::LevelSaveWildlifeSettings => {
+                    match state.level_authoring.wildlife(&object) {
+                        Ok(edit) => ProjectLevelMutation::Xml(edit),
+                        Err(reason) => {
+                            state.status = reason;
+                            return Task::none();
+                        }
+                    }
+                }
+                Message::LevelSaveWildlifeLinks => match state
+                    .level_scene
+                    .as_deref()
+                    .ok_or_else(|| "Reload the level before editing wildlife links.".to_owned())
+                    .and_then(|scene| state.level_authoring.links(scene, &object))
+                {
                     Ok(edit) => ProjectLevelMutation::Xml(edit),
                     Err(reason) => {
                         state.status = reason;
@@ -17992,6 +18036,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         merged.wildlife_distances = wildlife.wildlife_distances;
                         merged.wildlife_shapes = wildlife.wildlife_shapes.clone();
                         merged.wildlife_links = wildlife.wildlife_links.clone();
+                        merged.wildlife_circles = wildlife.wildlife_circles.clone();
                         merged.instance_count = merged
                             .groups
                             .iter()

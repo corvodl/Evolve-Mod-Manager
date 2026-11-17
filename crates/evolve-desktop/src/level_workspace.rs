@@ -2,6 +2,7 @@
 //! scenes. Renders source locations only; does not invent geometry or changes.
 use super::{Message, State};
 use crate::design;
+use evolve_core::wildlife_spawns::{SpawnType, WildlifeEntity};
 use evolve_core::{LevelScene, Transform};
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::{
@@ -358,6 +359,31 @@ pub(super) fn fullscreen_view(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+/// An outliner row naming the spawn type and its defining setting.
+fn wildlife_row_label(entity: WildlifeEntity, obj: &evolve_core::PlacedObject) -> String {
+    let detail = match entity {
+        WildlifeEntity::SpawnPoint if !obj.wildlife.species.is_empty() => {
+            format!(" [{}]", obj.wildlife.species)
+        }
+        WildlifeEntity::Group => obj
+            .wildlife
+            .radius
+            .map_or(String::new(), |radius| format!(" [{radius} m]")),
+        WildlifeEntity::Node => format!(" [{} candidates]", obj.wildlife.links.len()),
+        WildlifeEntity::Zone if !obj.wildlife.keywords.is_empty() => {
+            format!(" [{}]", obj.wildlife.keywords)
+        }
+        _ => String::new(),
+    };
+    let kind = match entity {
+        WildlifeEntity::SpawnPoint | WildlifeEntity::CreatureSpawn => "Spawn point",
+        WildlifeEntity::Group => "Spawn circle",
+        WildlifeEntity::Node => "Random set",
+        WildlifeEntity::Zone => "Dynamic zone",
+    };
+    format!("{kind} · {} / {}{detail}", obj.layer, obj.name)
+}
+
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let Some(scene) = &state.level_scene else {
         return container(
@@ -387,6 +413,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .iter()
         .filter(|obj| obj.is_wildlife_spawn())
         .count();
+    const WILDLIFE_GROUP: &str = "Wildlife Spawns (Source-Backed)";
+    if wildlife_count > 0 {
+        groups.entry(WILDLIFE_GROUP).or_default();
+    }
     for (index, obj) in scene.objects.iter().enumerate() {
         if !query.is_empty()
             && !obj.name.to_ascii_lowercase().contains(&query)
@@ -395,8 +425,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         {
             continue;
         }
+        let wildlife = WildlifeEntity::of(obj);
+        if wildlife.is_some()
+            && state
+                .level_wildlife_type
+                .is_some_and(|shown| wildlife.map(WildlifeEntity::spawn_type) != Some(shown))
+        {
+            continue;
+        }
         let group = if obj.is_wildlife_spawn() || obj.kind.eq_ignore_ascii_case("ZooKeeperShape") {
-            "Wildlife Spawns (Source-Backed)"
+            WILDLIFE_GROUP
         } else {
             obj.layer.as_str()
         };
@@ -406,6 +444,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let mut shown = 0;
     for (group, objects) in groups {
         let collapsed = state.level_collapsed_groups.contains(group);
+        let wildlife_group = group == WILDLIFE_GROUP;
         outliner = outliner.push(
             design::button(
                 text(format!(
@@ -422,6 +461,30 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         );
         if collapsed {
             continue;
+        }
+        if wildlife_group {
+            let shown_type = state.level_wildlife_type;
+            outliner = outliner.push(crate::ui_kit::segmented(
+                &state.ui,
+                "level-wildlife-type",
+                vec![
+                    ("All", Message::LevelWildlifeType(None)),
+                    (
+                        "Points",
+                        Message::LevelWildlifeType(Some(SpawnType::Static)),
+                    ),
+                    ("Sets", Message::LevelWildlifeType(Some(SpawnType::Choice))),
+                    ("Circles", Message::LevelWildlifeType(Some(SpawnType::Area))),
+                    ("Zones", Message::LevelWildlifeType(Some(SpawnType::Zone))),
+                ],
+                shown_type.map_or(0, |shown| {
+                    1 + SpawnType::ALL
+                        .iter()
+                        .position(|candidate| *candidate == shown)
+                        .unwrap_or(0)
+                }),
+                true,
+            ));
         }
         for (index, obj) in objects {
             if shown >= 180 {
@@ -440,8 +503,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                                 obj.populations.join(", ")
                             }
                         )
-                    } else if obj.kind.eq_ignore_ascii_case("ZooKeeperShape") {
-                        format!("Spawn area · {} / {}", obj.layer, obj.name)
+                    } else if let Some(entity) = WildlifeEntity::of(obj) {
+                        wildlife_row_label(entity, obj)
                     } else {
                         format!("{}  /  {}", obj.layer, obj.name)
                     })
