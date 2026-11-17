@@ -1427,7 +1427,8 @@ struct TerrainGpuTextures {
     layer_view: wgpu::TextureView,
     _normals: wgpu::Texture,
     normal_view: wgpu::TextureView,
-    _paint: wgpu::Texture,
+    /// Live terrain brush paint is written here (apply_ground_patches).
+    paint: wgpu::Texture,
     paint_view: wgpu::TextureView,
     uniforms: wgpu::Buffer,
     bytes: u64,
@@ -1623,7 +1624,7 @@ fn upload_terrain_layers(
         layer_view,
         _normals: normals,
         normal_view,
-        _paint: texture,
+        paint: texture,
         paint_view,
         uniforms,
         bytes: 2 * depth as u64 * mip_chain_bytes(dimensions.0, dimensions.1)
@@ -4670,8 +4671,43 @@ impl Renderer {
         let Ok(mut patches) = world.ground_patches.lock() else {
             return;
         };
-        if patches.rows.is_empty() && patches.indices.is_none() {
+        if patches.rows.is_empty() && patches.indices.is_none() && patches.paint.is_empty() {
             return;
+        }
+        // Without decoded source layers the ground draws the CPU-baked
+        // detail atlas, which has no paint IDs to update.
+        let paint = gpu._terrain_source.as_ref().map(|source| &source.paint);
+        for patch in patches.paint.drain(..) {
+            let Some(texture) = paint else {
+                continue;
+            };
+            let size = texture.size();
+            if patch.x + patch.width > size.width || patch.y + patch.height > size.height {
+                continue;
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: patch.x,
+                        y: patch.y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &patch.texels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(patch.width * 4),
+                    rows_per_image: Some(patch.height),
+                },
+                wgpu::Extent3d {
+                    width: patch.width,
+                    height: patch.height,
+                    depth_or_array_layers: 1,
+                },
+            );
         }
         let vertices = ground.mesh.positions.len();
         // Filled or restored holes change which quads the ground draws.

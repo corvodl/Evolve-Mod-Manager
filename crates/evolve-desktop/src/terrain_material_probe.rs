@@ -1029,16 +1029,23 @@ pub(super) fn compose(
     let active: BTreeSet<u8> = paint.ids.iter().copied().collect();
     let mut matches = HashMap::<u8, BTreeSet<String>>::new();
     for layer in &paint.layers {
-        if active.contains(&layer.id)
-            && let Some(path) = material_path(&layer.surface_type)
-        {
+        if let Some(path) = material_path(&layer.surface_type) {
             matches.entry(layer.id).or_default().insert(path);
         }
     }
+    // Layers the map does not use yet are loaded too, so the Level Editor's
+    // Paint tool can preview any material it offers. The map's own layers
+    // come first in case the shader's layer limit cuts the list short.
+    let mut order = matches.keys().copied().collect::<Vec<_>>();
+    order.sort_by_key(|id| (!active.contains(id), *id));
     let mut layers = HashMap::new();
     let mut failures = Vec::new();
     let mut verified_resolutions = Vec::new();
-    for (&id, names) in &matches {
+    for id in order {
+        if layers.len() == crate::world_instances::MAX_TERRAIN_LAYERS {
+            break;
+        }
+        let names = &matches[&id];
         if names.len() != 1 {
             failures.push(format!(
                 "paint ID {id}: conflicting original material bindings"
@@ -1145,10 +1152,12 @@ pub(super) fn compose(
             }
         ));
     }
+    let painted = layers.keys().filter(|id| active.contains(id)).count();
     let report = format!(
-        "Terrain.Layer high-pass preview: {}/{} authored painted material IDs reconstructed from complete same-install DDS streams; {} unresolved/unsupported. Original RGB ground atlas preserved. CPU-baked detail is now mip-prefiltered for atlas minification (avoids colored aliasing; does NOT retain native close-up resolution). Add-signed shader enabled; categorical layer borders use interpolated coverage (not original engine blend masks). Source resolutions: {}. Unresolved examples: {}",
-        layers.len(),
+        "Terrain.Layer high-pass preview: {}/{} authored painted material IDs reconstructed from complete same-install DDS streams ({} unused layers loaded for painting); {} unresolved/unsupported. Original RGB ground atlas preserved. CPU-baked detail is now mip-prefiltered for atlas minification (avoids colored aliasing; does NOT retain native close-up resolution). Add-signed shader enabled; categorical layer borders use interpolated coverage (not original engine blend masks). Source resolutions: {}. Unresolved examples: {}",
+        painted,
         active.len(),
+        layers.len() - painted,
         failures.len(),
         verified_resolutions
             .into_iter()
