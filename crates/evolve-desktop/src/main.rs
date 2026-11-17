@@ -3940,26 +3940,30 @@ fn apply_current_skin_frame(state: &mut State) {
         .into_iter()
         .collect::<Vec<_>>();
 
-    let clip_name = state
+    let raw_clip = state
         .current_caf_virtual_path
         .as_deref()
         .or_else(|| state.active_blendspace.as_ref().map(|b| b.path.as_str()))
-        .unwrap_or("")
-        .to_owned();
-    let stage = if state.input.contains("goliath2") {
-        2
-    } else if state.input.contains("goliath3") {
+        .unwrap_or("");
+    let clip_name = format!("{raw_clip} {}", state.input);
+    let lower_input = state.input.to_ascii_lowercase();
+    let stage = if lower_input.contains('3') {
         3
+    } else if lower_input.contains('2') {
+        2
     } else {
         1
     };
     let assets_root = state.preferences.asset_library_root.clone();
     let motion_time = state.motion_time;
     let motion_in_place = state.motion_in_place;
-    let base_surfaces_clone = state
-        .cdf_base_surfaces
-        .clone()
-        .or_else(|| state.cdf_surfaces.clone());
+
+    // Cache the pristine base character surfaces so animation props never
+    // accumulate or corrupt the contiguous GPU index table frame-over-frame.
+    if state.cdf_base_surfaces.is_none() && state.cdf_surfaces.is_some() {
+        state.cdf_base_surfaces = state.cdf_surfaces.clone();
+    }
+    let base_surfaces_clone = state.cdf_base_surfaces.clone();
     let assembly_clone = state.cdf_caf_preview.clone();
     let skin_clone = state.skin_preview.clone();
 
@@ -17427,6 +17431,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .viewer_gpu_remaining
                             .store(1, std::sync::atomic::Ordering::Relaxed);
                         state.cdf_surfaces = Some(Arc::new(surfaces));
+                        state.cdf_base_surfaces = state.cdf_surfaces.clone();
                         state.auto_resource_note = format!(
                             "Original CryEngine GPU mesh subsets: {textured} textured; {} material warnings. {}",
                             warnings.len(),
@@ -17648,6 +17653,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .viewer_gpu_remaining
                             .store(1, std::sync::atomic::Ordering::Relaxed);
                         state.cdf_surfaces = Some(Arc::new(surfaces));
+                        state.cdf_base_surfaces = state.cdf_surfaces.clone();
                         state.status = format!(
                             "Damage blend {percent}%: updated cached GPU textures; CDF geometry and DDS sources unchanged."
                         );
