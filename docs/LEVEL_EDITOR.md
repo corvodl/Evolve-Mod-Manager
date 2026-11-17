@@ -227,6 +227,11 @@ overview tints spawns by their distance to the camera. These guides show
 authored distance parameters, **not** runtime timing, caps, spawn weights,
 AI activation, or a gameplay simulation. Source PAKs are never changed.
 
+Stage 2 maps also author `WildlifeSpawnPoint`, `WildlifeGroup` (spawn circle)
+and `WildlifeNode` (random set) entities. [WILDLIFE_SPAWNS.md](WILDLIFE_SPAWNS.md)
+covers their storage and how the editor draws and edits each spawn type,
+including the outliner's type picker and the wildlife settings and links forms.
+
 Stage 2 Tutorial captures (the two diagnostic views hide ordinary world
 objects/vegetation **only in the offscreen test**, not in the editor):
 

@@ -1571,39 +1571,31 @@ pub(super) fn assemble_wildlife(
             })
             .collect(),
     );
-    let areas = scene
-        .objects
-        .iter()
-        .enumerate()
-        .filter(|(_, object)| !object.hidden && object.kind.eq_ignore_ascii_case("ZooKeeperShape"))
-        .map(|(index, object)| {
-            (
-                object.name.to_ascii_lowercase(),
-                (index, object.world.position),
-            )
-        })
-        .collect::<HashMap<_, _>>();
+    let layout = evolve_core::wildlife_spawns::layout(scene);
     world.wildlife_links = std::sync::Arc::new(
-        scene
-            .objects
+        layout
+            .links
             .iter()
-            .enumerate()
-            .filter(|(_, object)| {
-                !object.hidden
-                    && object.kind.eq_ignore_ascii_case("CreatureSpawn")
-                    && !object.home_area.is_empty()
-            })
-            .filter_map(|(spawn, object)| {
-                areas
-                    .get(&object.home_area.to_ascii_lowercase())
-                    .map(|&(home, to)| world_instances::SpawnLink {
-                        spawn,
-                        home,
-                        from: object.world.position,
-                        to,
-                    })
-            })
             .take(20000)
+            .map(|link| world_instances::SpawnLink {
+                spawn: link.from,
+                home: link.to,
+                from: scene.objects[link.from].world.position,
+                to: scene.objects[link.to].world.position,
+                role: link.role,
+            })
+            .collect(),
+    );
+    world.wildlife_circles = std::sync::Arc::new(
+        layout
+            .circles
+            .iter()
+            .take(4096)
+            .map(|&(object_index, radius)| world_instances::SpawnCircle {
+                object_index,
+                center: scene.objects[object_index].world.position,
+                radius,
+            })
             .collect(),
     );
     Ok((std::sync::Arc::new(world), assembled.report))

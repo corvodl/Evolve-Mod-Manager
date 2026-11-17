@@ -2,6 +2,7 @@
 //! The caller must use the verified project import transaction. This writer
 //! never opens game PAKs or imports from the read-only Asset Library.
 use crate::scene::{PlacedObject, SceneError, Transform, edit_level_transform, parse_level_scene};
+use crate::wildlife_spawns::{WildlifeEntity, WildlifeSettings};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer};
 use std::collections::HashSet;
@@ -51,6 +52,15 @@ pub enum LayerAuthoringEdit {
     /// Modify source-authored ZooKeeperShape vertices in their original order.
     /// Count stays constant to avoid inventing engine-specific area topology.
     Shape { guid: String, points: Vec<[f32; 3]> },
+    /// Modify the script properties of a WildlifeSpawnPoint, WildlifeGroup,
+    /// WildlifeNode or the keywords of a ZooKeeperShape.
+    Wildlife {
+        guid: String,
+        settings: WildlifeSettings,
+    },
+    /// Replace a WildlifeNode's candidate groups or a WildlifeGroup's spawn
+    /// points. Targets are EntityIds in the same mission file.
+    Links { guid: String, targets: Vec<String> },
 }
 
 impl LayerAuthoringEdit {
@@ -61,7 +71,9 @@ impl LayerAuthoringEdit {
             | Self::Duplicate { guid, .. }
             | Self::Delete { guid }
             | Self::Spawn { guid, .. }
-            | Self::Shape { guid, .. } => guid,
+            | Self::Shape { guid, .. }
+            | Self::Wildlife { guid, .. }
+            | Self::Links { guid, .. } => guid,
         }
     }
 }
@@ -153,6 +165,55 @@ fn tag(event: &Event<'_>, expected: &[u8]) -> bool {
 
 fn opening(event: &Event<'_>) -> bool {
     matches!(event, Event::Start(_) | Event::Empty(_))
+}
+
+/// Indices of opening elements inside one placement's events whose ancestor
+/// chain below the placement is exactly `path` and whose name passes `leaf`.
+fn nested(content: &[Event<'static>], path: &[&[u8]], leaf: impl Fn(&[u8]) -> bool) -> Vec<usize> {
+    let mut stack: Vec<Vec<u8>> = Vec::new();
+    let mut found = Vec::new();
+    for (index, event) in content.iter().enumerate().skip(1) {
+        match event {
+            Event::Start(element) | Event::Empty(element) => {
+                let name = element.name().as_ref().to_vec();
+                if stack.len() == path.len()
+                    && stack
+                        .iter()
+                        .zip(path)
+                        .all(|(have, want)| have.eq_ignore_ascii_case(want))
+                    && leaf(&name)
+                {
+                    found.push(index);
+                }
+                if matches!(event, Event::Start(_)) {
+                    stack.push(name);
+                }
+            }
+            Event::End(_) => {
+                stack.pop();
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// The single element at `path`/`leaf`, or an error naming what is missing.
+fn single(
+    content: &[Event<'static>],
+    path: &[&[u8]],
+    leaf: impl Fn(&[u8]) -> bool,
+    what: &str,
+) -> Result<usize, SceneError> {
+    match nested(content, path, leaf).as_slice() {
+        [index] => Ok(*index),
+        [] => Err(SceneError::Xml(format!(
+            "The placement has no authored {what}"
+        ))),
+        _ => Err(SceneError::Xml(format!(
+            "The placement has more than one {what}"
+        ))),
+    }
 }
 
 fn placement_tag(event: &Event<'_>) -> bool {
@@ -386,8 +447,140 @@ fn transform_target(
                 return Err(SceneError::Limits);
             }
         }
+        LayerAuthoringEdit::Wildlife { settings, .. } => {
+            settings.validate().map_err(SceneError::Xml)?;
+            if WildlifeEntity::of(object) != Some(settings.entity()) {
+                return Err(SceneError::Xml(format!(
+                    "{} is not a {}",
+                    object.name,
+                    settings.entity().class_name()
+                )));
+            }
+            let (at, fields) = if let WildlifeSettings::Zone {
+                keywords,
+                use_terrain_height,
+                restrict_all_species,
+            } = settings
+            {
+                (
+                    single(content, &[], |n| n.eq_ignore_ascii_case(b"Area"), "<Area>")?,
+                    vec![
+                        ("ZooKeeperKeywords", keywords.clone()),
+                        ("ZooKeeperUseTerrainHeight", bool_value(*use_terrain_height)),
+                        (
+                            "ZooKeeperRestrictAllSpeciesToArea",
+                            bool_value(*restrict_all_species),
+                        ),
+                    ],
+                )
+            } else {
+                let at = single(
+                    content,
+                    &[b"Properties"],
+                    |n| n.len() > 20 && n[..20].eq_ignore_ascii_case(b"extensionfolderbegin"),
+                    "script properties",
+                )?;
+                let fields = match settings {
+                    WildlifeSettings::SpawnPoint { species } => {
+                        vec![("esWildlife", species.clone())]
+                    }
+                    WildlifeSettings::Group { radius } => vec![("fRadius", radius.to_string())],
+                    WildlifeSettings::Node {
+                        enabled,
+                        category,
+                        radius,
+                    } => {
+                        let mut fields = vec![
+                            ("bEnabled", bool_value(*enabled)),
+                            ("esWildlifeCategory", category.clone()),
+                        ];
+                        if let Some(radius) = radius {
+                            fields.push(("fRadius", radius.to_string()));
+                        }
+                        fields
+                    }
+                    WildlifeSettings::Zone { .. } => Vec::new(),
+                };
+                (at, fields)
+            };
+            content[at] = replace_start(&content[at], &fields)?;
+        }
         _ => (),
     }
+    Ok(())
+}
+
+/// Rewrite one mission entity's `<EntityLinks>` to exactly `targets`,
+/// keeping each retained `<Link>` as authored. New links use the only form
+/// shipped wildlife layers contain: Name="NewLink", identity RelRot/RelPos.
+fn rewrite_links(
+    events: &mut Vec<Event<'static>>,
+    start: usize,
+    end: usize,
+    targets: &[String],
+) -> Result<(), SceneError> {
+    if !matches!(events[start], Event::Start(_)) {
+        return Err(SceneError::Xml(
+            "The entity has no child elements to link from".into(),
+        ));
+    }
+    let block = nested(&events[start..=end], &[], |n| {
+        n.eq_ignore_ascii_case(b"EntityLinks")
+    });
+    let (from, to) = match block.as_slice() {
+        [] => (start + 1, start + 1),
+        [at] => {
+            let open = start + at;
+            if matches!(events[open], Event::Empty(_)) {
+                (open, open + 1)
+            } else {
+                let mut depth = 0usize;
+                let mut close = None;
+                for (index, event) in events.iter().enumerate().take(end + 1).skip(open) {
+                    match event {
+                        Event::Start(_) => depth += 1,
+                        Event::End(_) => {
+                            depth -= 1;
+                            if depth == 0 {
+                                close = Some(index);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                (open, close.ok_or(SceneError::Limits)? + 1)
+            }
+        }
+        _ => {
+            return Err(SceneError::Xml(
+                "The entity has more than one <EntityLinks> block".into(),
+            ));
+        }
+    };
+    let mut kept = std::collections::HashMap::new();
+    for event in &events[from..to] {
+        if let Event::Start(link) | Event::Empty(link) = event
+            && link.name().as_ref().eq_ignore_ascii_case(b"Link")
+            && let Some(target) = value(link, b"TargetId")?
+        {
+            kept.entry(target.to_ascii_lowercase())
+                .or_insert_with(|| Event::Empty(link.clone().into_owned()));
+        }
+    }
+    let mut replacement = vec![Event::Start(BytesStart::new("EntityLinks"))];
+    for target in targets {
+        replacement.push(kept.remove(target).unwrap_or_else(|| {
+            let mut link = BytesStart::new("Link");
+            link.push_attribute(("TargetId", target.as_str()));
+            link.push_attribute(("Name", "NewLink"));
+            link.push_attribute(("RelRot", "1,0,0,0"));
+            link.push_attribute(("RelPos", "0,0,0"));
+            Event::Empty(link)
+        }));
+    }
+    replacement.push(Event::End(quick_xml::events::BytesEnd::new("EntityLinks")));
+    events.splice(from..to, replacement);
     Ok(())
 }
 
@@ -655,12 +848,17 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
         LayerAuthoringEdit::Delete { .. } => {
             if original.objects.iter().any(|child| {
                 child.parent.eq_ignore_ascii_case(&object.id)
+                    || child
+                        .wildlife
+                        .links
+                        .iter()
+                        .any(|target| target.eq_ignore_ascii_case(&object.id))
                     || (object.kind.eq_ignore_ascii_case("ZooKeeperShape")
                         && !object.name.is_empty()
                         && child.home_area.eq_ignore_ascii_case(&object.name))
             }) {
                 return Err(SceneError::Xml(
-                    "Cannot delete a placement referenced by child objects or wildlife home areas"
+                    "Cannot delete a placement referenced by child objects, entity links or wildlife home areas"
                         .into(),
                 ));
             }
@@ -775,6 +973,50 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
                 }
             }
         }
+        LayerAuthoringEdit::Links { targets, .. } => {
+            let Some(expected) = WildlifeEntity::of(object).and_then(WildlifeEntity::link_target)
+            else {
+                return Err(SceneError::Xml(format!(
+                    "{} is not a WildlifeNode or WildlifeGroup",
+                    object.name
+                )));
+            };
+            let element = match &events[start] {
+                Event::Start(element) | Event::Empty(element) => element.clone(),
+                _ => return Err(SceneError::Limits),
+            };
+            if !mission_entity(&element)? {
+                return Err(SceneError::Xml(
+                    "Entity links are only authored on mission entities".into(),
+                ));
+            }
+            if targets.is_empty() || targets.len() > 16 {
+                return Err(SceneError::Xml("Link one to sixteen entities".into()));
+            }
+            let mut seen = HashSet::new();
+            for target in targets {
+                let found = original
+                    .objects
+                    .iter()
+                    .find(|other| other.id.eq_ignore_ascii_case(target))
+                    .ok_or_else(|| {
+                        SceneError::Xml(format!("Entity {target} is not in this mission file"))
+                    })?;
+                if WildlifeEntity::of(found) != Some(expected) {
+                    return Err(SceneError::Xml(format!(
+                        "{} can only link a {}; {} is a {}",
+                        object.kind,
+                        expected.class_name(),
+                        found.name,
+                        found.kind
+                    )));
+                }
+                if *target != found.id || !seen.insert(found.id.clone()) {
+                    return Err(SceneError::Xml(format!("{} is listed twice", found.name)));
+                }
+            }
+            rewrite_links(&mut events, start, end, targets)?;
+        }
         _ => transform_target(&mut events[start..=end], edit, object)?,
     }
     let mut writer = Writer::new(Vec::new());
@@ -871,6 +1113,28 @@ pub fn edit_layer_bytes(source: &[u8], edit: &LayerAuthoringEdit) -> Result<Vec<
                 .find(|o| o.id.eq_ignore_ascii_case(guid))
                 .ok_or(SceneError::NoMatchingGuid)?;
             if updated.shape_points != *points {
+                return Err(SceneError::Limits);
+            }
+        }
+        LayerAuthoringEdit::Wildlife { guid, settings } => {
+            let updated = validated
+                .objects
+                .iter()
+                .find(|o| o.id.eq_ignore_ascii_case(guid))
+                .ok_or(SceneError::NoMatchingGuid)?;
+            if !settings.matches(updated) {
+                return Err(SceneError::Xml(
+                    "The saved wildlife settings did not read back as entered".into(),
+                ));
+            }
+        }
+        LayerAuthoringEdit::Links { guid, targets } => {
+            let updated = validated
+                .objects
+                .iter()
+                .find(|o| o.id.eq_ignore_ascii_case(guid))
+                .ok_or(SceneError::NoMatchingGuid)?;
+            if updated.wildlife.links != *targets {
                 return Err(SceneError::Limits);
             }
         }

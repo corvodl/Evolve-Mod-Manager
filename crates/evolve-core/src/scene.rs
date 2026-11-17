@@ -122,6 +122,17 @@ pub struct WildlifeMetadata {
     pub initial_health_percent: Option<f32>,
     pub use_terrain_height: Option<bool>,
     pub restrict_species_to_area: Option<bool>,
+    /// WildlifeSpawnPoint `esWildlife`: the species placed at this point.
+    pub species: String,
+    /// WildlifeGroup / WildlifeNode `fRadius` in metres.
+    pub radius: Option<f32>,
+    /// WildlifeNode `esWildlifeCategory` (Default, LargeWildlife, EliteTier1…).
+    pub category: String,
+    /// ZooKeeperShape `ZooKeeperKeywords`, matched by DynamicSpawnRules.
+    pub keywords: String,
+    /// Lower-cased `<EntityLinks><Link TargetId>` targets in source order:
+    /// a WildlifeNode's candidate groups, a WildlifeGroup's spawn points.
+    pub links: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlacedObject {
@@ -149,8 +160,7 @@ pub struct PlacedObject {
 }
 impl PlacedObject {
     pub fn is_wildlife_spawn(&self) -> bool {
-        self.kind.eq_ignore_ascii_case("CreatureSpawn")
-            || self.kind.eq_ignore_ascii_case("ZooKeeperShape")
+        crate::wildlife_spawns::WildlifeEntity::of(self).is_some()
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -290,6 +300,8 @@ fn parse_element(
         } else {
             "ZooKeeperShape".to_owned()
         }
+    } else if let Some(entity) = crate::wildlife_spawns::WildlifeEntity::from_class(&class) {
+        entity.class_name().to_owned()
     } else {
         tag_kind
     };
@@ -355,6 +367,35 @@ fn scan_wildlife_child(
     {
         object.wildlife.use_terrain_height = boolean(b"ZooKeeperUseTerrainHeight")?;
         object.wildlife.restrict_species_to_area = boolean(b"ZooKeeperRestrictAllSpeciesToArea")?;
+        object.wildlife.keywords = attr(e, b"ZooKeeperKeywords")?.unwrap_or_default();
+    } else if e.name().as_ref().eq_ignore_ascii_case(b"Link")
+        && parents
+            .last()
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"EntityLinks"))
+        && object.wildlife.links.len() < crate::wildlife_spawns::MAX_LINKS
+        && let Some(target) = attr(e, b"TargetId")?
+    {
+        object.wildlife.links.push(target.to_ascii_lowercase());
+    } else if crate::wildlife_spawns::WildlifeEntity::from_class(&object.kind)
+        .is_some_and(|entity| entity.has_extension_properties())
+        && parents
+            .last()
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"Properties"))
+    {
+        // Mission entities keep their script properties on one
+        // <extensionfolderbegin<Class> .../> child of <Properties>.
+        if let Some(species) = attr(e, b"esWildlife")? {
+            object.wildlife.species = species;
+        }
+        if let Some(category) = attr(e, b"esWildlifeCategory")? {
+            object.wildlife.category = category;
+        }
+        if let Some(radius) = finite(b"fRadius")? {
+            object.wildlife.radius = Some(radius);
+        }
+        if let Some(enabled) = boolean(b"bEnabled")? {
+            object.wildlife.enabled = Some(enabled);
+        }
     } else if object.kind.eq_ignore_ascii_case("CreatureSpawn")
         && e.name().as_ref().eq_ignore_ascii_case(b"Populations")
         && parents

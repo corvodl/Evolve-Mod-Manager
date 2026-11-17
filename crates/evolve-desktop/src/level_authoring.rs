@@ -2,6 +2,7 @@
 //! Read-only map previews never pass these edits to worker operations.
 use evolve_core::TerrainBrushEdit;
 use evolve_core::scene_authoring::{LayerAuthoringEdit, SpawnPropertiesEdit};
+use evolve_core::wildlife_spawns::{WildlifeEntity, WildlifeSettings, normalize_keywords};
 use evolve_core::{LevelScene, PlacedObject};
 use sha2::{Digest, Sha256};
 use std::{
@@ -18,6 +19,11 @@ pub(super) enum TextField {
     SpawnWeight,
     SpawnGroup,
     SpawnHealth,
+    WildlifeSpecies,
+    WildlifeRadius,
+    WildlifeCategory,
+    ZoneKeywords,
+    WildlifeLinks,
     Polygon,
     BrushX,
     BrushY,
@@ -37,6 +43,14 @@ pub(super) struct Fields {
     pub spawn_health: String,
     pub spawn_enabled: bool,
     pub spawn_on_round_start: bool,
+    pub wildlife_species: String,
+    pub wildlife_radius: String,
+    pub wildlife_category: String,
+    pub zone_keywords: String,
+    pub zone_terrain: bool,
+    pub zone_restrict: bool,
+    /// Linked entity names, or EntityIds where a name is not unique.
+    pub wildlife_links: String,
     pub polygon: String,
     pub brush_x: String,
     pub brush_y: String,
@@ -57,6 +71,13 @@ impl Default for Fields {
             spawn_health: "100".into(),
             spawn_enabled: true,
             spawn_on_round_start: false,
+            wildlife_species: String::new(),
+            wildlife_radius: String::new(),
+            wildlife_category: String::new(),
+            zone_keywords: String::new(),
+            zone_terrain: false,
+            zone_restrict: false,
+            wildlife_links: String::new(),
             polygon: String::new(),
             brush_x: "0".into(),
             brush_y: "0".into(),
@@ -68,12 +89,17 @@ impl Default for Fields {
 }
 
 impl Fields {
-    pub fn sync(&mut self, selected: Option<&PlacedObject>) {
+    pub fn sync(&mut self, scene: Option<&LevelScene>, selected: Option<&PlacedObject>) {
         self.new_object_name.clear();
         self.new_object_model.clear();
         self.populations.clear();
         self.home_area.clear();
         self.polygon.clear();
+        self.wildlife_species.clear();
+        self.wildlife_radius.clear();
+        self.wildlife_category.clear();
+        self.zone_keywords.clear();
+        self.wildlife_links.clear();
         let Some(object) = selected else {
             return;
         };
@@ -100,6 +126,38 @@ impl Fields {
             .map(|p| p.iter().map(f32::to_string).collect::<Vec<_>>().join(","))
             .collect::<Vec<_>>()
             .join("; ");
+        match WildlifeSettings::of(object) {
+            Some(WildlifeSettings::SpawnPoint { species }) => self.wildlife_species = species,
+            Some(WildlifeSettings::Group { radius }) => self.wildlife_radius = radius.to_string(),
+            Some(WildlifeSettings::Node {
+                enabled,
+                category,
+                radius,
+            }) => {
+                self.spawn_enabled = enabled;
+                self.wildlife_category = category;
+                self.wildlife_radius = radius.map_or(String::new(), |r| r.to_string());
+            }
+            Some(WildlifeSettings::Zone {
+                keywords,
+                use_terrain_height,
+                restrict_all_species,
+            }) => {
+                self.zone_keywords = keywords;
+                self.zone_terrain = use_terrain_height;
+                self.zone_restrict = restrict_all_species;
+            }
+            None => {}
+        }
+        if let Some(scene) = scene {
+            self.wildlife_links = object
+                .wildlife
+                .links
+                .iter()
+                .map(|id| link_label(scene, id))
+                .collect::<Vec<_>>()
+                .join(", ");
+        }
     }
 
     pub fn change(&mut self, key: TextField, value: String) {
@@ -111,6 +169,11 @@ impl Fields {
             TextField::SpawnWeight => self.spawn_weight = value,
             TextField::SpawnGroup => self.spawn_group = value,
             TextField::SpawnHealth => self.spawn_health = value,
+            TextField::WildlifeSpecies => self.wildlife_species = value,
+            TextField::WildlifeRadius => self.wildlife_radius = value,
+            TextField::WildlifeCategory => self.wildlife_category = value,
+            TextField::ZoneKeywords => self.zone_keywords = value,
+            TextField::WildlifeLinks => self.wildlife_links = value,
             TextField::Polygon => self.polygon = value,
             TextField::BrushX => self.brush_x = value,
             TextField::BrushY => self.brush_y = value,
@@ -155,6 +218,103 @@ impl Fields {
                 initial_health_percent,
                 group: self.spawn_group.trim().to_owned(),
             },
+        })
+    }
+
+    /// The selected wildlife entity's script properties, or a zone's keywords.
+    pub fn wildlife(&self, object: &PlacedObject) -> Result<LayerAuthoringEdit, String> {
+        let radius = |raw: &str| {
+            raw.trim()
+                .parse::<f32>()
+                .map_err(|_| "Radius must be a number of metres".to_owned())
+        };
+        let settings = match WildlifeEntity::of(object) {
+            Some(WildlifeEntity::SpawnPoint) => WildlifeSettings::SpawnPoint {
+                species: self.wildlife_species.trim().to_owned(),
+            },
+            Some(WildlifeEntity::Group) => WildlifeSettings::Group {
+                radius: radius(&self.wildlife_radius)?,
+            },
+            Some(WildlifeEntity::Node) => WildlifeSettings::Node {
+                enabled: self.spawn_enabled,
+                category: self.wildlife_category.trim().to_owned(),
+                radius: if self.wildlife_radius.trim().is_empty() {
+                    // The writer only sets attributes; it never removes one.
+                    if object.wildlife.radius.is_some() {
+                        return Err("This node authors a radius; enter one to keep it".into());
+                    }
+                    None
+                } else {
+                    Some(radius(&self.wildlife_radius)?)
+                },
+            },
+            Some(WildlifeEntity::Zone) => WildlifeSettings::Zone {
+                keywords: normalize_keywords(&self.zone_keywords)?,
+                use_terrain_height: self.zone_terrain,
+                restrict_all_species: self.zone_restrict,
+            },
+            _ => {
+                return Err(format!(
+                    "{} has no wildlife settings to edit here",
+                    object.kind
+                ));
+            }
+        };
+        settings.validate()?;
+        Ok(LayerAuthoringEdit::Wildlife {
+            guid: object.id.clone(),
+            settings,
+        })
+    }
+
+    /// A node's candidate groups or a group's spawn points, from the links
+    /// field: each entry is an EntityId or a name unique to its class.
+    pub fn links(
+        &self,
+        scene: &LevelScene,
+        object: &PlacedObject,
+    ) -> Result<LayerAuthoringEdit, String> {
+        let expected = WildlifeEntity::of(object)
+            .and_then(WildlifeEntity::link_target)
+            .ok_or("Only a WildlifeNode or WildlifeGroup links other wildlife")?;
+        let mut targets = Vec::new();
+        for entry in self
+            .wildlife_links
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+        {
+            let candidates = scene
+                .objects
+                .iter()
+                .filter(|other| WildlifeEntity::of(other) == Some(expected));
+            let target = match candidates
+                .clone()
+                .find(|other| other.id.eq_ignore_ascii_case(entry))
+            {
+                Some(target) => target,
+                None => {
+                    let mut named =
+                        candidates.filter(|other| other.name.eq_ignore_ascii_case(entry));
+                    match (named.next(), named.next()) {
+                        (Some(target), None) => target,
+                        (None, _) => {
+                            return Err(format!("No {} is named {entry}", expected.class_name()));
+                        }
+                        _ => {
+                            return Err(format!(
+                                "More than one {} is named {entry}; enter its EntityId",
+                                expected.class_name()
+                            ));
+                        }
+                    }
+                }
+            };
+            targets.push(target.id.clone());
+        }
+        Ok(LayerAuthoringEdit::Links {
+            guid: object.id.clone(),
+            targets,
         })
     }
 
@@ -242,6 +402,24 @@ impl Fields {
     }
 }
 
+/// A linked entity's name when no other entity of its class shares it,
+/// otherwise its EntityId, so the links field reads back unambiguously.
+fn link_label(scene: &LevelScene, id: &str) -> String {
+    let Some(target) = scene.objects.iter().find(|object| object.id == id) else {
+        return id.to_owned();
+    };
+    let shared = scene
+        .objects
+        .iter()
+        .filter(|other| other.kind == target.kind && other.name.eq_ignore_ascii_case(&target.name))
+        .count();
+    if target.name.is_empty() || shared > 1 || target.name.contains(',') {
+        id.to_owned()
+    } else {
+        target.name.clone()
+    }
+}
+
 /// A compiled terrain.dat's surface IDs are the SurfaceTypes listed in the
 /// map's compiled leveldata.xml, beside the terrain folder. Refuse an ID the
 /// map does not define, naming the ones it does.
@@ -295,12 +473,17 @@ pub(super) fn validate_deletion(scene: &LevelScene, guid: &str) -> Result<(), St
     if scene.objects.iter().any(|other| {
         other.id != object.id
             && (other.parent.eq_ignore_ascii_case(guid)
+                || other
+                    .wildlife
+                    .links
+                    .iter()
+                    .any(|target| target.eq_ignore_ascii_case(guid))
                 || (object.kind.eq_ignore_ascii_case("ZooKeeperShape")
                     && !object.name.is_empty()
                     && other.home_area.eq_ignore_ascii_case(&object.name)))
     }) {
         return Err(
-            "Cannot delete a placement referenced by a child or wildlife home area in another layer"
+            "Cannot delete a placement referenced by a child, an entity link or a wildlife home area"
                 .into(),
         );
     }
@@ -571,6 +754,9 @@ pub(super) fn placement_editor<'a>(
             .style(crate::design::muted),
     ]
     .spacing(6);
+    if let Some(settings) = wildlife_settings_editor(state, object) {
+        column = column.push(settings);
+    }
     if object.kind.eq_ignore_ascii_case("CreatureSpawn") {
         column = column
             .push(text("Wildlife spawn settings").size(12))
@@ -643,6 +829,107 @@ pub(super) fn placement_editor<'a>(
                 .size(11).style(crate::design::muted));
     }
     column.into()
+}
+
+/// Settings for the four Evolve spawn types: a static point's species, a
+/// circle's radius and members, a random set's candidates, and a dynamic
+/// zone's keywords. CreatureSpawn keeps its own form.
+fn wildlife_settings_editor<'a>(
+    state: &'a super::State,
+    object: &PlacedObject,
+) -> Option<iced::Element<'a, super::Message>> {
+    use super::Message;
+    use iced::widget::{column, row, text};
+    let entity = WildlifeEntity::of(object).filter(|e| *e != WildlifeEntity::CreatureSpawn)?;
+    let forms = &state.level_authoring;
+    let mut form =
+        column![text(format!("{} settings", entity.spawn_type().label())).size(12),].spacing(6);
+    form = match entity {
+        WildlifeEntity::SpawnPoint => form.push(edit_field(
+            "Species (esWildlife), e.g. Reaver",
+            &forms.wildlife_species,
+            TextField::WildlifeSpecies,
+        )),
+        WildlifeEntity::Group => form.push(edit_field(
+            "Spawn circle radius in metres (fRadius)",
+            &forms.wildlife_radius,
+            TextField::WildlifeRadius,
+        )),
+        WildlifeEntity::Node => form
+            .push(edit_field(
+                "Category (esWildlifeCategory), e.g. Default",
+                &forms.wildlife_category,
+                TextField::WildlifeCategory,
+            ))
+            .push(edit_field(
+                "Node radius in metres (fRadius, optional)",
+                &forms.wildlife_radius,
+                TextField::WildlifeRadius,
+            ))
+            .push(crate::ui_kit::switch(
+                &state.ui,
+                "wildlife-node-enabled",
+                "Node enabled",
+                forms.spawn_enabled,
+                Message::LevelAuthoringToggleEnabled,
+            )),
+        _ => form
+            .push(edit_field(
+                "Zone keywords, comma separated (ZooKeeperKeywords)",
+                &forms.zone_keywords,
+                TextField::ZoneKeywords,
+            ))
+            .push(
+                row![
+                    crate::ui_kit::switch(
+                        &state.ui,
+                        "zone-terrain-height",
+                        "Follow terrain height",
+                        forms.zone_terrain,
+                        Message::LevelAuthoringToggleZoneTerrain,
+                    ),
+                    crate::ui_kit::switch(
+                        &state.ui,
+                        "zone-restrict-species",
+                        "Keep all species inside",
+                        forms.zone_restrict,
+                        Message::LevelAuthoringToggleZoneRestrict,
+                    ),
+                ]
+                .spacing(6),
+            ),
+    };
+    form = form.push(
+        crate::design::button("Save wildlife settings")
+            .style(crate::design::primary)
+            .on_press(Message::LevelSaveWildlifeSettings),
+    );
+    if let Some(target) = entity.link_target() {
+        form = form
+            .push(edit_field(
+                if entity == WildlifeEntity::Node {
+                    "Candidate spawn circles (WildlifeGroup names or ids)"
+                } else {
+                    "Member spawn points (WildlifeSpawnPoint names or ids)"
+                },
+                &forms.wildlife_links,
+                TextField::WildlifeLinks,
+            ))
+            .push(
+                crate::design::button("Save links")
+                    .style(crate::design::secondary)
+                    .on_press(Message::LevelSaveWildlifeLinks),
+            )
+            .push(
+                text(format!(
+                    "One to sixteen {}s from this mission file.",
+                    target.class_name()
+                ))
+                .size(11)
+                .style(crate::design::muted),
+            );
+    }
+    Some(form.into())
 }
 
 pub(super) fn terrain_editor(state: &super::State) -> iced::Element<'_, super::Message> {
@@ -721,6 +1008,63 @@ mod tests {
         assert!(validate_deletion(&scene, "parent").is_err());
         assert!(validate_deletion(&scene, "free").is_ok());
         assert!(validate_deletion(&scene, "missing").is_err());
+    }
+
+    const WILDLIFE: &[u8] = br#"<Mission><Objects>
+<Entity Name="node" Pos="0,0,0" EntityClass="WildlifeNode" EntityId="1" Layer="WildlifeSpawns"><EntityLinks><Link TargetId="2" Name="NewLink" RelRot="1,0,0,0" RelPos="0,0,0"/></EntityLinks><Properties><extensionfolderbeginWildlifeNode bEnabled="1" esWildlifeCategory="Default"/></Properties></Entity>
+<Entity Name="circle" Pos="5,0,0" EntityClass="WildlifeGroup" EntityId="2" Layer="WildlifeSpawns"><Properties><extensionfolderbeginWildlifeGroup fRadius="10"/></Properties></Entity>
+<Entity Name="twin" Pos="9,0,0" EntityClass="WildlifeGroup" EntityId="3" Layer="WildlifeSpawns"><Properties><extensionfolderbeginWildlifeGroup fRadius="8"/></Properties></Entity>
+<Entity Name="twin" Pos="9,9,0" EntityClass="WildlifeGroup" EntityId="4" Layer="WildlifeSpawns"><Properties><extensionfolderbeginWildlifeGroup fRadius="8"/></Properties></Entity>
+<Entity Name="zone" Pos="0,0,0" EntityClass="ZooKeeperShape" EntityId="5" Layer="ZooKeepers"><Area ZooKeeperKeywords="ArmadonBull" ZooKeeperUseTerrainHeight="1"><Points><Point Pos="0,0,0"/><Point Pos="1,0,0"/><Point Pos="1,1,0"/></Points></Area></Entity>
+</Objects></Mission>"#;
+
+    #[test]
+    fn linked_wildlife_cannot_be_deleted() {
+        let scene = evolve_core::parse_level_scene(&[("mission", WILDLIFE)]).unwrap();
+        assert!(validate_deletion(&scene, "2").is_err());
+        assert!(validate_deletion(&scene, "3").is_ok());
+    }
+
+    #[test]
+    fn wildlife_form_reads_settings_and_names_links() {
+        let scene = evolve_core::parse_level_scene(&[("mission", WILDLIFE)]).unwrap();
+        let mut fields = Fields::default();
+        fields.sync(Some(&scene), Some(&scene.objects[0]));
+        assert_eq!(fields.wildlife_category, "Default");
+        assert_eq!(fields.wildlife_links, "circle");
+        fields.wildlife_links = "circle, 3".into();
+        assert!(matches!(
+            fields.links(&scene, &scene.objects[0]),
+            Ok(LayerAuthoringEdit::Links { targets, .. }) if targets == ["2", "3"]
+        ));
+        fields.wildlife_links = "twin".into();
+        assert!(
+            fields
+                .links(&scene, &scene.objects[0])
+                .unwrap_err()
+                .contains("EntityId")
+        );
+        fields.wildlife_links = "zone".into();
+        assert!(fields.links(&scene, &scene.objects[0]).is_err());
+        assert!(fields.links(&scene, &scene.objects[4]).is_err());
+
+        fields.sync(Some(&scene), Some(&scene.objects[4]));
+        assert!(fields.zone_terrain);
+        fields.zone_keywords = " ArmadonBull ,NoElites ".into();
+        assert!(matches!(
+            fields.wildlife(&scene.objects[4]),
+            Ok(LayerAuthoringEdit::Wildlife {
+                settings: WildlifeSettings::Zone { keywords, .. },
+                ..
+            }) if keywords == "ArmadonBull, NoElites"
+        ));
+
+        fields.sync(Some(&scene), Some(&scene.objects[1]));
+        assert_eq!(fields.wildlife_radius, "10");
+        fields.wildlife_radius = "far".into();
+        assert!(fields.wildlife(&scene.objects[1]).is_err());
+        fields.wildlife_radius = "9000".into();
+        assert!(fields.wildlife(&scene.objects[1]).is_err());
     }
 
     #[test]

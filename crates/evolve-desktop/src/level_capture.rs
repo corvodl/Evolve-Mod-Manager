@@ -137,6 +137,7 @@ fn capture_real_map_views() {
         merged.wildlife_distances = wildlife.wildlife_distances;
         merged.wildlife_shapes = wildlife.wildlife_shapes.clone();
         merged.wildlife_links = wildlife.wildlife_links.clone();
+        merged.wildlife_circles = wildlife.wildlife_circles.clone();
         merged.instance_count = merged
             .groups
             .iter()

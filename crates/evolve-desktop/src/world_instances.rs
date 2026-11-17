@@ -665,13 +665,58 @@ pub(super) struct AreaOutline {
     pub points: Vec<[f32; 3]>,
 }
 
-/// A spawn's line to its home area, by scene object index.
+/// A wildlife relation drawn as a line, by scene object index: a node to a
+/// candidate group, a group to a member point, or a spawn to its home area.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct SpawnLink {
     pub spawn: usize,
     pub home: usize,
     pub from: [f32; 3],
     pub to: [f32; 3],
+    pub role: evolve_core::wildlife_spawns::LinkRole,
+}
+
+/// A WildlifeGroup's authored fRadius, drawn around the group.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SpawnCircle {
+    pub object_index: usize,
+    pub center: [f32; 3],
+    pub radius: f32,
+}
+
+/// Horizontal scanlines filling a polygon in the XY plane (even-odd rule),
+/// so a dynamic zone reads as an area through the line-list overlay.
+pub(super) fn hatch_polygon(polygon: &[[f32; 3]], lines: usize) -> Vec<[[f32; 3]; 2]> {
+    if polygon.len() < 3 || lines == 0 {
+        return Vec::new();
+    }
+    let (low, high) = polygon
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), p| {
+            (low.min(p[1]), high.max(p[1]))
+        });
+    let spacing = ((high - low) / lines as f32).max(2.0);
+    let z = polygon.iter().map(|p| p[2]).sum::<f32>() / polygon.len() as f32;
+    let mut hatch = Vec::new();
+    let mut y = low + spacing * 0.5;
+    while y < high {
+        let mut crossings = polygon
+            .iter()
+            .zip(polygon.iter().cycle().skip(1))
+            .filter(|(a, b)| (a[1] <= y) != (b[1] <= y))
+            .map(|(a, b)| a[0] + (y - a[1]) / (b[1] - a[1]) * (b[0] - a[0]))
+            .collect::<Vec<_>>();
+        crossings.sort_by(f32::total_cmp);
+        hatch.extend(
+            crossings
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|[start, end]| [[*start, y, z], [*end, y, z]]),
+        );
+        y += spacing;
+    }
+    hatch
 }
 
 /// The local point a world transform places at `world`: the inverse of
@@ -721,6 +766,7 @@ pub(super) struct World {
     pub wildlife_distances: Option<evolve_core::zookeeper::SpawnDistances>,
     pub wildlife_shapes: Arc<Vec<AreaOutline>>,
     pub wildlife_links: Arc<Vec<SpawnLink>>,
+    pub wildlife_circles: Arc<Vec<SpawnCircle>>,
     pub time_of_day: Option<Arc<super::level_environment::TimeOfDay>>,
     pub fog_profile: Option<super::level_environment::FogProfile>,
     /// A weather zone with its own TimeOfDay and fog (Ice_Alpine's biodome).
@@ -1154,6 +1200,19 @@ impl World {
                         from: spawn.world.position,
                         to: home.world.position,
                         ..*link
+                    })
+                })
+                .collect(),
+        );
+        next.wildlife_circles = Arc::new(
+            self.wildlife_circles
+                .iter()
+                .filter_map(|circle| {
+                    let object = scene.objects.get(circle.object_index)?;
+                    (!object.hidden).then(|| SpawnCircle {
+                        center: object.world.position,
+                        radius: object.wildlife.radius.unwrap_or(circle.radius),
+                        ..*circle
                     })
                 })
                 .collect(),
@@ -5959,7 +6018,11 @@ impl Renderer {
     }
 
     fn update_wildlife_overlay(&mut self, device: &wgpu::Device, world: &World, camera: [f32; 3]) {
-        if world.wildlife_distances.is_none() && world.wildlife_shapes.is_empty() {
+        if world.wildlife_distances.is_none()
+            && world.wildlife_shapes.is_empty()
+            && world.wildlife_links.is_empty()
+            && world.wildlife_circles.is_empty()
+        {
             self.wildlife_count = 0;
             return;
         }
@@ -5974,44 +6037,44 @@ impl Renderer {
         }
         self.wildlife_last_origin = Some(origin);
         self.wildlife_preview_generation = preview.generation;
-        let terrain = world
+        // The grid is measured once: zone hatching samples it thousands of
+        // times per rebuild.
+        let grid = world
             .groups
             .iter()
-            .find(|group| group.mesh.info.format == "CryEngine Heightmap.dat");
+            .find(|group| group.mesh.info.format == "CryEngine Heightmap.dat")
+            .and_then(|group| {
+                let points = &group.mesh.positions;
+                if points.len() < 4 {
+                    return None;
+                }
+                let rows = points.iter().take_while(|p| p[0] == points[0][0]).count();
+                let columns = points.len().checked_div(rows)?;
+                if rows < 2 || columns < 2 {
+                    return None;
+                }
+                let dx = (points[rows][0] - points[0][0]).abs();
+                let dy = (points[1][1] - points[0][1]).abs();
+                (dx >= 1e-6 && dy >= 1e-6).then_some((points, rows, columns, dx, dy))
+            });
         let ground = |x: f32, y: f32, fallback: f32| {
-            terrain
-                .and_then(|group| {
-                    let points = &group.mesh.positions;
-                    if points.len() < 4 {
-                        return None;
-                    }
-                    let rows = points.iter().take_while(|p| p[0] == points[0][0]).count();
-                    let columns = points.len().checked_div(rows)?;
-                    if rows < 2 || columns < 2 {
-                        return None;
-                    }
-                    let dx = (points[rows][0] - points[0][0]).abs();
-                    let dy = (points[1][1] - points[0][1]).abs();
-                    if dx < 1e-6 || dy < 1e-6 {
-                        return None;
-                    }
-                    let gx = (x - points[0][0]) / dx;
-                    let gy = (y - points[0][1]) / dy;
-                    if gx < 0.0 || gy < 0.0 || gx >= (columns - 1) as f32 || gy >= (rows - 1) as f32
-                    {
-                        return None;
-                    }
-                    let col = gx.floor() as usize;
-                    let row = gy.floor() as usize;
-                    let tx = gx - col as f32;
-                    let ty = gy - row as f32;
-                    let at = |i: usize, j: usize| points[i * rows + j][2];
-                    Some(
-                        (at(col, row) * (1.0 - tx) + at(col + 1, row) * tx) * (1.0 - ty)
-                            + (at(col, row + 1) * (1.0 - tx) + at(col + 1, row + 1) * tx) * ty,
-                    )
-                })
-                .unwrap_or(fallback)
+            grid.and_then(|(points, rows, columns, dx, dy)| {
+                let gx = (x - points[0][0]) / dx;
+                let gy = (y - points[0][1]) / dy;
+                if gx < 0.0 || gy < 0.0 || gx >= (columns - 1) as f32 || gy >= (rows - 1) as f32 {
+                    return None;
+                }
+                let col = gx.floor() as usize;
+                let row = gy.floor() as usize;
+                let tx = gx - col as f32;
+                let ty = gy - row as f32;
+                let at = |i: usize, j: usize| points[i * rows + j][2];
+                Some(
+                    (at(col, row) * (1.0 - tx) + at(col + 1, row) * tx) * (1.0 - ty)
+                        + (at(col, row + 1) * (1.0 - tx) + at(col + 1, row + 1) * tx) * ty,
+                )
+            })
+            .unwrap_or(fallback)
                 + 0.4
         };
         let mut points = Vec::<[[f32; 4]; 2]>::new();
@@ -6067,6 +6130,13 @@ impl Renderer {
         let placed = |index: usize, fallback: Transform| {
             preview.transforms.get(&index).copied().unwrap_or(fallback)
         };
+        const ZONE: [f32; 4] = [0.68, 0.44, 0.98, 0.9];
+        const ZONE_FILL: [f32; 4] = [0.68, 0.44, 0.98, 0.32];
+        const CIRCLE: [f32; 4] = [0.30, 0.90, 0.72, 0.9];
+        const MEMBER: [f32; 4] = [0.30, 0.90, 0.72, 0.4];
+        const CANDIDATE: [f32; 4] = [0.98, 0.84, 0.25, 0.9];
+        const CHOICE_SET: [f32; 4] = [0.98, 0.84, 0.25, 0.45];
+        const HOME: [f32; 4] = [0.54, 0.78, 0.95, 0.52];
         for area in world.wildlife_shapes.iter().take(1024) {
             let transform = placed(area.object_index, area.world);
             let polygon = preview
@@ -6079,8 +6149,23 @@ impl Renderer {
             let tint = if area.boundary {
                 [0.96, 0.30, 0.30, 0.85]
             } else {
-                [0.99, 0.67, 0.18, 0.8]
+                ZONE
             };
+            if !area.boundary {
+                for [a, b] in hatch_polygon(&polygon, 16) {
+                    // Short pieces, so terrain-following fill drapes hills.
+                    let pieces = ((a[0] - b[0]).abs() / 16.0).ceil().clamp(1.0, 8.0) as usize;
+                    for piece in 0..pieces {
+                        let at = |t: f32| [a[0] + (b[0] - a[0]) * t, a[1], a[2]];
+                        segment(
+                            at(piece as f32 / pieces as f32),
+                            at((piece + 1) as f32 / pieces as f32),
+                            ZONE_FILL,
+                            area.use_terrain,
+                        );
+                    }
+                }
+            }
             for pair in polygon.windows(2) {
                 segment(pair[0], pair[1], tint, area.use_terrain);
             }
@@ -6093,6 +6178,27 @@ impl Renderer {
                 );
             }
         }
+        const CIRCLE_SECTIONS: usize = 48;
+        for circle in world.wildlife_circles.iter().take(4096) {
+            let center = preview
+                .transforms
+                .get(&circle.object_index)
+                .map_or(circle.center, |t| t.position);
+            let at = |index: usize| {
+                let angle = index as f32 * std::f32::consts::TAU / CIRCLE_SECTIONS as f32;
+                [
+                    center[0] + circle.radius * angle.cos(),
+                    center[1] + circle.radius * angle.sin(),
+                    center[2],
+                ]
+            };
+            for i in 0..CIRCLE_SECTIONS {
+                segment(at(i), at(i + 1), CIRCLE, true);
+            }
+        }
+        // A node's candidate groups are also joined to each other, so a
+        // random set (usually three) reads as one triangle.
+        let mut choice_sets = HashMap::<usize, Vec<[f32; 3]>>::new();
         for link in world.wildlife_links.iter().take(20000) {
             let from = preview
                 .transforms
@@ -6102,7 +6208,21 @@ impl Renderer {
                 .transforms
                 .get(&link.home)
                 .map_or(link.to, |t| t.position);
-            segment(from, to, [0.54, 0.78, 0.95, 0.52], true);
+            use evolve_core::wildlife_spawns::LinkRole;
+            let tint = match link.role {
+                LinkRole::Candidate => {
+                    choice_sets.entry(link.spawn).or_default().push(to);
+                    CANDIDATE
+                }
+                LinkRole::Member => MEMBER,
+                LinkRole::Home => HOME,
+            };
+            segment(from, to, tint, true);
+        }
+        for set in choice_sets.values().filter(|set| set.len() >= 3) {
+            for (a, b) in set.iter().zip(set.iter().cycle().skip(1)) {
+                segment(*a, *b, CHOICE_SET, true);
+            }
         }
         if points.is_empty() {
             self.wildlife_count = 0;
@@ -6529,6 +6649,27 @@ mod tests {
         naga::front::wgsl::parse_str(wgsl).expect("source point corona shader parses");
         assert!(wgsl.contains("fn fs_light("));
         assert!(wgsl.contains("var<storage,read> sources"));
+    }
+
+    #[test]
+    fn zone_hatching_fills_inside_the_polygon_only() {
+        // An L shape: the upper scanlines stop at the notch.
+        let polygon = [
+            [0.0, 0.0, 1.0],
+            [20.0, 0.0, 1.0],
+            [20.0, 10.0, 1.0],
+            [10.0, 10.0, 1.0],
+            [10.0, 20.0, 1.0],
+            [0.0, 20.0, 1.0],
+        ];
+        let hatch = hatch_polygon(&polygon, 4);
+        assert_eq!(hatch.len(), 4);
+        for [a, b] in &hatch {
+            assert_eq!(a[2], 1.0);
+            assert_eq!(a[0], 0.0);
+            assert_eq!(b[0], if a[1] < 10.0 { 20.0 } else { 10.0 });
+        }
+        assert!(hatch_polygon(&polygon[..2], 4).is_empty());
     }
 
     #[test]
