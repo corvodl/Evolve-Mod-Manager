@@ -187,12 +187,12 @@ pub fn get_or_load_prop_texture(
         return Some(img.clone());
     }
 
-    if let Some(path) = find_prop_cgf(assets_root, &key) {
-        if let Ok((_, rgba)) = evolve_core::decode_dds_rgba(&path) {
-            let arc = Arc::new(rgba);
-            cache.insert(key, arc.clone());
-            return Some(arc);
-        }
+    if let Some(path) = find_prop_cgf(assets_root, &key)
+        && let Ok((_, rgba)) = evolve_core::decode_dds_rgba(&path)
+    {
+        let arc = Arc::new(rgba);
+        cache.insert(key, arc.clone());
+        return Some(arc);
     }
     None
 }
@@ -211,7 +211,8 @@ pub fn generate_procedural_texture(
             let factor = match pattern {
                 0 => (((x / 8) + (y / 8)) % 2 == 0) as u8 as f32,
                 1 => ((x * 7 + y * 13) % 19) as f32 / 19.0,
-                _ => (((x as f32 - 32.0).hypot(y as f32 - 32.0) as u32 / 6) % 2 == 0) as u8 as f32,
+                _ => ((x as f32 - 32.0).hypot(y as f32 - 32.0) as u32 / 6).is_multiple_of(2) as u8
+                    as f32,
             };
             let r = (color_a[0] as f32 * (1.0 - factor) + color_b[0] as f32 * factor) as u8;
             let g = (color_a[1] as f32 * (1.0 - factor) + color_b[1] as f32 * factor) as u8;
@@ -648,6 +649,7 @@ pub struct PropSimulationResult {
 /// Evaluate animation props and projectiles for the current frame.
 /// If an active prop is present, transforms and attaches it, merging geometry
 /// while returning a cached stable Surface table pointer to eliminate GPU flickering.
+#[allow(clippy::too_many_arguments)]
 pub fn simulate_frame_props(
     base_mesh: RenderMesh,
     base_surfaces: Option<&Arc<Vec<Surface>>>,
@@ -1015,7 +1017,7 @@ pub fn simulate_frame_props(
                 };
 
                 let ring_segments = 16;
-                let ring_radius = (motion_time * 8.0).min(4.5).max(0.5);
+                let ring_radius = (motion_time * 8.0).clamp(0.5, 4.5);
                 for i in 0..ring_segments {
                     let angle = (i as f32 / ring_segments as f32) * std::f32::consts::TAU;
                     let x = impact_center[0] + angle.cos() * ring_radius;
@@ -1633,26 +1635,26 @@ fn get_bone_transform(
     in_place: bool,
 ) -> Option<Mat4> {
     if let Some(weights) = weighted_clips {
-        if let Some(assembly) = assembly {
-            if let Some(mat) = assembly.posed_bone_world_weighted(bone_name, weights, in_place) {
-                return Some(mat);
-            }
+        if let Some(assembly) = assembly
+            && let Some(mat) = assembly.posed_bone_world_weighted(bone_name, weights, in_place)
+        {
+            return Some(mat);
         }
-        if let Some(skin) = skin {
-            if let Some(mat) = skin.posed_bone_world_weighted(bone_name, weights, in_place) {
-                return Some(mat);
-            }
-        }
-    }
-    if let Some(assembly) = assembly {
-        if let Some(mat) = assembly.posed_bone_world(bone_name, seconds, layers, in_place) {
+        if let Some(skin) = skin
+            && let Some(mat) = skin.posed_bone_world_weighted(bone_name, weights, in_place)
+        {
             return Some(mat);
         }
     }
-    if let Some(skin) = skin {
-        if let Some(mat) = skin.posed_bone_world(bone_name, seconds, layers, in_place) {
-            return Some(mat);
-        }
+    if let Some(assembly) = assembly
+        && let Some(mat) = assembly.posed_bone_world(bone_name, seconds, layers, in_place)
+    {
+        return Some(mat);
+    }
+    if let Some(skin) = skin
+        && let Some(mat) = skin.posed_bone_world(bone_name, seconds, layers, in_place)
+    {
+        return Some(mat);
     }
     None
 }
