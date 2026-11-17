@@ -67,12 +67,24 @@ pub(super) struct GroundPatch {
     pub data: Vec<f32>,
 }
 
+/// A rectangle of the ground's paint-ID texture to overwrite: RGBA8 texels
+/// row by row, with the LayerId or SurfaceTypeID byte in red, the layout
+/// `terrain_material_probe::GpuTerrainSource::paint` uploads.
+pub(super) struct PaintPatch {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub texels: Vec<u8>,
+}
+
 /// Pending ground-mesh updates for the renderer.
 #[derive(Default)]
 pub(super) struct GroundUpdates {
     pub rows: Vec<GroundPatch>,
     /// A whole new index list, after holes were filled or restored.
     pub indices: Option<Vec<u32>>,
+    pub paint: Vec<PaintPatch>,
 }
 
 pub(super) type GroundPatches = Arc<Mutex<GroundUpdates>>;
@@ -442,6 +454,9 @@ impl TerrainSession {
             }
             self.dirty = Some(grow(self.dirty, rect));
             self.publish(rect);
+            if paint || filled {
+                self.publish_paint(rect);
+            }
             if filled {
                 self.publish_indices();
             }
@@ -568,6 +583,7 @@ impl TerrainSession {
         }
         self.dirty = Some(grow(self.dirty, rect));
         self.publish(rect);
+        self.publish_paint(rect);
         self.publish_indices();
         current
     }
@@ -601,7 +617,31 @@ impl TerrainSession {
         self.undo.clear();
         self.redo.clear();
         self.publish(rect);
+        self.publish_paint(rect);
         self.publish_indices();
+    }
+
+    /// Send the samples' current paint IDs in `rect` to the renderer.
+    fn publish_paint(&self, rect: [u32; 4]) {
+        let Some(surfaces) = &self.surfaces else {
+            return;
+        };
+        let [x0, y0, x1, y1] = rect;
+        let mut texels = Vec::with_capacity(((x1 - x0 + 1) * (y1 - y0 + 1) * 4) as usize);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                texels.extend_from_slice(&[surfaces[self.index(x, y)], 0, 0, 255]);
+            }
+        }
+        if let Ok(mut queue) = self.patches.lock() {
+            queue.paint.push(PaintPatch {
+                x: x0,
+                y: y0,
+                width: x1 - x0 + 1,
+                height: y1 - y0 + 1,
+                texels,
+            });
+        }
     }
 
     /// The edited rectangle as one patch for the terrain file writer.
@@ -1010,5 +1050,45 @@ mod tests {
         session.end_stroke();
         let patch = session.patch().unwrap();
         assert!(patch.surfaces.contains(&Some(3)));
+    }
+
+    /// The paint-ID texel a queued patch writes at sample (x, y), if any.
+    fn queued_id(session: &TerrainSession, x: u32, y: u32) -> Option<u8> {
+        let queue = session.patches.lock().unwrap();
+        queue.paint.iter().rev().find_map(|patch| {
+            let (dx, dy) = (x.checked_sub(patch.x)?, y.checked_sub(patch.y)?);
+            (dx < patch.width && dy < patch.height)
+                .then(|| patch.texels[((dy * patch.width + dx) * 4) as usize])
+        })
+    }
+
+    #[test]
+    fn paint_strokes_undo_and_redo_queue_the_viewport_paint_ids() {
+        let mut session = flat(33, 33, 10.0);
+        let paint = BrushSettings {
+            surface: 7,
+            ..BrushSettings::default()
+        };
+        session.begin_stroke([16.0, 16.0, 10.0], false, true);
+        assert!(session.dab([16.0, 16.0, 10.0], &paint));
+        session.end_stroke();
+        assert_eq!(queued_id(&session, 16, 16), Some(7));
+        assert_eq!(queued_id(&session, 1, 1), None);
+        session.patches.lock().unwrap().paint.clear();
+        assert!(session.undo());
+        assert_eq!(queued_id(&session, 16, 16), Some(0));
+        assert!(session.redo());
+        assert_eq!(queued_id(&session, 16, 16), Some(7));
+        session.discard();
+        assert_eq!(queued_id(&session, 16, 16), Some(0));
+    }
+
+    #[test]
+    fn sculpt_strokes_leave_the_paint_ids_alone() {
+        let mut session = flat(33, 33, 10.0);
+        session.begin_stroke([16.0, 16.0, 10.0], false, false);
+        assert!(session.dab([16.0, 16.0, 10.0], &BrushSettings::default()));
+        session.end_stroke();
+        assert!(session.patches.lock().unwrap().paint.is_empty());
     }
 }
