@@ -1,4 +1,4 @@
-Nightly requested 2026-11-16 after merging PR #233.
-request: user-requested-merge-build-public-nightly-2026-11-16-pr233
-base-main-commit: d6123f2fbebf950c4dbdf60434ffea9f74070be6
-description: Build and publish a fresh Windows Nightly from merged private EMM-SRC main including PR #233 (Monster materials & texture resolution for Behemoth, Wraith, Gorgon; fix disappearing model bug during rock/ability playback; Meteor Goliath ambient body flames & Ability VFX; Stage-up cocoon ground alignment and scaling; silent background audio with zero console popups). Preserve release authorization, requireAdministrator manifest verification, official Stage 2 runtime packaging and licensing safeguards. Publish only compiled installer and portable ZIP to public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease; do not publish private source.
+Nightly requested 2026-11-16 after merging PR #234.
+request: user-requested-merge-build-public-nightly-2026-11-16-pr234
+base-main-commit: 8bbd6359
+description: Build and publish a fresh Windows Nightly from merged private EMM-SRC main including PR #234 (Eliminate animation prop surface thrashing & flickering with PROP_SURFACE_CACHE; remove pseudo-geometry VFX like yellow lampshade neck discs and fake cylinders; add authentic authored Meteor Goliath rock projectiles projectile_goliathmeteor1..3.cgf; fix Behemoth ability classification on standard animations; rescale evolution cocoons to natural 1:1 snug fit). Preserve release authorization, requireAdministrator manifest verification, official Stage 2 runtime packaging and licensing safeguards. Publish only compiled installer and portable ZIP to public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease; do not publish private source.
