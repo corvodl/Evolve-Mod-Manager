@@ -1,4 +1,4 @@
-Nightly requested 2026-11-16 after merging PR #231.
-request: user-requested-merge-build-public-nightly-2026-11-16-pr231
-base-main-commit: 5915a4e0e14d9b217dfac2ea3f7d07bc30c1bf5d
-description: Build and publish a fresh Windows Nightly from merged private EMM-SRC main including PR #231 (character portraits, enabled mods, readable gameplay values). Preserve release authorization, requireAdministrator manifest verification, official Stage 2 runtime packaging and licensing safeguards. Publish only compiled installer and portable ZIP to public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease; do not publish private source.
+Nightly requested 2026-11-16 after merging PR #232.
+request: user-requested-merge-build-public-nightly-2026-11-16-pr232
+base-main-commit: aea4715b56557876a3e6f98ef1f2e0a2947171e2
+description: Build and publish a fresh Windows Nightly from merged private EMM-SRC main including PR #232 (Animation Browser clean-up, lighting/slider stepping fixes, dynamic prop & projectile simulation for Goliath rock, cocoons per monster & evolution stage, Behemoth magma vs Glacial Behemoth ice effects, hunter deployables per character, and authentic FMOD/vgmstream audio playback). Preserve release authorization, requireAdministrator manifest verification, official Stage 2 runtime packaging and licensing safeguards. Publish only compiled installer and portable ZIP to public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease; do not publish private source.
