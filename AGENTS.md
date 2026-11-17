@@ -17,8 +17,11 @@ Iced, and wgpu. The Cargo workspace lives in `crates/` (`evolve-core`,
   substitute a plausible asset for a verified source.
 - Workspace crate boundaries:
   - `evolve-core`: Domain models, game root detection, VPK and pak archive
-    parsing, asset provenance, install verification, and configuration. Must
-    remain UI-agnostic with no dependencies on Iced or wgpu.
+    parsing, asset provenance, install verification, and configuration, plus
+    Modding-project storage and the UI-free Level Editor logic in
+    `level_editor` (draft, save, validation, brushes, map sources; see
+    `docs/LEVEL_CLI.md`). Must remain UI-agnostic with no dependencies on Iced
+    or wgpu.
   - `evolve-desktop`: The primary desktop application (`evolve-mod-manager`).
     Manages GUI state, user messages, layout views, components, keyboard focus,
     and canvas rendering.

@@ -102,7 +102,7 @@ Basis: everything below was read from `CRYENGINE_Build_PC_v3_5_8_2310_freesdk`. 
 - Four surfaces have neither a matrix row nor a column: `mat_glass_breakable_thin_small`, `mat_glass_breakable_thin_large`, `mat_glass_breakable_safetyglass_small`, `mat_glass_breakable_safetyglass_large`.
 - 25 cells reference effects that exist in none of the 13 `FXLibs/*.xml`: `collisions:canopy_canopy` ×12, `foley:bf_mud` ×12, `collisions:small_shell_default` ×1.
 - FXLib schema (`FXLibs/bulletimpacts.xml`): `<Effect name delay>` containing `<RandEffect>` groups of `<Particle><Name minscale maxscale maxscaledist>`, `<Decal minscale maxscale><Material>`, `<FlowGraph name maxdist>` and `<Sound><Name>`; 13 FXLib files and 5 Flowgraph files ship in this build.
-- 353 of the 373 `Objects.pak` MTL files declare `SurfaceType="mat_…"`. `MaterialSlot` (`crates/evolve-core/src/materials.rs:77-102`) has no surface-type field, and `ResourceSummary` (`crates/evolve-desktop/src/level_environment.rs`) counts only particle XML, MTL and CFX files.
+- 353 of the 373 `Objects.pak` MTL files declare `SurfaceType="mat_…"`. `MaterialSlot` (`crates/evolve-core/src/materials.rs:77-102`) has no surface-type field, and `ResourceSummary` (`crates/evolve-core/src/level_editor/level_environment.rs`) counts only particle XML, MTL and CFX files.
 
 **Scope (read-only)**
 
@@ -135,7 +135,7 @@ Basis: everything below was read from `CRYENGINE_Build_PC_v3_5_8_2310_freesdk`. 
 - `GameSDK/Levels/Singleplayer/Forest/LevelData/TimeOfDay.xml` has 107 variables / 1,669 keys / 12 out-of-range editor keys. Flag histogram: `0`×1,169, `36`×482, `65536`×7, `458752`×3, `65556`×2, and one each of `28`, `24`, `20`, `35`, `65572`, `3`. Four curves carry STEP/ZERO tangents: `Skybox multiplier` (`35` at 0, `3` at 1.0), `Volumetric fog: Shadow darkening sun` (`28`, `24`), `Sky color multiplier` (`65556` ×2), `Night sky: Moon inner corona scale` (`20`). A fifth, `Sky light: Rayleigh scattering` (`65572`), is LINEAR/LINEAR plus a UI-selection bit and must sample like flag `36`.
 - `Editor/CryDesigner_TimeOfDay.xml` (editor-side sample) mixes selection bits with tangents (`65572`, `458788`) and uses one key per curve.
 - The shipped `Code` tree contains only the `ITimeOfDay` interface (`I3DEngine.h:972-1206`); no TimeOfDay spline implementation is included, so the exact auto-smooth (`NONE`) evaluator cannot be confirmed from SDK source.
-- Manager status: this branch now decodes the in/out tangent bits and evaluates a cubic Bezier basis with a linear fallback for unsupported modes (`Curve::sample` in `crates/evolve-desktop/src/level_environment.rs`, commit "Preview TimeOfDay splines with SDK tangent flags"); earlier builds sampled linearly. Diagnostics are emitted by `crates/evolve-desktop/src/level_library.rs:652-660` and `crates/evolve-desktop/src/level_workspace.rs:476-479`. The gates below decide when the preview may stop being labelled approximate.
+- Manager status: this branch now decodes the in/out tangent bits and evaluates a cubic Bezier basis with a linear fallback for unsupported modes (`Curve::sample` in `crates/evolve-core/src/level_editor/level_environment.rs`, commit "Preview TimeOfDay splines with SDK tangent flags"); earlier builds sampled linearly. Diagnostics are emitted by `crates/evolve-desktop/src/level_library.rs:652-660` and `crates/evolve-desktop/src/level_workspace.rs:476-479`. The gates below decide when the preview may stop being labelled approximate.
 
 **Scope (phased, no reserialization)**
 

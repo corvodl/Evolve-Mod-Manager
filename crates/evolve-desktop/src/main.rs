@@ -127,8 +127,8 @@ use evolve_core::level_editor::level_save::{
 };
 use evolve_core::level_editor::{
     level_archive, level_atmosphere, level_camera, level_draft, level_edit_history,
-    level_effect_sources, level_environment, level_lighting, level_transform, terrain_brush,
-    terrain_material_probe, vegetation_map,
+    level_effect_sources, level_environment, level_lighting, level_transform, level_validation,
+    terrain_brush, terrain_material_probe, vegetation_map,
 };
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
@@ -2346,7 +2346,7 @@ impl Operation {
                 {
                     Some((
                         guid.clone(),
-                        level_authoring::validate_project_deletion(&root, &source, guid)?,
+                        level_validation::validate_project_deletion(&root, &source, guid)?,
                     ))
                 } else {
                     None
@@ -2403,7 +2403,7 @@ impl Operation {
                             || lower.ends_with("/terrain/terrain.dat")
                         {
                             if let evolve_core::TerrainBrushEdit::Paint { layer_id, .. } = change {
-                                level_authoring::check_compiled_surface_type(&source, layer_id)?;
+                                level_validation::check_compiled_surface_type(&source, layer_id)?;
                             }
                             evolve_core::edit_compiled_terrain_bytes(&original, change)
                                 .map_err(|e| e.to_string())?
@@ -2449,7 +2449,7 @@ impl Operation {
                             let mut checked = std::collections::BTreeSet::new();
                             for id in patch.surfaces.iter().flatten() {
                                 if checked.insert(*id) {
-                                    level_authoring::check_compiled_surface_type(&source, *id)?;
+                                    level_validation::check_compiled_surface_type(&source, *id)?;
                                 }
                             }
                             evolve_core::patch_compiled_terrain_bytes(&original, &patch)
@@ -2478,7 +2478,7 @@ impl Operation {
                 }
                 if let Some((guid, snapshot)) = map_snapshot {
                     snapshot.verify()?;
-                    if level_authoring::validate_project_deletion(&root, &source, &guid)?
+                    if level_validation::validate_project_deletion(&root, &source, &guid)?
                         != snapshot
                     {
                         return Err(
@@ -4741,7 +4741,7 @@ fn draft_object_edit(state: &mut State, message: &Message) -> Task<Message> {
                 }
                 if !is_compiled_kind(object)
                     && let Err(reason) =
-                        level_authoring::validate_deletion(&snapshot.scene, &object.id)
+                        level_validation::validate_deletion(&snapshot.scene, &object.id)
                 {
                     state.status = reason;
                     return Task::none();
@@ -8664,7 +8664,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             "Reload the combined level before deleting a placement.".into();
                         return Task::none();
                     };
-                    if let Err(reason) = level_authoring::validate_deletion(scene, &object.id) {
+                    if let Err(reason) = level_validation::validate_deletion(scene, &object.id) {
                         state.status = reason;
                         return Task::none();
                     }

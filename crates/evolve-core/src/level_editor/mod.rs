@@ -13,6 +13,7 @@ pub mod level_environment;
 pub mod level_lighting;
 pub mod level_save;
 pub mod level_transform;
+pub mod level_validation;
 pub mod terrain_brush;
 pub mod terrain_material_probe;
 pub mod terrain_rebake_project;

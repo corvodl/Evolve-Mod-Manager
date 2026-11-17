@@ -148,16 +148,16 @@ pub fn save_rebaked_rgb24_grid_checked(
                 };
                 let mut rollback_errors = Vec::new();
                 for &prior in committed.iter().rev() {
-                    if let Some(previous_output) = &encoded.changed_tiles[prior] {
-                        if let Err(error) = modding_projects::save_level_member_checked(
+                    if let Some(previous_output) = &encoded.changed_tiles[prior]
+                        && let Err(error) = modding_projects::save_level_member_checked(
                             project,
                             projects_root,
                             &members[prior],
                             previous_output,
                             &originals[prior],
-                        ) {
-                            rollback_errors.push(format!("{}: {error}", members[prior]));
-                        }
+                        )
+                    {
+                        rollback_errors.push(format!("{}: {error}", members[prior]));
                     }
                 }
                 return Err(if rollback_errors.is_empty() {

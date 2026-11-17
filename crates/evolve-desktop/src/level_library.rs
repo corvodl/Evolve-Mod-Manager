@@ -3091,10 +3091,10 @@ mod tests {
             let id = (0u8..127)
                 .find(|id| {
                     *id != current
-                        && crate::level_authoring::check_compiled_surface_type(&path, *id).is_ok()
+                        && crate::level_validation::check_compiled_surface_type(&path, *id).is_ok()
                 })
                 .expect("a second surface type");
-            assert!(crate::level_authoring::check_compiled_surface_type(&path, 126).is_err());
+            assert!(crate::level_validation::check_compiled_surface_type(&path, 126).is_err());
             let original = fs::read(&path).unwrap();
             let edited = evolve_core::edit_compiled_terrain_bytes(
                 &original,

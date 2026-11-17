@@ -21,6 +21,11 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+// A crate root resolves `mod` beside itself; keep the module in the
+// binary's own folder so Cargo does not mistake it for another binary.
+#[path = "evolve-cli/level.rs"]
+mod level;
+
 const OVERLAY_MAX_MEMBERS: usize = 64;
 
 fn main() {
@@ -87,6 +92,10 @@ fn usage() -> String {
         "  evolve-cli level glb <mission.xml|layer.lyr> <asset-folder> <new-scene.glb> [Heightmap.dat]",
         "  evolve-cli level fbx <mission.xml|layer.lyr> <asset-folder> <Blender.exe> <new-scene.fbx> [Heightmap.dat]",
         "  evolve-cli level edit <mission.xml|layer.lyr> <new.xml> <GUID> <x,y,z> [w,x,y,z] [sx,sy,sz]",
+        "  evolve-cli level wildlife <mission.xml|layer.lyr> [spawns.json]",
+        "  evolve-cli project list <projects-root> <stage>",
+        "  evolve-cli level open <project-folder> <layer-member> [scene.json]",
+        "  evolve-cli level apply <projects-root> <stage> <project-folder> <layer-member> <edits.json> [--dry-run]",
         "",
         "Signed Stage 2 PAKs require the matching local PUBLIC RSA key and exact signed basename.",
         "Signed Stage 2 replacement requires a separate local RSA private key; game acceptance is unverified.",
@@ -94,6 +103,7 @@ fn usage() -> String {
         "Hook preparation only writes a NEW copy; it does not patch or run the installed client.",
         "PAK/hook preflight does not verify Evolve mounted the PAK; real offline Stage 2 launch testing remains necessary.",
         "Outputs are never silently overwritten.",
+        "level apply writes only through the project's checked, backed-up member save; --dry-run writes nothing.",
     ]
     .join("\n")
 }
@@ -311,6 +321,13 @@ fn inspect_surface_pair(
 fn run(args: Vec<OsString>) -> Result<(), String> {
     let mut args = args.into_iter();
     let verb = pop(&mut args)?;
+    if let Some(name @ ("project" | "level")) = verb.to_str() {
+        let rest = args.collect::<Vec<_>>();
+        if let Some(result) = level::run(name, &rest) {
+            return result;
+        }
+        args = rest.into_iter();
+    }
     if verb == OsStr::new("cryxml") {
         let action = pop(&mut args)?;
         let source: PathBuf = pop(&mut args)?.into();
