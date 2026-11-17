@@ -3,69 +3,49 @@
 //! Maps authored `.animevents` timeline parameters (foley, VO, abilities)
 //! to CryEngine FMOD sound bank streams, decodes on-demand via vgmstream,
 //! and plays with zero UI latency in 100% safe Rust.
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Sender, channel};
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 static FSB_LOCATIONS: OnceLock<Mutex<std::collections::HashMap<String, PathBuf>>> = OnceLock::new();
-static AUDIO_PLAYER: OnceLock<Sender<PathBuf>> = OnceLock::new();
 
 fn fsb_locations() -> &'static Mutex<std::collections::HashMap<String, PathBuf>> {
     FSB_LOCATIONS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
-/// Spawns or returns the sender to the persistent audio worker.
-fn audio_sender() -> &'static Sender<PathBuf> {
-    AUDIO_PLAYER.get_or_init(|| {
-        let (tx, rx) = channel::<PathBuf>();
+/// Plays a WAV sound file asynchronously with absolutely zero console popups.
+pub fn play_wav_file(wav_path: &Path) {
+    if !wav_path.is_file() {
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new("powershell.exe");
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &format!(
+                "$p = New-Object System.Media.SoundPlayer '{}'; $p.Play()",
+                wav_path.to_string_lossy().replace('\'', "''")
+            ),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x08000000); // CREATE_NO_WINDOW: Suppresses console window entirely
+
         std::thread::spawn(move || {
-            let mut player_proc: Option<Child> = None;
-            for path in rx {
-                #[cfg(target_os = "windows")]
-                {
-                    let send_result = (|| -> Result<(), std::io::Error> {
-                        if player_proc.is_none() {
-                            let child = Command::new("powershell.exe")
-                                .args([
-                                    "-NoProfile",
-                                    "-NonInteractive",
-                                    "-WindowStyle",
-                                    "Hidden",
-                                    "-Command",
-                                    "$p = New-Object System.Media.SoundPlayer; while ($l = [Console]::In.ReadLine()) { if ($l -and (Test-Path $l)) { $p.SoundLocation = $l; try { $p.Play() } catch {} } }",
-                                ])
-                                .stdin(Stdio::piped())
-                                .stdout(Stdio::null())
-                                .stderr(Stdio::null())
-                                .spawn()?;
-                            player_proc = Some(child);
-                        }
-
-                        if let Some(child) = player_proc.as_mut() {
-                            if let Some(stdin) = child.stdin.as_mut() {
-                                writeln!(stdin, "{}", path.to_string_lossy())?;
-                                stdin.flush()?;
-                            }
-                        }
-                        Ok(())
-                    })();
-
-                    if send_result.is_err() {
-                        if let Some(mut child) = player_proc.take() {
-                            let _ = child.kill();
-                        }
-                    }
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    let _ = path;
-                }
-            }
+            let _ = cmd.status();
         });
-        tx
-    })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = wav_path;
+    }
 }
 
 /// Find a specific FSB bank within the user's asset library root.
@@ -149,14 +129,7 @@ fn resolve_vgmstream(configured: &str) -> Option<PathBuf> {
     None
 }
 
-/// Plays a WAV sound file asynchronously through the persistent audio channel.
-pub fn play_wav_file(wav_path: &Path) {
-    if wav_path.is_file() {
-        let _ = audio_sender().send(wav_path.to_path_buf());
-    }
-}
-
-/// Decode a specific subsong from an FSB bank and play it immediately.
+/// Decode a specific subsong from an FSB bank and play it immediately with zero console popups.
 pub fn play_fsb_subsong(fsb_path: &Path, subsong: u32, vgmstream_exe: &Path) {
     let cache_dir = std::env::temp_dir().join("evolve_anim_audio");
     let _ = std::fs::create_dir_all(&cache_dir);
@@ -179,13 +152,21 @@ pub fn play_fsb_subsong(fsb_path: &Path, subsong: u32, vgmstream_exe: &Path) {
     let wav = target_wav.clone();
 
     std::thread::spawn(move || {
-        let status = std::process::Command::new(vgm_path)
-            .arg("-s")
+        let mut cmd = std::process::Command::new(vgm_path);
+        cmd.arg("-s")
             .arg(subsong.to_string())
             .arg("-o")
             .arg(&wav)
             .arg(&fsb)
-            .status();
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW: Suppresses console popup entirely
+        }
+        let status = cmd.status();
 
         if let Ok(s) = status {
             if s.success() && wav.is_file() {
@@ -209,7 +190,17 @@ pub fn map_event_to_audio_spec(
 
     // 1. Global Footsteps (Monsters, Hunters, Wildlife)
     if event_name.eq_ignore_ascii_case("footstep") {
-        if clip_lower.contains("monster") || clip_lower.contains("creature") {
+        if clip_lower.contains("teleporter")
+            || clip_lower.contains("wraith")
+            || clip_lower.contains("scorpid")
+        {
+            // Wraith levitates and floats - she does not have heavy ground monster footsteps.
+            // Uses her authentic eerie floating tentacle displacement foley:
+            return Some(("Teleporter1_Foley_3p.fsb", 1, 4));
+        } else if clip_lower.contains("kraken") || clip_lower.contains("flyer") {
+            // Kraken levitates / flies:
+            return Some(("Flyer1_Foley_3p.fsb", 1, 4));
+        } else if clip_lower.contains("monster") || clip_lower.contains("creature") {
             return Some(("footsteps_monsters_shared.fsb", 1, 5));
         } else {
             return Some(("Mercenaries_Shared_Foley_3p.fsb", 1, 5));
@@ -419,6 +410,14 @@ mod tests {
         assert_eq!(
             map_event_to_audio_spec("footstep", "", "characters/monsters/goliath/anim.caf", 1),
             Some(("footsteps_monsters_shared.fsb", 1, 5))
+        );
+        assert_eq!(
+            map_event_to_audio_spec("footstep", "", "characters/monsters/wraith/anim.caf", 1),
+            Some(("Teleporter1_Foley_3p.fsb", 1, 4))
+        );
+        assert_eq!(
+            map_event_to_audio_spec("footstep", "", "characters/monsters/teleporter/anim.caf", 1),
+            Some(("Teleporter1_Foley_3p.fsb", 1, 4))
         );
         assert_eq!(
             map_event_to_audio_spec("footstep", "", "characters/hunters/merc_markov/anim.caf", 1),

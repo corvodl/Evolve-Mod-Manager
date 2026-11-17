@@ -383,6 +383,18 @@ pub(crate) fn material_for_part(
     {
         bases.push(stem[..at].to_owned());
     }
+    // Trim trailing evolution stage digits (e.g. rocky1 -> rocky, teleporter1 -> teleporter, grounder1 -> grounder)
+    let trimmed = stem.trim_end_matches(|c: char| c.is_ascii_digit());
+    if !trimmed.is_empty() && trimmed != stem && trimmed.len() >= 3 {
+        bases.push(trimmed.to_owned());
+    }
+    // Check owning folder basename (e.g. characters/monsters/rocky/rocky1.skin -> rocky.mtl)
+    if !parent.is_empty() {
+        let folder = parent.rsplit('/').next().unwrap_or("");
+        if !folder.is_empty() && !bases.iter().any(|b| b.eq_ignore_ascii_case(folder)) {
+            bases.push(folder.to_owned());
+        }
+    }
     for base in bases {
         let path = if parent.is_empty() {
             format!("{base}.mtl")
@@ -2667,6 +2679,53 @@ mod tests {
             .unwrap();
         assert_eq!(scoped, found);
         assert!(material_for_part(binding, Some("goliath2.exr"), &inventory, None, None).is_err());
+    }
+
+    #[test]
+    fn monster_evolution_stage_inherits_family_material() {
+        let dir = tempfile::tempdir().unwrap();
+        let rocky_dir = dir.path().join("characters/monsters/rocky");
+        std::fs::create_dir_all(&rocky_dir).unwrap();
+        std::fs::write(rocky_dir.join("rocky.mtl"), br#"<Material Name="Rocky"/>"#).unwrap();
+        std::fs::write(rocky_dir.join("rocky1.skin"), b"rocky skin bytes").unwrap();
+
+        let teleporter_dir = dir.path().join("characters/monsters/teleporter");
+        std::fs::create_dir_all(&teleporter_dir).unwrap();
+        std::fs::write(
+            teleporter_dir.join("teleporter.mtl"),
+            br#"<Material Name="Teleporter"/>"#,
+        )
+        .unwrap();
+        std::fs::write(teleporter_dir.join("teleporter1.skin"), b"teleporter bytes").unwrap();
+
+        let inventory = evolve_core::scan_directory(dir.path()).unwrap();
+        let rocky_found = material_for_part(
+            "characters/monsters/rocky/rocky1.skin",
+            None,
+            &inventory,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            rocky_found.file_name().and_then(|n| n.to_str()),
+            Some("rocky.mtl")
+        );
+
+        let teleporter_found = material_for_part(
+            "characters/monsters/teleporter/teleporter1.skin",
+            None,
+            &inventory,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            teleporter_found.file_name().and_then(|n| n.to_str()),
+            Some("teleporter.mtl")
+        );
     }
 
     #[test]
