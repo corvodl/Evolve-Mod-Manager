@@ -70,7 +70,7 @@ pub use archive::{
     rebuild_legacy_pak,
 };
 pub use asset_compare::{AssetComparison, AssetFingerprint, CompareError, compare_assets};
-pub use caf_layers::{CafLayer, sample_verified_caf_layers};
+pub use caf_layers::{CafLayer, WeightedCaf, sample_verified_caf_layers};
 pub use cdf::{
     AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
     read_cdf, resolve_cdf, resolve_virtual,
@@ -186,7 +186,10 @@ pub use signed_pak::{
     inspect_signed_pak, open_verified_signed_pak, rebuild_signed_pak_entries,
     rebuild_signed_pak_entry, resign_signed_pak,
 };
-pub use skin_preview::{VerifiedCafAssembly, VerifiedCafSkin};
+pub use skin_preview::{
+    VerifiedCafAssembly, VerifiedCafSkin, append_render_mesh, transform_normal, transform_point,
+    transform_render_mesh,
+};
 pub use terrain::{
     MAX_RENDER_GRID, TerrainBrushEdit, TerrainError, TerrainInfo, TerrainLayerDefinition,
     TerrainMesh, TerrainPaintMap, TerrainPatch, TerrainSurfaceType, TerrainTextureHeader,

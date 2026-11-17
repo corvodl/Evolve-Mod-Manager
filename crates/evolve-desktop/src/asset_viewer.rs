@@ -225,6 +225,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                             active.values[axis],
                             move |value| Message::BlendspaceParameterChanged(axis, value),
                         )
+                        .step(((dimension.max - dimension.min) / 100.0).max(0.01))
                         .width(Fill),
                     ]
                     .spacing(6)
@@ -241,6 +242,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                         state.caf_layer_weight,
                         Message::ViewerLayerWeight
                     )
+                    .step(0.01_f32)
                     .width(160),
                     text(format!("{:.0}%", state.caf_layer_weight * 100.0)).size(design::LABEL),
                     design::button("Remove layer").on_press(Message::ViewerClearLayer),
@@ -258,7 +260,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
             let count: usize = matching.iter().map(|timeline| timeline.events.len()).sum();
             clips = clips.push(
                 text(format!(
-                    "AUTHORED EVENT MARKERS · {count} · {} (inspection only)",
+                    "AUTHORED EVENT MARKERS · {count} · {} (simulation & audio active)",
                     state.animation_event_source
                 ))
                 .size(design::CAPTION)
@@ -286,7 +288,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                         .on_press(Message::MotionScrub(at))
                         .style(design::text_button),
                     text(format!(
-                        "{} · parameter: {} · bone: {} · model: {} · offset: {:?} · dir: {:?}. Read-only; no effect executes.",
+                        "{} · parameter: {} · bone: {} · model: {} · offset: {:?} · dir: {:?}. Authored audio and simulation active.",
                         event.name.chars().take(100).collect::<String>(),
                         event.parameter.chars().take(100).collect::<String>(),
                         event.bone.chars().take(100).collect::<String>(),
@@ -310,44 +312,112 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
                 .on_input(Message::ViewerAutoClipFilter),
         );
         let needle = state.auto_clip_filter.to_ascii_lowercase();
+        let pill = |label: &'static str, query: &'static str| {
+            let active = if query.is_empty() {
+                needle.is_empty()
+            } else {
+                needle == query
+            };
+            design::button(text(label).size(11))
+                .on_press(Message::ViewerAutoClipFilter(query.to_owned()))
+                .style(if active {
+                    design::primary
+                } else {
+                    design::secondary
+                })
+                .padding([4, 8])
+        };
+        clips = clips.push(
+            row![
+                pill("All", ""),
+                pill("Abilities", "ability"),
+                pill("Locomotion", "locomotion"),
+                pill("Combat", "melee"),
+            ]
+            .spacing(6)
+            .align_y(iced::Center),
+        );
         for (index, clip) in state.auto_clips.iter().enumerate().filter(|(_, clip)| {
             needle.is_empty()
                 || clip.label.to_ascii_lowercase().contains(&needle)
                 || clip.kind.to_ascii_lowercase().contains(&needle)
         }) {
-            // A CHRPARAMS declaration or matching manifest entry is not
-            // proof of an extracted CAF. Most entries are resolved lazily.
-            // Never label every unresolved clip as a missing extraction.
+            let is_active = state
+                .current_caf_virtual_path
+                .as_deref()
+                .is_some_and(|p| p.eq_ignore_ascii_case(&clip.virtual_path))
+                || state
+                    .active_blendspace
+                    .as_ref()
+                    .is_some_and(|b| b.path.eq_ignore_ascii_case(&clip.virtual_path));
+
             let availability = if clip.source.is_some() {
-                " · verified source"
+                "Verified source asset"
             } else if clip.kind == "caf" {
-                " · cataloged (check on selection)"
+                "Cataloged CAF (resolved on selection)"
             } else if clip.kind == "dba" {
-                " · declared DBA (check on selection)"
+                "Declared DBA database"
             } else {
-                " · declared"
+                "Declared character animation"
             };
-            let label = format!(
-                "{} · {}{}",
+
+            let title = if is_active {
+                format!("▶ {}", clip.label)
+            } else {
+                clip.label.clone()
+            };
+
+            let tooltip_info = format!(
+                "{}\nKind: {} · {}\nVirtual Path: {}",
                 clip.label,
                 clip.kind.to_ascii_uppercase(),
                 availability,
+                clip.virtual_path
             );
-            clips = clips.push(
-                row![
-                    design::button(text(label).size(design::LABEL))
-                        .on_press(Message::ViewerAutoClip(index))
-                        .style(design::text_button)
-                        .width(Fill),
-                    design::button("Blend layer").on_press_maybe(
+            let clip_button = tooltip(
+                design::button(
+                    row![
+                        text(title).size(12).width(Fill),
+                        container(
+                            text(clip.kind.to_ascii_uppercase())
+                                .size(10)
+                                .style(design::muted)
+                        )
+                        .padding([2, 5]),
+                    ]
+                    .align_y(iced::Center)
+                    .spacing(6),
+                )
+                .on_press(Message::ViewerAutoClip(index))
+                .style(if is_active {
+                    design::primary
+                } else {
+                    design::text_button
+                })
+                .padding(if is_active { [6, 10] } else { [5, 8] })
+                .width(Fill),
+                text(tooltip_info).size(11),
+                tooltip::Position::Top,
+            );
+
+            let blend_button = tooltip(
+                design::button(text("+ Layer").size(11))
+                    .on_press_maybe(
                         (!state.busy
                             && (state.skin_preview.is_some() || state.cdf_caf_preview.is_some())
                             && clip.kind.eq_ignore_ascii_case("caf")
                             && (clip.source.is_some() || state.inventory.is_some()))
-                        .then_some(Message::ViewerLayerClip(index))
-                    ),
-                ]
-                .spacing(8),
+                        .then_some(Message::ViewerLayerClip(index)),
+                    )
+                    .padding([5, 8]),
+                text("Blend as secondary animation layer").size(11),
+                tooltip::Position::Top,
+            );
+
+            clips = clips.push(
+                row![clip_button, blend_button]
+                    .spacing(6)
+                    .align_y(iced::Center),
             );
         }
         if let Some(motion) = &state.glb_motion
@@ -1889,6 +1959,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                     state.light_strength.clamp(0.2, 4.0),
                     Message::LightStrengthChanged
                 )
+                .step(0.05_f32)
                 .width(Length::Fixed(136.0)),
                 text(format!("{:.1}×", state.light_strength)).size(design::CAPTION),
             ]
@@ -1970,6 +2041,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
             state.motion_time.clamp(0.0, duration),
             Message::MotionScrub
         )
+        .step(0.01_f32)
         .width(Fill),
         text(format!("{:.2} / {:.2} s", state.motion_time, duration)).size(design::LABEL),
         text(format!("{:.1}×", state.playback_speed)).size(design::LABEL),
@@ -1978,6 +2050,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
             state.playback_speed.max(0.1),
             Message::PlaybackSpeedChanged
         )
+        .step(0.05_f32)
         .width(Length::Fixed(80.0)),
     ]
     .spacing(8)
@@ -2892,6 +2965,7 @@ pub(super) fn preferences_view(state: &State) -> Element<'_, Message> {
                         state.light_strength.clamp(0.2, 4.0),
                         Message::LightStrengthChanged
                     )
+                    .step(0.05_f32)
                     .width(Length::Fixed(240.0)),
                 ]
                 .spacing(8)
