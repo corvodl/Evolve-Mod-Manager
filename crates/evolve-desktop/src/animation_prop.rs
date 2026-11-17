@@ -259,9 +259,20 @@ fn mat4_rot_x(angle: f32) -> Mat4 {
     ]
 }
 
+fn mat4_identity() -> Mat4 {
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropEffectKind {
     GoliathRock,
+    GoliathFireBreath,
+    GoliathLeapSmash,
     Cocoon { monster_family: &'static str },
     WraithWarpBlast,
     BehemothLavaBomb,
@@ -284,11 +295,23 @@ pub fn classify_animation_prop(clip_name: &str) -> Option<PropEffectKind> {
         return Some(PropEffectKind::GoliathRock);
     }
 
-    // 2. Stage-Up Evolve Cocoons per Monster Family
+    // 2. Goliath Fire Breath Plume
+    if lower.contains("fire_breath") || lower.contains("flame_breath") {
+        return Some(PropEffectKind::GoliathFireBreath);
+    }
+
+    // 3. Goliath Leap Attack Ground Smash
+    if lower.contains("leap_attack_smash")
+        || (lower.contains("leap_attack") && lower.contains("smash"))
+    {
+        return Some(PropEffectKind::GoliathLeapSmash);
+    }
+
+    // 4. Stage-Up Evolve Cocoons per Monster Family
     if lower.contains("cocoon") || lower.contains("stageup") || lower.contains("stage_up") {
         let family = if lower.contains("goliathmeteor") {
             "goliathmeteor"
-        } else if lower.contains("goliath") {
+        } else if lower.contains("goliath") || lower.contains("scorpid") {
             "goliath"
         } else if lower.contains("rockybobcicle") {
             "rockybobcicle"
@@ -296,10 +319,7 @@ pub fn classify_animation_prop(clip_name: &str) -> Option<PropEffectKind> {
             "rocky"
         } else if lower.contains("kraken") || lower.contains("flyer") {
             "kraken"
-        } else if lower.contains("wraith")
-            || lower.contains("teleporter")
-            || lower.contains("scorpid")
-        {
+        } else if lower.contains("wraith") || lower.contains("teleporter") {
             "wraith"
         } else if lower.contains("grounder")
             || lower.contains("parasite")
@@ -315,12 +335,12 @@ pub fn classify_animation_prop(clip_name: &str) -> Option<PropEffectKind> {
         });
     }
 
-    // 3. Wraith Warp Blast & Supernova
+    // 5. Wraith Warp Blast & Supernova
     if lower.contains("warp_blast") || lower.contains("warpblast") || lower.contains("supernova") {
         return Some(PropEffectKind::WraithWarpBlast);
     }
 
-    // 4. Glacial Behemoth (RockyBobcicle) Frost Spikes & Killing Frost
+    // 6. Glacial Behemoth (RockyBobcicle) Frost Spikes & Killing Frost
     if lower.contains("rending_spikes")
         || lower.contains("killing_frost")
         || lower.contains("ice_shard")
@@ -329,7 +349,7 @@ pub fn classify_animation_prop(clip_name: &str) -> Option<PropEffectKind> {
         return Some(PropEffectKind::GlacialBehemothIceSpikes);
     }
 
-    // 5. Standard Behemoth (Rocky / Bob) Lava Bomb, Rock Wall & Molten Fissure
+    // 7. Standard Behemoth (Rocky / Bob) Lava Bomb, Rock Wall & Molten Fissure
     if lower.contains("lavaball")
         || lower.contains("lavabomb")
         || lower.contains("lava_bomb")
@@ -340,7 +360,7 @@ pub fn classify_animation_prop(clip_name: &str) -> Option<PropEffectKind> {
         return Some(PropEffectKind::BehemothLavaBomb);
     }
 
-    // 6. Hunter Deployable Equipment per Character
+    // 8. Hunter Deployable Equipment per Character
     if lower.contains("harpoon_mine")
         || lower.contains("mine_place")
         || lower.contains("grenade_throw")
@@ -382,6 +402,244 @@ pub fn is_rock_throw_animation(clip_name: &str) -> bool {
     classify_animation_prop(clip_name) == Some(PropEffectKind::GoliathRock)
 }
 
+fn default_base_surface(index_count: u32) -> Surface {
+    Surface {
+        first_index: 0,
+        index_count,
+        visible: true,
+        transparent: false,
+        foliage_cutout: false,
+        distance_clouds: None,
+        uv_transform: None,
+        material_tint: Some([1.0, 1.0, 1.0, 1.0]),
+        material_specular: Some([0.3, 0.3, 0.3]),
+        material_emissive: None,
+        emission_on_diffuse: false,
+        emission_alpha_mask: false,
+        material_shininess: Some(25.0),
+        waterfall: None,
+        detail_map: None,
+        blend_layer: None,
+        blend_mask: None,
+        vertex_colors: false,
+        blend_normal: None,
+        detail_tile: None,
+        layer_params: None,
+        foliage_transmit: None,
+        layer_specular: None,
+        alpha_cutoff: 0.5,
+        diffuse: None,
+        normal: None,
+        emissive: None,
+        armor_emissive: None,
+        emission_strength: 0.0,
+        emissive_uv: None,
+        specular: None,
+        gloss: None,
+        opacity: None,
+    }
+}
+
+fn new_empty_mesh() -> RenderMesh {
+    RenderMesh {
+        info: evolve_core::ModelInfo {
+            format: "ProceduralVFX".to_string(),
+            version: 1,
+            chunk_count: 1,
+            vertex_count: 0,
+            triangle_count: 0,
+            original_uv0: true,
+            original_normals: true,
+        },
+        positions: Vec::new(),
+        indices: Vec::new(),
+        uv0: Some(Vec::new()),
+        normals: Some(Vec::new()),
+        vertex_alpha: None,
+        vertex_color: None,
+    }
+}
+
+fn append_billboard_quad(
+    mesh: &mut RenderMesh,
+    center: [f32; 3],
+    size: [f32; 2],
+    uv_min: [f32; 2],
+    uv_max: [f32; 2],
+) {
+    let half_w = size[0] * 0.5;
+    let half_h = size[1] * 0.5;
+    let start_idx = mesh.positions.len() as u32;
+
+    mesh.positions
+        .push([center[0] - half_w, center[1], center[2] - half_h]);
+    mesh.positions
+        .push([center[0] + half_w, center[1], center[2] - half_h]);
+    mesh.positions
+        .push([center[0] + half_w, center[1], center[2] + half_h]);
+    mesh.positions
+        .push([center[0] - half_w, center[1], center[2] + half_h]);
+
+    if let Some(normals) = &mut mesh.normals {
+        for _ in 0..4 {
+            normals.push([0.0, -1.0, 0.0]);
+        }
+    }
+    if let Some(uvs) = &mut mesh.uv0 {
+        uvs.push([uv_min[0], uv_max[1]]);
+        uvs.push([uv_max[0], uv_max[1]]);
+        uvs.push([uv_max[0], uv_min[1]]);
+        uvs.push([uv_min[0], uv_min[1]]);
+    }
+
+    mesh.indices.extend_from_slice(&[
+        start_idx,
+        start_idx + 1,
+        start_idx + 2,
+        start_idx,
+        start_idx + 2,
+        start_idx + 3,
+    ]);
+}
+
+fn append_crossed_quads(mesh: &mut RenderMesh, center: [f32; 3], size: [f32; 2]) {
+    let half_w = size[0] * 0.5;
+    let half_h = size[1] * 0.5;
+    let start_idx = mesh.positions.len() as u32;
+
+    // Plane 1: X-Z plane
+    mesh.positions
+        .push([center[0] - half_w, center[1], center[2] - half_h]);
+    mesh.positions
+        .push([center[0] + half_w, center[1], center[2] - half_h]);
+    mesh.positions
+        .push([center[0] + half_w, center[1], center[2] + half_h]);
+    mesh.positions
+        .push([center[0] - half_w, center[1], center[2] + half_h]);
+
+    // Plane 2: Y-Z plane
+    mesh.positions
+        .push([center[0], center[1] - half_w, center[2] - half_h]);
+    mesh.positions
+        .push([center[0], center[1] + half_w, center[2] - half_h]);
+    mesh.positions
+        .push([center[0], center[1] + half_w, center[2] + half_h]);
+    mesh.positions
+        .push([center[0], center[1] - half_w, center[2] + half_h]);
+
+    if let Some(normals) = &mut mesh.normals {
+        for _ in 0..8 {
+            normals.push([0.0, 0.0, 1.0]);
+        }
+    }
+    if let Some(uvs) = &mut mesh.uv0 {
+        for _ in 0..2 {
+            uvs.push([0.0, 1.0]);
+            uvs.push([1.0, 1.0]);
+            uvs.push([1.0, 0.0]);
+            uvs.push([0.0, 0.0]);
+        }
+    }
+
+    mesh.indices.extend_from_slice(&[
+        start_idx,
+        start_idx + 1,
+        start_idx + 2,
+        start_idx,
+        start_idx + 2,
+        start_idx + 3,
+        start_idx + 4,
+        start_idx + 5,
+        start_idx + 6,
+        start_idx + 4,
+        start_idx + 6,
+        start_idx + 7,
+    ]);
+}
+
+fn get_goliath_hand_midpoint(
+    motion_time: f32,
+    assembly: Option<&evolve_core::VerifiedCafAssembly>,
+    skin: Option<&evolve_core::VerifiedCafSkin>,
+    layers: &[evolve_core::CafLayer<'_>],
+    weighted_clips: Option<&[evolve_core::WeightedCaf<'_>]>,
+    in_place: bool,
+) -> Option<Mat4> {
+    let r_hand = get_bone_transform(
+        "bone_goliath_R_hand",
+        motion_time,
+        assembly,
+        skin,
+        layers,
+        weighted_clips,
+        in_place,
+    )?;
+    let l_hand = get_bone_transform(
+        "bone_goliath_L_hand",
+        motion_time,
+        assembly,
+        skin,
+        layers,
+        weighted_clips,
+        in_place,
+    );
+    if let Some(l) = l_hand {
+        let mut mid = r_hand;
+        mid[0][3] = (r_hand[0][3] + l[0][3]) * 0.5;
+        mid[1][3] = (r_hand[1][3] + l[1][3]) * 0.5 + 0.15;
+        mid[2][3] = (r_hand[2][3] + l[2][3]) * 0.5 + 0.05;
+        Some(mid)
+    } else {
+        Some(r_hand)
+    }
+}
+
+fn append_meteor_body_flames(
+    mesh: &mut RenderMesh,
+    motion_time: f32,
+    assembly: Option<&evolve_core::VerifiedCafAssembly>,
+    skin: Option<&evolve_core::VerifiedCafSkin>,
+    layers: &[evolve_core::CafLayer<'_>],
+    weighted_clips: Option<&[evolve_core::WeightedCaf<'_>]>,
+    in_place: bool,
+) {
+    if mesh.normals.is_none() {
+        mesh.normals = Some(vec![[0.0, 1.0, 0.0]; mesh.positions.len()]);
+    }
+    if mesh.uv0.is_none() {
+        mesh.uv0 = Some(vec![[0.0, 0.0]; mesh.positions.len()]);
+    }
+
+    const FLAME_BONES: &[(&str, f32)] = &[
+        ("bone_goliath_spine2", 0.7),
+        ("bone_goliath_spine3", 0.8),
+        ("bone_goliath_spine4", 0.9),
+        ("bone_goliath_R_clavicle", 0.6),
+        ("bone_goliath_L_clavicle", 0.6),
+        ("bone_goliath_R_forearm", 0.5),
+        ("bone_goliath_L_forearm", 0.5),
+        ("bone_goliath_tail2", 0.6),
+        ("bone_goliath_tail4", 0.5),
+        ("bone_goliath_head", 0.5),
+    ];
+
+    for &(bone, scale) in FLAME_BONES {
+        if let Some(trans) = get_bone_transform(
+            bone,
+            motion_time,
+            assembly,
+            skin,
+            layers,
+            weighted_clips,
+            in_place,
+        ) {
+            let center = [trans[0][3], trans[1][3], trans[2][3] + scale * 0.15];
+            let size = [scale * 0.8, scale * 1.2];
+            append_crossed_quads(mesh, center, size);
+        }
+    }
+}
+
 pub struct PropSimulationResult {
     pub combined_mesh: RenderMesh,
     pub surfaces: Option<Arc<Vec<Surface>>>,
@@ -396,6 +654,7 @@ pub fn simulate_frame_props(
     clip_name: &str,
     character_path: &str,
     motion_time: f32,
+    clip_duration: f32,
     assembly: Option<&evolve_core::VerifiedCafAssembly>,
     skin: Option<&evolve_core::VerifiedCafSkin>,
     layers: &[evolve_core::CafLayer<'_>],
@@ -404,16 +663,103 @@ pub fn simulate_frame_props(
     assets_root: &str,
     monster_stage: u8,
 ) -> PropSimulationResult {
+    let lower_clip = clip_name.to_ascii_lowercase();
+    let is_meteor =
+        character_path.to_ascii_lowercase().contains("meteor") || lower_clip.contains("meteor");
+
     let Some(prop_kind) = classify_animation_prop(clip_name) else {
+        if is_meteor {
+            let mut combined = base_mesh;
+            let base_indices_count = combined.indices.len() as u32;
+            append_meteor_body_flames(
+                &mut combined,
+                motion_time,
+                assembly,
+                skin,
+                layers,
+                weighted_clips,
+                in_place,
+            );
+            let flame_indices_count = combined.indices.len() as u32 - base_indices_count;
+            if flame_indices_count > 0 {
+                let base_identity = base_surfaces.map_or(0, |s| Arc::as_ptr(s) as usize);
+                let cache_key = format!(
+                    "vfx_meteor_ambient:{base_indices_count}:{flame_indices_count}:{base_identity}"
+                );
+                let surfaces = {
+                    let mut cache = prop_surface_cache().lock().unwrap();
+                    if let Some(existing) = cache.get(&cache_key) {
+                        existing.clone()
+                    } else {
+                        let mut list = base_surfaces
+                            .map(|s| (**s).clone())
+                            .unwrap_or_else(|| vec![default_base_surface(base_indices_count)]);
+                        let flame_diff = get_or_load_prop_texture(
+                            assets_root,
+                            "objects/effects/abilities/Goliath_Meteor/goliathmeteor_fireball01_diff.dds.0",
+                        )
+                        .or_else(|| {
+                            Some(generate_procedural_texture(
+                                [40, 180, 255, 255],
+                                [10, 80, 180, 255],
+                                2,
+                            ))
+                        });
+                        list.push(Surface {
+                            first_index: base_indices_count,
+                            index_count: flame_indices_count,
+                            visible: true,
+                            transparent: false,
+                            foliage_cutout: false,
+                            distance_clouds: None,
+                            uv_transform: None,
+                            material_tint: Some([0.25, 0.75, 1.0, 0.85]),
+                            material_specular: Some([0.2, 0.5, 0.8]),
+                            material_emissive: Some([0.15, 0.85, 1.0]),
+                            emission_on_diffuse: false,
+                            emission_alpha_mask: false,
+                            material_shininess: Some(25.0),
+                            waterfall: None,
+                            detail_map: None,
+                            blend_layer: None,
+                            blend_mask: None,
+                            vertex_colors: false,
+                            blend_normal: None,
+                            detail_tile: None,
+                            layer_params: None,
+                            foliage_transmit: None,
+                            layer_specular: None,
+                            alpha_cutoff: 0.1,
+                            diffuse: flame_diff,
+                            normal: None,
+                            emissive: None,
+                            armor_emissive: None,
+                            emission_strength: 3.0,
+                            emissive_uv: None,
+                            specular: None,
+                            gloss: None,
+                            opacity: None,
+                        });
+                        let arc = Arc::new(list);
+                        cache.insert(cache_key, arc.clone());
+                        arc
+                    }
+                };
+                return PropSimulationResult {
+                    combined_mesh: combined,
+                    surfaces: Some(surfaces),
+                };
+            }
+            return PropSimulationResult {
+                combined_mesh: combined,
+                surfaces: base_surfaces.cloned(),
+            };
+        }
         return PropSimulationResult {
             combined_mesh: base_mesh,
             surfaces: base_surfaces.cloned(),
         };
     };
-
-    let lower_clip = clip_name.to_ascii_lowercase();
-    let is_meteor =
-        character_path.to_ascii_lowercase().contains("meteor") || lower_clip.contains("meteor");
 
     let (prop_mesh, prop_matrix, prop_cache_key, tint, emissive, strength, diff_tex, glow_tex) =
         match prop_kind {
@@ -426,12 +772,13 @@ pub fn simulate_frame_props(
                     };
                 };
 
+                let throw_release_time = 0.6726 * clip_duration.max(0.1);
+
                 let mat: Option<Mat4> = if lower_clip.contains("rock_pick_up") {
                     if motion_time < 0.35 {
                         None
                     } else {
-                        get_bone_transform(
-                            "bone_goliath_R_hand",
+                        get_goliath_hand_midpoint(
                             motion_time,
                             assembly,
                             skin,
@@ -440,7 +787,7 @@ pub fn simulate_frame_props(
                             in_place,
                         )
                         .map(|hand| {
-                            let offset = mat4_translation([0.2, 0.4, 0.0]);
+                            let offset = mat4_translation([0.0, 0.25, 0.0]);
                             mat4_mul(&hand, &offset)
                         })
                     }
@@ -448,8 +795,7 @@ pub fn simulate_frame_props(
                     || lower_clip.contains("rock_turn")
                     || lower_clip.contains("rockthrow")
                 {
-                    get_bone_transform(
-                        "bone_goliath_R_hand",
+                    get_goliath_hand_midpoint(
                         motion_time,
                         assembly,
                         skin,
@@ -458,14 +804,12 @@ pub fn simulate_frame_props(
                         in_place,
                     )
                     .map(|hand| {
-                        let offset = mat4_translation([0.15, 0.45, -0.05]);
+                        let offset = mat4_translation([0.0, 0.25, 0.0]);
                         mat4_mul(&hand, &offset)
                     })
                 } else if lower_clip.contains("rock_throw") {
-                    const THROW_RELEASE_TIME: f32 = 0.6726;
-                    if motion_time < THROW_RELEASE_TIME {
-                        get_bone_transform(
-                            "bone_goliath_R_hand",
+                    if motion_time < throw_release_time {
+                        get_goliath_hand_midpoint(
                             motion_time,
                             assembly,
                             skin,
@@ -474,13 +818,12 @@ pub fn simulate_frame_props(
                             in_place,
                         )
                         .map(|hand| {
-                            let offset = mat4_translation([0.15, 0.4, 0.0]);
+                            let offset = mat4_translation([0.0, 0.25, 0.0]);
                             mat4_mul(&hand, &offset)
                         })
                     } else {
-                        let release_hand = get_bone_transform(
-                            "bone_goliath_R_hand",
-                            THROW_RELEASE_TIME,
+                        let release_hand = get_goliath_hand_midpoint(
+                            throw_release_time,
                             assembly,
                             skin,
                             layers,
@@ -489,12 +832,12 @@ pub fn simulate_frame_props(
                         );
 
                         let (p0_x, p0_y, p0_z) = if let Some(h) = release_hand {
-                            (h[0][3] + 0.2, h[1][3] + 0.5, h[2][3])
+                            (h[0][3], h[1][3] + 0.3, h[2][3])
                         } else {
                             (0.0, 1.5, 2.5)
                         };
 
-                        let delta_t = motion_time - THROW_RELEASE_TIME;
+                        let delta_t = motion_time - throw_release_time;
                         let v_forward = 28.0;
                         let v_up = 3.8;
                         let gravity = 9.81;
@@ -532,51 +875,208 @@ pub fn simulate_frame_props(
 
                 let (diff, glow, tint, emissive_color, strength, key) = if is_meteor {
                     (
-                    get_or_load_prop_texture(
-                        assets_root,
-                        "objects/effects/abilities/Goliath_Meteor/goliathmeteor_rock_smolder01_diff.dds.0",
+                        get_or_load_prop_texture(
+                            assets_root,
+                            "objects/effects/abilities/Goliath_Meteor/goliathmeteor_rock_smolder01_diff.dds.0",
+                        )
+                        .or_else(|| {
+                            Some(generate_procedural_texture(
+                                [45, 55, 65, 255],
+                                [15, 20, 25, 255],
+                                1,
+                            ))
+                        }),
+                        get_or_load_prop_texture(
+                            assets_root,
+                            "objects/effects/abilities/Goliath_Meteor/goliathmeteor_rock_smolder01_glow.dds.0",
+                        ),
+                        [1.0, 1.0, 1.0, 1.0],
+                        None,
+                        2.8,
+                        "rock_meteor",
                     )
-                    .or_else(|| {
-                        Some(generate_procedural_texture(
-                            [50, 60, 80, 255],
-                            [10, 20, 30, 255],
-                            1,
-                        ))
-                    }),
-                    get_or_load_prop_texture(
-                        assets_root,
-                        "objects/effects/abilities/Goliath_Meteor/goliathmeteor_rock_smolder01_glow.dds.0",
-                    ),
-                    [0.35, 0.45, 0.65, 1.0],
-                    [0.10, 0.75, 1.0],
-                    2.6,
-                    "rock_meteor",
-                )
                 } else {
                     (
-                    get_or_load_prop_texture(
-                        assets_root,
-                        "objects/effects/abilities/goliath/rock_throw/rock_throw_smolder01_diff.dds.0",
+                        get_or_load_prop_texture(
+                            assets_root,
+                            "objects/effects/abilities/goliath/rock_throw/rock_throw_smolder01_diff.dds.0",
+                        )
+                        .or_else(|| {
+                            Some(generate_procedural_texture(
+                                [80, 70, 60, 255],
+                                [40, 35, 30, 255],
+                                1,
+                            ))
+                        }),
+                        get_or_load_prop_texture(
+                            assets_root,
+                            "objects/effects/abilities/goliath/rock_throw/rock_throw_glow01.dds.0",
+                        ),
+                        [1.0, 1.0, 1.0, 1.0],
+                        None,
+                        2.4,
+                        "rock_goliath",
                     )
-                    .or_else(|| {
-                        Some(generate_procedural_texture(
-                            [80, 70, 60, 255],
-                            [40, 35, 30, 255],
-                            1,
-                        ))
-                    }),
-                    get_or_load_prop_texture(
-                        assets_root,
-                        "objects/effects/abilities/goliath/rock_throw/rock_throw_glow01.dds.0",
-                    ),
-                    [0.55, 0.48, 0.42, 1.0],
-                    [1.0, 0.35, 0.05],
-                    2.4,
-                    "rock_goliath",
-                )
                 };
 
                 (mesh, mat, key, tint, emissive_color, strength, diff, glow)
+            }
+            PropEffectKind::GoliathFireBreath => {
+                let head_bone = get_bone_transform(
+                    "bone_goliath_jaw",
+                    motion_time,
+                    assembly,
+                    skin,
+                    layers,
+                    weighted_clips,
+                    in_place,
+                )
+                .or_else(|| {
+                    get_bone_transform(
+                        "bone_goliath_head",
+                        motion_time,
+                        assembly,
+                        skin,
+                        layers,
+                        weighted_clips,
+                        in_place,
+                    )
+                })
+                .unwrap_or_else(|| mat4_translation([0.0, 1.5, 2.0]));
+
+                let mut flame_mesh = new_empty_mesh();
+                let steps = 14;
+                let (plume_tint, plume_emissive) = if is_meteor {
+                    ([0.25, 0.75, 1.0, 0.9], [0.15, 0.85, 1.0])
+                } else {
+                    ([1.0, 0.50, 0.1, 0.9], [1.0, 0.40, 0.05])
+                };
+
+                for i in 1..=steps {
+                    let frac = i as f32 / steps as f32;
+                    let dist = frac * 5.5;
+                    let radius = 0.25 + frac * 1.8;
+                    let jitter_x = ((motion_time * 24.0 + i as f32 * 1.7).sin()) * 0.15 * frac;
+                    let jitter_z = ((motion_time * 18.0 + i as f32 * 2.3).cos()) * 0.15 * frac;
+
+                    let center = [jitter_x, dist, jitter_z];
+                    let size = [radius * 2.0, radius * 2.0];
+                    append_crossed_quads(&mut flame_mesh, center, size);
+                }
+
+                let diff = get_or_load_prop_texture(
+                    assets_root,
+                    if is_meteor {
+                        "objects/effects/abilities/Goliath_Meteor/goliathmeteor_fireball01_diff.dds.0"
+                    } else {
+                        "objects/effects/abilities/goliath/fireball/fireball01_diff.dds.0"
+                    },
+                )
+                .or_else(|| {
+                    Some(generate_procedural_texture(
+                        if is_meteor { [40, 180, 255, 255] } else { [255, 120, 20, 255] },
+                        if is_meteor { [10, 80, 180, 255] } else { [180, 40, 5, 255] },
+                        2,
+                    ))
+                });
+
+                (
+                    Arc::new(flame_mesh),
+                    Some(head_bone),
+                    if is_meteor {
+                        "vfx_meteor_fire_breath"
+                    } else {
+                        "vfx_fire_breath"
+                    },
+                    plume_tint,
+                    Some(plume_emissive),
+                    3.2,
+                    diff,
+                    None,
+                )
+            }
+            PropEffectKind::GoliathLeapSmash => {
+                let mut smash_mesh = new_empty_mesh();
+                let impact_center = get_goliath_hand_midpoint(
+                    motion_time,
+                    assembly,
+                    skin,
+                    layers,
+                    weighted_clips,
+                    in_place,
+                )
+                .map(|h| [h[0][3], h[1][3], 0.05])
+                .unwrap_or([0.0, 1.5, 0.05]);
+
+                let (smash_tint, smash_emissive) = if is_meteor {
+                    ([0.25, 0.75, 1.0, 0.85], [0.15, 0.85, 1.0])
+                } else {
+                    ([1.0, 0.45, 0.08, 0.85], [1.0, 0.35, 0.02])
+                };
+
+                let ring_segments = 16;
+                let ring_radius = (motion_time * 8.0).min(4.5).max(0.5);
+                for i in 0..ring_segments {
+                    let angle = (i as f32 / ring_segments as f32) * std::f32::consts::TAU;
+                    let x = impact_center[0] + angle.cos() * ring_radius;
+                    let y = impact_center[1] + angle.sin() * ring_radius;
+                    let z = impact_center[2];
+                    append_billboard_quad(
+                        &mut smash_mesh,
+                        [x, y, z + 0.3],
+                        [1.4, 1.4],
+                        [0.0, 0.0],
+                        [1.0, 1.0],
+                    );
+                }
+
+                if motion_time >= 0.12 {
+                    for i in 0..6 {
+                        let offset_x = ((i as f32 * 1.5).sin()) * 0.8;
+                        let offset_y = ((i as f32 * 1.5).cos()) * 0.8;
+                        let height = 0.5 + (i as f32 * 0.3);
+                        append_crossed_quads(
+                            &mut smash_mesh,
+                            [
+                                impact_center[0] + offset_x,
+                                impact_center[1] + offset_y,
+                                impact_center[2] + height,
+                            ],
+                            [1.2, 1.8],
+                        );
+                    }
+                }
+
+                let diff = get_or_load_prop_texture(
+                    assets_root,
+                    if is_meteor {
+                        "objects/effects/abilities/Goliath_Meteor/goliathmeteor_fireball01_diff.dds.0"
+                    } else {
+                        "objects/effects/abilities/goliath/rock_throw/rock_throw_glow01.dds.0"
+                    },
+                )
+                .or_else(|| {
+                    Some(generate_procedural_texture(
+                        if is_meteor { [40, 180, 255, 255] } else { [255, 120, 20, 255] },
+                        if is_meteor { [10, 80, 180, 255] } else { [180, 40, 5, 255] },
+                        2,
+                    ))
+                });
+
+                (
+                    Arc::new(smash_mesh),
+                    Some(mat4_identity()),
+                    if is_meteor {
+                        "vfx_meteor_leap_smash"
+                    } else {
+                        "vfx_leap_smash"
+                    },
+                    smash_tint,
+                    Some(smash_emissive),
+                    3.5,
+                    diff,
+                    None,
+                )
             }
             PropEffectKind::Cocoon { monster_family } => {
                 let (rel_path, tint, emissive, strength, scale_factor, key) = match monster_family {
@@ -713,7 +1213,16 @@ pub fn simulate_frame_props(
                     ))
                 });
 
-                (mesh, matrix, key, tint, emissive, strength, diff, None)
+                (
+                    mesh,
+                    matrix,
+                    key,
+                    tint,
+                    Some(emissive),
+                    strength,
+                    diff,
+                    None,
+                )
             }
             PropEffectKind::WraithWarpBlast => {
                 let Some(mesh) = get_or_load_prop_mesh(
@@ -753,7 +1262,7 @@ pub fn simulate_frame_props(
                     mat,
                     "warp_blast",
                     [0.3, 0.15, 0.45, 1.0],
-                    [0.65, 0.15, 0.95],
+                    Some([0.65, 0.15, 0.95]),
                     2.6,
                     Some(generate_procedural_texture(
                         [150, 50, 200, 255],
@@ -779,7 +1288,7 @@ pub fn simulate_frame_props(
                     Some(mat4_translation([0.0, 3.2, 0.0])),
                     "ice_spikes",
                     [0.7, 0.9, 1.0, 1.0],
-                    [0.15, 0.85, 1.0],
+                    Some([0.15, 0.85, 1.0]),
                     2.4,
                     Some(generate_procedural_texture(
                         [180, 220, 255, 255],
@@ -803,7 +1312,7 @@ pub fn simulate_frame_props(
                     Some(mat4_translation([0.0, 2.5, 0.5])),
                     "lava_bomb",
                     [0.55, 0.25, 0.15, 1.0],
-                    [1.0, 0.30, 0.02],
+                    Some([1.0, 0.30, 0.02]),
                     2.8,
                     Some(generate_procedural_texture(
                         [120, 40, 20, 255],
@@ -964,7 +1473,7 @@ pub fn simulate_frame_props(
                     ))
                 });
 
-                (mesh, mat, key, tint, emissive, strength, diff, None)
+                (mesh, mat, key, tint, Some(emissive), strength, diff, None)
             }
         };
 
@@ -982,54 +1491,37 @@ pub fn simulate_frame_props(
     let prop_indices_count = prop_mesh.indices.len() as u32;
     append_render_mesh(&mut combined, &transformed_prop);
 
+    // If meteor monster, also append ambient body flames
+    let mut ambient_flame_indices = 0u32;
+    if is_meteor {
+        let pre_flame_count = combined.indices.len() as u32;
+        append_meteor_body_flames(
+            &mut combined,
+            motion_time,
+            assembly,
+            skin,
+            layers,
+            weighted_clips,
+            in_place,
+        );
+        ambient_flame_indices = combined.indices.len() as u32 - pre_flame_count;
+    }
+
     // Retrieve or create a stable Arc<Vec<Surface>> pointer so textured.rs never detects
     // a spurious identity change from frame to frame, completely preventing GPU flickering.
     let base_identity = base_surfaces.map_or(0, |s| Arc::as_ptr(s) as usize);
-    let cache_key =
-        format!("{prop_cache_key}:{base_indices_count}:{prop_indices_count}:{base_identity}");
+    let cache_key = format!(
+        "{prop_cache_key}:{base_indices_count}:{prop_indices_count}:{ambient_flame_indices}:{base_identity}"
+    );
 
     let surfaces = {
         let mut cache = prop_surface_cache().lock().unwrap();
         if let Some(existing) = cache.get(&cache_key) {
             existing.clone()
         } else {
-            let mut list = base_surfaces.map(|s| (**s).clone()).unwrap_or_else(|| {
-                vec![Surface {
-                    first_index: 0,
-                    index_count: base_indices_count,
-                    visible: true,
-                    transparent: false,
-                    foliage_cutout: false,
-                    distance_clouds: None,
-                    uv_transform: None,
-                    material_tint: Some([1.0, 1.0, 1.0, 1.0]),
-                    material_specular: Some([0.3, 0.3, 0.3]),
-                    material_emissive: None,
-                    emission_on_diffuse: false,
-                    emission_alpha_mask: false,
-                    material_shininess: Some(25.0),
-                    waterfall: None,
-                    detail_map: None,
-                    blend_layer: None,
-                    blend_mask: None,
-                    vertex_colors: false,
-                    blend_normal: None,
-                    detail_tile: None,
-                    layer_params: None,
-                    foliage_transmit: None,
-                    layer_specular: None,
-                    alpha_cutoff: 0.5,
-                    diffuse: None,
-                    normal: None,
-                    emissive: None,
-                    armor_emissive: None,
-                    emission_strength: 0.0,
-                    emissive_uv: None,
-                    specular: None,
-                    gloss: None,
-                    opacity: None,
-                }]
-            });
+            let mut list = base_surfaces
+                .map(|s| (**s).clone())
+                .unwrap_or_else(|| vec![default_base_surface(base_indices_count)]);
 
             let prop_surface = Surface {
                 first_index: base_indices_count,
@@ -1041,7 +1533,7 @@ pub fn simulate_frame_props(
                 uv_transform: None,
                 material_tint: Some(tint),
                 material_specular: Some([0.25, 0.22, 0.20]),
-                material_emissive: Some(emissive),
+                material_emissive: emissive,
                 emission_on_diffuse: false,
                 emission_alpha_mask: false,
                 material_shininess: Some(25.0),
@@ -1067,6 +1559,57 @@ pub fn simulate_frame_props(
                 opacity: None,
             };
             list.push(prop_surface);
+
+            if ambient_flame_indices > 0 {
+                let flame_diff = get_or_load_prop_texture(
+                    assets_root,
+                    "objects/effects/abilities/Goliath_Meteor/goliathmeteor_fireball01_diff.dds.0",
+                )
+                .or_else(|| {
+                    Some(generate_procedural_texture(
+                        [40, 180, 255, 255],
+                        [10, 80, 180, 255],
+                        2,
+                    ))
+                });
+                let flame_surface = Surface {
+                    first_index: base_indices_count + prop_indices_count,
+                    index_count: ambient_flame_indices,
+                    visible: true,
+                    transparent: false,
+                    foliage_cutout: false,
+                    distance_clouds: None,
+                    uv_transform: None,
+                    material_tint: Some([0.25, 0.75, 1.0, 0.85]),
+                    material_specular: Some([0.2, 0.5, 0.8]),
+                    material_emissive: Some([0.15, 0.85, 1.0]),
+                    emission_on_diffuse: false,
+                    emission_alpha_mask: false,
+                    material_shininess: Some(25.0),
+                    waterfall: None,
+                    detail_map: None,
+                    blend_layer: None,
+                    blend_mask: None,
+                    vertex_colors: false,
+                    blend_normal: None,
+                    detail_tile: None,
+                    layer_params: None,
+                    foliage_transmit: None,
+                    layer_specular: None,
+                    alpha_cutoff: 0.1,
+                    diffuse: flame_diff,
+                    normal: None,
+                    emissive: None,
+                    armor_emissive: None,
+                    emission_strength: 3.0,
+                    emissive_uv: None,
+                    specular: None,
+                    gloss: None,
+                    opacity: None,
+                };
+                list.push(flame_surface);
+            }
+
             let arc = Arc::new(list);
             cache.insert(cache_key, arc.clone());
             arc
@@ -1160,7 +1703,14 @@ mod tests {
         assert_eq!(classify_animation_prop("Rocky_AimPoses_idle"), None);
         assert_eq!(classify_animation_prop("rockybobcicle_store_pose"), None);
         assert_eq!(classify_animation_prop("ability_charge_attack"), None);
-        assert_eq!(classify_animation_prop("ability_fire_breath"), None);
+        assert_eq!(
+            classify_animation_prop("ability_fire_breath"),
+            Some(PropEffectKind::GoliathFireBreath)
+        );
+        assert_eq!(
+            classify_animation_prop("locomotion_leap_attack_smash"),
+            Some(PropEffectKind::GoliathLeapSmash)
+        );
     }
 
     #[test]
@@ -1232,6 +1782,7 @@ mod tests {
             "locomotion_walk_forward",
             "characters/monsters/goliath/goliath1.cdf",
             1.0,
+            4.0,
             None,
             None,
             &[],

@@ -3955,7 +3955,19 @@ fn apply_current_skin_frame(state: &mut State) {
     } else {
         1
     };
-    let assets_root = state.preferences.asset_library_root.clone();
+    let assets_root = if !state.preferences.asset_library_root.is_empty() {
+        state.preferences.asset_library_root.clone()
+    } else if !state.assets_root.is_empty() {
+        state.assets_root.clone()
+    } else {
+        state.library_root.clone()
+    };
+    let clip_duration = state
+        .active_blendspace
+        .as_ref()
+        .map(|b| b.duration)
+        .or_else(|| state.native_caf.as_ref().map(|c| c.duration_seconds()))
+        .unwrap_or(4.0);
     let motion_time = state.motion_time;
     let motion_in_place = state.motion_in_place;
 
@@ -3995,6 +4007,7 @@ fn apply_current_skin_frame(state: &mut State) {
                     &clip_name,
                     &character_path,
                     motion_time,
+                    clip_duration,
                     assembly_clone.as_deref(),
                     skin_clone.as_deref(),
                     &layers,
@@ -4027,6 +4040,7 @@ fn apply_current_skin_frame(state: &mut State) {
                     &clip_name,
                     &character_path,
                     motion_time,
+                    clip_duration,
                     Some(assembly.as_ref()),
                     skin_clone.as_deref(),
                     &layers,
@@ -4056,6 +4070,7 @@ fn apply_current_skin_frame(state: &mut State) {
                     &clip_name,
                     &character_path,
                     motion_time,
+                    clip_duration,
                     None,
                     Some(skin.as_ref()),
                     &layers,
@@ -4106,35 +4121,110 @@ fn check_and_trigger_audio_events(
     duration: f32,
     looped: bool,
 ) {
-    let (Some(events), Some(clip_path)) =
-        (&state.animation_events, &state.current_caf_virtual_path)
-    else {
+    let clip_path = state
+        .current_caf_virtual_path
+        .as_deref()
+        .or_else(|| state.active_blendspace.as_ref().map(|b| b.path.as_str()))
+        .unwrap_or("");
+    if clip_path.is_empty() {
         return;
-    };
-    let stage = if state.input.contains("goliath2") {
-        2
-    } else if state.input.contains("goliath3") {
+    }
+
+    let lower_input = state.input.to_ascii_lowercase();
+    let stage = if lower_input.contains('3') {
         3
+    } else if lower_input.contains('2') {
+        2
     } else {
         1
     };
 
-    for timeline in events.timelines_for(clip_path) {
-        for event in &timeline.events {
-            let event_time = event.start_seconds(duration);
-            let fired = if looped {
-                (event_time > prev_time && event_time <= duration)
-                    || (event_time >= 0.0 && event_time <= curr_time)
-            } else {
-                event_time > prev_time && event_time <= curr_time
-            };
+    let assets_root = if !state.preferences.asset_library_root.is_empty() {
+        &state.preferences.asset_library_root
+    } else if !state.assets_root.is_empty() {
+        &state.assets_root
+    } else {
+        &state.library_root
+    };
+    let character_path = &state.input;
 
-            if fired {
+    let mut event_fired = false;
+    if let Some(events) = &state.animation_events {
+        for timeline in events.timelines_for(clip_path) {
+            for event in &timeline.events {
+                let event_time = event.start_seconds(duration);
+                let fired = if looped {
+                    (event_time > prev_time && event_time <= duration)
+                        || (event_time >= 0.0 && event_time <= curr_time)
+                } else {
+                    event_time > prev_time && event_time <= curr_time
+                };
+
+                if fired {
+                    event_fired = true;
+                    animation_audio::trigger_animation_event(
+                        &event.name,
+                        &event.parameter,
+                        clip_path,
+                        character_path,
+                        assets_root,
+                        &state.preferences.vgmstream_executable,
+                        stage,
+                    );
+                }
+            }
+        }
+    }
+
+    // Fallback trigger for ability animations if no timeline event fired (or clip lacks animevents)
+    let lower_clip = clip_path.to_ascii_lowercase();
+    if !event_fired {
+        if lower_clip.contains("fire_breath") || lower_clip.contains("flame_breath") {
+            let at_start = (prev_time < 0.1 && curr_time >= 0.1) || looped;
+            if at_start {
                 animation_audio::trigger_animation_event(
-                    &event.name,
-                    &event.parameter,
+                    "foley",
+                    "FlameBreath",
                     clip_path,
-                    &state.preferences.asset_library_root,
+                    character_path,
+                    assets_root,
+                    &state.preferences.vgmstream_executable,
+                    stage,
+                );
+            }
+        } else if lower_clip.contains("rock_throw") || lower_clip.contains("rockthrow") {
+            let throw_time = 0.6726 * duration.max(0.1);
+            if prev_time < 0.2 && curr_time >= 0.2 {
+                animation_audio::trigger_animation_event(
+                    "foley",
+                    "VO_RockThrow_PickUp",
+                    clip_path,
+                    character_path,
+                    assets_root,
+                    &state.preferences.vgmstream_executable,
+                    stage,
+                );
+            } else if prev_time < throw_time && curr_time >= throw_time {
+                animation_audio::trigger_animation_event(
+                    "foley",
+                    "VO_RockThrow_Throw",
+                    clip_path,
+                    character_path,
+                    assets_root,
+                    &state.preferences.vgmstream_executable,
+                    stage,
+                );
+            }
+        } else if lower_clip.contains("leap_attack_smash")
+            || (lower_clip.contains("leap") && lower_clip.contains("smash"))
+        {
+            if prev_time < 0.12 && curr_time >= 0.12 {
+                animation_audio::trigger_animation_event(
+                    "foley",
+                    "Clawbash_Double",
+                    clip_path,
+                    character_path,
+                    assets_root,
                     &state.preferences.vgmstream_executable,
                     stage,
                 );
@@ -4144,11 +4234,14 @@ fn check_and_trigger_audio_events(
 }
 
 fn trigger_matching_event_on_scrub(state: &State, scrub_time: f32) {
-    let (Some(events), Some(clip_path)) =
-        (&state.animation_events, &state.current_caf_virtual_path)
-    else {
+    let clip_path = state
+        .current_caf_virtual_path
+        .as_deref()
+        .or_else(|| state.active_blendspace.as_ref().map(|b| b.path.as_str()))
+        .unwrap_or("");
+    if clip_path.is_empty() {
         return;
-    };
+    }
     let duration = state
         .active_blendspace
         .as_ref()
@@ -4156,28 +4249,56 @@ fn trigger_matching_event_on_scrub(state: &State, scrub_time: f32) {
         .or_else(|| state.native_caf.as_ref().map(|c| c.duration_seconds()))
         .unwrap_or(1.0);
 
-    let stage = if state.input.contains("goliath2") {
-        2
-    } else if state.input.contains("goliath3") {
+    let lower_input = state.input.to_ascii_lowercase();
+    let stage = if lower_input.contains('3') {
         3
+    } else if lower_input.contains('2') {
+        2
     } else {
         1
     };
 
-    for timeline in events.timelines_for(clip_path) {
-        for event in &timeline.events {
-            let event_time = event.start_seconds(duration);
-            if (event_time - scrub_time).abs() < 0.05 {
-                animation_audio::trigger_animation_event(
-                    &event.name,
-                    &event.parameter,
-                    clip_path,
-                    &state.preferences.asset_library_root,
-                    &state.preferences.vgmstream_executable,
-                    stage,
-                );
-                return;
+    let assets_root = if !state.preferences.asset_library_root.is_empty() {
+        &state.preferences.asset_library_root
+    } else if !state.assets_root.is_empty() {
+        &state.assets_root
+    } else {
+        &state.library_root
+    };
+    let character_path = &state.input;
+
+    if let Some(events) = &state.animation_events {
+        for timeline in events.timelines_for(clip_path) {
+            for event in &timeline.events {
+                let event_time = event.start_seconds(duration);
+                if (event_time - scrub_time).abs() < 0.05 {
+                    animation_audio::trigger_animation_event(
+                        &event.name,
+                        &event.parameter,
+                        clip_path,
+                        character_path,
+                        assets_root,
+                        &state.preferences.vgmstream_executable,
+                        stage,
+                    );
+                    return;
+                }
             }
+        }
+    }
+
+    let lower_clip = clip_path.to_ascii_lowercase();
+    if lower_clip.contains("fire_breath") || lower_clip.contains("flame_breath") {
+        if (scrub_time - 0.1).abs() < 0.08 {
+            animation_audio::trigger_animation_event(
+                "foley",
+                "FlameBreath",
+                clip_path,
+                character_path,
+                assets_root,
+                &state.preferences.vgmstream_executable,
+                stage,
+            );
         }
     }
 }
