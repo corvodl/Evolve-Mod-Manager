@@ -1,11 +1,12 @@
 //! Optional local integration for the developer-supplied Stage 2 encoder.
 //! No developer executable, DLL, signing key or key source is shipped in Rust.
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use std::process::Command;
 use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 const CRYPTO_SHA: &str = "841105bb6703206cae4d5c73d8d0ced5c50240d9595090a2a09dc2963fd22f78";
@@ -122,7 +123,7 @@ impl OfficialTools {
         #[cfg(not(windows))]
         {
             let _ = (action, a, b);
-            return Err("The developer encoder only runs on Windows".into());
+            Err("The developer encoder only runs on Windows".into())
         }
         #[cfg(windows)]
         {
