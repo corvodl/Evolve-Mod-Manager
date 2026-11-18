@@ -122,6 +122,62 @@ pub fn discover_equipment(cdf: &CdfDefinition, inventory: &Inventory) -> Vec<Equ
             choices: found,
         });
     }
+    if crate::character_assembly::is_parasite_host(cdf) {
+        let parasite_candidates = [
+            (
+                "Archer",
+                "objects/characters/monsters/parasite/parasite_archer_attachment.chr",
+            ),
+            (
+                "Berserker",
+                "objects/characters/monsters/parasite/parasite_berzerker_attachment.chr",
+            ),
+            (
+                "Armor",
+                "objects/characters/monsters/parasite/parasite_armor_attachment.chr",
+            ),
+            (
+                "Wasp",
+                "objects/characters/monsters/parasite/parasite_wasp_attachment.chr",
+            ),
+            (
+                "Egglayer",
+                "objects/characters/monsters/parasite/parasite_egglayer_attachment.chr",
+            ),
+            (
+                "Exploder",
+                "objects/characters/monsters/parasite/parasite_exploder_attachment.chr",
+            ),
+            (
+                "Mine",
+                "objects/characters/monsters/parasite/parasite_mine_attachment.chr",
+            ),
+        ];
+        let mut available = Vec::new();
+        for (label, path) in parasite_candidates {
+            if matches!(resolve_virtual(inventory, path), AssetResolution::Found(_)) {
+                available.push(EquipmentChoice {
+                    label: label.to_owned(),
+                    binding: path.to_owned(),
+                });
+            }
+        }
+        if available.len() >= 2 {
+            for attachment in &cdf.attachments {
+                if attachment
+                    .bone_name
+                    .as_deref()
+                    .is_some_and(|b| b.starts_with("Parasite"))
+                {
+                    result.push(EquipmentSlot {
+                        name: attachment.name.clone(),
+                        original: attachment.binding.clone(),
+                        choices: available.clone(),
+                    });
+                }
+            }
+        }
+    }
     result
 }
 

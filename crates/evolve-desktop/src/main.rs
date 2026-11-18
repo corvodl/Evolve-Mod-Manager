@@ -12696,9 +12696,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .inventory
                 .as_ref()
                 .and_then(|inventory| inventory.entries.get(index))
-                .is_some_and(|entry| entry.relative_path.to_ascii_lowercase().ends_with(".cdf"));
+                .is_some_and(|entry| {
+                    let lower = entry.relative_path.to_ascii_lowercase();
+                    lower.ends_with(".cdf") || lower.ends_with(".chr")
+                });
             if !valid {
-                state.status = "Virtual character entry no longer refers to a valid CDF.".into();
+                state.status =
+                    "Virtual character entry no longer refers to a valid character.".into();
                 return Task::none();
             }
             state.selected = Some(index);
@@ -12725,12 +12729,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let Some(entry) = state.selected.and_then(|i| inventory.entries.get(i)) else {
-                state.status = "Select an actual .cdf character definition.".into();
+                state.status =
+                    "Select an actual .cdf character definition or .chr character.".into();
                 return Task::none();
             };
-            if !entry.relative_path.to_ascii_lowercase().ends_with(".cdf") {
+            let lower_entry = entry.relative_path.to_ascii_lowercase();
+            if !lower_entry.ends_with(".cdf") && !lower_entry.ends_with(".chr") {
                 state.status =
-                    "Static character assembly requires selecting a .cdf definition.".into();
+                    "Static character assembly requires selecting a .cdf or .chr character.".into();
                 return Task::none();
             }
             let source = PathBuf::from(&inventory.root).join(&entry.relative_path);
@@ -12762,7 +12768,37 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.damage_blend_percent = 0;
                 state.damage_blend_enabled = false;
                 state.equipment_source = Some(source.clone());
-                let definition = read_cdf(&source).ok();
+                let definition = if source
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("chr"))
+                {
+                    let virtual_name = entry.relative_path.clone();
+                    let mut def = evolve_core::cdf::CdfDefinition {
+                        schema: 0,
+                        skeleton: virtual_name.clone(),
+                        attachments: vec![evolve_core::cdf::CdfAttachment {
+                            name: "Mesh".into(),
+                            kind: evolve_core::cdf::AttachmentKind::Skin,
+                            binding: virtual_name,
+                            material: None,
+                            position: None,
+                            rotation: None,
+                            bone_name: None,
+                        }],
+                        skin_sets: std::collections::BTreeMap::new(),
+                    };
+                    if evolve_core::is_parasite_host(&def) {
+                        evolve_core::populate_parasite_host_sockets(&mut def);
+                    }
+                    Some(def)
+                } else {
+                    read_cdf(&source).ok().map(|mut def| {
+                        if evolve_core::is_parasite_host(&def) {
+                            evolve_core::populate_parasite_host_sockets(&mut def);
+                        }
+                        def
+                    })
+                };
                 state.equipment_slots = definition
                     .as_ref()
                     .map(|cdf| discover_equipment(cdf, inventory))
@@ -17137,15 +17173,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             && let Some(index) = state.inventory.as_ref().and_then(|inv| {
                                 inv.entries.iter().position(|item| {
                                     item.relative_path.eq_ignore_ascii_case(owner)
-                                        && item.relative_path.to_ascii_lowercase().ends_with(".cdf")
+                                        && (item
+                                            .relative_path
+                                            .to_ascii_lowercase()
+                                            .ends_with(".cdf")
+                                            || item
+                                                .relative_path
+                                                .to_ascii_lowercase()
+                                                .ends_with(".chr"))
                                 })
                             })
                         {
                             state.selected = Some(index);
                             state.file_selection.click(&[index], index, false, false);
-                            state.status = format!(
-                                "Opening exact owning CDF {owner} to preserve skeleton-bound equipment arms"
-                            );
+                            state.status = format!("Opening character assembly {owner}");
                             return update(state, Message::ViewerPreviewStaticCdf);
                         }
                         state.auto_clips = resources.clips;

@@ -117,6 +117,106 @@ pub fn is_original_kala_3p(cdf: &CdfDefinition) -> bool {
         .all(|name| cdf.skin_sets.contains_key(*name))
 }
 
+/// Canonical rigid bone sockets and default attachment bindings for Parasite Host monster.
+pub const PARASITE_HOST_SOCKETS: [(&str, &str, &str); 12] = [
+    // Slot 1 (Cluster 0): Archer Parasites
+    (
+        "Parasite0_0",
+        "Parasite_Archer_0",
+        "objects/characters/monsters/parasite/parasite_archer_attachment.chr",
+    ),
+    (
+        "Parasite0_1",
+        "Parasite_Archer_1",
+        "objects/characters/monsters/parasite/parasite_archer_attachment.chr",
+    ),
+    (
+        "Parasite0_2",
+        "Parasite_Archer_2",
+        "objects/characters/monsters/parasite/parasite_archer_attachment.chr",
+    ),
+    // Slot 2 (Cluster 1): Berserker Parasites
+    (
+        "Parasite1_0",
+        "Parasite_Berzerker_0",
+        "objects/characters/monsters/parasite/parasite_berzerker_attachment.chr",
+    ),
+    (
+        "Parasite1_1",
+        "Parasite_Berzerker_1",
+        "objects/characters/monsters/parasite/parasite_berzerker_attachment.chr",
+    ),
+    (
+        "Parasite1_2",
+        "Parasite_Berzerker_2",
+        "objects/characters/monsters/parasite/parasite_berzerker_attachment.chr",
+    ),
+    // Slot 3 (Cluster 2): Tank / Armor Parasites
+    (
+        "Parasite2_0",
+        "Parasite_Armor_0",
+        "objects/characters/monsters/parasite/parasite_armor_attachment.chr",
+    ),
+    (
+        "Parasite2_1",
+        "Parasite_Armor_1",
+        "objects/characters/monsters/parasite/parasite_armor_attachment.chr",
+    ),
+    (
+        "Parasite2_2",
+        "Parasite_Armor_2",
+        "objects/characters/monsters/parasite/parasite_armor_attachment.chr",
+    ),
+    // Slot 4 (Cluster 3): Wasp Parasites
+    (
+        "Parasite3_0",
+        "Parasite_Wasp_0",
+        "objects/characters/monsters/parasite/parasite_wasp_attachment.chr",
+    ),
+    (
+        "Parasite3_1",
+        "Parasite_Wasp_1",
+        "objects/characters/monsters/parasite/parasite_wasp_attachment.chr",
+    ),
+    (
+        "Parasite3_2",
+        "Parasite_Wasp_2",
+        "objects/characters/monsters/parasite/parasite_wasp_attachment.chr",
+    ),
+];
+
+/// Identifies if a character definition represents the Parasite Host monster.
+pub fn is_parasite_host(cdf: &CdfDefinition) -> bool {
+    let skel = cdf.skeleton.to_ascii_lowercase();
+    skel.contains("parasitehost")
+        || cdf
+            .attachments
+            .iter()
+            .any(|a| a.binding.to_ascii_lowercase().contains("parasitehost"))
+}
+
+/// Automatically populates the 12 default parasite socket attachments on Parasite Host when not authored.
+pub fn populate_parasite_host_sockets(definition: &mut CdfDefinition) {
+    for (bone, name, binding) in PARASITE_HOST_SOCKETS {
+        let already_present = definition.attachments.iter().any(|att| {
+            att.bone_name
+                .as_deref()
+                .is_some_and(|b| b.trim().eq_ignore_ascii_case(bone))
+        });
+        if !already_present {
+            definition.attachments.push(crate::cdf::CdfAttachment {
+                name: name.to_owned(),
+                kind: AttachmentKind::Bone,
+                binding: binding.to_owned(),
+                material: None,
+                position: Some([0.0, 0.0, 0.0]),
+                rotation: Some([1.0, 0.0, 0.0, 0.0]),
+                bone_name: Some(bone.to_owned()),
+            });
+        }
+    }
+}
+
 pub fn select_attachments(
     cdf: &CdfDefinition,
 ) -> Result<(Option<String>, Vec<&str>), AssemblyError> {
@@ -504,7 +604,61 @@ pub fn read_static_cdf_assembly_with_kala_state(
             "CDF file must be a real indexed file inside the selected asset root".into(),
         ));
     }
-    let definition = read_cdf(&cdf_location)?;
+    let mut definition = if cdf_location
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("chr"))
+    {
+        let virtual_path = match cdf_location.strip_prefix(&root) {
+            Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+            Err(_) => cdf_location
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        };
+        CdfDefinition {
+            schema: 0,
+            skeleton: virtual_path.clone(),
+            attachments: vec![crate::cdf::CdfAttachment {
+                name: "Mesh".into(),
+                kind: AttachmentKind::Skin,
+                binding: virtual_path,
+                material: None,
+                position: None,
+                rotation: None,
+                bone_name: None,
+            }],
+            skin_sets: std::collections::BTreeMap::new(),
+        }
+    } else {
+        read_cdf(&cdf_location)?
+    };
+
+    // If an authored CDF provides no attachments (e.g. single-mesh character where <Model File="..."/> is the mesh),
+    // default to mounting the skeleton's render mesh.
+    if definition.attachments.is_empty()
+        || !definition.attachments.iter().any(|a| {
+            matches!(
+                a.kind,
+                AttachmentKind::Skin | AttachmentKind::UniqueSkin | AttachmentKind::Bone
+            )
+        })
+    {
+        definition.attachments.push(crate::cdf::CdfAttachment {
+            name: "Mesh".into(),
+            kind: AttachmentKind::Skin,
+            binding: definition.skeleton.clone(),
+            material: None,
+            position: None,
+            rotation: None,
+            bone_name: None,
+        });
+    }
+
+    if is_parasite_host(&definition) {
+        populate_parasite_host_sockets(&mut definition);
+    }
+
     let overrides = validated_equipment_overrides(&definition, library, requested)
         .map_err(AssemblyError::Incomplete)?;
     let (skin_set, selected) = select_attachments_with_kala_state(&definition, kala_state)?;
@@ -844,6 +998,140 @@ mod tests {
                 .source
                 .ends_with("ParasiteHost3.chr")
         );
+    }
+
+    #[test]
+    fn direct_chr_file_assembles_as_single_mesh_character_assembly() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("characters");
+        let folder = root.join("monsters/Parasite/Parasite_Archer");
+        fs::create_dir_all(&folder).unwrap();
+        let chr = folder.join("Parasite_Archer1.chr");
+        fs::write(&chr, crate::model::tests::fixture()).unwrap();
+        let inventory = crate::scan_directory(&root).unwrap();
+        let (mesh, report) = read_static_cdf_assembly(&chr, &inventory).unwrap();
+        assert_eq!(report.original_parts, ["Mesh"]);
+        assert_eq!(mesh.indices.len(), 3);
+        assert_eq!(report.geometry_parts.len(), 1);
+        assert!(
+            report.geometry_parts[0]
+                .source
+                .ends_with("Parasite_Archer1.chr")
+        );
+    }
+
+    #[test]
+    fn cdf_without_attachments_assembles_skeleton_model_mesh() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("characters");
+        let folder = root.join("monsters/Parasite/Parasite_Bomber");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(
+            folder.join("parasite_bomber1.chr"),
+            crate::model::tests::fixture(),
+        )
+        .unwrap();
+        let cdf = folder.join("parasite_bomber1.cdf");
+        fs::write(
+            &cdf,
+            br#"<CharacterDefinition>
+            <Model File="objects/characters/monsters/parasite/parasite_bomber/parasite_bomber1.chr"/>
+            <AttachmentList/>
+            </CharacterDefinition>"#,
+        )
+        .unwrap();
+        let inventory = crate::scan_directory(&root).unwrap();
+        let (mesh, report) = read_static_cdf_assembly(&cdf, &inventory).unwrap();
+        assert_eq!(report.original_parts, ["Mesh"]);
+        assert_eq!(mesh.indices.len(), 3);
+        assert_eq!(report.geometry_parts.len(), 1);
+    }
+
+    fn parasite_skeleton_fixture() -> Vec<u8> {
+        const RECORD: usize = 584;
+        const BONES_CHUNK: u32 = 0x08002000;
+        let mut bones = vec!["Root"];
+        for (bone, _, _) in PARASITE_HOST_SOCKETS {
+            bones.push(bone);
+        }
+        let count = bones.len() as u32;
+        let chunk_len = 32 + (count as usize) * RECORD;
+        let mut source = vec![0u8; 32];
+        source[..8].copy_from_slice(b"CrChF\x07\0\0");
+        source[8..12].copy_from_slice(&1u32.to_le_bytes()); // 1 chunk
+        source[12..16].copy_from_slice(&16u32.to_le_bytes()); // directory at 16
+        source[16..20].copy_from_slice(&BONES_CHUNK.to_le_bytes());
+        source[20..24].copy_from_slice(&1u32.to_le_bytes()); // version
+        source[24..28].copy_from_slice(&(chunk_len as u32).to_le_bytes()); // chunk length
+        source[28..32].copy_from_slice(&32u32.to_le_bytes()); // chunk offset at 32
+        source.extend_from_slice(&[0u8; 32]); // first 32 bytes of BONES chunk
+        for (i, name) in bones.iter().enumerate() {
+            let mut data = vec![0u8; RECORD];
+            data[..4].copy_from_slice(&((i as u32 + 100).to_le_bytes())); // controller id
+            for base in [216, 264] {
+                for r in 0..3 {
+                    data[base + (r * 4 + r) * 4..base + (r * 4 + r) * 4 + 4]
+                        .copy_from_slice(&1f32.to_le_bytes());
+                }
+            }
+            data[312..312 + name.len()].copy_from_slice(name.as_bytes());
+            if i > 0 {
+                let delta = -(i as i32);
+                data[572..576].copy_from_slice(&(delta as u32).to_le_bytes());
+            }
+            source.extend_from_slice(&data);
+        }
+        source
+    }
+
+    #[test]
+    fn parasite_host_cdf_populates_twelve_parasite_socket_attachments() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("characters");
+        let host_folder = root.join("monsters/ParasiteHost");
+        let parasite_folder = root.join("monsters/parasite");
+        fs::create_dir_all(&host_folder).unwrap();
+        fs::create_dir_all(&parasite_folder).unwrap();
+        fs::write(
+            host_folder.join("ParasiteHost1.chr"),
+            crate::model::tests::fixture(),
+        )
+        .unwrap();
+        fs::write(
+            host_folder.join("parasitehost1_skeleton.chr"),
+            parasite_skeleton_fixture(),
+        )
+        .unwrap();
+        for file in [
+            "parasite_archer_attachment.chr",
+            "parasite_berzerker_attachment.chr",
+            "parasite_armor_attachment.chr",
+            "parasite_wasp_attachment.chr",
+        ] {
+            fs::write(parasite_folder.join(file), crate::model::tests::fixture()).unwrap();
+        }
+        let cdf = host_folder.join("ParasiteHost1.cdf");
+        fs::write(
+            &cdf,
+            br#"<CharacterDefinition>
+            <Model File="objects/characters/monsters/parasitehost/parasitehost1_skeleton.chr"/>
+            <AttachmentList>
+                <Attachment AName="Mesh" Type="CA_SKIN"
+                    Binding="objects/characters/monsters/parasitehost/parasitehost1.chr"/>
+            </AttachmentList>
+            </CharacterDefinition>"#,
+        )
+        .unwrap();
+        let inventory = crate::scan_directory(&root).unwrap();
+        let (mesh, report) = read_static_cdf_assembly(&cdf, &inventory).unwrap();
+        assert_eq!(report.original_parts.len(), 13);
+        assert_eq!(report.original_parts[0], "Mesh");
+        assert_eq!(report.original_parts[1], "Parasite_Archer_0");
+        assert_eq!(report.original_parts[4], "Parasite_Berzerker_0");
+        assert_eq!(report.original_parts[7], "Parasite_Armor_0");
+        assert_eq!(report.original_parts[10], "Parasite_Wasp_0");
+        assert_eq!(report.geometry_parts.len(), 13);
+        assert_eq!(mesh.indices.len(), 13 * 3);
     }
 
     #[test]
