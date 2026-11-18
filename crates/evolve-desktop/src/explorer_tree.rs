@@ -33,7 +33,7 @@ fn add_entries<'a>(
         {
             continue;
         }
-        if path.to_ascii_lowercase().ends_with(".cdf") {
+        if evolve_core::is_character_assembly_path(&path) {
             assemblies.push((index, path.clone()));
         }
         let parts: Vec<&str> = path.split('/').collect();
@@ -76,11 +76,13 @@ fn add_entries<'a>(
             bytes: 0,
         });
         for (index, file) in assemblies {
-            let stem = file
-                .rsplit('/')
-                .next()
-                .unwrap_or("Character")
-                .trim_end_matches(".cdf")
+            let filename = file.rsplit('/').next().unwrap_or("Character");
+            let stem = filename
+                .strip_suffix(".cdf")
+                .or_else(|| filename.strip_suffix(".CDF"))
+                .or_else(|| filename.strip_suffix(".chr"))
+                .or_else(|| filename.strip_suffix(".CHR"))
+                .unwrap_or(filename)
                 .replace('_', " ");
             nodes.entry(group.clone()).or_default().push(ExplorerRow {
                 path: format!("{group}/{file}"),
@@ -229,6 +231,42 @@ mod tests {
                 .iter()
                 .any(|row| row.path.starts_with("@assemblies/"))
         );
+    }
+
+    #[test]
+    fn virtual_assemblies_include_chr_characters_and_exclude_skeletons_and_lods() {
+        let entries = vec![
+            (
+                0,
+                "objects/characters/monsters/parasite/Parasite_Archer/Parasite_Archer1.chr",
+                500,
+            ),
+            (
+                1,
+                "objects/characters/monsters/parasite/parasite_archer_attachment_LOD1.chr",
+                200,
+            ),
+            (
+                2,
+                "objects/characters/monsters/parasitehost/parasitehost1_skeleton.chr",
+                100,
+            ),
+            (
+                3,
+                "objects/characters/monsters/parasite/parasite_archer_attachment.chr",
+                400,
+            ),
+        ];
+        let rows = visible_rows(entries, "", &HashSet::new(), 100);
+        let assembly_rows: Vec<_> = rows
+            .iter()
+            .filter(|row| row.path.starts_with("@assemblies/"))
+            .collect();
+        assert_eq!(assembly_rows.len(), 2);
+        assert!(assembly_rows.iter().any(|r| r.index == Some(0)));
+        assert!(assembly_rows.iter().any(|r| r.index == Some(3)));
+        assert!(!assembly_rows.iter().any(|r| r.index == Some(1)));
+        assert!(!assembly_rows.iter().any(|r| r.index == Some(2)));
     }
 
     #[test]

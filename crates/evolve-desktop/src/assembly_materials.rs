@@ -251,6 +251,10 @@ fn legacy_owner_material(
         .unwrap_or(binding)
         .rsplit_once('.')
         .map_or(binding, |(stem, _)| stem);
+    let stem = stem
+        .strip_suffix("_attachment")
+        .or_else(|| stem.strip_suffix("_attach"))
+        .unwrap_or(stem);
     // 2012 source folders often have a build suffix (Goliath_2,
     // Scorpid_2), while authored render parts use a character/skin suffix
     // (Goliath3_Rig.chr). Compare the original character-family prefix,
@@ -378,6 +382,19 @@ pub(crate) fn material_for_part(
         .map_or(binding, |(name, _)| name);
     let mut bases = vec![stem.to_owned()];
     let lower = stem.to_ascii_lowercase();
+    if let Some(stripped) = lower
+        .strip_suffix("_attachment")
+        .or_else(|| lower.strip_suffix("_attach"))
+    {
+        bases.push(stripped.to_owned());
+        let trimmed_stripped = stripped.trim_end_matches(|c: char| c.is_ascii_digit());
+        if !trimmed_stripped.is_empty()
+            && trimmed_stripped != stripped
+            && trimmed_stripped.len() >= 3
+        {
+            bases.push(trimmed_stripped.to_owned());
+        }
+    }
     if let Some(at) = lower.rfind("_lod")
         && lower[at + 4..].bytes().all(|c| c.is_ascii_digit())
     {

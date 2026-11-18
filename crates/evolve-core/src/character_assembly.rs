@@ -117,71 +117,83 @@ pub fn is_original_kala_3p(cdf: &CdfDefinition) -> bool {
         .all(|name| cdf.skin_sets.contains_key(*name))
 }
 
-/// Canonical rigid bone sockets and default attachment bindings for Parasite Host monster.
-pub const PARASITE_HOST_SOCKETS: [(&str, &str, &str); 12] = [
+/// Canonical rigid bone sockets, default attachment bindings, and authored materials for Parasite Host monster.
+pub const PARASITE_HOST_SOCKETS: [(&str, &str, &str, &str); 12] = [
     // Slot 1 (Cluster 0): Archer Parasites
     (
         "Parasite0_0",
         "Parasite_Archer_0",
         "objects/characters/monsters/parasite/parasite_archer_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Archer.mtl",
     ),
     (
         "Parasite0_1",
         "Parasite_Archer_1",
         "objects/characters/monsters/parasite/parasite_archer_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Archer.mtl",
     ),
     (
         "Parasite0_2",
         "Parasite_Archer_2",
         "objects/characters/monsters/parasite/parasite_archer_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Archer.mtl",
     ),
     // Slot 2 (Cluster 1): Berserker Parasites
     (
         "Parasite1_0",
         "Parasite_Berzerker_0",
         "objects/characters/monsters/parasite/parasite_berzerker_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Berzerker.mtl",
     ),
     (
         "Parasite1_1",
         "Parasite_Berzerker_1",
         "objects/characters/monsters/parasite/parasite_berzerker_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Berzerker.mtl",
     ),
     (
         "Parasite1_2",
         "Parasite_Berzerker_2",
         "objects/characters/monsters/parasite/parasite_berzerker_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Berzerker.mtl",
     ),
     // Slot 3 (Cluster 2): Tank / Armor Parasites
     (
         "Parasite2_0",
         "Parasite_Armor_0",
         "objects/characters/monsters/parasite/parasite_armor_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Armor.mtl",
     ),
     (
         "Parasite2_1",
         "Parasite_Armor_1",
         "objects/characters/monsters/parasite/parasite_armor_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Armor.mtl",
     ),
     (
         "Parasite2_2",
         "Parasite_Armor_2",
         "objects/characters/monsters/parasite/parasite_armor_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Armor.mtl",
     ),
     // Slot 4 (Cluster 3): Wasp Parasites
     (
         "Parasite3_0",
         "Parasite_Wasp_0",
         "objects/characters/monsters/parasite/parasite_wasp_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Wasp.mtl",
     ),
     (
         "Parasite3_1",
         "Parasite_Wasp_1",
         "objects/characters/monsters/parasite/parasite_wasp_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Wasp.mtl",
     ),
     (
         "Parasite3_2",
         "Parasite_Wasp_2",
         "objects/characters/monsters/parasite/parasite_wasp_attachment.chr",
+        "objects/characters/monsters/parasite/Parasite_Wasp.mtl",
     ),
 ];
 
@@ -197,7 +209,7 @@ pub fn is_parasite_host(cdf: &CdfDefinition) -> bool {
 
 /// Automatically populates the 12 default parasite socket attachments on Parasite Host when not authored.
 pub fn populate_parasite_host_sockets(definition: &mut CdfDefinition) {
-    for (bone, name, binding) in PARASITE_HOST_SOCKETS {
+    for (bone, name, binding, material) in PARASITE_HOST_SOCKETS {
         let already_present = definition.attachments.iter().any(|att| {
             att.bone_name
                 .as_deref()
@@ -208,13 +220,32 @@ pub fn populate_parasite_host_sockets(definition: &mut CdfDefinition) {
                 name: name.to_owned(),
                 kind: AttachmentKind::Bone,
                 binding: binding.to_owned(),
-                material: None,
+                material: Some(material.to_owned()),
                 position: Some([0.0, 0.0, 0.0]),
                 rotation: Some([1.0, 0.0, 0.0, 0.0]),
                 bone_name: Some(bone.to_owned()),
             });
         }
     }
+}
+
+/// Returns true if a path refers to a character assembly (.cdf, or .chr character that is not a skeleton or LOD).
+pub fn is_character_assembly_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".cdf") {
+        return true;
+    }
+    if lower.ends_with(".chr") {
+        if lower.ends_with("_skeleton.chr")
+            || lower.ends_with("skeleton.chr")
+            || lower.contains("_skel")
+            || lower.contains("_lod")
+        {
+            return false;
+        }
+        return true;
+    }
+    false
 }
 
 pub fn select_attachments(
@@ -1051,7 +1082,7 @@ mod tests {
         const RECORD: usize = 584;
         const BONES_CHUNK: u32 = 0x08002000;
         let mut bones = vec!["Root"];
-        for (bone, _, _) in PARASITE_HOST_SOCKETS {
+        for (bone, _, _, _) in PARASITE_HOST_SOCKETS {
             bones.push(bone);
         }
         let count = bones.len() as u32;
@@ -1130,8 +1161,48 @@ mod tests {
         assert_eq!(report.original_parts[4], "Parasite_Berzerker_0");
         assert_eq!(report.original_parts[7], "Parasite_Armor_0");
         assert_eq!(report.original_parts[10], "Parasite_Wasp_0");
+        assert_eq!(
+            report.source_parts[1].material_hint.as_deref(),
+            Some("objects/characters/monsters/parasite/Parasite_Archer.mtl")
+        );
+        assert_eq!(
+            report.source_parts[4].material_hint.as_deref(),
+            Some("objects/characters/monsters/parasite/Parasite_Berzerker.mtl")
+        );
+        assert_eq!(
+            report.source_parts[7].material_hint.as_deref(),
+            Some("objects/characters/monsters/parasite/Parasite_Armor.mtl")
+        );
+        assert_eq!(
+            report.source_parts[10].material_hint.as_deref(),
+            Some("objects/characters/monsters/parasite/Parasite_Wasp.mtl")
+        );
         assert_eq!(report.geometry_parts.len(), 13);
         assert_eq!(mesh.indices.len(), 13 * 3);
+    }
+
+    #[test]
+    fn character_assembly_path_identification() {
+        assert!(is_character_assembly_path(
+            "objects/characters/monsters/parasitehost/ParasiteHost1.cdf"
+        ));
+        assert!(is_character_assembly_path(
+            "objects/characters/monsters/parasite/Parasite_Archer/Parasite_Archer1.chr"
+        ));
+        assert!(is_character_assembly_path(
+            "objects/characters/monsters/parasite/parasite_archer_attachment.chr"
+        ));
+        assert!(is_character_assembly_path(
+            "objects/characters/monsters/parasite/Parasite_Bomber.chr"
+        ));
+        assert!(!is_character_assembly_path(
+            "objects/characters/monsters/parasitehost/parasitehost1_skeleton.chr"
+        ));
+        assert!(!is_character_assembly_path(
+            "objects/characters/monsters/parasite/parasite_archer_attachment_LOD1.chr"
+        ));
+        assert!(!is_character_assembly_path("objects/props/chair.cgf"));
+        assert!(!is_character_assembly_path("textures/monster.dds"));
     }
 
     #[test]
