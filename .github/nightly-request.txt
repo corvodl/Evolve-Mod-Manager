@@ -1,4 +1,4 @@
-Nightly requested 2026-11-17 after merging PR #235.
-request: user-requested-merge-build-public-nightly-2026-11-17-pr235
-base-main-commit: 548dc96d
-description: Build and publish a fresh Windows Nightly from merged private EMM-SRC main including PR #235 (Fix rock coloring and magma vein emission; fix rock placement between palms and throw release timing at 2.69s; implement procedural VFX for Fire Breath plume, Leap Attack Smash ground shockwave ring and upward flame bursts; add persistent ambient body flames to Meteor Goliath across all animations; fix ability audio triggers and eliminate PowerShell window flashes with direct Win32 PlaySoundW). Preserve release authorization, requireAdministrator manifest verification, official Stage 2 runtime packaging and licensing safeguards. Publish only compiled installer and portable ZIP to public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease; do not publish private source.
+Nightly requested 2026-11-18 after merging PR #240 and PR #241.
+request: user-requested-merge-build-public-nightly-2026-11-18-pr240-pr241
+base-main-commit: 1e112cb4
+description: Build and publish a fresh Windows Nightly from merged private EMM-SRC main including PR #240 (Move Level Editor logic into evolve-core; add headless level CLI) and PR #241 (Support standalone character assemblies for parasites and populate Parasite Host socket mounts). Preserve release authorization, requireAdministrator manifest verification, official Stage 2 runtime packaging and licensing safeguards. Publish only compiled installer and portable ZIP to public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease; do not publish private source.
