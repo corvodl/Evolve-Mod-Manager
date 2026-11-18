@@ -203,7 +203,7 @@ fn declaring_local_cdf(
             .strip_suffix(compiled)
             .map(|base| format!("{base}{authored}"))
     })
-    .unwrap_or(lower);
+    .unwrap_or_else(|| lower.clone());
     let cdfs = inv
         .entries
         .iter()
@@ -248,6 +248,30 @@ fn declaring_local_cdf(
             ));
         }
         owner = Some((entry.relative_path.clone(), cdf));
+    }
+    if owner.is_none() && (lower.ends_with(".chr") || lower.ends_with(".chrm")) {
+        let chr_path = if lower.ends_with(".chrm") {
+            binding.clone()
+        } else {
+            relative.to_owned()
+        };
+        owner = Some((
+            chr_path.clone(),
+            evolve_core::cdf::CdfDefinition {
+                schema: 0,
+                skeleton: chr_path.clone(),
+                attachments: vec![evolve_core::cdf::CdfAttachment {
+                    name: "Mesh".into(),
+                    kind: evolve_core::cdf::AttachmentKind::Skin,
+                    binding: chr_path,
+                    material: None,
+                    position: None,
+                    rotation: None,
+                    bone_name: None,
+                }],
+                skin_sets: std::collections::BTreeMap::new(),
+            },
+        ));
     }
     Ok(owner)
 }
@@ -607,7 +631,26 @@ pub fn discover(
                 found.event_database = None;
                 continue;
             }
-            match exact(inv, &r.path, imported, build) {
+            let event_path = match exact(inv, &r.path, imported, build) {
+                Ok(Some(path)) => Ok(Some(path)),
+                Ok(None) => {
+                    let cleaned = r
+                        .path
+                        .replace("\\Stage1\\", "\\")
+                        .replace("/Stage1/", "/")
+                        .replace("\\Stage2\\", "\\")
+                        .replace("/Stage2/", "/")
+                        .replace("\\Stage3\\", "\\")
+                        .replace("/Stage3/", "/");
+                    if cleaned != r.path {
+                        exact(inv, &cleaned, imported, build)
+                    } else {
+                        Ok(None)
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            match event_path {
                 Ok(Some(path)) => match read_animation_events(path) {
                     Ok(events) => {
                         if let Some(diagnostic) = events.diagnostics().first() {

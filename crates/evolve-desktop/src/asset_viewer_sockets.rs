@@ -88,8 +88,11 @@ pub(crate) struct AuthoredSocketTransform {
 /// Authored socket attachments of an inspected CDF, regardless of whether the
 /// preview is currently assembled. Real CDF data only; never synthesized.
 pub(crate) fn authored_sockets(definition: &CdfDefinition) -> Vec<AuthoredSocketTransform> {
-    definition
-        .attachments
+    let mut def = definition.clone();
+    if evolve_core::is_parasite_host(&def) {
+        evolve_core::populate_parasite_host_sockets(&mut def);
+    }
+    def.attachments
         .iter()
         .filter(|attachment| attachment.kind == AttachmentKind::Bone)
         .filter_map(|attachment| {
@@ -119,7 +122,11 @@ pub(crate) fn definition_matches_report(
     definition: &CdfDefinition,
     report: &AssemblyReport,
 ) -> bool {
-    if !definition
+    let mut def = definition.clone();
+    if evolve_core::is_parasite_host(&def) {
+        evolve_core::populate_parasite_host_sockets(&mut def);
+    }
+    if !def
         .skeleton
         .trim()
         .eq_ignore_ascii_case(report.cdf_skeleton.trim())
@@ -137,7 +144,7 @@ pub(crate) fn definition_matches_report(
             continue;
         };
         saw_socket = true;
-        let mapped = definition.attachments.iter().any(|attachment| {
+        let mapped = def.attachments.iter().any(|attachment| {
             if attachment.kind != AttachmentKind::Bone
                 || !attachment.name.eq_ignore_ascii_case(&part.name)
                 || !attachment
