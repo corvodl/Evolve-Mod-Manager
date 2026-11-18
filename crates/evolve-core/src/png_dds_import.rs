@@ -1,7 +1,7 @@
 //! Bounded PNG -> DDS replacement encoder for editable Modding workspaces.
 //! Keep the original DDS header, dimensions, mip count and GPU format.
 //! Unsupported/split textures fail without changing the managed asset.
-use evolve_core::{DdsFormat, inspect_dds};
+use crate::{DdsFormat, inspect_dds};
 use image::{RgbaImage, imageops::FilterType};
 use std::fs;
 use std::io::Write;
@@ -230,7 +230,7 @@ fn encode_mip(image: &RgbaImage, format: DdsFormat, header: &[u8]) -> Result<Vec
 /// Convert an external PNG into exactly the selected original DDS's format,
 /// dimensions, mip count and header, only for complete linear 2D DDS files.
 /// The temp output is consumed by the existing manifest/backup transaction.
-pub(super) fn convert(png: &Path, target_dds: &Path, output: &Path) -> Result<(), String> {
+pub fn convert(png: &Path, target_dds: &Path, output: &Path) -> Result<(), String> {
     if !png
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
@@ -307,11 +307,11 @@ pub(super) fn convert(png: &Path, target_dds: &Path, output: &Path) -> Result<()
 /// Original Rust-only texture compilation for user-created mod assets. No
 /// Crytek SDK executable, DLL, license or file is required at runtime.
 /// Produces a conventional PC DDS (BC1, BC3 or BC5), never writes game sources.
-pub(super) fn compile_standalone(
+pub fn compile_standalone(
     png: &Path,
     output: &Path,
     format: DdsFormat,
-) -> Result<evolve_core::DdsInfo, String> {
+) -> Result<crate::DdsInfo, String> {
     let (fourcc, bytes_per_block): (&[u8; 4], usize) = match format {
         DdsFormat::Bc1 => (b"DXT1", 8),
         DdsFormat::Bc3 => (b"DXT5", 16),
@@ -527,7 +527,7 @@ mod tests {
             assert_eq!(fs::metadata(&output).unwrap().len(), header.len() as u64);
             assert_eq!(&fs::read(&output).unwrap()[..128], &header[..128]);
             assert_eq!(fs::read(&original).unwrap(), header);
-            let (_, decoded) = evolve_core::decode_dds_rgba(&output).unwrap();
+            let (_, decoded) = crate::decode_dds_rgba(&output).unwrap();
             let red = decoded.get_pixel(0, 0)[0];
             assert!(red >= 170, "Red channel should survive lossy BC encoding");
         }

@@ -157,17 +157,6 @@ pub(super) fn preview_project(project: ProjectRow, name: &str, library: &Path) -
     })
 }
 
-/// Most imported map archives are Levels_*.pak. Other imports can be opened
-/// explicitly using the Asset Library's Open in Level Editor action.
-pub(super) fn likely_level_pak(pak: &ImportedPak) -> bool {
-    let name = pak.name.to_ascii_lowercase();
-    pak.group.eq_ignore_ascii_case("Levels")
-        || name.starts_with("map_")
-        || name.starts_with("maps_")
-        || name.contains("_level")
-        || name.contains("_map")
-}
-
 /// Map-owned PAKs store paths relative to the source folder, while extracted
 /// all-map archives often contain <Map>/Layers/... and <Map>/LevelData/...
 /// Never interpret a layer subfolder (lighting, geometry, audio) as a map.
@@ -3102,10 +3091,10 @@ mod tests {
             let id = (0u8..127)
                 .find(|id| {
                     *id != current
-                        && crate::level_authoring::check_compiled_surface_type(&path, *id).is_ok()
+                        && crate::level_validation::check_compiled_surface_type(&path, *id).is_ok()
                 })
                 .expect("a second surface type");
-            assert!(crate::level_authoring::check_compiled_surface_type(&path, 126).is_err());
+            assert!(crate::level_validation::check_compiled_surface_type(&path, 126).is_err());
             let original = fs::read(&path).unwrap();
             let edited = evolve_core::edit_compiled_terrain_bytes(
                 &original,
@@ -3990,10 +3979,10 @@ mod tests {
             warnings: 0,
             builds: vec![],
         };
-        assert!(!likely_level_pak(&pak));
+        assert!(!crate::level_archive::likely_level_pak(&pak));
         pak.name = "Levels_Island.pak".into();
         pak.group = "Levels".into();
-        assert!(likely_level_pak(&pak));
+        assert!(crate::level_archive::likely_level_pak(&pak));
     }
 
     #[test]

@@ -5,11 +5,11 @@
 mod png_dds_import;
 
 /// Built into public builds: original Rust conversion, no private SDK dependency.
-pub(crate) fn compile_standalone_dds(
+pub fn compile_standalone_dds(
     png: &Path,
     output: &Path,
-    format: evolve_core::DdsFormat,
-) -> Result<evolve_core::DdsInfo, String> {
+    format: crate::DdsFormat,
+) -> Result<crate::DdsInfo, String> {
     png_dds_import::compile_standalone(png, output, format)
 }
 
@@ -91,8 +91,7 @@ fn serialize_project_xml(
     if !format!("{:x}", Sha256::digest(original)).eq_ignore_ascii_case(expected) {
         return Err("Original binary XML differs from the project manifest".into());
     }
-    evolve_core::cryxml::encode_edited_xml(original, edited, MAX_XML_BYTES)
-        .map_err(|e| e.to_string())
+    crate::cryxml::encode_edited_xml(original, edited, MAX_XML_BYTES).map_err(|e| e.to_string())
 }
 
 #[derive(Clone, Debug)]
@@ -162,7 +161,7 @@ fn additions(manifest: &Value, originals: &[Value]) -> Result<Vec<String>, Strin
     for value in items {
         let path = value.as_str().ok_or("Added member name is not text")?;
         if !safe_member(path)
-            || !evolve_core::archive::safe_member_name(path).is_ok_and(|safe| safe == path)
+            || !crate::archive::safe_member_name(path).is_ok_and(|safe| safe == path)
             || existing.contains(&path.to_ascii_lowercase())
             || !seen.insert(path.to_ascii_lowercase())
         {
@@ -187,7 +186,7 @@ pub fn register_added_member(
     if !folder.starts_with(&root)
         || folder == root
         || !safe_member(member)
-        || !evolve_core::archive::safe_member_name(member).is_ok_and(|safe| safe == member)
+        || !crate::archive::safe_member_name(member).is_ok_and(|safe| safe == member)
     {
         return Err("Choose a safe relative member path in the selected project".into());
     }
@@ -682,21 +681,21 @@ pub fn discover_projects(root: &Path, stage: &Path) -> Result<Vec<ProjectRow>, S
 /// or a signing stage. Work from the immutable, verified Asset Library
 /// extraction into a new private project; launchability is checked later.
 pub fn edit_imported_snapshot(
-    pak: &evolve_core::ImportedPak,
+    pak: &crate::ImportedPak,
     projects: &Path,
 ) -> Result<(PathBuf, usize), String> {
     edit_imported_snapshot_with_progress(pak, projects, None)
 }
 
 pub fn edit_imported_snapshot_with_progress(
-    pak: &evolve_core::ImportedPak,
+    pak: &crate::ImportedPak,
     projects: &Path,
     progress: Option<&ProjectCopyProgress>,
 ) -> Result<(PathBuf, usize), String> {
     if let Some(progress) = progress {
         progress.phase.store(0, Ordering::Relaxed);
     }
-    let inventory = evolve_core::imported_archive_files(pak).map_err(|e| e.to_string())?;
+    let inventory = crate::imported_archive_files(pak).map_err(|e| e.to_string())?;
     if !projects.is_absolute() {
         return Err("Configure an absolute Projects directory before editing".into());
     }
@@ -886,7 +885,7 @@ pub fn unpack_raw_project_with_signed_name(
     .map_err(|e| e.to_string())?;
     // The core's signed extractor uses an atomic temporary directory. It
     // refuses to merge results with pre-existing assets or follow bad paths.
-    let info = evolve_core::extract_signed_pak(source, &public, signed_name, &output.join("files"))
+    let info = crate::extract_signed_pak(source, &public, signed_name, &output.join("files"))
         .map_err(|e| e.to_string())?;
     if info.entries.len() > 60_000 {
         return Err("Project exceeds supported manifest entry limit".into());
@@ -910,10 +909,10 @@ pub fn unpack_raw_project_with_signed_name(
                 return Err("Binary XML exceeds the editable document limit".into());
             }
             let binary = fs::read(&asset).map_err(|e| e.to_string())?;
-            let text = evolve_core::cryxml::xml_bytes(&binary, MAX_XML_BYTES)
-                .map_err(|e| e.to_string())?;
+            let text =
+                crate::cryxml::xml_bytes(&binary, MAX_XML_BYTES).map_err(|e| e.to_string())?;
             // Establish representability before replacing the extracted copy.
-            evolve_core::cryxml::encode_edited_xml(&binary, &text, MAX_XML_BYTES)
+            crate::cryxml::encode_edited_xml(&binary, &text, MAX_XML_BYTES)
                 .map_err(|e| e.to_string())?;
             let backup = output
                 .join("EditorBackups/extracted-original")
@@ -1000,7 +999,7 @@ fn build_imported_snapshot(
     let mut authenticated = None;
     for name in signed_names {
         for key in &originals.paths {
-            if evolve_core::inspect_signed_pak(&source, key, name).is_ok() {
+            if crate::inspect_signed_pak(&source, key, name).is_ok() {
                 authenticated = Some((key.clone(), name.to_owned()));
                 break;
             }
@@ -1012,7 +1011,7 @@ fn build_imported_snapshot(
     let (original_key, signed_name) = authenticated.ok_or(
         "This source PAK cannot be authenticated for signing. The editor is still available; select the correct game installation or rebuild its signing setup."
     )?;
-    let index = evolve_core::open_verified_signed_pak(&source, &original_key, &signed_name)
+    let index = crate::open_verified_signed_pak(&source, &original_key, &signed_name)
         .map_err(|e| e.to_string())?;
     let source_files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
     let serialized = tempfile::Builder::new()
@@ -1058,7 +1057,7 @@ fn build_imported_snapshot(
             let prior = index
                 .read_member(&source, rel, MAX_XML_BYTES as u64)
                 .map_err(|e| e.to_string())?;
-            let encoded = evolve_core::cryxml::encode_edited_xml(
+            let encoded = crate::cryxml::encode_edited_xml(
                 &prior,
                 &fs::read(&file).map_err(|e| e.to_string())?,
                 MAX_XML_BYTES,
@@ -1096,7 +1095,7 @@ fn build_imported_snapshot(
         super::modding_keys::signing_keys(stage)
             .map_err(|_| "Registered additions require locally configured signing keys; the official encoder currently supports replacements only".to_owned())
             .and_then(|signer| {
-                evolve_core::signed_pak::rebuild_signed_pak_with_additions(
+                crate::signed_pak::rebuild_signed_pak_with_additions(
                     &source, &original_key, &signer.private, &signer.public,
                     &signed_name, &replacements, &signed_path,
                 ).map(|report| report.len()).map_err(|e| e.to_string())
@@ -1115,7 +1114,7 @@ fn build_imported_snapshot(
             .map(|()| replacements.len())
     } else {
         let signer = signer.ok_or("Signing stage has no private key")?;
-        evolve_core::rebuild_signed_pak_entries(
+        crate::rebuild_signed_pak_entries(
             &source,
             &original_key,
             &signer.private,
@@ -1273,7 +1272,7 @@ pub fn build_project_raw(
         return Err("Archive signed basename is not an authenticated filename variant".into());
     }
     let source_files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
-    let original_index = evolve_core::open_verified_signed_pak(&original, &public, signed_name)
+    let original_index = crate::open_verified_signed_pak(&original, &public, signed_name)
         .map_err(|e| e.to_string())?;
     for rel in &added {
         if original_index
@@ -1371,7 +1370,7 @@ pub fn build_project_raw(
     fs::create_dir_all(&output_folder).map_err(|e| e.to_string())?;
     let output = output_folder.join(&basename);
     if official.is_some() && added.is_empty() && output.exists() {
-        evolve_core::inspect_signed_pak(&output, &public, signed_name)
+        crate::inspect_signed_pak(&output, &public, signed_name)
             .map_err(|e| format!("Official PAK cache is not authenticated: {e}"))?;
         return Ok((
             format!("{} modified member(s) · cached", replacements.len()),
@@ -1388,7 +1387,7 @@ pub fn build_project_raw(
         super::modding_keys::signing_keys(stage)
             .map_err(|_| "Registered additions require locally configured signing keys; the official encoder currently supports replacements only".to_owned())
             .and_then(|keys| {
-                evolve_core::signed_pak::rebuild_signed_pak_with_additions(
+                crate::signed_pak::rebuild_signed_pak_with_additions(
                     &original, &keys.public, &keys.private, &keys.public,
                     signed_name, &replacements, &signed_output,
                 ).map(|report| report.len()).map_err(|e| e.to_string())
@@ -1399,7 +1398,7 @@ pub fn build_project_raw(
             .map(|()| replacements.len())
     } else {
         let keys = super::modding_keys::signing_keys(stage)?;
-        evolve_core::rebuild_signed_pak_entries(
+        crate::rebuild_signed_pak_entries(
             &original,
             &keys.public,
             &keys.private,
@@ -1507,7 +1506,7 @@ pub fn suggested_pak_export_name(
 
 /// Validate a user-friendly addon name independently of the original signed
 /// source PAK's basename. Keep the resulting archive name deterministic.
-pub(crate) fn sparse_pak_filename(input: &str) -> Result<String, String> {
+pub fn sparse_pak_filename(input: &str) -> Result<String, String> {
     let input = input.trim();
     let stem = input
         .strip_suffix(".pak")
@@ -1588,7 +1587,7 @@ pub fn export_project_pak(
     } else {
         super::modding_keys::public_key(stage)?
     };
-    let index = evolve_core::open_verified_signed_pak(&signed_full, &public, signed_name)
+    let index = crate::open_verified_signed_pak(&signed_full, &public, signed_name)
         .map_err(|e| format!("Built source signature verification failed: {e}"))?;
     if mode.changed_only() {
         official
@@ -1608,7 +1607,7 @@ pub fn export_project_pak(
         let mut input = File::open(&signed_full).map_err(|e| e.to_string())?;
         std::io::copy(&mut input, temporary.as_file_mut())
             .map_err(|e| format!("Cannot copy complete PAK: {e}"))?;
-        evolve_core::inspect_signed_pak(temporary.path(), &public, signed_name)
+        crate::inspect_signed_pak(temporary.path(), &public, signed_name)
             .map_err(|e| format!("Copied PAK signature verification failed: {e}"))?;
         if digest(&signed_full).map_err(|e| e.to_string())?
             != digest(temporary.path()).map_err(|e| e.to_string())?
@@ -1723,7 +1722,7 @@ pub fn provision_selected_original(project: &ProjectRow, stage: &Path) -> Result
 /// Resolve an exact installed-game target for an offline test. This does
 /// NOT require an old source checksum to match a game update, but never
 /// guesses a destination by basename or searches outside the selected game.
-pub(super) fn offline_test_target(project: &ProjectRow, stage: &Path) -> Result<String, String> {
+pub fn offline_test_target(project: &ProjectRow, stage: &Path) -> Result<String, String> {
     let manifest = read_json(
         &project.workspace.join(".evolve-pak-workspace.json"),
         8 * 1024 * 1024,
@@ -1801,8 +1800,8 @@ pub fn prepare_built_offline_test(
     // Verify the exact built archive and stage target before persisting
     // anything. Signed member inventory differences are permitted offline.
     let lowercase = basename.to_ascii_lowercase();
-    evolve_core::inspect_signed_pak(output, &public, &basename)
-        .or_else(|_| evolve_core::inspect_signed_pak(output, &public, &lowercase))
+    crate::inspect_signed_pak(output, &public, &basename)
+        .or_else(|_| crate::inspect_signed_pak(output, &public, &lowercase))
         .map_err(|e| format!("Built offline PAK signature could not be verified: {e}"))?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1814,10 +1813,10 @@ pub fn prepare_built_offline_test(
         .take(24)
         .collect::<String>();
     let name = format!("Offline Test {display} {:x}", stamp);
-    let profile = evolve_core::create_mod_profile(stage, &name)
+    let profile = crate::create_mod_profile(stage, &name)
         .map_err(|e| format!("Cannot create offline test profile: {e}"))?;
     let staged = (|| -> Result<(), String> {
-        evolve_core::add_mod_to_profile(
+        crate::add_mod_to_profile(
             stage,
             &profile.id,
             output,
@@ -1827,12 +1826,12 @@ pub fn prepare_built_offline_test(
             &basename,
         )
         .map_err(|e| e.to_string())?;
-        evolve_core::apply_profile_stage(stage, &profile.id, &original_public, &public)
+        crate::apply_profile_stage(stage, &profile.id, &original_public, &public)
             .map_err(|e| e.to_string())?;
         Ok(())
     })();
     if let Err(error) = staged {
-        let _ = evolve_core::profiles::delete_mod_profile(stage, &profile.id);
+        let _ = crate::profiles::delete_mod_profile(stage, &profile.id);
         return Err(format!(
             "Offline test was not prepared: {error}. Restore any pending stage transaction before retrying."
         ));
@@ -1997,7 +1996,7 @@ fn import_raw_member_checked(
         if !regular(replacement_source, MAX_XML_BYTES as u64) {
             return Err("Edited XML exceeds document limit".into());
         }
-        evolve_core::cryxml::encode_xml(
+        crate::cryxml::encode_xml(
             &fs::read(replacement_source).map_err(|e| e.to_string())?,
             MAX_XML_BYTES,
         )
@@ -2261,9 +2260,9 @@ pub fn guided_members(project: &ProjectRow, models: bool) -> Result<Vec<String>,
             return Err("Unsafe member path".into());
         }
         if if models {
-            evolve_core::mod_safety::model_document(p)
+            crate::mod_safety::model_document(p)
         } else {
-            evolve_core::mod_safety::gameplay_document(p)
+            crate::mod_safety::gameplay_document(p)
         } {
             paths.push(p.to_owned());
         }
@@ -2278,7 +2277,7 @@ pub fn read_gameplay_document(project: &ProjectRow, member: &str) -> Result<Vec<
     }
     let files = fs::canonicalize(project.workspace.join("files")).map_err(|e| e.to_string())?;
     let path = project.workspace.join("files").join(member);
-    if !regular(&path, evolve_core::gameplay_values::LIMIT as u64)
+    if !regular(&path, crate::gameplay_values::LIMIT as u64)
         || !fs::canonicalize(&path)
             .map_err(|e| e.to_string())?
             .starts_with(&files)
@@ -2295,7 +2294,7 @@ pub fn save_gameplay_document(
     projects_root: &Path,
     member: &str,
     snapshot: &[u8],
-    fields: &[evolve_core::gameplay_values::ValueField],
+    fields: &[crate::gameplay_values::ValueField],
 ) -> Result<bool, String> {
     use std::io::Write;
     if read_gameplay_document(project, member)? != snapshot {
@@ -2303,7 +2302,7 @@ pub fn save_gameplay_document(
             "File changed since opening. Reopen it before saving; no changes were written.".into(),
         );
     }
-    let bytes = evolve_core::gameplay_values::apply(snapshot, fields)?;
+    let bytes = crate::gameplay_values::apply(snapshot, fields)?;
     let mut replacement = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
     replacement.write_all(&bytes).map_err(|e| e.to_string())?;
     replacement.flush().map_err(|e| e.to_string())?;
@@ -2319,27 +2318,27 @@ pub fn save_gameplay_document(
 /// Read only the bounded imported manifest for guided navigation; creation still
 /// goes through the full original-file and signing-stage verification path.
 pub fn guided_import_members(
-    archive: &evolve_core::library_catalog::ImportedPak,
+    archive: &crate::library_catalog::ImportedPak,
     models: bool,
 ) -> Result<Vec<String>, String> {
     imported_members(archive, |path| {
         if models {
-            evolve_core::mod_safety::model_document(path)
+            crate::mod_safety::model_document(path)
         } else {
-            evolve_core::mod_safety::gameplay_document(path)
+            crate::mod_safety::gameplay_document(path)
         }
     })
 }
 
 /// Compiled actor and creature scripts: read-only sources, never edit targets.
 pub fn imported_actor_scripts(
-    archive: &evolve_core::library_catalog::ImportedPak,
+    archive: &crate::library_catalog::ImportedPak,
 ) -> Result<Vec<String>, String> {
-    imported_members(archive, evolve_core::character_gameplay::actor_script)
+    imported_members(archive, crate::character_gameplay::actor_script)
 }
 
 fn imported_members(
-    archive: &evolve_core::library_catalog::ImportedPak,
+    archive: &crate::library_catalog::ImportedPak,
     keep: impl Fn(&str) -> bool,
 ) -> Result<Vec<String>, String> {
     let manifest = read_json(
@@ -2471,7 +2470,7 @@ mod tests {
         };
         assert_eq!(guided_members(&project, false).unwrap(), vec![member]);
         let snapshot = read_gameplay_document(&project, member).unwrap();
-        let mut fields = evolve_core::gameplay_values::fields(&snapshot).unwrap();
+        let mut fields = crate::gameplay_values::fields(&snapshot).unwrap();
         fields[0].value = "110|220|330".into();
         assert!(save_gameplay_document(&project, &projects, member, &snapshot, &fields).unwrap());
         assert!(save_gameplay_document(&project, &projects, member, &snapshot, &fields).is_err());
@@ -2512,7 +2511,7 @@ mod tests {
         assert_eq!(guided_members(&project, false).unwrap(), vec![member]);
         assert!(guided_members(&project, true).unwrap().is_empty());
         let snapshot = read_gameplay_document(&project, member).unwrap();
-        let mut fields = evolve_core::gameplay_values::fields(&snapshot).unwrap();
+        let mut fields = crate::gameplay_values::fields(&snapshot).unwrap();
         assert_eq!(fields.len(), 3);
         fields[1].value = "0.07|0.08|0.10".into();
         fields[2].value = "False".into();
@@ -2538,7 +2537,7 @@ mod tests {
         fs::create_dir_all(workspace.join("files")).unwrap();
         let original = br#"<Config xmlns:test="urn:test" test:Value="original"></Config>"#;
         let edited = br#"<Config xmlns:test="urn:test" test:Value="edited"></Config>"#;
-        let binary = evolve_core::cryxml::encode_xml(original, MAX_XML_BYTES).unwrap();
+        let binary = crate::cryxml::encode_xml(original, MAX_XML_BYTES).unwrap();
         let record = serde_json::json!({"path":"config.xml", "format":"cryxml",
             "sha256":format!("{:x}",Sha256::digest(original)),
             "original_sha256":format!("{:x}",Sha256::digest(&binary))});
@@ -2565,7 +2564,7 @@ mod tests {
         assert!(import_raw_member(&project, &projects, "config.xml", &replacement).unwrap());
         let serialized = serialize_project_xml(&binary, edited, &record).unwrap();
         assert_eq!(
-            evolve_core::cryxml::xml_bytes(&serialized, MAX_XML_BYTES)
+            crate::cryxml::xml_bytes(&serialized, MAX_XML_BYTES)
                 .unwrap()
                 .as_ref(),
             edited

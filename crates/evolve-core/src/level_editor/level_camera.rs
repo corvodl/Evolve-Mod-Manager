@@ -1,10 +1,10 @@
 //! Level-editor camera in original CryEngine world coordinates (XY, Z-up).
 //! This is deliberately independent of the model-viewer's orbit controls.
-use evolve_core::RenderMesh;
+use crate::RenderMesh;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Camera {
+pub struct Camera {
     pub position: [f32; 3],
     pub speed: f32,
     pub fov_degrees: f32,
@@ -131,7 +131,7 @@ impl Camera {
 /// renderer and the scene triangle picker.
 /// The unit world ray through a viewport point given in normalized device
 /// coordinates (-1..1, Y up), matching the renderer's projection.
-pub(super) fn view_ray(
+pub fn view_ray(
     camera: Camera,
     yaw: f32,
     pitch: f32,
@@ -149,7 +149,7 @@ pub(super) fn view_ray(
     (length > 1e-6 && length.is_finite()).then(|| direction.map(|v| v / length))
 }
 
-pub(super) fn basis(yaw: f32, pitch: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
+pub fn basis(yaw: f32, pitch: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
     let (sy, cy) = yaw.to_radians().sin_cos();
     let (sp, cp) = pitch.to_radians().sin_cos();
     (
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn start_camera_is_above_the_ground_near_the_map_center() {
         let mesh = RenderMesh {
-            info: evolve_core::ModelInfo {
+            info: crate::ModelInfo {
                 format: String::new(),
                 version: 0,
                 chunk_count: 0,
@@ -199,7 +199,7 @@ mod tests {
     #[ignore = "requires local read-only Tutorial Asset Library (EVOLVE_BENCH_LIBRARY)"]
     fn imported_tutorial_camera_starts_over_the_ground() {
         let library = std::env::var("EVOLVE_BENCH_LIBRARY").unwrap();
-        let imports = evolve_core::imported_library(std::path::Path::new(&library)).unwrap();
+        let imports = crate::imported_library(std::path::Path::new(&library)).unwrap();
         let archive = imports
             .archives
             .iter()
@@ -208,7 +208,7 @@ mod tests {
                     && pak.source.to_ascii_lowercase().contains("moddedevolve")
             })
             .unwrap();
-        let inventory = evolve_core::imported_archive_files(archive).unwrap();
+        let inventory = crate::imported_archive_files(archive).unwrap();
         let member = inventory
             .entries
             .iter()
@@ -218,13 +218,13 @@ mod tests {
                     .eq_ignore_ascii_case("levels/Tutorial/leveldata/Heightmap.dat")
             })
             .unwrap();
-        let terrain = evolve_core::read_terrain(
+        let terrain = crate::read_terrain(
             &std::path::Path::new(&inventory.root).join(&member.relative_path),
             64,
         )
         .unwrap();
         let mesh = RenderMesh {
-            info: evolve_core::ModelInfo {
+            info: crate::ModelInfo {
                 format: String::new(),
                 version: 0,
                 chunk_count: 0,

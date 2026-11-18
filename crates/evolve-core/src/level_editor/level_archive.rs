@@ -5,7 +5,7 @@
 //! baked terrain color tiles, never a loadable map, so it must not be offered
 //! as a level. The level PAK itself has a generic filename, so lists label it
 //! with its owner folder while keeping the source location visible.
-use evolve_core::ImportedPak;
+use crate::ImportedPak;
 
 fn path_parts(path: &str) -> Vec<String> {
     path.replace('\\', "/")
@@ -22,14 +22,14 @@ fn usable_folder(name: &str) -> bool {
 /// The map's baked terrain color container. The Asset Library classifies it
 /// with Levels because of its name, but it is a ZIP of RGB24 tiles and can
 /// never be opened as a map.
-pub(super) fn is_terrain_texture_pak(pak: &ImportedPak) -> bool {
+pub fn is_terrain_texture_pak(pak: &ImportedPak) -> bool {
     pak.name.eq_ignore_ascii_case("terraintexture.pak")
 }
 
 /// The `Game/Levels/<map>` owner folder of an original 2012 map archive.
 /// Only the exact map-owned `level.pak` layout has an authoritative owner;
 /// any other `level.pak` keeps its filename.
-pub(super) fn map_owner(pak: &ImportedPak) -> Option<String> {
+pub fn map_owner(pak: &ImportedPak) -> Option<String> {
     if !pak.name.eq_ignore_ascii_case("level.pak") {
         return None;
     }
@@ -51,26 +51,37 @@ pub(super) fn map_owner(pak: &ImportedPak) -> Option<String> {
 /// is always excluded; a generic `level.pak` is a map only when its source
 /// proves its owner folder. Everything else keeps the filename/category
 /// heuristic used for the shipped Levels archives.
-pub(super) fn offers_as_map(pak: &ImportedPak) -> bool {
+pub fn offers_as_map(pak: &ImportedPak) -> bool {
     if is_terrain_texture_pak(pak) {
         return false;
     }
     if pak.name.eq_ignore_ascii_case("level.pak") {
         return map_owner(pak).is_some();
     }
-    crate::level_library::likely_level_pak(pak)
+    likely_level_pak(pak)
+}
+
+/// Most imported map archives are Levels_*.pak. Other imports can be opened
+/// explicitly using the Asset Library's Open in Level Editor action.
+pub fn likely_level_pak(pak: &ImportedPak) -> bool {
+    let name = pak.name.to_ascii_lowercase();
+    pak.group.eq_ignore_ascii_case("Levels")
+        || name.starts_with("map_")
+        || name.starts_with("maps_")
+        || name.contains("_level")
+        || name.contains("_map")
 }
 
 /// The list title: the owner folder for a 2012 map archive, otherwise the
 /// imported filename.
-pub(super) fn display_title(pak: &ImportedPak) -> String {
+pub fn display_title(pak: &ImportedPak) -> String {
     map_owner(pak).unwrap_or_else(|| pak.name.clone())
 }
 
 /// Human-scale labels in the main table; original paths are always available
 /// under Details. On Windows Path::parent is not reliable for C:\\ paths when
 /// tests run on Linux, so normalize only for display and comparison.
-pub(super) fn source_label(source: &str) -> String {
+pub fn source_label(source: &str) -> String {
     let normalized = source.replace('\\', "/");
     let pieces = normalized
         .split('/')
@@ -100,7 +111,7 @@ pub(super) fn source_label(source: &str) -> String {
 /// The subtitle a map chooser card shows: the exact original source location
 /// for a map-owned level.pak, otherwise its build labels. With several builds
 /// carrying identically named maps, the owner name alone is not sufficient.
-pub(super) fn display_subtitle(pak: &ImportedPak) -> String {
+pub fn display_subtitle(pak: &ImportedPak) -> String {
     if map_owner(pak).is_some() {
         pak.source.clone()
     } else {

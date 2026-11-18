@@ -10,11 +10,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const MAX_REVISION_BYTES: usize = 192 * 1024 * 1024;
-pub(super) const MAX_HISTORY_STEPS: usize = 8;
-pub(super) const MAX_HISTORY_DISK_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_HISTORY_STEPS: usize = 8;
+pub const MAX_HISTORY_DISK_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug)]
-pub(super) struct CommittedRevision {
+pub struct CommittedRevision {
     workspace: PathBuf,
     target: String,
     member: String,
@@ -27,11 +27,11 @@ pub(super) struct CommittedRevision {
 
 impl CommittedRevision {
     /// Edited archive member, for the undo history timeline.
-    pub(super) fn member(&self) -> &str {
+    pub fn member(&self) -> &str {
         &self.member
     }
 
-    pub(super) fn target(&self) -> &str {
+    pub fn target(&self) -> &str {
         &self.target
     }
 }
@@ -51,7 +51,7 @@ impl CommittedRevision {
     /// Capture both ends *before* attempting the native project transaction.
     /// An I/O error here therefore never turns an already-committed save into
     /// a misleading failure. The saved history is deliberately session-scoped.
-    pub(super) fn capture(
+    pub fn capture(
         project: &ProjectRow,
         member: &str,
         original: &[u8],
@@ -87,18 +87,18 @@ impl CommittedRevision {
         })
     }
 
-    pub(super) fn project_matches(&self, project: &ProjectRow) -> bool {
+    pub fn project_matches(&self, project: &ProjectRow) -> bool {
         self.workspace == project.workspace && self.target == project.target
     }
 
-    pub(super) fn disk_bytes(&self) -> u64 {
+    pub fn disk_bytes(&self) -> u64 {
         self.disk_bytes
     }
 
     /// Reapply exact archived source bytes. A stale edit is an error, never a
     /// blind overwrite: save_level_member_checked checks the on-disk digest
     /// again immediately before its verified atomic project replacement.
-    pub(super) fn apply(
+    pub fn apply(
         &self,
         project: &ProjectRow,
         projects_root: &Path,

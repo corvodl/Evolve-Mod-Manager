@@ -37,6 +37,10 @@ uploads it immediately rather than leaving a 512–1024 px original at its
 128 px initial preview while other materials wait to refine. Larger textures
 still stream progressively; GPU quality and device limits still apply.
 
+Headless edits to a project's XML layers (open, move, copy, reshape, delete,
+list wildlife spawns) are available from `evolve-cli`; see
+[LEVEL_CLI.md](LEVEL_CLI.md).
+
 ## How to open
 
 1. Import your original Evolve level PAKs and their dependency PAKs into Asset Library.

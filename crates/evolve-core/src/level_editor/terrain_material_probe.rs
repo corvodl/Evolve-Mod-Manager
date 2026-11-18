@@ -1,7 +1,7 @@
 //! Read-only, build-scoped audit of CryEngine terrain material dependencies.
 //! This deliberately does not invent a terrain blending equation. Original
 //! Terrain.Layer parameters and split DDS sources remain game-authored.
-use evolve_core::{
+use crate::{
     ImportedPak, TerrainPaintMap, imported_archive_preview_inventory, imported_library,
     inspect_dds, read_material, scoped_texture_candidates,
 };
@@ -108,7 +108,7 @@ fn material_path(path: &str) -> Option<String> {
 
 /// A terrain material to paint with: its paint ID, a readable name and a
 /// small preview of its Terrain.Layer diffuse texture, when one resolves.
-pub(super) struct PaletteEntry {
+pub struct PaletteEntry {
     pub id: u8,
     pub name: String,
     pub thumbnail: Option<image::RgbaImage>,
@@ -116,7 +116,7 @@ pub(super) struct PaletteEntry {
 
 /// The SurfaceTypes of a map's `leveldata.xml`: SurfaceTypeID, name and
 /// detail material, as a compiled terrain.dat paints them.
-pub(super) fn leveldata_surfaces(xml: &[u8]) -> Vec<(u8, String, String)> {
+pub fn leveldata_surfaces(xml: &[u8]) -> Vec<(u8, String, String)> {
     let mut reader = quick_xml::Reader::from_reader(xml);
     let mut out = Vec::new();
     loop {
@@ -150,7 +150,7 @@ fn readable(name: &str) -> String {
 /// Previews for terrain materials (paint ID, name, material path), from the
 /// same game installation as the map. A material whose texture cannot be
 /// resolved is still listed, without a preview.
-pub(super) fn surface_palette(
+pub fn surface_palette(
     selected: &ImportedPak,
     surfaces: &[(u8, String, String)],
 ) -> Vec<PaletteEntry> {
@@ -183,7 +183,7 @@ pub(super) fn surface_palette(
 /// Reviews original materials from imported PAKs in the *same installed Game
 /// directory* as the map. Missing/ambiguous materials never fall back to a
 /// different build, similar basename, or a supplied ZIP copied into Git.
-pub(super) fn audit(selected: &ImportedPak, paint: &TerrainPaintMap) -> Vec<String> {
+pub fn audit(selected: &ImportedPak, paint: &TerrainPaintMap) -> Vec<String> {
     let mut messages = Vec::new();
     let mut paths = BTreeSet::new();
     for surface in &paint.surface_types {
@@ -452,7 +452,7 @@ struct DetailLayer {
 /// the GPU texture-array upload. No source material is sampled into the
 /// low-resolution baked atlas when this verified path is supported.
 #[derive(Clone)]
-pub(super) struct GpuTerrainLayer {
+pub struct GpuTerrainLayer {
     pub id: u8,
     pub image: image::RgbaImage,
     pub normal: Option<image::RgbaImage>,
@@ -465,18 +465,21 @@ pub(super) struct GpuTerrainLayer {
 }
 
 #[derive(Clone)]
-pub(super) struct GpuTerrainSource {
+pub struct GpuTerrainSource {
     /// Categorical LayerId map; RGBA8 red channel is the exact ID byte.
     pub paint: image::RgbaImage,
     pub unit: f32,
     pub layers: Vec<GpuTerrainLayer>,
 }
 
-pub(super) struct Preview {
+pub struct Preview {
     pub fallback: image::RgbaImage,
     pub gpu: Option<GpuTerrainSource>,
     pub report: String,
 }
+
+/// Painted terrain materials the shader takes (its `SourceTerrainParams`).
+pub const MAX_TERRAIN_LAYERS: usize = 32;
 
 /// An array texture holds at most `MAX_TERRAIN_LAYERS` layers of one size:
 /// the largest layer's (at most 2048 px), every other layer resampled to it.
@@ -487,7 +490,7 @@ fn gpu_source(
     unit: f32,
     layers: &HashMap<u8, DetailLayer>,
 ) -> Option<GpuTerrainSource> {
-    if layers.is_empty() || layers.len() > crate::world_instances::MAX_TERRAIN_LAYERS {
+    if layers.is_empty() || layers.len() > MAX_TERRAIN_LAYERS {
         return None;
     }
     let source = layers
@@ -606,7 +609,7 @@ fn authored_detail(bytes: &[u8]) -> Result<AuthoredDetail, String> {
     // The normal MTL resolver already decodes it; use the same bounded
     // decoder for optional TexMod/PublicParams rather than silently
     // treating a compiled material as an empty XML document.
-    let xml = evolve_core::cryxml::xml_bytes(bytes, 4 * 1024 * 1024).map_err(|e| e.to_string())?;
+    let xml = crate::cryxml::xml_bytes(bytes, 4 * 1024 * 1024).map_err(|e| e.to_string())?;
     let mut reader = quick_xml::Reader::from_reader(xml.as_ref());
     let mut diffuse_open = false;
     loop {
@@ -736,7 +739,7 @@ fn load_detail_image(
         };
         let header = verified(found)?;
         if candidate.ends_with(".dds") {
-            return evolve_core::decode_dds_rgba(&header)
+            return crate::decode_dds_rgba(&header)
                 .map(|(_, image)| image)
                 .map_err(|e| e.to_string());
         }
@@ -762,7 +765,7 @@ fn load_detail_image(
                 }
             }
         }
-        return evolve_core::decode_dds_rgba_with_parts(&header, &more)
+        return crate::decode_dds_rgba_with_parts(&header, &more)
             .map(|(_, image)| image)
             .map_err(|e| e.to_string());
     }
@@ -978,9 +981,7 @@ fn compose_detail(
 /// verified material decoder. The ad-hoc source parameter scan is never
 /// authoritative for DDS selection: real materials can use nested leaf
 /// slots, mixed-case attributes or compiled CryXmlB.
-fn terrain_layer_diffuse(
-    document: &evolve_core::MaterialDocument,
-) -> Result<Option<String>, String> {
+fn terrain_layer_diffuse(document: &crate::MaterialDocument) -> Result<Option<String>, String> {
     let mut paths = BTreeSet::new();
     for slot in document
         .slots
@@ -1009,7 +1010,7 @@ fn terrain_layer_diffuse(
 /// A high-pass overlay in *neutral signed color*, not a replacement for the
 /// map-owned RGB atlas. The fragment shader composes signed detail and then
 /// applies ordinary preview lighting/fog. A missing layer is transparent.
-pub(super) fn compose(
+pub fn compose(
     selected: &ImportedPak,
     paint: &TerrainPaintMap,
     atlas_size: (u32, u32),
@@ -1042,7 +1043,7 @@ pub(super) fn compose(
     let mut failures = Vec::new();
     let mut verified_resolutions = Vec::new();
     for id in order {
-        if layers.len() == crate::world_instances::MAX_TERRAIN_LAYERS {
+        if layers.len() == MAX_TERRAIN_LAYERS {
             break;
         }
         let names = &matches[&id];
@@ -1293,7 +1294,7 @@ mod composition_tests {
 
     #[test]
     fn terrain_diffuse_comes_from_verified_nested_mtl_leaf_not_optional_xml_scan() {
-        let doc = evolve_core::parse_material(
+        let doc = crate::parse_material(
             br#"<Material Name="Outer"><SubMaterials>
                 <Material Name="Dirt" Shader="Terrain.Layer"><Textures>
                   <Texture Map="Diffuse" File="Materials/Terrain/Clay_Dirt_B_Highpass.tif"/>
@@ -1310,14 +1311,14 @@ mod composition_tests {
 
     #[test]
     fn missing_and_ambiguous_diffuse_remain_explicit_not_silent() {
-        let no_diffuse = evolve_core::parse_material(
+        let no_diffuse = crate::parse_material(
             br#"<Material Shader="Terrain.Layer"><Textures>
             <Texture Map="Bumpmap" File="materials/terrain/dirt_ddn.tif"/>
             </Textures></Material>"#,
         )
         .unwrap();
         assert!(terrain_layer_diffuse(&no_diffuse).unwrap().is_none());
-        let competing = evolve_core::parse_material(
+        let competing = crate::parse_material(
             br#"<Material><SubMaterials>
               <Material Shader="Terrain.Layer"><Textures><Texture Map="Diffuse" File="Materials/Terrain/A.tif"/></Textures></Material>
               <Material Shader="Terrain.Layer"><Textures><Texture Map="Diffuse" File="Materials/Terrain/B.tif"/></Textures></Material>

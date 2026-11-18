@@ -4,7 +4,7 @@
 //! A matching, authenticated full-resolution baked atlas must already exist.
 //! The original game PAK and imported Asset Library remain strictly read-only.
 use crate::modding_projects::{self, ProjectRow};
-use evolve_core::terrain_rebake::{decode_original_rgb24_grid, encode_original_rgb24_rebake};
+use crate::terrain_rebake::{decode_original_rgb24_grid, encode_original_rgb24_rebake};
 use image::RgbaImage;
 use serde_json::Value;
 use std::fs;
@@ -49,7 +49,7 @@ fn validate_member(member: &str, index: usize, side: usize, parent: &Path) -> Re
 /// On a later failure, earlier writes are reverted in reverse order through
 /// that same guarded importer; crash-consistent multi-file atomicity is still
 /// not established, so this must not be called as a game-parity-complete bake.
-pub(super) fn save_rebaked_rgb24_grid_checked(
+pub fn save_rebaked_rgb24_grid_checked(
     project: &ProjectRow,
     projects_root: &Path,
     members: &[String],
@@ -148,16 +148,16 @@ pub(super) fn save_rebaked_rgb24_grid_checked(
                 };
                 let mut rollback_errors = Vec::new();
                 for &prior in committed.iter().rev() {
-                    if let Some(previous_output) = &encoded.changed_tiles[prior] {
-                        if let Err(error) = modding_projects::save_level_member_checked(
+                    if let Some(previous_output) = &encoded.changed_tiles[prior]
+                        && let Err(error) = modding_projects::save_level_member_checked(
                             project,
                             projects_root,
                             &members[prior],
                             previous_output,
                             &originals[prior],
-                        ) {
-                            rollback_errors.push(format!("{}: {error}", members[prior]));
-                        }
+                        )
+                    {
+                        rollback_errors.push(format!("{}: {error}", members[prior]));
                     }
                 }
                 return Err(if rollback_errors.is_empty() {

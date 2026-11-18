@@ -3,10 +3,10 @@
 //! that world axis (again to release); typed digits give an exact amount;
 //! LMB or Enter applies and RMB or Escape cancels. Pure math: the editor
 //! feeds it pointer rays and draws its results.
-use evolve_core::Transform;
+use crate::Transform;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum Mode {
+pub enum Mode {
     #[default]
     Move,
     Rotate,
@@ -15,7 +15,7 @@ pub(super) enum Mode {
 
 /// One placement being transformed.
 #[derive(Clone, Debug)]
-pub(super) struct Target {
+pub struct Target {
     pub index: usize,
     /// World transform when the operation started.
     pub world: Transform,
@@ -26,7 +26,7 @@ pub(super) struct Target {
 type Ray = ([f32; 3], [f32; 3]);
 
 #[derive(Clone, Debug)]
-pub(super) struct ModalTransform {
+pub struct ModalTransform {
     pub mode: Mode,
     pub axis: Option<usize>,
     pub typed: String,
@@ -123,7 +123,7 @@ fn closest_on_axis(ray: Ray, point: [f32; 3], axis: [f32; 3]) -> Option<f32> {
 
 /// A world transform as the local transform of a placement under `parent`:
 /// the inverse of the scene's parent-then-child composition.
-pub(super) fn local_under(parent: Option<&Transform>, world: Transform) -> Transform {
+pub fn local_under(parent: Option<&Transform>, world: Transform) -> Transform {
     let Some(parent) = parent else {
         return world;
     };

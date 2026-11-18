@@ -1,11 +1,12 @@
 //! Optional local integration for the developer-supplied Stage 2 encoder.
 //! No developer executable, DLL, signing key or key source is shipped in Rust.
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use std::process::Command;
 use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 const CRYPTO_SHA: &str = "841105bb6703206cae4d5c73d8d0ced5c50240d9595090a2a09dc2963fd22f78";
@@ -122,7 +123,7 @@ impl OfficialTools {
         #[cfg(not(windows))]
         {
             let _ = (action, a, b);
-            return Err("The developer encoder only runs on Windows".into());
+            Err("The developer encoder only runs on Windows".into())
         }
         #[cfg(windows)]
         {
@@ -161,7 +162,7 @@ impl OfficialTools {
         signed_name: &str,
         output: &Path,
     ) -> Result<(), String> {
-        use evolve_core::signed_pak::inspect_signed_pak;
+        use crate::signed_pak::inspect_signed_pak;
         if output.exists() {
             return Err("Official target already exists".into());
         }
@@ -194,7 +195,7 @@ impl OfficialTools {
         replacements: &[(String, PathBuf)],
         output: &Path,
     ) -> Result<(), String> {
-        use evolve_core::signed_pak::{inspect_signed_pak, open_verified_signed_pak};
+        use crate::signed_pak::{inspect_signed_pak, open_verified_signed_pak};
         if replacements.is_empty() {
             return Err("No changed files to encode".into());
         }
@@ -318,7 +319,7 @@ impl OfficialTools {
         changed_members: &[String],
         output: &Path,
     ) -> Result<(), String> {
-        use evolve_core::signed_pak::open_verified_signed_pak;
+        use crate::signed_pak::open_verified_signed_pak;
         if changed_members.is_empty() || changed_members.len() > 64 {
             return Err("Sparse PAK export requires 1–64 changed members".into());
         }

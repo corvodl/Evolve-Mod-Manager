@@ -2,7 +2,7 @@
 //! Original CryEngine TimeOfDay.xml curves and light entities are not yet
 //! decoded here. These controls are a predictable preview, never an export.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Lighting {
+pub struct Lighting {
     pub sun: [f32; 4],       // xyz = direction toward the light, w = strength
     pub ambient: [f32; 4],   // rgb = ambient light, a = unused
     pub sun_color: [f32; 4], // rgb = directional color

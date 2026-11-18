@@ -2,7 +2,7 @@
 //! exact virtual source/material pair; authored placements remain a separate
 //! instanced vertex stream (not baked into one enormous CPU mesh).
 use super::world_mips::{MipKind, MipLevels, MipPrep};
-use crate::{level_camera, textured::Surface};
+use crate::{level_camera, terrain_material_probe::MAX_TERRAIN_LAYERS, textured::Surface};
 use evolve_core::{RenderMesh, Transform};
 use iced::wgpu;
 use iced::wgpu::util::DeviceExt;
@@ -633,11 +633,7 @@ pub(super) struct ModelGroup {
     pub instances: Vec<Instance>,
     pub radius: f32,
 }
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Instance {
-    pub object_index: usize,
-    pub transform: Transform,
-}
+pub(super) use crate::level_draft::Instance;
 /// Live transforms of placements being moved, rotated or scaled, by scene
 /// object index. A world and its edited copies share one; the renderer
 /// rewrites only the affected placements, without rebuilding the scene.
@@ -1051,6 +1047,19 @@ impl InteriorWeather {
             }
             inside
         })
+    }
+}
+
+impl crate::level_draft::DrawnWorld for World {
+    fn updated(&self, scene: &evolve_core::LevelScene) -> Self {
+        World::updated(self, scene)
+    }
+
+    fn edit_instances(&mut self, mut edit: impl FnMut(&mut Vec<Instance>)) {
+        for group in &mut self.groups {
+            edit(&mut group.instances);
+        }
+        self.instance_count = self.groups.iter().map(|g| g.instances.len()).sum();
     }
 }
 
@@ -1690,9 +1699,6 @@ fn upload_terrain_layers(
             + pw as u64 * ph as u64 * 4,
     }
 }
-
-/// Painted terrain materials the shader takes (its `SourceTerrainParams`).
-pub(super) const MAX_TERRAIN_LAYERS: usize = 32;
 
 struct GpuParticles {
     instances: wgpu::Buffer,
