@@ -293,7 +293,7 @@ fn stems(name: &str) -> Vec<String> {
     if stripped_lod != stem {
         variants.push(stripped_lod.to_owned());
     }
-    for ending in ["_3p", "_fp", "_skeleton"] {
+    for ending in ["_3p", "_fp", "_skeleton", "_attachment", "_attach"] {
         if stripped_lod.to_ascii_lowercase().ends_with(ending) {
             variants.push(stripped_lod[..stripped_lod.len() - ending.len()].to_owned());
         }

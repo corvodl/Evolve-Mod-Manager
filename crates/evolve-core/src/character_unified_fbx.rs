@@ -701,6 +701,25 @@ fn original_model_material_with_scope(
         } else {
             format!("{parent}/{stem}.mtl")
         });
+        let lower_stem = stem.to_ascii_lowercase();
+        if let Some(stripped) = lower_stem
+            .strip_suffix("_attachment")
+            .or_else(|| lower_stem.strip_suffix("_attach"))
+        {
+            paths.push(if parent.is_empty() {
+                format!("{stripped}.mtl")
+            } else {
+                format!("{parent}/{stripped}.mtl")
+            });
+        }
+        let trimmed_stem = stem.trim_end_matches(|c: char| c.is_ascii_digit());
+        if !trimmed_stem.is_empty() && trimmed_stem != stem && trimmed_stem.len() >= 3 {
+            paths.push(if parent.is_empty() {
+                format!("{trimmed_stem}.mtl")
+            } else {
+                format!("{parent}/{trimmed_stem}.mtl")
+            });
+        }
         use std::io::Read;
         let mut header = [0u8; 16];
         let historical = fs::File::open(&mesh)

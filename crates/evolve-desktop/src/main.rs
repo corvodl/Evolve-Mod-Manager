@@ -12572,12 +12572,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .and_then(|inv| inv.entries.get(index))
                     .is_some_and(|entry| is_viewer_preview_source(&entry.relative_path))
             {
-                let is_cdf = state
+                let is_assembly = state
                     .inventory
                     .as_ref()
                     .and_then(|inv| inv.entries.get(index))
                     .is_some_and(|entry| {
-                        entry.relative_path.to_ascii_lowercase().ends_with(".cdf")
+                        evolve_core::is_character_assembly_path(&entry.relative_path)
                     });
                 let is_gfx = state
                     .inventory
@@ -12593,7 +12593,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 return update(
                     state,
-                    if is_cdf {
+                    if is_assembly {
                         Message::ViewerPreviewStaticCdf
                     } else if state
                         .inventory
@@ -13172,7 +13172,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             // The explicit Preview button must use the same complete CDF
             // assembly pipeline as single-click auto-preview. Parsing only
             // dependency metadata here left the viewer with no geometry.
-            if filename.ends_with(".cdf") {
+            if evolve_core::is_character_assembly_path(&filename) {
                 state.gfx_active = false;
                 if state.viewer_sidebar_active == ViewerSidebarTab::GfxTools {
                     state.viewer_sidebar_active = ViewerSidebarTab::Files;
@@ -17205,10 +17205,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         // A missing standalone-model MTL is not a CDF material
                         // failure: do not overwrite valid 7/7 GPU material
                         // diagnostics with "No verified material for this mesh".
-                        state.auto_resource_note = if relative
-                            .to_ascii_lowercase()
-                            .ends_with(".cdf")
-                            && resources.material.is_none()
+                        state.auto_resource_note = if evolve_core::is_character_assembly_path(
+                            &relative,
+                        ) && resources.material.is_none()
                         {
                             "CDF attachment materials are verified per mesh section in the Inspector"
                                     .into()
@@ -18602,10 +18601,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 && state.selected == Some(index)
                 && let Some(entry) = state.inventory.as_ref().and_then(|i| i.entries.get(index))
             {
-                let is_cdf = entry.relative_path.to_ascii_lowercase().ends_with(".cdf");
+                let is_assembly = evolve_core::is_character_assembly_path(&entry.relative_path);
                 return update(
                     state,
-                    if is_cdf {
+                    if is_assembly {
                         Message::ViewerPreviewStaticCdf
                     } else {
                         Message::ViewerPreviewSelected

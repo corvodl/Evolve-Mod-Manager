@@ -2141,7 +2141,7 @@ fn file_context_actions(state: &State) -> Element<'_, Message> {
             .and_then(|inv| inv.entries.get(index))
         {
             let filename = entry.relative_path.as_str();
-            let is_cdf = filename.to_ascii_lowercase().ends_with(".cdf");
+            let is_assembly = evolve_core::is_character_assembly_path(filename);
             let is_dds = filename.to_ascii_lowercase().ends_with(".dds")
                 || filename.to_ascii_lowercase().ends_with(".dds.0");
             let is_model = [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cdf"]
@@ -2206,12 +2206,14 @@ fn file_context_actions(state: &State) -> Element<'_, Message> {
                             .style(design::text_button)
                             .on_press(Message::StartDependencyInspection),
                         crate::ui_kit::why_disabled(
-                            design::button("Preview full CDF")
+                            design::button("Preview full character")
                                 .width(Fill)
                                 .style(design::text_button)
-                                .on_press_maybe(is_cdf.then_some(Message::ViewerPreviewStaticCdf)),
-                            !is_cdf,
-                            "Only for .cdf character files.",
+                                .on_press_maybe(
+                                    is_assembly.then_some(Message::ViewerPreviewStaticCdf),
+                                ),
+                            !is_assembly,
+                            "Only for character assemblies (.cdf / .chr).",
                         ),
                         crate::ui_kit::why_disabled(
                             design::button("Export DDS → PNG")
@@ -2421,7 +2423,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
         );
         let title = if entry.directory {
             entry.name.clone()
-        } else if entry.name.to_ascii_lowercase().ends_with(".cdf") {
+        } else if evolve_core::is_character_assembly_path(&entry.name) {
             format!("◇ {} · Character assembly", entry.name)
         } else {
             entry.name.clone()
