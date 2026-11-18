@@ -693,7 +693,11 @@ fn original_model_material_with_scope(
         if !rooted && !parent.is_empty() {
             paths.push(format!("{parent}/{authored}"));
         } else {
-            paths.push(authored);
+            paths.push(authored.clone());
+        }
+        if let Some((vparent, vfile)) = authored.rsplit_once('/') {
+            let vstem = vfile.strip_suffix(".mtl").unwrap_or(vfile);
+            paths.push(format!("{vparent}/{vstem}/{vfile}"));
         }
     } else {
         paths.push(if parent.is_empty() {
@@ -711,6 +715,9 @@ fn original_model_material_with_scope(
             } else {
                 format!("{parent}/{stripped}.mtl")
             });
+            if !parent.is_empty() {
+                paths.push(format!("{parent}/{stripped}/{stripped}.mtl"));
+            }
         }
         let trimmed_stem = stem.trim_end_matches(|c: char| c.is_ascii_digit());
         if !trimmed_stem.is_empty() && trimmed_stem != stem && trimmed_stem.len() >= 3 {

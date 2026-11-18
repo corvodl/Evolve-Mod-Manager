@@ -338,9 +338,18 @@ pub(crate) fn material_for_part(
                 return Ok(Some(found));
             }
         }
-        return auto_resources::exact(inventory, &virtual_mtl, imported, build)?
-            .ok_or_else(|| format!("Source CDF material not found: {virtual_mtl}"))
-            .map(Some);
+        if let Some(found) = auto_resources::exact(inventory, &virtual_mtl, imported, build)? {
+            return Ok(Some(found));
+        }
+        if let Some((vparent, vfile)) = virtual_mtl.rsplit_once('/') {
+            let vstem = vfile.strip_suffix(".mtl").unwrap_or(vfile);
+            let subfolder_mtl = format!("{vparent}/{vstem}/{vfile}");
+            if let Some(found) = auto_resources::exact(inventory, &subfolder_mtl, imported, build)?
+            {
+                return Ok(Some(found));
+            }
+        }
+        return Err(format!("Source CDF material not found: {virtual_mtl}"));
     }
     // Compiled MtlName data is authoritative before a fallback same-stem
     // material; multiple contradictory authored hints remain ambiguous.
@@ -420,6 +429,13 @@ pub(crate) fn material_for_part(
         };
         if let Some(found) = auto_resources::exact(inventory, &path, imported, build)? {
             return Ok(Some(found));
+        }
+        if !parent.is_empty() {
+            let subfolder_path = format!("{parent}/{base}/{base}.mtl");
+            if let Some(found) = auto_resources::exact(inventory, &subfolder_path, imported, build)?
+            {
+                return Ok(Some(found));
+            }
         }
     }
     legacy_owner_material(binding, inventory, imported, build)
@@ -745,13 +761,17 @@ fn authored_maps(
         imported,
         build,
     } = lookup;
-    let slot = document.slots.get(material_slot as usize).ok_or_else(|| {
-        format!(
-            "Source material slot {} exceeds {} authored leaves",
-            material_slot,
-            document.slots.len()
-        )
-    })?;
+    let slot = document
+        .slots
+        .get(material_slot as usize)
+        .or_else(|| (document.slots.len() == 1).then(|| &document.slots[0]))
+        .ok_or_else(|| {
+            format!(
+                "Source material slot {} exceeds {} authored leaves",
+                material_slot,
+                document.slots.len()
+            )
+        })?;
     let mut result: [Option<Arc<image::RgbaImage>>; 6] = std::array::from_fn(|_| None);
     let mut warnings = Vec::new();
     // A failed opacity/normal/gloss lookup must not discard a separately
@@ -1519,7 +1539,11 @@ pub fn apply_damage_blend(
             continue;
         };
         let doc = read_material(&material).map_err(|e| e.to_string())?;
-        let Some(leaf) = doc.slots.get(part.material_slot as usize) else {
+        let Some(leaf) = doc
+            .slots
+            .get(part.material_slot as usize)
+            .or_else(|| (doc.slots.len() == 1).then(|| &doc.slots[0]))
+        else {
             continue;
         };
         let Some((damage_ref, mask_ref)) = evolve_core::authored_damage_layer(leaf) else {
@@ -1773,6 +1797,7 @@ pub fn load_with_progress(
             let leaf = authored
                 .slots
                 .get(part.material_slot as usize)
+                .or_else(|| (authored.slots.len() == 1).then(|| &authored.slots[0]))
                 .ok_or_else(|| {
                     format!("Original material slot {} is missing", part.material_slot)
                 })?;
@@ -1780,13 +1805,20 @@ pub fn load_with_progress(
                 surface.visible = false;
                 return Ok(());
             }
-            let slot_key = (path.clone(), part.binding.clone(), part.material_slot);
+            let effective_slot = if authored.slots.get(part.material_slot as usize).is_none()
+                && authored.slots.len() == 1
+            {
+                0
+            } else {
+                part.material_slot
+            };
+            let slot_key = (path.clone(), part.binding.clone(), effective_slot);
             let maps = decoded_slots.entry(slot_key).or_insert_with(|| {
                 authored_maps(
                     authored,
                     &path,
                     &part.binding,
-                    part.material_slot,
+                    effective_slot,
                     MaterialLookup {
                         inventory,
                         imported,

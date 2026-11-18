@@ -1634,12 +1634,22 @@ where
                     false
                 };
                 if matches!(attachment.kind, AttachmentKind::Bone) || !has_skin_weights {
-                    transform_equipment(&mut part.mesh, attachment, skeleton).map_err(|error| {
-                        LevelExportError::Material(format!(
-                            "CDF {original} attachment {}: {error}",
-                            attachment.name
-                        ))
-                    })?;
+                    let host_scale = if crate::character_assembly::is_parasite_host(&source) {
+                        crate::character_assembly::parasite_host_stage_scale(
+                            &source,
+                            Some(skeleton),
+                        )
+                    } else {
+                        1.0
+                    };
+                    transform_equipment(&mut part.mesh, attachment, skeleton, host_scale).map_err(
+                        |error| {
+                            LevelExportError::Material(format!(
+                                "CDF {original} attachment {}: {error}",
+                                attachment.name
+                            ))
+                        },
+                    )?;
                 }
                 // Bone-space transform was applied to geometry, or weighted
                 // skin already occupies skeleton bind-pose coordinates.

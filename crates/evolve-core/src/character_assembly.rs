@@ -124,19 +124,19 @@ pub const PARASITE_HOST_SOCKETS: [(&str, &str, &str, &str); 12] = [
         "Parasite0_0",
         "Parasite_Archer_0",
         "objects/characters/monsters/parasite/parasite_archer_attachment.chr",
-        "objects/characters/monsters/parasite/Parasite_Archer.mtl",
+        "objects/characters/monsters/parasite/parasite_archer/Parasite_Archer.mtl",
     ),
     (
         "Parasite0_1",
         "Parasite_Archer_1",
         "objects/characters/monsters/parasite/parasite_archer_attachment.chr",
-        "objects/characters/monsters/parasite/Parasite_Archer.mtl",
+        "objects/characters/monsters/parasite/parasite_archer/Parasite_Archer.mtl",
     ),
     (
         "Parasite0_2",
         "Parasite_Archer_2",
         "objects/characters/monsters/parasite/parasite_archer_attachment.chr",
-        "objects/characters/monsters/parasite/Parasite_Archer.mtl",
+        "objects/characters/monsters/parasite/parasite_archer/Parasite_Archer.mtl",
     ),
     // Slot 2 (Cluster 1): Berserker Parasites
     (
@@ -181,19 +181,19 @@ pub const PARASITE_HOST_SOCKETS: [(&str, &str, &str, &str); 12] = [
         "Parasite3_0",
         "Parasite_Wasp_0",
         "objects/characters/monsters/parasite/parasite_wasp_attachment.chr",
-        "objects/characters/monsters/parasite/Parasite_Wasp.mtl",
+        "objects/characters/monsters/parasite/parasite_wasp/Parasite_Wasp.mtl",
     ),
     (
         "Parasite3_1",
         "Parasite_Wasp_1",
         "objects/characters/monsters/parasite/parasite_wasp_attachment.chr",
-        "objects/characters/monsters/parasite/Parasite_Wasp.mtl",
+        "objects/characters/monsters/parasite/parasite_wasp/Parasite_Wasp.mtl",
     ),
     (
         "Parasite3_2",
         "Parasite_Wasp_2",
         "objects/characters/monsters/parasite/parasite_wasp_attachment.chr",
-        "objects/characters/monsters/parasite/Parasite_Wasp.mtl",
+        "objects/characters/monsters/parasite/parasite_wasp/Parasite_Wasp.mtl",
     ),
 ];
 
@@ -205,6 +205,45 @@ pub fn is_parasite_host(cdf: &CdfDefinition) -> bool {
             .attachments
             .iter()
             .any(|a| a.binding.to_ascii_lowercase().contains("parasitehost"))
+}
+
+/// Computes the uniform stage scale factor (0.30 for Stage 1, 0.60 for Stage 2, 1.00 for Stage 3)
+/// for Parasite Host monster assemblies so mounted attachments match the host monster size.
+pub fn parasite_host_stage_scale(
+    definition: &CdfDefinition,
+    skeleton: Option<&CompiledSkeleton>,
+) -> f32 {
+    let lower_skel = definition.skeleton.to_ascii_lowercase();
+    let any_binding1 = definition.attachments.iter().any(|a| {
+        let b = a.binding.to_ascii_lowercase();
+        b.contains("parasitehost1") || b.contains("host1")
+    });
+    if lower_skel.contains("parasitehost1") || lower_skel.contains("host1") || any_binding1 {
+        return 0.30;
+    }
+    let any_binding2 = definition.attachments.iter().any(|a| {
+        let b = a.binding.to_ascii_lowercase();
+        b.contains("parasitehost2") || b.contains("host2")
+    });
+    if lower_skel.contains("parasitehost2") || lower_skel.contains("host2") || any_binding2 {
+        return 0.60;
+    }
+    // If a skeleton is available, verify distance of Parasite0_0 socket:
+    if let Some(skel) = skeleton
+        && let Some(pos) = skel
+            .names
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case("Parasite0_0"))
+    {
+        let m = &skel.world[pos];
+        let dist = (m[0][3] * m[0][3] + m[1][3] * m[1][3] + m[2][3] * m[2][3]).sqrt();
+        if dist < 2.8 {
+            return 0.30;
+        } else if dist < 5.0 {
+            return 0.60;
+        }
+    }
+    1.0
 }
 
 /// Automatically populates the 12 default parasite socket attachments on Parasite Host when not authored.
@@ -491,6 +530,7 @@ pub(crate) fn transform_equipment(
     mesh: &mut RenderMesh,
     attachment: &crate::cdf::CdfAttachment,
     skeleton: &CompiledSkeleton,
+    scale: f32,
 ) -> Result<(), AssemblyError> {
     let bone = attachment.bone_name.as_deref().ok_or_else(|| {
         AssemblyError::Incomplete(format!(
@@ -543,8 +583,14 @@ pub(crate) fn transform_equipment(
     let rotate = |p: [f32; 3]| -> [f32; 3] {
         std::array::from_fn(|i| (0..3).map(|j| rotation[i][j] * p[j]).sum::<f32>())
     };
+    let scale = if scale.is_finite() && scale > 1e-4 {
+        scale
+    } else {
+        1.0
+    };
     for point in &mut mesh.positions {
-        let local = rotate(*point);
+        let scaled = [point[0] * scale, point[1] * scale, point[2] * scale];
+        let local = rotate(scaled);
         let transformed: [f32; 3] = std::array::from_fn(|i| {
             (0..3)
                 .map(|j| matrix[i][j] * (local[j] + offset[j]))
@@ -824,7 +870,12 @@ pub fn read_static_cdf_assembly_with_kala_state(
                 ));
                 continue;
             };
-            if let Err(error) = transform_equipment(&mut mesh, attachment, verified) {
+            let host_scale = if is_parasite_host(&definition) {
+                parasite_host_stage_scale(&definition, skeleton.as_ref())
+            } else {
+                1.0
+            };
+            if let Err(error) = transform_equipment(&mut mesh, attachment, verified, host_scale) {
                 notes.push(format!("{}: {error}", attachment.name));
                 continue;
             }
@@ -1163,7 +1214,7 @@ mod tests {
         assert_eq!(report.original_parts[10], "Parasite_Wasp_0");
         assert_eq!(
             report.source_parts[1].material_hint.as_deref(),
-            Some("objects/characters/monsters/parasite/Parasite_Archer.mtl")
+            Some("objects/characters/monsters/parasite/parasite_archer/Parasite_Archer.mtl")
         );
         assert_eq!(
             report.source_parts[4].material_hint.as_deref(),
@@ -1175,7 +1226,7 @@ mod tests {
         );
         assert_eq!(
             report.source_parts[10].material_hint.as_deref(),
-            Some("objects/characters/monsters/parasite/Parasite_Wasp.mtl")
+            Some("objects/characters/monsters/parasite/parasite_wasp/Parasite_Wasp.mtl")
         );
         assert_eq!(report.geometry_parts.len(), 13);
         assert_eq!(mesh.indices.len(), 13 * 3);
@@ -1395,18 +1446,24 @@ mod tests {
         };
         let mut rifle = part(3, true);
         rifle.positions[0] = [1., 0., 0.];
-        transform_equipment(&mut rifle, &attachment, &skeleton).unwrap();
+        transform_equipment(&mut rifle, &attachment, &skeleton, 1.0).unwrap();
         assert_eq!(rifle.positions[0], [12., 22., 33.]);
         assert_eq!(rifle.normals.as_ref().unwrap()[0], [0., 0., 1.]);
+        let mut scaled_rifle = part(3, true);
+        scaled_rifle.positions[0] = [1., 0., 0.];
+        transform_equipment(&mut scaled_rifle, &attachment, &skeleton, 0.5).unwrap();
+        // local = [0.5, 0, 0] + offset [1, 2, 3] = [1.5, 2, 3]
+        // matrix: x = 1.5 + 10 = 11.5, y = 2 + 20 = 22, z = 3 + 30 = 33
+        assert_eq!(scaled_rifle.positions[0], [11.5, 22., 33.]);
         let mut wrong = attachment.clone();
         wrong.bone_name = Some("OtherWeaponSocket".into());
-        assert!(transform_equipment(&mut rifle, &wrong, &skeleton).is_err());
+        assert!(transform_equipment(&mut rifle, &wrong, &skeleton, 1.0).is_err());
         // A CA_SKIN piece lacking weights but naming the original socket
         // uses precisely the same original rest transform, never root space.
         let mut unweighted_arm = attachment;
         unweighted_arm.kind = AttachmentKind::Skin;
         let mut arm = part(3, true);
-        transform_equipment(&mut arm, &unweighted_arm, &skeleton).unwrap();
+        transform_equipment(&mut arm, &unweighted_arm, &skeleton, 1.0).unwrap();
         assert_eq!(arm.positions[0], [11., 22., 33.]);
     }
 
