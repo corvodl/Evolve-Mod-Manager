@@ -1,4 +1,4 @@
-Nightly requested 2026-11-18 after merging PR #240 and PR #241.
-request: user-requested-merge-build-public-nightly-2026-11-18-pr240-pr241
-base-main-commit: 1e112cb4
-description: Build and publish a fresh Windows Nightly from merged private EMM-SRC main including PR #240 (Move Level Editor logic into evolve-core; add headless level CLI) and PR #241 (Support standalone character assemblies for parasites and populate Parasite Host socket mounts). Preserve release authorization, requireAdministrator manifest verification, official Stage 2 runtime packaging and licensing safeguards. Publish only compiled installer and portable ZIP to public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease; do not publish private source.
+Nightly requested 2026-11-18 after merging PR #242.
+request: user-requested-merge-build-public-nightly-2026-11-18-pr242
+base-main-commit: 055eea6b
+description: Build and publish a fresh Windows Nightly from merged private EMM-SRC main including PR #242 (Load textures on Parasite Host socket mounts and recognize standalone parasite character assemblies). Preserve release authorization, requireAdministrator manifest verification, official Stage 2 runtime packaging and licensing safeguards. Publish only compiled installer and portable ZIP to public corvodl/Evolve-Mod-Manager GitHub Nightly prerelease; do not publish private source.
